@@ -525,6 +525,8 @@ class LanMessengerApp:
                 continue
             for info in infos:
                 ip = info[4][0]
+                if not isinstance(ip, str):
+                    continue
                 if is_ipv4_address(ip) and not ip.startswith("127."):
                     addresses.add(ip)
 
@@ -1775,50 +1777,269 @@ class SettingsWindow(BaseWindow):
         self.hide()
 
 
-class QuickChatWindow(BaseWindow):
-    def __init__(self, app: LanMessengerApp, peer_ip: str, peer_name: str) -> None:
-        super().__init__(app, f"Quick Chat - {peer_name} - {APP_VERSION}", "360x320")
-        self.peer_ip = peer_ip
-        self.peer_name = peer_name
-        self.resizable(False, False)
-        self.attributes("-topmost", True)
+class MainChatWindow(BaseWindow):
+    def __init__(self, app: LanMessengerApp) -> None:
+        super().__init__(app, f"{APP_NAME} - {APP_VERSION}", "980x660")
+        self.minsize(860, 560)
+        self.selected_ip: str | None = None
 
-        container = ttk.Frame(self)
-        container.pack(fill="both", expand=True, padx=10, pady=10)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
 
-        self.text = tk.Text(container, wrap="word", state="disabled", height=10)
-        self.text.pack(fill="both", expand=True)
+        container = ttk.Frame(self, padding=12)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(1, weight=1)
+        container.rowconfigure(0, weight=1)
+
+        sidebar = ttk.Frame(container, width=290)
+        sidebar.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+        sidebar.grid_propagate(False)
+
+        ttk.Label(sidebar, text=f"Conversations  {APP_VERSION}").pack(anchor="w")
+        ttk.Label(sidebar, text="Open a chat or use the paperclip to send a file.").pack(anchor="w", pady=(2, 8))
+
+        sidebar_holder = tk.Frame(sidebar, bg="#eaf0f7", bd=0, highlightthickness=0)
+        sidebar_holder.pack(fill="both", expand=True)
+        self.sidebar_canvas = tk.Canvas(sidebar_holder, bg="#eaf0f7", bd=0, highlightthickness=0)
+        self.sidebar_scroll = ttk.Scrollbar(sidebar_holder, orient="vertical", command=self.sidebar_canvas.yview)
+        self.sidebar_canvas.configure(yscrollcommand=self.sidebar_scroll.set)
+        self.sidebar_canvas.pack(side="left", fill="both", expand=True)
+        self.sidebar_scroll.pack(side="right", fill="y")
+
+        self.sidebar_list = tk.Frame(self.sidebar_canvas, bg="#eaf0f7")
+        self.sidebar_window = self.sidebar_canvas.create_window((0, 0), window=self.sidebar_list, anchor="nw")
+        self.sidebar_list.bind(
+            "<Configure>",
+            lambda _event: self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all")),
+        )
+        self.sidebar_canvas.bind(
+            "<Configure>",
+            lambda event: self.sidebar_canvas.itemconfigure(self.sidebar_window, width=event.width),
+        )
+
+        chat = ttk.Frame(container)
+        chat.grid(row=0, column=1, sticky="nsew")
+        chat.columnconfigure(0, weight=1)
+        chat.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(chat)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header.columnconfigure(0, weight=1)
+        self.header_name_var = tk.StringVar(value="No chat selected")
+        self.header_status_var = tk.StringVar(value="Discovered contacts will appear in the sidebar.")
+        ttk.Label(header, textvariable=self.header_name_var, font=("Helvetica", 16, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(header, textvariable=self.header_status_var).grid(row=1, column=0, sticky="w", pady=(3, 0))
+        self.contact_button = ttk.Button(header, text="Add Contact", command=self.add_selected_contact)
+        self.contact_button.grid(row=0, column=1, rowspan=2, sticky="e")
+
+        self.text = tk.Text(chat, wrap="word", state="disabled")
+        self.text.grid(row=1, column=0, sticky="nsew")
         self._setup_message_view(self.text)
 
-        self.entry = tk.Text(container, height=3, wrap="word")
-        self.entry.pack(fill="x", pady=(8, 8))
+        self.transfer_label = ttk.Label(chat, text="Idle")
+        self.transfer_label.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self.transfer_bar = ttk.Progressbar(chat, mode="determinate")
+        self.transfer_bar.grid(row=3, column=0, sticky="ew", pady=(4, 10))
+
+        composer = ttk.Frame(chat)
+        composer.grid(row=4, column=0, sticky="ew")
+        composer.columnconfigure(1, weight=1)
+
+        self.attach_button = ttk.Button(composer, text="📎", width=3, command=self.pick_file)
+        self.attach_button.grid(row=0, column=0, sticky="nsw", padx=(0, 8))
+
+        self.entry = tk.Text(composer, height=4, wrap="word")
+        self.entry.grid(row=0, column=1, sticky="ew")
         self.entry.bind("<Return>", self.on_enter)
 
-        actions = ttk.Frame(container)
-        actions.pack(fill="x")
-        ttk.Button(actions, text="Send", command=self.send_text).pack(side="left")
-        ttk.Button(actions, text="File", command=self.pick_file).pack(side="left", padx=(8, 0))
+        ttk.Button(composer, text="Send", command=self.send_text).grid(row=0, column=2, sticky="nse", padx=(8, 0))
 
-        self.transfer_label = ttk.Label(container, text="Idle")
-        self.transfer_label.pack(fill="x", pady=(8, 0))
-        self.transfer_bar = ttk.Progressbar(container, mode="determinate")
-        self.transfer_bar.pack(fill="x", pady=(4, 0))
-
-        self._load_history()
         self._init_drop_target()
+        self.refresh()
 
     def show(self) -> None:
         super().show()
-        self.app.mark_peer_read(self.peer_ip)
+        if self.selected_ip is None:
+            self.select_chat(None)
+        elif self.selected_ip:
+            self.app.mark_peer_read(self.selected_ip)
 
-    def rebind_peer(self, peer_ip: str, peer_name: str) -> None:
-        self.peer_ip = peer_ip
-        self.peer_name = peer_name
-        self.title(f"Quick Chat - {peer_name} - {APP_VERSION}")
-        self.reload_history()
+    def show_chat(self, ip: str | None) -> None:
+        self.select_chat(ip)
+        self.show()
 
-    def _load_history(self) -> None:
-        self.reload_history()
+    def is_conversation_active(self, ip: str) -> bool:
+        return self.is_visible() and self.selected_ip == ip
+
+    def rebind_peer(self, old_ip: str, new_ip: str, _peer_name: str) -> None:
+        if self.selected_ip == old_ip:
+            self.selected_ip = new_ip
+        self.refresh()
+
+    def refresh(self) -> None:
+        conversation_ips = self.app.conversation_targets()
+        if self.selected_ip not in conversation_ips:
+            self.selected_ip = conversation_ips[0] if conversation_ips else None
+        self.refresh_sidebar()
+        self.refresh_current_chat()
+
+    def refresh_for_message(self, ip: str) -> None:
+        if self.selected_ip is None:
+            self.selected_ip = ip
+        self.refresh()
+
+    def refresh_sidebar(self) -> None:
+        for child in self.sidebar_list.winfo_children():
+            child.destroy()
+
+        conversation_ips = self.app.conversation_targets()
+        if not conversation_ips:
+            empty = tk.Label(
+                self.sidebar_list,
+                text="No conversations yet.\nPeers discovered on your LAN will appear here.",
+                justify="left",
+                bg="#eaf0f7",
+                fg="#516273",
+                padx=14,
+                pady=14,
+            )
+            empty.pack(fill="x", pady=(2, 0))
+            return
+
+        for ip in conversation_ips:
+            self._build_row(ip)
+
+    def _build_row(self, ip: str) -> None:
+        selected = ip == self.selected_ip
+        bg = "#d8ebff" if selected else "#ffffff"
+        frame = tk.Frame(self.sidebar_list, bg=bg, bd=1, highlightthickness=0)
+        frame.pack(fill="x", pady=(0, 6))
+
+        text_wrap = tk.Frame(frame, bg=bg)
+        text_wrap.pack(side="left", fill="both", expand=True, padx=(10, 6), pady=10)
+
+        name = self.app.conversation_name(ip)
+        unread = self.app.unread_counts.get(ip, 0)
+        title = name if unread == 0 else f"{name} ({unread})"
+        preview = self.app.conversation_preview(ip)
+        status = self.app.conversation_status(ip)
+
+        title_label = tk.Label(
+            text_wrap,
+            text=title,
+            anchor="w",
+            bg=bg,
+            fg="#15202b",
+            font=("Helvetica", 11, "bold"),
+        )
+        title_label.pack(fill="x")
+        preview_label = tk.Label(
+            text_wrap,
+            text=preview,
+            anchor="w",
+            justify="left",
+            bg=bg,
+            fg="#334556",
+            font=("Helvetica", 10),
+        )
+        preview_label.pack(fill="x", pady=(2, 1))
+        status_label = tk.Label(
+            text_wrap,
+            text=status,
+            anchor="w",
+            bg=bg,
+            fg="#5f7284",
+            font=("Helvetica", 9),
+        )
+        status_label.pack(fill="x")
+
+        attach_button = tk.Button(
+            frame,
+            text="📎",
+            command=lambda target_ip=ip: self.pick_file(target_ip),
+            relief="flat",
+            bg=bg,
+            activebackground="#c7def7",
+            bd=0,
+            padx=10,
+            pady=8,
+        )
+        attach_button.pack(side="right", padx=(0, 6), pady=6)
+
+        for widget in (frame, text_wrap, title_label, preview_label, status_label):
+            widget.bind("<Button-1>", lambda _event, target_ip=ip: self.select_chat(target_ip))
+
+    def select_chat(self, ip: str | None) -> None:
+        if ip is None:
+            conversation_ips = self.app.conversation_targets()
+            ip = conversation_ips[0] if conversation_ips else None
+        if ip is None:
+            self.selected_ip = None
+            self.refresh_current_chat()
+            return
+
+        peer = self.app._resolve_active_peer(ip)
+        self.selected_ip = peer.ip if peer is not None else ip
+        self.refresh()
+        if self.selected_ip:
+            self.app.mark_peer_read(self.selected_ip)
+
+    def refresh_current_chat(self) -> None:
+        if not self.selected_ip:
+            self.title(f"{APP_NAME} - {APP_VERSION}")
+            self.header_name_var.set("No chat selected")
+            self.header_status_var.set("Discovered contacts and saved contacts appear in the sidebar.")
+            self.contact_button.state(["disabled"])
+            self.attach_button.state(["disabled"])
+            self._render_history([])
+            self.transfer_label.config(text="Idle")
+            self.transfer_bar["value"] = 0
+            self.transfer_bar["maximum"] = 1
+            return
+
+        ip = self.selected_ip
+        self.title(f"{APP_NAME} - {self.app.conversation_name(ip)} - {APP_VERSION}")
+        self.header_name_var.set(self.app.conversation_name(ip))
+        self.header_status_var.set(self.app.conversation_status(ip))
+
+        peer = self.app.find_peer_by_ip(ip)
+        if peer is not None and not self.app.is_contact(peer):
+            self.contact_button.state(["!disabled"])
+        else:
+            self.contact_button.state(["disabled"])
+        self.attach_button.state(["!disabled"])
+
+        self._render_history(self.app.message_history.get(ip, []))
+        self.refresh_transfer(ip)
+
+    def _render_history(self, entries: list[MessageEntry]) -> None:
+        self.text.config(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.config(state="disabled")
+        for entry in entries:
+            self._append_bubble(self.text, self.app.username, entry)
+
+    def refresh_transfer(self, ip: str | None = None) -> None:
+        target_ip = ip or self.selected_ip
+        if not target_ip or target_ip != self.selected_ip:
+            return
+
+        transfer = self.app.transfer_statuses.get(target_ip)
+        if transfer is None:
+            self.transfer_label.config(text="Idle")
+            self.transfer_bar["value"] = 0
+            self.transfer_bar["maximum"] = 1
+            return
+
+        label, current, total = transfer
+        self.transfer_label.config(text=f"{label} ({format_bytes(current)} / {format_bytes(total)})")
+        self.transfer_bar["maximum"] = max(total, 1)
+        self.transfer_bar["value"] = current
+
+    def add_selected_contact(self) -> None:
+        if not self.selected_ip:
+            return
+        self.app.add_contact_from_peer(self.selected_ip)
 
     def _init_drop_target(self) -> None:
         if DND_FILES is None:
@@ -1831,12 +2052,14 @@ class QuickChatWindow(BaseWindow):
             pass
 
     def on_drop_files(self, event: Any) -> None:
+        if not self.selected_ip:
+            return
         paths = self.tk.splitlist(event.data)
         for raw_path in paths:
             path = raw_path.strip("{}")
             if Path(path).is_file():
-                self.app.add_message(self.peer_ip, "System", f"Sending file: {Path(path).name}", incoming=False)
-                self.app.send_file(self.peer_ip, path)
+                self.app.add_message(self.selected_ip, "System", f"Sending file: {Path(path).name}", incoming=False)
+                self.app.send_file(self.selected_ip, path)
 
     def on_enter(self, event) -> str | None:
         if event.state & 0x0001:
@@ -1844,38 +2067,24 @@ class QuickChatWindow(BaseWindow):
         self.send_text()
         return "break"
 
-    def reload_history(self) -> None:
-        self.text.config(state="normal")
-        self.text.delete("1.0", "end")
-        self.text.config(state="disabled")
-        for entry in self.app.message_history.get(self.peer_ip, []):
-            self.display_message(entry)
-
-    def display_message(self, entry: MessageEntry) -> None:
-        self._append_bubble(self.text, self.app.username, entry)
-
-    def update_transfer(self, label: str, current: int, total: int) -> None:
-        self.transfer_label.config(text=f"{label} ({format_bytes(current)} / {format_bytes(total)})")
-        self.transfer_bar["maximum"] = max(total, 1)
-        self.transfer_bar["value"] = current
-
-    def finish_transfer(self, label: str) -> None:
-        self.transfer_label.config(text=f"{label} complete")
-        self.transfer_bar["value"] = self.transfer_bar["maximum"]
-
     def send_text(self) -> None:
+        if not self.selected_ip:
+            return
         content = self.entry.get("1.0", "end").strip()
         if not content:
             return
         self.entry.delete("1.0", "end")
-        self.app.send_text(self.peer_ip, content)
+        self.app.send_text(self.selected_ip, content)
 
-    def pick_file(self) -> None:
+    def pick_file(self, ip: str | None = None) -> None:
+        target_ip = ip or self.selected_ip
+        if not target_ip:
+            return
         path = filedialog.askopenfilename(parent=self)
         if not path:
             return
-        self.app.add_message(self.peer_ip, "System", f"Sending file: {Path(path).name}", incoming=False)
-        self.app.send_file(self.peer_ip, path)
+        self.app.add_message(target_ip, "System", f"Sending file: {Path(path).name}", incoming=False)
+        self.app.send_file(target_ip, path)
 
 
 def main() -> None:
