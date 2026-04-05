@@ -1,9 +1,9 @@
 [Setup]
 AppId={{D1F2044B-7D82-46A0-8D35-6A85D46F442C}
 AppName=LAN Messenger
-AppVersion=1.1.1
+AppVersion=1.3.2
 AppPublisher=Dave
-DefaultDirName={autopf}\LAN Messenger
+DefaultDirName={localappdata}\Programs\LAN Messenger
 DefaultGroupName=LAN Messenger
 DisableProgramGroupPage=yes
 OutputDir=.\dist-installer
@@ -13,6 +13,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+PrivilegesRequired=lowest
 
 [Files]
 Source: ".\dist\LanMessenger\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

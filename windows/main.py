@@ -9,18 +9,19 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 from urllib.error import URLError
 from urllib.parse import urljoin
 from urllib.request import urlopen
 from typing import Any, cast
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 import pystray
 from pystray import MenuItem as TrayItem
 
@@ -52,19 +53,56 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 APP_NAME = "LAN Messenger"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.2"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 UPDATE_MANIFEST_FILENAME = "lan-messenger-update.json"
 DISCOVERY_PORT = 54231
 TCP_PORT = 54232
 DISCOVERY_MULTICAST_GROUP = "239.255.42.99"
 DISCOVERY_MULTICAST_TTL = 1
-DISCOVERY_INTERVAL = 3
-PEER_TIMEOUT = 30
+DISCOVERY_INTERVAL = 1.5
+PEER_TIMEOUT = 7
 BUFFER_SIZE = 64 * 1024
 CONFIG_DIR = Path.home() / ".lan_messenger"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 INBOX_DIR = CONFIG_DIR / "received"
+HISTORY_FILE = CONFIG_DIR / "history.enc"
+LOG_FILE = CONFIG_DIR / "app.log"
+
+UI_COLORS = {
+    "app_bg": "#eef3f8",
+    "panel_bg": "#f7fafc",
+    "card_bg": "#ffffff",
+    "card_selected": "#dceeff",
+    "border": "#d6dee8",
+    "text": "#16202a",
+    "muted": "#5f6f82",
+    "accent": "#2f80ed",
+    "accent_active": "#1f6fd8",
+    "accent_soft": "#eaf3ff",
+    "success": "#1f9d68",
+    "composer_bg": "#ffffff",
+    "incoming_bg": "#ffffff",
+    "outgoing_bg": "#dff1ff",
+}
+UI_FONT = "Segoe UI"
+
+
+def resolve_ui_font_family(root: tk.Tk) -> str:
+    try:
+        available_fonts = {name.lower() for name in tkfont.families(root)}
+    except Exception:
+        return UI_FONT
+
+    candidates = ["Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial", "Helvetica"]
+    for family in candidates:
+        if family.lower() in available_fonts:
+            return family
+
+    try:
+        return cast(str, tkfont.nametofont("TkDefaultFont").cget("family"))
+    except Exception:
+        return UI_FONT
 
 
 def now() -> float:
@@ -173,7 +211,10 @@ def configure_hidden_root(root: tk.Tk) -> None:
         root.attributes("-alpha", 0.0)
     except Exception:
         pass
-    root.withdraw()
+    try:
+        root.lower()
+    except Exception:
+        pass
     root.update_idletasks()
 
 
@@ -224,6 +265,7 @@ class ConfigStore:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         INBOX_DIR.mkdir(parents=True, exist_ok=True)
         self.data = self._load()
+        self.inbox_dir.mkdir(parents=True, exist_ok=True)
 
     def _load(self) -> dict:
         if CONFIG_FILE.exists():
@@ -237,6 +279,7 @@ class ConfigStore:
             "username": socket.gethostname(),
             "contacts": [],
             "update_server_url": "",
+            "inbox_dir": str(INBOX_DIR),
             "private_key_b64": b64e(
                 private_key.private_bytes(
                     encoding=serialization.Encoding.Raw,
@@ -295,10 +338,30 @@ class ConfigStore:
         self.data["update_server_url"] = normalize_update_manifest_url(value)
         self._save(self.data)
 
+    @property
+    def inbox_dir(self) -> Path:
+        raw_value = str(self.data.get("inbox_dir", "")).strip()
+        path = Path(raw_value).expanduser() if raw_value else INBOX_DIR
+        return path
+
+    @inbox_dir.setter
+    def inbox_dir(self, value: str | Path) -> None:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = (CONFIG_DIR / path).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        self.data["inbox_dir"] = str(path)
+        self._save(self.data)
+
 
 class CryptoBox:
     def __init__(self, private_key: x25519.X25519PrivateKey) -> None:
         self.private_key = private_key
+        self.private_key_bytes = private_key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
         self.public_key = private_key.public_key()
         self.public_key_b64 = b64e(
             self.public_key.public_bytes(
@@ -320,6 +383,22 @@ class CryptoBox:
         shared = self.private_key.exchange(peer_public_key)
         key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"lan-messenger").derive(shared)
         return AESGCM(key).decrypt(b64d(nonce_b64), b64d(ciphertext_b64), aad)
+
+    def _history_key(self) -> bytes:
+        return HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b"lan-messenger-history",
+        ).derive(self.private_key_bytes)
+
+    def encrypt_local(self, plaintext: bytes, aad: bytes = b"") -> tuple[str, str]:
+        nonce = os.urandom(12)
+        ciphertext = AESGCM(self._history_key()).encrypt(nonce, plaintext, aad)
+        return b64e(nonce), b64e(ciphertext)
+
+    def decrypt_local(self, nonce_b64: str, ciphertext_b64: str, aad: bytes = b"") -> bytes:
+        return AESGCM(self._history_key()).decrypt(b64d(nonce_b64), b64d(ciphertext_b64), aad)
 
 
 class NotificationManager:
@@ -372,6 +451,7 @@ class LanMessengerApp:
         self.root = create_root()
         configure_hidden_root(self.root)
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
+        self._configure_theme()
 
         if NSApp is not None and NSApplicationActivationPolicyAccessory is not None:
             try:
@@ -398,6 +478,9 @@ class LanMessengerApp:
         self.contacts_window: "ContactsWindow | None" = None
         self.settings_window: "SettingsWindow | None" = None
         self.latest_update_info: UpdateInfo | None = None
+        self.history_lock = threading.Lock()
+
+        self.message_history = self._load_message_history()
 
         self.icon = self._create_tray_icon()
 
@@ -414,9 +497,187 @@ class LanMessengerApp:
 
         self.root.after(100, self.process_ui_queue)
 
+    def _configure_theme(self) -> None:
+        global UI_FONT
+        UI_FONT = resolve_ui_font_family(self.root)
+
+        for font_name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkIconFont", "TkTooltipFont"):
+            try:
+                tkfont.nametofont(font_name).configure(family=UI_FONT, size=10)
+            except Exception:
+                pass
+        self.root.configure(bg=UI_COLORS["app_bg"])
+
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        style.configure(".", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 10))
+        style.configure("TFrame", background=UI_COLORS["app_bg"])
+        style.configure("TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"])
+        style.configure("Muted.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["muted"], font=(UI_FONT, 9))
+        style.configure("Heading.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 16, "bold"))
+        style.configure("Subheading.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["muted"], font=(UI_FONT, 10))
+        style.configure(
+            "TButton",
+            background=UI_COLORS["card_bg"],
+            foreground=UI_COLORS["text"],
+            borderwidth=0,
+            focusthickness=0,
+            focuscolor=UI_COLORS["card_bg"],
+            padding=(12, 8),
+            relief="flat",
+        )
+        style.map("TButton", background=[("active", UI_COLORS["accent_soft"])])
+        style.configure(
+            "Primary.TButton",
+            background=UI_COLORS["accent"],
+            foreground="#ffffff",
+            borderwidth=0,
+            focusthickness=0,
+            focuscolor=UI_COLORS["accent"],
+            padding=(14, 9),
+            relief="flat",
+        )
+        style.map("Primary.TButton", background=[("active", UI_COLORS["accent_active"])], foreground=[("active", "#ffffff")])
+        style.configure(
+            "TEntry",
+            fieldbackground=UI_COLORS["card_bg"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            insertcolor=UI_COLORS["text"],
+            padding=8,
+            relief="flat",
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=UI_COLORS["card_bg"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            arrowsize=16,
+            padding=6,
+            relief="flat",
+        )
+        style.configure(
+            "Treeview",
+            background=UI_COLORS["card_bg"],
+            fieldbackground=UI_COLORS["card_bg"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            rowheight=32,
+            relief="flat",
+        )
+        style.map("Treeview", background=[("selected", UI_COLORS["card_selected"])], foreground=[("selected", UI_COLORS["text"])])
+        style.configure(
+            "Treeview.Heading",
+            background=UI_COLORS["panel_bg"],
+            foreground=UI_COLORS["muted"],
+            borderwidth=0,
+            relief="flat",
+            padding=(10, 8),
+            font=(UI_FONT, 9, "bold"),
+        )
+        style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor=UI_COLORS["accent_soft"],
+            background=UI_COLORS["accent"],
+            borderwidth=0,
+            lightcolor=UI_COLORS["accent"],
+            darkcolor=UI_COLORS["accent"],
+        )
+
+    def prepare_window_host(self) -> None:
+        try:
+            self.root.deiconify()
+            self.root.overrideredirect(True)
+            self.root.geometry("1x1+0+0")
+            self.root.configure(bg=UI_COLORS["app_bg"])
+            try:
+                self.root.attributes("-alpha", 0.0)
+            except Exception:
+                pass
+            self.root.lower()
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+    def _load_message_history(self) -> dict[str, list[MessageEntry]]:
+        if not HISTORY_FILE.exists():
+            return {}
+
+        try:
+            payload = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+            nonce = str(payload.get("nonce", "")).strip()
+            ciphertext = str(payload.get("ciphertext", "")).strip()
+            if not nonce or not ciphertext:
+                return {}
+            decrypted = self.crypto.decrypt_local(nonce, ciphertext, aad=b"history-v1")
+            raw_history = json.loads(decrypted.decode("utf-8"))
+        except Exception:
+            return {}
+
+        history: dict[str, list[MessageEntry]] = {}
+        if not isinstance(raw_history, dict):
+            return history
+
+        for ip, entries in raw_history.items():
+            if not isinstance(ip, str) or not isinstance(entries, list):
+                continue
+            parsed: list[MessageEntry] = []
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                parsed.append(MessageEntry(
+                    sender=str(item.get("sender", "")).strip() or "Unknown",
+                    text=str(item.get("text", "")),
+                    incoming=bool(item.get("incoming")),
+                    timestamp=float(item.get("timestamp") or now()),
+                    message_id=str(item.get("message_id", "")).strip() or None,
+                    status=str(item.get("status", "")),
+                    read_receipt_sent=bool(item.get("read_receipt_sent")),
+                ))
+            if parsed:
+                history[ip] = parsed[-200:]
+        return history
+
+    def _save_message_history(self) -> None:
+        serializable = {
+            ip: [
+                {
+                    "sender": entry.sender,
+                    "text": entry.text,
+                    "incoming": entry.incoming,
+                    "timestamp": entry.timestamp,
+                    "message_id": entry.message_id,
+                    "status": entry.status,
+                    "read_receipt_sent": entry.read_receipt_sent,
+                }
+                for entry in entries[-200:]
+            ]
+            for ip, entries in self.message_history.items()
+            if entries
+        }
+
+        try:
+            plaintext = json.dumps(serializable, separators=(",", ":")).encode("utf-8")
+            nonce, ciphertext = self.crypto.encrypt_local(plaintext, aad=b"history-v1")
+            with self.history_lock:
+                HISTORY_FILE.write_text(
+                    json.dumps({"nonce": nonce, "ciphertext": ciphertext}),
+                    encoding="utf-8",
+                )
+        except Exception:
+            pass
+
     @property
     def username(self) -> str:
         return self.config.username
+
+    @property
+    def inbox_dir(self) -> Path:
+        return self.config.inbox_dir
 
     @property
     def contacts(self) -> list[Contact]:
@@ -452,68 +713,87 @@ class LanMessengerApp:
     def enqueue_ui(self, action: str, *args) -> None:
         self.ui_queue.put((action, args))
 
+    def log_runtime_error(self, context: str, exc: BaseException) -> None:
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            with LOG_FILE.open("a", encoding="utf-8") as handle:
+                handle.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {context}\n")
+                handle.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+                handle.write("\n")
+        except Exception:
+            pass
+
+    def _dispatch_ui_action(self, action: str, args: tuple[Any, ...]) -> None:
+        if action == "peer_update":
+            self.refresh_tray_menu()
+        elif action == "message":
+            ip, sender, text, message_id, timestamp = args
+            self.add_message(ip, sender, text, incoming=True, show_popup=True, message_id=message_id, timestamp=timestamp)
+        elif action == "message_status":
+            ip, message_id, status = args
+            self.update_message_status(ip, message_id, status)
+        elif action == "transfer_progress":
+            ip, label, current, total = args
+            self.update_transfer_status(ip, label, current, total)
+        elif action == "transfer_complete":
+            ip, label = args
+            self.finish_transfer_status(ip, label)
+        elif action == "incoming_file":
+            ip, sender, path = args
+            self.add_message(ip, "System", f"Received file: {Path(path).name}", incoming=False, show_popup=True)
+            self.notifications.notify(f"File from {sender}", f"Saved to {path}")
+        elif action == "network_error":
+            ip, text = args
+            self.add_message(ip, "System", text, incoming=False, show_popup=True)
+        elif action == "show_quick_chat":
+            ip = args[0]
+            self.open_quick_chat(ip)
+        elif action == "show_main_chat":
+            self.show_main_window()
+        elif action == "show_contacts":
+            self.show_contacts_window()
+        elif action == "show_settings":
+            self.show_settings_window()
+        elif action == "check_updates":
+            manual = bool(args[0]) if args else True
+            self.check_for_updates(manual=manual)
+        elif action == "update_available":
+            self._handle_update_available(args[0], bool(args[1]) if len(args) > 1 else True)
+        elif action == "update_not_available":
+            self._handle_no_update(bool(args[0]) if args else True)
+        elif action == "update_error":
+            self._handle_update_error(str(args[0]), bool(args[1]) if len(args) > 1 else True)
+        elif action == "prompt_username":
+            self.prompt_username_change()
+        elif action == "add_contact":
+            ip = args[0]
+            self.add_contact_from_peer(ip)
+        elif action == "remove_contact":
+            public_key_b64 = args[0]
+            self.remove_contact(public_key_b64)
+        elif action == "prompt_send_file":
+            ip = args[0]
+            self.prompt_send_file(ip)
+        elif action == "shutdown_from_tray":
+            self.quit()
+        elif action == "shutdown":
+            self._shutdown_ui()
+
     def process_ui_queue(self) -> None:
-        while True:
-            try:
-                action, args = self.ui_queue.get_nowait()
-            except queue.Empty:
-                break
+        try:
+            while True:
+                try:
+                    action, args = self.ui_queue.get_nowait()
+                except queue.Empty:
+                    break
 
-            if action == "peer_update":
-                self.refresh_tray_menu()
-            elif action == "message":
-                ip, sender, text, message_id, timestamp = args
-                self.add_message(ip, sender, text, incoming=True, show_popup=True, message_id=message_id, timestamp=timestamp)
-            elif action == "message_status":
-                ip, message_id, status = args
-                self.update_message_status(ip, message_id, status)
-            elif action == "transfer_progress":
-                ip, label, current, total = args
-                self.update_transfer_status(ip, label, current, total)
-            elif action == "transfer_complete":
-                ip, label = args
-                self.finish_transfer_status(ip, label)
-            elif action == "incoming_file":
-                ip, sender, path = args
-                self.add_message(ip, "System", f"Received file: {Path(path).name}", incoming=False, show_popup=True)
-                self.notifications.notify(f"File from {sender}", f"Saved to {path}")
-            elif action == "network_error":
-                ip, text = args
-                self.add_message(ip, "System", text, incoming=False, show_popup=True)
-            elif action == "show_quick_chat":
-                ip = args[0]
-                self.open_quick_chat(ip)
-            elif action == "show_main_chat":
-                self.show_main_window()
-            elif action == "show_contacts":
-                self.show_contacts_window()
-            elif action == "show_settings":
-                self.show_settings_window()
-            elif action == "check_updates":
-                manual = bool(args[0]) if args else True
-                self.check_for_updates(manual=manual)
-            elif action == "update_available":
-                self._handle_update_available(args[0], bool(args[1]) if len(args) > 1 else True)
-            elif action == "update_not_available":
-                self._handle_no_update(bool(args[0]) if args else True)
-            elif action == "update_error":
-                self._handle_update_error(str(args[0]), bool(args[1]) if len(args) > 1 else True)
-            elif action == "prompt_username":
-                self.prompt_username_change()
-            elif action == "add_contact":
-                ip = args[0]
-                self.add_contact_from_peer(ip)
-            elif action == "remove_contact":
-                public_key_b64 = args[0]
-                self.remove_contact(public_key_b64)
-            elif action == "prompt_send_file":
-                ip = args[0]
-                self.prompt_send_file(ip)
-            elif action == "shutdown":
-                self._shutdown_ui()
-
-        if self.running:
-            self.root.after(100, self.process_ui_queue)
+                try:
+                    self._dispatch_ui_action(action, args)
+                except Exception as exc:
+                    self.log_runtime_error(f"UI action failed: {action}", exc)
+        finally:
+            if self.running:
+                self.root.after(100, self.process_ui_queue)
 
     def _detect_local_ips(self) -> set[str]:
         addresses: set[str] = set()
@@ -675,7 +955,7 @@ class LanMessengerApp:
                 self.peers.pop(ip, None)
             if expired:
                 self.enqueue_ui("peer_update")
-            time.sleep(2)
+            time.sleep(1)
 
     def tcp_server_loop(self) -> None:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -755,7 +1035,7 @@ class LanMessengerApp:
             transfer_id = packet["transfer_id"]
             sender = packet.get("sender") or peer.username
             filename = sanitize_filename(packet["filename"])
-            temp_path = INBOX_DIR / f"{transfer_id}_{filename}.part"
+            temp_path = self.inbox_dir / f"{transfer_id}_{filename}.part"
             handle = temp_path.open("wb")
             self.incoming_files[(ip, transfer_id)] = {
                 "handle": handle,
@@ -798,7 +1078,7 @@ class LanMessengerApp:
             return
 
     def _unique_inbox_path(self, filename: str) -> Path:
-        target = INBOX_DIR / sanitize_filename(filename)
+        target = self.inbox_dir / sanitize_filename(filename)
         if not target.exists():
             return target
         stem = target.stem
@@ -965,6 +1245,7 @@ class LanMessengerApp:
 
         if self.main_window is not None and self.main_window.winfo_exists():
             self.main_window.rebind_peer(old_ip, new_ip, peer_name)
+        self._save_message_history()
 
     def _upsert_peer(self, ip: str, username: str, port: int, public_key_b64: str) -> tuple[Peer, bool]:
         changed = False
@@ -1388,7 +1669,7 @@ class LanMessengerApp:
             TrayItem("Contact List", lambda *_: self.enqueue_ui("show_contacts")),
             TrayItem("Check for Updates", lambda *_: self.enqueue_ui("check_updates", True)),
             TrayItem("Settings", lambda *_: self.enqueue_ui("show_settings")),
-            TrayItem("Exit", lambda *_: self.quit()),
+            TrayItem("Exit", lambda *_: self.enqueue_ui("shutdown_from_tray")),
         )
 
     def _open_first_peer(self, *_args) -> None:
@@ -1425,6 +1706,7 @@ class LanMessengerApp:
             if incoming and self.main_window.is_conversation_active(ip):
                 self.mark_peer_read(ip)
 
+        self._save_message_history()
         self.refresh_tray_menu()
 
     def mark_peer_read(self, ip: str) -> None:
@@ -1438,6 +1720,9 @@ class LanMessengerApp:
         if self.unread_counts.get(ip, 0):
             self.unread_counts[ip] = 0
             self.refresh_tray_menu()
+
+        if receipts:
+            self._save_message_history()
 
         if peer is None or not receipts:
             return
@@ -1476,6 +1761,7 @@ class LanMessengerApp:
 
         if self.main_window is not None and self.main_window.winfo_exists():
             self.main_window.refresh_for_message(ip)
+        self._save_message_history()
         self.refresh_tray_menu()
 
     def update_transfer_status(self, ip: str, label: str, current: int, total: int) -> None:
@@ -1513,6 +1799,10 @@ class LanMessengerApp:
         return pystray.Icon(APP_NAME, self._tray_image(), APP_TITLE, self._build_tray_menu())
 
     def _start_tray_icon(self) -> None:
+        if sys.platform.startswith("win"):
+            threading.Thread(target=self.icon.run, daemon=True).start()
+            return
+
         try:
             self.icon.run_detached()
             self.icon.visible = True
@@ -1555,10 +1845,12 @@ class BaseWindow(tk.Toplevel):
         self.app = app
         self.title(title)
         self.geometry(size)
+        self.configure(bg=UI_COLORS["app_bg"])
         self.withdraw()
         self.protocol("WM_DELETE_WINDOW", self.hide)
 
     def show(self) -> None:
+        self.app.prepare_window_host()
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -1574,8 +1866,11 @@ class BaseWindow(tk.Toplevel):
 
     def _setup_message_view(self, widget: tk.Text) -> None:
         widget.configure(
-            bg="#f5f7fb",
+            bg=UI_COLORS["panel_bg"],
+            fg=UI_COLORS["text"],
             relief="flat",
+            bd=0,
+            highlightthickness=0,
             padx=14,
             pady=14,
             spacing1=4,
@@ -1584,42 +1879,42 @@ class BaseWindow(tk.Toplevel):
         )
         widget.tag_configure(
             "meta",
-            foreground="#7b8798",
-            font=("Helvetica", 9),
+            foreground=UI_COLORS["muted"],
+            font=(UI_FONT, 9),
             spacing1=10,
             spacing3=2,
         )
         widget.tag_configure(
             "incoming",
-            background="#ffffff",
-            foreground="#17212b",
+            background=UI_COLORS["incoming_bg"],
+            foreground=UI_COLORS["text"],
             lmargin1=18,
             lmargin2=18,
             rmargin=90,
             borderwidth=8,
             relief="flat",
-            font=("Helvetica", 11),
+            font=(UI_FONT, 11),
         )
         widget.tag_configure(
             "outgoing",
-            background="#dff4ff",
-            foreground="#12344d",
+            background=UI_COLORS["outgoing_bg"],
+            foreground=UI_COLORS["text"],
             lmargin1=90,
             lmargin2=90,
             rmargin=18,
             borderwidth=8,
             relief="flat",
             justify="right",
-            font=("Helvetica", 11),
+            font=(UI_FONT, 11),
         )
         widget.tag_configure(
             "system",
-            foreground="#5b6573",
+            foreground=UI_COLORS["muted"],
             lmargin1=36,
             lmargin2=36,
             rmargin=36,
             justify="center",
-            font=("Helvetica", 10, "italic"),
+            font=(UI_FONT, 10, "italic"),
         )
 
     def _append_bubble(self, widget: tk.Text, my_username: str, entry: MessageEntry) -> None:
@@ -1650,13 +1945,14 @@ class BaseWindow(tk.Toplevel):
 
 class ContactsWindow(BaseWindow):
     def __init__(self, app: LanMessengerApp) -> None:
-        super().__init__(app, f"Contact List - {APP_TITLE}", "430x420")
+        super().__init__(app, f"Contact List - {APP_TITLE}", "480x430")
         self.resizable(False, False)
 
-        frame = ttk.Frame(self)
+        frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True, padx=12, pady=12)
 
-        ttk.Label(frame, text="Contact Book").pack(anchor="w")
+        ttk.Label(frame, text="Contact List", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="Saved peers and live LAN discovery.", style="Subheading.TLabel").pack(anchor="w", pady=(2, 10))
         self.tree = ttk.Treeview(frame, columns=("name", "status", "ip"), show="headings", height=12)
         self.tree.heading("name", text="Name")
         self.tree.heading("status", text="Status")
@@ -1666,16 +1962,17 @@ class ContactsWindow(BaseWindow):
         self.tree.column("ip", width=140, anchor="w")
         self.tree.pack(fill="both", expand=True, pady=(8, 10))
 
-        online_frame = ttk.LabelFrame(frame, text="Add Online Peer")
+        online_frame = ttk.Frame(frame)
         online_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(online_frame, text="Add online peer", style="Subheading.TLabel").pack(anchor="w", pady=(0, 6))
         self.online_var = tk.StringVar()
         self.online_combo = ttk.Combobox(online_frame, textvariable=self.online_var, state="readonly")
-        self.online_combo.pack(side="left", fill="x", expand=True, padx=(8, 8), pady=8)
-        ttk.Button(online_frame, text="Add", command=self.add_selected_online).pack(side="right", padx=(0, 8), pady=8)
+        self.online_combo.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ttk.Button(online_frame, text="Add", command=self.add_selected_online, style="Primary.TButton").pack(side="right")
 
         actions = ttk.Frame(frame)
         actions.pack(fill="x")
-        ttk.Button(actions, text="Chat", command=self.chat_selected).pack(side="left")
+        ttk.Button(actions, text="Open Chat", command=self.chat_selected, style="Primary.TButton").pack(side="left")
         ttk.Button(actions, text="Remove", command=self.remove_selected).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Refresh", command=self.refresh).pack(side="right")
 
@@ -1734,11 +2031,14 @@ class ContactsWindow(BaseWindow):
 
 class SettingsWindow(BaseWindow):
     def __init__(self, app: LanMessengerApp) -> None:
-        super().__init__(app, f"Settings - {APP_TITLE}", "420x330")
+        super().__init__(app, f"Settings - {APP_TITLE}", "500x420")
         self.resizable(False, False)
 
-        frame = ttk.Frame(self)
+        frame = ttk.Frame(self, padding=18)
         frame.pack(fill="both", expand=True, padx=14, pady=14)
+
+        ttk.Label(frame, text="Settings", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="Identity, updates, and encrypted local storage.", style="Subheading.TLabel").pack(anchor="w", pady=(2, 12))
 
         ttk.Label(frame, text="Username").pack(anchor="w")
         self.username_var = tk.StringVar(value=self.app.username)
@@ -1758,55 +2058,77 @@ class SettingsWindow(BaseWindow):
             justify="left",
         ).pack(anchor="w", pady=(0, 10))
 
-        ttk.Label(frame, text=f"Received files are saved to:\n{INBOX_DIR}", justify="left").pack(anchor="w", pady=(0, 12))
+        ttk.Label(frame, text="Received Files Folder").pack(anchor="w")
+        inbox_row = ttk.Frame(frame)
+        inbox_row.pack(fill="x", pady=(6, 10))
+        self.inbox_dir_var = tk.StringVar(value=str(self.app.inbox_dir))
+        ttk.Entry(inbox_row, textvariable=self.inbox_dir_var).pack(side="left", fill="x", expand=True)
+        ttk.Button(inbox_row, text="Browse", command=self.pick_inbox_dir).pack(side="left", padx=(8, 0))
+
+        ttk.Label(frame, text="Chat history is encrypted and restored on launch.", style="Subheading.TLabel").pack(anchor="w", pady=(0, 12))
 
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x")
-        ttk.Button(buttons, text="Save", command=self.save).pack(side="left")
+        ttk.Button(buttons, text="Save", command=self.save, style="Primary.TButton").pack(side="left")
         ttk.Button(buttons, text="Check Updates", command=lambda: self.app.check_for_updates(manual=True)).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Close", command=self.hide).pack(side="right")
+
+    def pick_inbox_dir(self) -> None:
+        selected = filedialog.askdirectory(parent=self, initialdir=self.inbox_dir_var.get() or str(self.app.inbox_dir))
+        if selected:
+            self.inbox_dir_var.set(selected)
 
     def save(self) -> None:
         value = self.username_var.get().strip()
         if not value:
             messagebox.showerror("Invalid username", "Username cannot be empty.", parent=self)
             return
+        inbox_dir = self.inbox_dir_var.get().strip()
+        if not inbox_dir:
+            messagebox.showerror("Invalid folder", "Choose a folder for received files.", parent=self)
+            return
         self.app.config.username = value
         self.app.config.update_server_url = self.update_server_var.get().strip()
+        try:
+            self.app.config.inbox_dir = inbox_dir
+        except Exception as exc:
+            messagebox.showerror("Invalid folder", f"Could not use that folder:\n{exc}", parent=self)
+            return
         self.app.refresh_tray_menu()
         self.hide()
 
 
 class MainChatWindow(BaseWindow):
     def __init__(self, app: LanMessengerApp) -> None:
-        super().__init__(app, f"{APP_NAME} - {APP_VERSION}", "980x660")
-        self.minsize(860, 560)
+        super().__init__(app, f"{APP_NAME} - {APP_VERSION}", "760x560")
+        self.minsize(700, 500)
         self.selected_ip: str | None = None
+        self.attach_icon = self._create_attach_icon()
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        container = ttk.Frame(self, padding=12)
+        container = ttk.Frame(self, padding=14)
         container.grid(row=0, column=0, sticky="nsew")
         container.columnconfigure(1, weight=1)
         container.rowconfigure(0, weight=1)
 
-        sidebar = ttk.Frame(container, width=290)
+        sidebar = ttk.Frame(container, width=220)
         sidebar.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
         sidebar.grid_propagate(False)
 
-        ttk.Label(sidebar, text=f"Conversations  {APP_VERSION}").pack(anchor="w")
-        ttk.Label(sidebar, text="Open a chat or use the paperclip to send a file.").pack(anchor="w", pady=(2, 8))
+        ttk.Label(sidebar, text=f"Chats  {APP_VERSION}", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(sidebar, text="Fast local messaging with encrypted history.", style="Subheading.TLabel").pack(anchor="w", pady=(2, 10))
 
-        sidebar_holder = tk.Frame(sidebar, bg="#eaf0f7", bd=0, highlightthickness=0)
+        sidebar_holder = tk.Frame(sidebar, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=1, highlightbackground=UI_COLORS["border"])
         sidebar_holder.pack(fill="both", expand=True)
-        self.sidebar_canvas = tk.Canvas(sidebar_holder, bg="#eaf0f7", bd=0, highlightthickness=0)
+        self.sidebar_canvas = tk.Canvas(sidebar_holder, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         self.sidebar_scroll = ttk.Scrollbar(sidebar_holder, orient="vertical", command=self.sidebar_canvas.yview)
         self.sidebar_canvas.configure(yscrollcommand=self.sidebar_scroll.set)
         self.sidebar_canvas.pack(side="left", fill="both", expand=True)
         self.sidebar_scroll.pack(side="right", fill="y")
 
-        self.sidebar_list = tk.Frame(self.sidebar_canvas, bg="#eaf0f7")
+        self.sidebar_list = tk.Frame(self.sidebar_canvas, bg=UI_COLORS["panel_bg"])
         self.sidebar_window = self.sidebar_canvas.create_window((0, 0), window=self.sidebar_list, anchor="nw")
         self.sidebar_list.bind(
             "<Configure>",
@@ -1822,40 +2144,73 @@ class MainChatWindow(BaseWindow):
         chat.columnconfigure(0, weight=1)
         chat.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(chat)
+        header = tk.Frame(chat, bg=UI_COLORS["card_bg"], highlightthickness=1, highlightbackground=UI_COLORS["border"], padx=14, pady=12)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         header.columnconfigure(0, weight=1)
         self.header_name_var = tk.StringVar(value="No chat selected")
         self.header_status_var = tk.StringVar(value="Discovered contacts will appear in the sidebar.")
-        ttk.Label(header, textvariable=self.header_name_var, font=("Helvetica", 16, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(header, textvariable=self.header_status_var).grid(row=1, column=0, sticky="w", pady=(3, 0))
-        self.contact_button = ttk.Button(header, text="Add Contact", command=self.add_selected_contact)
+        tk.Label(header, textvariable=self.header_name_var, bg=UI_COLORS["card_bg"], fg=UI_COLORS["text"], font=(UI_FONT, 15, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(header, textvariable=self.header_status_var, bg=UI_COLORS["card_bg"], fg=UI_COLORS["muted"], font=(UI_FONT, 10)).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.contact_button = ttk.Button(header, text="Add Contact", command=self.add_selected_contact, style="Primary.TButton")
         self.contact_button.grid(row=0, column=1, rowspan=2, sticky="e")
 
         self.text = tk.Text(chat, wrap="word", state="disabled")
         self.text.grid(row=1, column=0, sticky="nsew")
         self._setup_message_view(self.text)
 
-        self.transfer_label = ttk.Label(chat, text="Idle")
+        self.transfer_label = ttk.Label(chat, text="Idle", style="Muted.TLabel")
         self.transfer_label.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         self.transfer_bar = ttk.Progressbar(chat, mode="determinate")
         self.transfer_bar.grid(row=3, column=0, sticky="ew", pady=(4, 10))
 
-        composer = ttk.Frame(chat)
+        composer = tk.Frame(chat, bg=UI_COLORS["card_bg"], highlightthickness=1, highlightbackground=UI_COLORS["border"], padx=10, pady=10)
         composer.grid(row=4, column=0, sticky="ew")
         composer.columnconfigure(1, weight=1)
 
-        self.attach_button = ttk.Button(composer, text="📎", width=3, command=self.pick_file)
+        self.attach_button = tk.Button(
+            composer,
+            image=self.attach_icon,
+            command=self.pick_file,
+            bg=UI_COLORS["accent_soft"],
+            fg=UI_COLORS["accent"],
+            activebackground=UI_COLORS["card_selected"],
+            activeforeground=UI_COLORS["accent_active"],
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=10,
+        )
         self.attach_button.grid(row=0, column=0, sticky="nsw", padx=(0, 8))
 
-        self.entry = tk.Text(composer, height=4, wrap="word")
+        self.entry = tk.Text(
+            composer,
+            height=3,
+            wrap="word",
+            bg=UI_COLORS["composer_bg"],
+            fg=UI_COLORS["text"],
+            insertbackground=UI_COLORS["text"],
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=8,
+            pady=8,
+            font=(UI_FONT, 11),
+        )
         self.entry.grid(row=0, column=1, sticky="ew")
         self.entry.bind("<Return>", self.on_enter)
 
-        ttk.Button(composer, text="Send", command=self.send_text).grid(row=0, column=2, sticky="nse", padx=(8, 0))
+        ttk.Button(composer, text="Send", command=self.send_text, style="Primary.TButton").grid(row=0, column=2, sticky="nse", padx=(8, 0))
 
         self._init_drop_target()
         self.refresh()
+
+    def _create_attach_icon(self) -> ImageTk.PhotoImage:
+        image = Image.new("RGBA", (18, 18), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.arc((3, 1, 14, 15), start=300, end=120, fill=UI_COLORS["accent"], width=2)
+        draw.arc((6, 4, 16, 17), start=300, end=125, fill=UI_COLORS["accent"], width=2)
+        draw.line((10, 10, 6, 14), fill=UI_COLORS["accent"], width=2)
+        return ImageTk.PhotoImage(image)
 
     def show(self) -> None:
         super().show()
@@ -1898,10 +2253,11 @@ class MainChatWindow(BaseWindow):
                 self.sidebar_list,
                 text="No conversations yet.\nPeers discovered on your LAN will appear here.",
                 justify="left",
-                bg="#eaf0f7",
-                fg="#516273",
+                bg=UI_COLORS["panel_bg"],
+                fg=UI_COLORS["muted"],
                 padx=14,
                 pady=14,
+                font=(UI_FONT, 10),
             )
             empty.pack(fill="x", pady=(2, 0))
             return
@@ -1911,12 +2267,12 @@ class MainChatWindow(BaseWindow):
 
     def _build_row(self, ip: str) -> None:
         selected = ip == self.selected_ip
-        bg = "#d8ebff" if selected else "#ffffff"
-        frame = tk.Frame(self.sidebar_list, bg=bg, bd=1, highlightthickness=0)
+        bg = UI_COLORS["card_selected"] if selected else UI_COLORS["card_bg"]
+        frame = tk.Frame(self.sidebar_list, bg=bg, bd=0, highlightthickness=1, highlightbackground=UI_COLORS["border"])
         frame.pack(fill="x", pady=(0, 6))
 
         text_wrap = tk.Frame(frame, bg=bg)
-        text_wrap.pack(side="left", fill="both", expand=True, padx=(10, 6), pady=10)
+        text_wrap.pack(side="left", fill="both", expand=True, padx=10, pady=10)
 
         name = self.app.conversation_name(ip)
         unread = self.app.unread_counts.get(ip, 0)
@@ -1929,8 +2285,8 @@ class MainChatWindow(BaseWindow):
             text=title,
             anchor="w",
             bg=bg,
-            fg="#15202b",
-            font=("Helvetica", 11, "bold"),
+            fg=UI_COLORS["text"],
+            font=(UI_FONT, 10, "bold"),
         )
         title_label.pack(fill="x")
         preview_label = tk.Label(
@@ -1939,8 +2295,9 @@ class MainChatWindow(BaseWindow):
             anchor="w",
             justify="left",
             bg=bg,
-            fg="#334556",
-            font=("Helvetica", 10),
+            fg=UI_COLORS["muted"],
+            font=(UI_FONT, 9),
+            wraplength=170,
         )
         preview_label.pack(fill="x", pady=(2, 1))
         status_label = tk.Label(
@@ -1948,23 +2305,10 @@ class MainChatWindow(BaseWindow):
             text=status,
             anchor="w",
             bg=bg,
-            fg="#5f7284",
-            font=("Helvetica", 9),
+            fg=UI_COLORS["success"] if self.app.find_peer_by_ip(ip) is not None else UI_COLORS["muted"],
+            font=(UI_FONT, 9),
         )
         status_label.pack(fill="x")
-
-        attach_button = tk.Button(
-            frame,
-            text="📎",
-            command=lambda target_ip=ip: self.pick_file(target_ip),
-            relief="flat",
-            bg=bg,
-            activebackground="#c7def7",
-            bd=0,
-            padx=10,
-            pady=8,
-        )
-        attach_button.pack(side="right", padx=(0, 6), pady=6)
 
         for widget in (frame, text_wrap, title_label, preview_label, status_label):
             widget.bind("<Button-1>", lambda _event, target_ip=ip: self.select_chat(target_ip))
@@ -1990,7 +2334,7 @@ class MainChatWindow(BaseWindow):
             self.header_name_var.set("No chat selected")
             self.header_status_var.set("Discovered contacts and saved contacts appear in the sidebar.")
             self.contact_button.state(["disabled"])
-            self.attach_button.state(["disabled"])
+            self.attach_button.config(state="disabled")
             self._render_history([])
             self.transfer_label.config(text="Idle")
             self.transfer_bar["value"] = 0
@@ -2007,7 +2351,7 @@ class MainChatWindow(BaseWindow):
             self.contact_button.state(["!disabled"])
         else:
             self.contact_button.state(["disabled"])
-        self.attach_button.state(["!disabled"])
+        self.attach_button.config(state="normal")
 
         self._render_history(self.app.message_history.get(ip, []))
         self.refresh_transfer(ip)
