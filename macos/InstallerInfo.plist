@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>lanmessenger-installer</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.dave.lanmessenger.installer</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>LanMessenger.icns</string>
+  <key>CFBundleName</key>
+  <string>LAN Messenger Installer</string>
+  <key>CFBundleDisplayName</key>
+  <string>LAN Messenger Installer</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1.0.0</string>
+  <key>LSUIElement</key>
+  <false/>
+</dict>
+</plist>

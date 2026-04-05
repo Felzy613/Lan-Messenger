@@ -1,0 +1,8 @@
+{
+  "version": "1.1.1",
+  "notes": "Initial remote update manifest. Replace these URLs with your hosted installers.",
+  "downloads": {
+    "windows": "https://example.com/downloads/LanMessengerSetup.exe",
+    "macos": "https://example.com/downloads/LAN-Messenger-Installer.dmg"
+  }
+}

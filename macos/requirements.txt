@@ -1,0 +1,11 @@
+cryptography>=42.0.0
+Pillow>=10.0.0
+pystray>=0.19.5
+
+# Optional but used when available:
+plyer>=2.1.0
+tkinterdnd2>=0.4.2
+pyobjc-framework-Cocoa>=10.3; platform_system == "Darwin"
+
+# Packaging:
+pyinstaller>=6.11.0
