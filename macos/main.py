@@ -59,7 +59,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 APP_NAME = "LAN Messenger"
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.4.0"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 UPDATE_MANIFEST_FILENAME = "lan-messenger-update.json"
 DISCOVERY_PORT = 54231
@@ -100,6 +100,9 @@ TRANSFER_STATUS_CLEAR_DELAY_MS = 1800
 COMPOSER_MIN_CHARS = 18
 COMPOSER_MAX_CHARS = 34
 COMPOSER_MAX_LINES = 4
+TYPING_IDLE_TIMEOUT_MS = 1500
+TYPING_STATUS_TTL = 4.0
+TYPING_SEND_THROTTLE = 1.0
 
 
 def resolve_ui_font_family(root: tk.Tk) -> str:
@@ -444,6 +447,7 @@ class ConfigStore:
         data = {
             "username": socket.gethostname(),
             "contacts": [],
+            "hidden_conversations": [],
             "update_server_url": "",
             "inbox_dir": str(INBOX_DIR),
             "private_key_b64": b64e(
@@ -493,6 +497,17 @@ class ConfigStore:
 
     def save_pending_messages(self, pending_messages: list[dict[str, Any]]) -> None:
         self.data["pending_messages"] = pending_messages
+        self._save(self.data)
+
+    @property
+    def hidden_conversations(self) -> list[str]:
+        hidden = self.data.get("hidden_conversations", [])
+        if isinstance(hidden, list):
+            return [str(item).strip() for item in hidden if str(item).strip()]
+        return []
+
+    def save_hidden_conversations(self, hidden_conversations: list[str]) -> None:
+        self.data["hidden_conversations"] = sorted(set(hidden_conversations))
         self._save(self.data)
 
     @property
@@ -629,6 +644,12 @@ class LanMessengerApp:
         self.transfer_statuses: dict[str, tuple[str, int, int]] = {}
         self.transfer_status_tokens: dict[str, int] = {}
         self.incoming_files: dict[tuple[str, str], dict] = {}
+        self.file_queues: dict[str, list[dict[str, Any]]] = {}
+        self.active_file_transfers: set[str] = set()
+        self.typing_states: dict[str, dict[str, Any]] = {}
+        self.typing_state_tokens: dict[str, int] = {}
+        self.outgoing_typing_state: dict[str, bool] = {}
+        self.outgoing_typing_sent_at: dict[str, float] = {}
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.running = True
         self.local_ips = self._detect_local_ips()
@@ -918,6 +939,11 @@ class LanMessengerApp:
             ip, sender, path = args
             self.add_message(ip, "System", f"Received file: {Path(path).name}", incoming=False, show_popup=True)
             self.notifications.notify(f"File from {sender}", f"Saved to {path}")
+        elif action == "typing_state":
+            ip, sender, is_typing = args
+            self.set_typing_state(ip, sender, bool(is_typing))
+        elif action == "refresh_file_queue":
+            self.refresh_file_queue_status(str(args[0]))
         elif action == "network_error":
             ip, text = args
             self.add_message(ip, "System", text, incoming=False, show_popup=True)
@@ -1146,6 +1172,8 @@ class LanMessengerApp:
             ]
             for ip in expired:
                 self.peers.pop(ip, None)
+                self.outgoing_typing_state.pop(ip, None)
+                self.outgoing_typing_sent_at.pop(ip, None)
             if expired:
                 self.enqueue_ui("peer_update")
             time.sleep(1)
@@ -1207,9 +1235,15 @@ class LanMessengerApp:
             text = plaintext.decode("utf-8", errors="replace")
             sender = packet.get("sender") or peer.username
             timestamp = float(packet.get("timestamp") or now())
+            self.enqueue_ui("typing_state", ip, sender, False)
             self.enqueue_ui("message", ip, sender, text, packet["message_id"], timestamp)
             self._send_receipt_to_peer(peer, "sent_receipt", packet["message_id"])
             self.notifications.notify(f"Message from {sender}", text[:120])
+            return
+
+        if packet_type == "typing":
+            sender = str(packet.get("sender") or peer.username).strip() or peer.username
+            self.enqueue_ui("typing_state", ip, sender, bool(packet.get("active")))
             return
 
         if packet_type == "sent_receipt":
@@ -1287,6 +1321,8 @@ class LanMessengerApp:
         peer = self._resolve_delivery_peer(ip)
         initial_status = "Sending" if peer is not None else "Queued"
         history_ip = peer.ip if peer is not None else ip
+        self._reveal_conversation(history_ip)
+        self.send_typing_state(history_ip, False, force=True)
         self.add_message(history_ip, self.username, text, incoming=False, message_id=message_id, status=initial_status)
 
         if not peer:
@@ -1308,35 +1344,91 @@ class LanMessengerApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def send_file(self, ip: str, path: str, progress_callback=None) -> None:
-        peer = self._resolve_delivery_peer(ip)
-        if not peer:
-            self.enqueue_ui("network_error", ip, "Peer is no longer available.")
+        self.queue_files(ip, [path], progress_callback=progress_callback)
+
+    def queue_files(self, ip: str, paths: list[str], progress_callback=None) -> None:
+        if not paths:
             return
 
-        file_path = Path(path)
-        if not file_path.exists():
-            self.enqueue_ui("network_error", ip, "Selected file no longer exists.")
+        conversation_key = self._conversation_key(ip)
+        queued_items = self.file_queues.setdefault(conversation_key, [])
+        had_work = conversation_key in self.active_file_transfers or bool(queued_items)
+        valid_added = 0
+
+        for raw_path in paths:
+            file_path = Path(raw_path).expanduser()
+            if not file_path.exists() or not file_path.is_file():
+                self.enqueue_ui("network_error", ip, f"File not found: {file_path.name or raw_path}")
+                continue
+            queued_items.append({
+                "path": str(file_path),
+                "filename": file_path.name,
+                "queued_at": now(),
+                "progress_callback": progress_callback,
+                "conversation_ip": ip,
+            })
+            valid_added += 1
+            queue_depth = len(queued_items) - (1 if conversation_key in self.active_file_transfers else 0)
+            if had_work or queue_depth > 1:
+                self.add_message(ip, "System", f"Queued file: {file_path.name}", incoming=False)
+            else:
+                self.add_message(ip, "System", f"Sending file: {file_path.name}", incoming=False)
+            had_work = True
+
+        if valid_added == 0:
+            if not queued_items:
+                self.file_queues.pop(conversation_key, None)
             return
+
+        self._reveal_conversation(ip)
+        self.send_typing_state(ip, False, force=True)
+        self.enqueue_ui("refresh_file_queue", conversation_key)
+        self._start_next_file_transfer(conversation_key)
+
+    def _start_next_file_transfer(self, conversation_key: str) -> None:
+        if conversation_key in self.active_file_transfers:
+            return
+
+        queued_items = self.file_queues.get(conversation_key, [])
+        if not queued_items:
+            self.file_queues.pop(conversation_key, None)
+            self.enqueue_ui("refresh_file_queue", conversation_key)
+            return
+
+        peer = self._resolve_delivery_peer_for_key(conversation_key)
+        if peer is None:
+            self.enqueue_ui("refresh_file_queue", conversation_key)
+            return
+
+        item = queued_items[0]
+        file_path = Path(str(item.get("path", "")))
+        if not file_path.exists() or not file_path.is_file():
+            queued_items.pop(0)
+            self.enqueue_ui("network_error", peer.ip, f"Queued file is missing: {item.get('filename', file_path.name)}")
+            self.enqueue_ui("refresh_file_queue", conversation_key)
+            self._start_next_file_transfer(conversation_key)
+            return
+
+        self.active_file_transfers.add(conversation_key)
 
         def worker() -> None:
             transfer_id = uuid.uuid4().hex
             total_size = file_path.stat().st_size
-            packets = [{
-                "type": "file_start",
-                "transfer_id": transfer_id,
-                "filename": file_path.name,
-                "size": total_size,
-                "sender": self.username,
-                "sender_public_key_b64": self.crypto.public_key_b64,
-                "port": TCP_PORT,
-            }]
-
+            success = False
+            progress_cb = item.get("progress_callback")
             try:
                 with socket.create_connection((peer.ip, peer.port), timeout=5) as sock, file_path.open("rb") as handle:
-                    for packet in packets:
-                        send_frame(sock, packet)
+                    send_frame(sock, {
+                        "type": "file_start",
+                        "transfer_id": transfer_id,
+                        "filename": file_path.name,
+                        "size": total_size,
+                        "sender": self.username,
+                        "sender_public_key_b64": self.crypto.public_key_b64,
+                        "port": TCP_PORT,
+                    })
                     sent = 0
-                    self.enqueue_ui("transfer_progress", ip, f"Sending {file_path.name}", 0, total_size)
+                    self.enqueue_ui("transfer_progress", peer.ip, f"Sending {file_path.name}", 0, total_size)
                     while True:
                         chunk = handle.read(BUFFER_SIZE)
                         if not chunk:
@@ -1353,9 +1445,9 @@ class LanMessengerApp:
                             "ciphertext": ciphertext,
                         })
                         sent += len(chunk)
-                        self.enqueue_ui("transfer_progress", ip, f"Sending {file_path.name}", sent, total_size)
-                        if progress_callback:
-                            progress_callback(sent, total_size)
+                        self.enqueue_ui("transfer_progress", peer.ip, f"Sending {file_path.name}", sent, total_size)
+                        if callable(progress_cb):
+                            progress_cb(sent, total_size)
 
                     send_frame(sock, {
                         "type": "file_end",
@@ -1364,9 +1456,23 @@ class LanMessengerApp:
                         "sender_public_key_b64": self.crypto.public_key_b64,
                         "port": TCP_PORT,
                     })
-                    self.enqueue_ui("transfer_complete", ip, f"Sending {file_path.name}")
+                    self.enqueue_ui("transfer_complete", peer.ip, f"Sending {file_path.name}")
+                    success = True
             except Exception:
-                self.enqueue_ui("network_error", ip, f"File transfer failed for {file_path.name}.")
+                self.enqueue_ui(
+                    "network_error",
+                    peer.ip,
+                    f"File transfer paused for {file_path.name}. It will retry when {peer.username} is available.",
+                )
+            finally:
+                self.active_file_transfers.discard(conversation_key)
+                current_items = self.file_queues.get(conversation_key, [])
+                if success and current_items:
+                    current_items.pop(0)
+                    if not current_items:
+                        self.file_queues.pop(conversation_key, None)
+                self.enqueue_ui("refresh_file_queue", conversation_key)
+                self._start_next_file_transfer(conversation_key)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1418,6 +1524,68 @@ class LanMessengerApp:
         }
         return self._send_packets(peer, [packet])
 
+    def send_typing_state(self, ip: str, active: bool, force: bool = False) -> None:
+        peer = self._resolve_active_peer(ip)
+        if peer is None:
+            self.outgoing_typing_state[ip] = active
+            return
+
+        last_state = self.outgoing_typing_state.get(peer.ip)
+        last_sent = self.outgoing_typing_sent_at.get(peer.ip, 0.0)
+        if not force and last_state == active:
+            if not active or (now() - last_sent) < TYPING_SEND_THROTTLE:
+                return
+
+        self.outgoing_typing_state[peer.ip] = active
+        self.outgoing_typing_sent_at[peer.ip] = now()
+
+        packet = {
+            "type": "typing",
+            "active": active,
+            "sender": self.username,
+            "sender_public_key_b64": self.crypto.public_key_b64,
+            "port": TCP_PORT,
+        }
+        threading.Thread(target=lambda: self._send_packets(peer, [packet]), daemon=True).start()
+
+    def set_typing_state(self, ip: str, sender: str, is_typing: bool) -> None:
+        if is_typing:
+            token = self.typing_state_tokens.get(ip, 0) + 1
+            self.typing_state_tokens[ip] = token
+            self.typing_states[ip] = {
+                "sender": sender.strip() or self.conversation_name(ip),
+                "expires_at": now() + TYPING_STATUS_TTL,
+            }
+            self.root.after(int(TYPING_STATUS_TTL * 1000), lambda target_ip=ip, target_token=token: self._expire_typing_state(target_ip, target_token))
+        else:
+            self.typing_state_tokens[ip] = self.typing_state_tokens.get(ip, 0) + 1
+            self.typing_states.pop(ip, None)
+
+        if self.main_window is not None and self.main_window.winfo_exists():
+            self.main_window.refresh()
+
+    def _expire_typing_state(self, ip: str, token: int) -> None:
+        if self.typing_state_tokens.get(ip) != token:
+            return
+        state = self.typing_states.get(ip)
+        if state is None or float(state.get("expires_at") or 0.0) > now():
+            return
+        self.typing_states.pop(ip, None)
+        if self.main_window is not None and self.main_window.winfo_exists():
+            self.main_window.refresh()
+
+    def typing_status_text(self, ip: str) -> str:
+        state = self.typing_states.get(ip)
+        if state is None:
+            return ""
+        if float(state.get("expires_at") or 0.0) <= now():
+            self.typing_states.pop(ip, None)
+            return ""
+        sender = str(state.get("sender", "")).strip() or self.conversation_name(ip)
+        if sender == self.conversation_name(ip):
+            return "Typing..."
+        return f"{sender} is typing..."
+
     def _rebind_peer_state(self, old_ip: str, new_ip: str, peer_name: str) -> None:
         if old_ip == new_ip:
             return
@@ -1435,6 +1603,20 @@ class LanMessengerApp:
         transfer_status = self.transfer_statuses.pop(old_ip, None)
         if transfer_status is not None:
             self.transfer_statuses[new_ip] = transfer_status
+
+        typing_state = self.typing_states.pop(old_ip, None)
+        if typing_state is not None:
+            self.typing_states[new_ip] = typing_state
+        typing_token = self.typing_state_tokens.pop(old_ip, None)
+        if typing_token is not None:
+            self.typing_state_tokens[new_ip] = typing_token
+
+        outgoing_typing = self.outgoing_typing_state.pop(old_ip, None)
+        if outgoing_typing is not None:
+            self.outgoing_typing_state[new_ip] = outgoing_typing
+        outgoing_sent_at = self.outgoing_typing_sent_at.pop(old_ip, None)
+        if outgoing_sent_at is not None:
+            self.outgoing_typing_sent_at[new_ip] = outgoing_sent_at
 
         if self.main_window is not None and self.main_window.winfo_exists():
             self.main_window.rebind_peer(old_ip, new_ip, peer_name)
@@ -1473,6 +1655,7 @@ class LanMessengerApp:
         self._update_contact_last_seen(peer)
         if newly_online:
             self._deliver_pending_messages_for_peer(peer)
+            self._start_next_file_transfer(f"pk:{peer.public_key_b64}")
 
         return peer, (changed or newly_online)
 
@@ -1507,6 +1690,66 @@ class LanMessengerApp:
             public_key_b64=contact.public_key_b64,
             last_seen=now(),
         )
+
+    def _conversation_key(self, ip: str) -> str:
+        peer = self.peers.get(ip)
+        if peer is not None:
+            return f"pk:{peer.public_key_b64}"
+        contact = self._find_contact_by_ip(ip)
+        if contact is not None:
+            return f"pk:{contact.public_key_b64}"
+        return f"ip:{ip}"
+
+    def _resolve_delivery_peer_for_key(self, conversation_key: str) -> Peer | None:
+        if conversation_key.startswith("pk:"):
+            public_key_b64 = conversation_key[3:]
+            peer = self.find_peer_by_public_key(public_key_b64)
+            if peer is not None:
+                return peer
+            contact = self.find_contact_by_public_key(public_key_b64)
+            if contact is not None and contact.last_ip:
+                return Peer(
+                    ip=contact.last_ip,
+                    username=contact.username,
+                    port=TCP_PORT,
+                    public_key_b64=contact.public_key_b64,
+                    last_seen=now(),
+                )
+            return None
+        if conversation_key.startswith("ip:"):
+            return self._resolve_delivery_peer(conversation_key[3:])
+        return None
+
+    def _display_ip_for_conversation_key(self, conversation_key: str) -> str:
+        if conversation_key.startswith("pk:"):
+            public_key_b64 = conversation_key[3:]
+            peer = self.find_peer_by_public_key(public_key_b64)
+            if peer is not None:
+                return peer.ip
+            contact = self.find_contact_by_public_key(public_key_b64)
+            if contact is not None:
+                return contact.last_ip
+            return ""
+        if conversation_key.startswith("ip:"):
+            return conversation_key[3:]
+        return ""
+
+    def _is_hidden_conversation(self, ip: str) -> bool:
+        return self._conversation_key(ip) in set(self.config.hidden_conversations)
+
+    def _hide_conversation(self, ip: str) -> None:
+        key = self._conversation_key(ip)
+        hidden = set(self.config.hidden_conversations)
+        hidden.add(key)
+        self.config.save_hidden_conversations(list(hidden))
+
+    def _reveal_conversation(self, ip: str) -> None:
+        key = self._conversation_key(ip)
+        hidden = set(self.config.hidden_conversations)
+        if key not in hidden:
+            return
+        hidden.discard(key)
+        self.config.save_hidden_conversations(list(hidden))
 
     def get_peer_name(self, ip: str) -> str:
         peer = self._resolve_active_peer(ip)
@@ -1565,6 +1808,10 @@ class LanMessengerApp:
         return "Offline"
 
     def conversation_preview(self, ip: str) -> str:
+        typing_text = self.typing_status_text(ip)
+        if typing_text:
+            return typing_text
+
         history = self.message_history.get(ip, [])
         if not history:
             return "Ready to chat" if self.peers.get(ip) is not None else "No messages yet"
@@ -1577,16 +1824,19 @@ class LanMessengerApp:
         return text if len(text) <= 48 else f"{text[:45]}..."
 
     def conversation_targets(self) -> list[str]:
+        hidden = set(self.config.hidden_conversations)
         targets: set[str] = set(self.message_history.keys())
 
         for peer in self.online_peers():
-            targets.add(peer.ip)
+            if f"pk:{peer.public_key_b64}" not in hidden:
+                targets.add(peer.ip)
 
         for contact in self.contacts:
             peer = self.find_peer_for_contact(contact)
             if peer is not None:
-                targets.add(peer.ip)
-            elif contact.last_ip:
+                if f"pk:{contact.public_key_b64}" not in hidden:
+                    targets.add(peer.ip)
+            elif contact.last_ip and f"pk:{contact.public_key_b64}" not in hidden:
                 targets.add(contact.last_ip)
 
         return sorted(
@@ -1709,11 +1959,10 @@ class LanMessengerApp:
         self.refresh_tray_menu()
 
     def prompt_send_file(self, ip: str) -> None:
-        path = filedialog.askopenfilename(parent=self.root)
-        if not path:
+        paths = filedialog.askopenfilenames(parent=self.root)
+        if not paths:
             return
-        self.add_message(ip, "System", f"Sending file: {Path(path).name}", incoming=False)
-        self.send_file(ip, path)
+        self.queue_files(ip, list(paths))
 
     def check_for_updates(self, manual: bool = True) -> None:
         manifest_url = self.config.update_server_url
@@ -1890,10 +2139,24 @@ class LanMessengerApp:
         )
 
     def delete_conversation(self, ip: str) -> None:
+        conversation_key = self._conversation_key(ip)
+        self._hide_conversation(ip)
+        if conversation_key.startswith("pk:"):
+            public_key_b64 = conversation_key[3:]
+            pending_messages = [
+                pending for pending in self.config.pending_messages
+                if pending.get("public_key_b64") != public_key_b64
+            ]
+            self.config.save_pending_messages(pending_messages)
         self.message_history.pop(ip, None)
         self.unread_counts.pop(ip, None)
         self.transfer_statuses.pop(ip, None)
         self.transfer_status_tokens.pop(ip, None)
+        self.typing_states.pop(ip, None)
+        self.typing_state_tokens[ip] = self.typing_state_tokens.get(ip, 0) + 1
+        self.file_queues.pop(conversation_key, None)
+        self.active_file_transfers.discard(conversation_key)
+        self.send_typing_state(ip, False, force=True)
         self._save_message_history()
         self.refresh_tray_menu()
         if self.main_window is not None and self.main_window.winfo_exists():
@@ -1988,6 +2251,10 @@ class LanMessengerApp:
         status: str = "",
         timestamp: float | None = None,
     ) -> None:
+        self._reveal_conversation(ip)
+        if sender.strip().lower() != self.username.strip().lower():
+            self.typing_states.pop(ip, None)
+            self.typing_state_tokens[ip] = self.typing_state_tokens.get(ip, 0) + 1
         history = self.message_history.setdefault(ip, [])
         history.append(MessageEntry(
             sender=sender,
@@ -2067,6 +2334,7 @@ class LanMessengerApp:
         self.refresh_tray_menu()
 
     def update_transfer_status(self, ip: str, label: str, current: int, total: int) -> None:
+        self._reveal_conversation(ip)
         self.transfer_status_tokens[ip] = self.transfer_status_tokens.get(ip, 0) + 1
         self.transfer_statuses[ip] = (label, current, total)
         if self.main_window is not None and self.main_window.winfo_exists():
@@ -2089,12 +2357,40 @@ class LanMessengerApp:
         if self.main_window is not None and self.main_window.winfo_exists():
             self.main_window.refresh_transfer(ip)
 
+    def refresh_file_queue_status(self, conversation_key: str) -> None:
+        if conversation_key in self.active_file_transfers:
+            return
+
+        queued_items = self.file_queues.get(conversation_key, [])
+        display_ip = self._display_ip_for_conversation_key(conversation_key)
+        if not display_ip and queued_items:
+            display_ip = str(queued_items[0].get("conversation_ip", "")).strip()
+        if not display_ip:
+            return
+
+        if not queued_items:
+            self.transfer_statuses.pop(display_ip, None)
+            if self.main_window is not None and self.main_window.winfo_exists():
+                self.main_window.refresh_transfer(display_ip)
+            return
+
+        next_item = queued_items[0]
+        label = f"Queued {next_item['filename']}"
+        if len(queued_items) > 1:
+            label = f"{label} (+{len(queued_items) - 1} more)"
+        self.transfer_status_tokens[display_ip] = self.transfer_status_tokens.get(display_ip, 0) + 1
+        self.transfer_statuses[display_ip] = (label, 0, 1)
+        if self.main_window is not None and self.main_window.winfo_exists():
+            self.main_window.refresh_transfer(display_ip)
+
     def open_quick_chat(self, ip: str) -> "MainChatWindow":
         return self.show_main_window(ip)
 
     def show_main_window(self, ip: str | None = None) -> "MainChatWindow":
         if self.main_window is None or not self.main_window.winfo_exists():
             self.main_window = MainChatWindow(self)
+        if ip:
+            self._reveal_conversation(ip)
         self.main_window.show_chat(ip)
         return self.main_window
 
@@ -2596,6 +2892,8 @@ class MainChatWindow(BaseWindow):
         self.minsize(640, 480)
         self.selected_ip: str | None = None
         self.row_menus: list[tk.Menu] = []
+        self.typing_idle_job: str | None = None
+        self.typing_target_ip: str | None = None
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
@@ -2685,6 +2983,20 @@ class MainChatWindow(BaseWindow):
             fg=UI_COLORS["muted"],
             font=(UI_FONT, 10),
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.header_typing_var = tk.StringVar(value="")
+        self.header_typing_label = tk.Label(
+            header.content,
+            textvariable=self.header_typing_var,
+            bg=UI_COLORS["card_bg"],
+            fg=UI_COLORS["accent"],
+            font=(UI_FONT, 10, "italic"),
+        )
+        self.header_typing_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        header_actions = ttk.Frame(header.content)
+        header_actions.grid(row=0, column=2, rowspan=3, sticky="e", padx=(12, 0))
+        ttk.Button(header_actions, text="Info", command=self._show_active_chat_info).pack(side="left")
+        ttk.Button(header_actions, text="Delete Thread", command=self._delete_active_thread).pack(side="left", padx=(8, 0))
 
         history_card = RoundedPanel(
             chat,
@@ -2788,7 +3100,9 @@ class MainChatWindow(BaseWindow):
         self.entry.grid(row=0, column=0, sticky="ew")
         self.entry.bind("<Return>", self.on_enter)
         self.entry.bind("<KeyRelease>", self._schedule_composer_resize, add="+")
+        self.entry.bind("<KeyRelease>", self._handle_composer_change, add="+")
         self.entry.bind("<<Paste>>", self._schedule_composer_resize, add="+")
+        self.entry.bind("<<Paste>>", self._handle_composer_change, add="+")
 
         self.send_button = RoundedButton(
             composer.content,
@@ -2815,6 +3129,10 @@ class MainChatWindow(BaseWindow):
         elif self.selected_ip:
             self.app.mark_peer_read(self.selected_ip)
 
+    def hide(self) -> None:
+        self._flush_typing_state()
+        super().hide()
+
     def show_chat(self, ip: str | None) -> None:
         self.select_chat(ip)
         self.show()
@@ -2838,6 +3156,14 @@ class MainChatWindow(BaseWindow):
         if self.selected_ip is None:
             self.selected_ip = ip
         self.refresh()
+
+    def _show_active_chat_info(self) -> None:
+        if self.selected_ip:
+            self._show_chat_info(self.selected_ip)
+
+    def _delete_active_thread(self) -> None:
+        if self.selected_ip:
+            self._delete_thread(self.selected_ip)
 
     def refresh_sidebar(self) -> None:
         sidebar_y = self.sidebar_canvas.yview()[0] if self.sidebar_canvas.winfo_exists() else 0.0
@@ -2973,15 +3299,19 @@ class MainChatWindow(BaseWindow):
             self.refresh()
 
     def select_chat(self, ip: str | None) -> None:
+        previous_ip = self.selected_ip
         if ip is None:
             conversation_ips = self.app.conversation_targets()
             ip = conversation_ips[0] if conversation_ips else None
         if ip is None:
+            self._flush_typing_state()
             self.selected_ip = None
             self.refresh_current_chat()
             return
 
         peer = self.app._resolve_active_peer(ip)
+        if previous_ip and previous_ip != (peer.ip if peer is not None else ip):
+            self._flush_typing_state(previous_ip)
         self.selected_ip = peer.ip if peer is not None else ip
         self.refresh()
         if self.selected_ip:
@@ -2992,6 +3322,7 @@ class MainChatWindow(BaseWindow):
             self.title(APP_NAME)
             self.header_name_var.set("No chat selected")
             self.header_status_var.set("Discovered contacts and saved contacts appear in the sidebar.")
+            self.header_typing_var.set("")
             self._set_status_badge(False)
             self.attach_button.set_enabled(False)
             self.send_button.set_enabled(False)
@@ -3007,6 +3338,7 @@ class MainChatWindow(BaseWindow):
         contact = self.app._find_contact_by_ip(ip)
         display_ip = peer.ip if peer is not None else (contact.last_ip if contact is not None and contact.last_ip else "")
         self.header_status_var.set(f"IP Address: {display_ip}" if display_ip else "IP Address: Offline")
+        self.header_typing_var.set(self.app.typing_status_text(ip))
         self._set_status_badge(peer is not None)
 
         self.attach_button.set_enabled(True)
@@ -3116,11 +3448,9 @@ class MainChatWindow(BaseWindow):
         if not self.selected_ip:
             return
         paths = self.tk.splitlist(event.data)
-        for raw_path in paths:
-            path = raw_path.strip("{}")
-            if Path(path).is_file():
-                self.app.add_message(self.selected_ip, "System", f"Sending file: {Path(path).name}", incoming=False)
-                self.app.send_file(self.selected_ip, path)
+        queued_paths = [raw_path.strip("{}") for raw_path in paths if Path(raw_path.strip("{}")).is_file()]
+        if queued_paths:
+            self.app.queue_files(self.selected_ip, queued_paths)
 
     def on_enter(self, event) -> str | None:
         if event.state & 0x0001:
@@ -3136,17 +3466,39 @@ class MainChatWindow(BaseWindow):
             return
         self.entry.delete("1.0", "end")
         self._resize_composer_to_content()
+        self._flush_typing_state(self.selected_ip)
         self.app.send_text(self.selected_ip, content)
 
     def pick_file(self, ip: str | None = None) -> None:
         target_ip = ip or self.selected_ip
         if not target_ip:
             return
-        path = filedialog.askopenfilename(parent=self)
-        if not path:
+        paths = filedialog.askopenfilenames(parent=self)
+        if not paths:
             return
-        self.app.add_message(target_ip, "System", f"Sending file: {Path(path).name}", incoming=False)
-        self.app.send_file(target_ip, path)
+        self.app.queue_files(target_ip, list(paths))
+
+    def _handle_composer_change(self, _event=None) -> None:
+        if not self.selected_ip:
+            return
+        content = self.entry.get("1.0", "end-1c").strip()
+        if content:
+            self.typing_target_ip = self.selected_ip
+            self.app.send_typing_state(self.selected_ip, True)
+            if self.typing_idle_job is not None:
+                self.after_cancel(self.typing_idle_job)
+            self.typing_idle_job = self.after(TYPING_IDLE_TIMEOUT_MS, self._flush_typing_state)
+        else:
+            self._flush_typing_state(self.selected_ip)
+
+    def _flush_typing_state(self, ip: str | None = None) -> None:
+        target_ip = ip or self.typing_target_ip or self.selected_ip
+        if self.typing_idle_job is not None:
+            self.after_cancel(self.typing_idle_job)
+            self.typing_idle_job = None
+        if target_ip:
+            self.app.send_typing_state(target_ip, False, force=True)
+        self.typing_target_ip = None
 
 
 def main() -> None:

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Messenger Updates</title>
+  <style>
+    :root {
+      --bg: #eef3f8;
+      --panel: #ffffff;
+      --border: #d6dee8;
+      --text: #16202a;
+      --muted: #5f6f82;
+      --accent: #2f80ed;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #f6fbff 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 48px 20px 80px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: 0 12px 30px rgba(22, 32, 42, 0.06);
+    }
+
+    h1 { margin: 0 0 8px; font-size: 2rem; }
+    p { color: var(--muted); line-height: 1.6; }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+    .button {
+      display: inline-block;
+      padding: 12px 16px;
+      border-radius: 12px;
+      text-decoration: none;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      color: var(--text);
+      background: #f7fafc;
+    }
+    .button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>LAN Messenger Updates</h1>
+      <p>This static folder hosts the remote update manifest and platform installers used by LAN Messenger.</p>
+      <p>Manifest: <code>lan-messenger-update.json</code></p>
+      <div class="actions">
+        <a class="button primary" href="lan-messenger-update.json">Open Manifest</a>
+        <a class="button" href="downloads/LanMessengerSetup-1.4.0.exe">Windows Installer</a>
+        <a class="button" href="downloads/LAN-Messenger-Installer-1.4.0.dmg">macOS Installer</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

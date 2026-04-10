@@ -59,12 +59,20 @@ To remove it:
 
 The app can check a hosted JSON manifest for newer versions.
 
-Sample files are in:
+The static update feed is in:
 
 - `update_server/README.md`
 - `update_server/lan-messenger-update.json`
+- `update_server/index.html`
+- `update_server/build_update_server.py`
 
 Set the update server URL in the app Settings. You can use either:
 
 - the direct manifest URL
 - a folder URL that contains `lan-messenger-update.json`
+
+To generate a deployable update feed after building both installers:
+
+```bash
+python3 update_server/build_update_server.py --version 1.4.0
+```

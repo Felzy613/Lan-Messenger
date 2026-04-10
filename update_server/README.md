@@ -1,31 +1,57 @@
-# Remote Update Server
+# Update Server
 
-Host this folder on any static web server.
+`update_server/` is now a deployable static update feed for LAN Messenger.
 
-The app looks for:
+What lives here:
 
-- `lan-messenger-update.json`
+- `lan-messenger-update.json`: the manifest the app reads
+- `index.html`: a simple landing page for humans
+- `build_update_server.py`: copies installers into `downloads/` and rewrites the manifest/page
+- `downloads/`: generated installer files to upload with the manifest
 
-You can either point the app directly at that JSON file, or point it at the
-folder URL and the app will append the manifest filename automatically.
+## Build The Feed
 
-Example manifest URL:
+From the repo root:
 
-- `https://example.com/lan-messenger-update.json`
+```bash
+python3 update_server/build_update_server.py --version 1.4.0
+```
 
-Example folder URL:
+Default input files:
 
-- `https://example.com/updates/`
+- Windows: `windows/dist-installer/LanMessengerSetup.exe`
+- macOS: `macos/releases/LAN-Messenger-Installer.dmg`
 
-Required manifest fields:
+Generated output:
+
+- `update_server/lan-messenger-update.json`
+- `update_server/index.html`
+- `update_server/downloads/LanMessengerSetup-<version>.exe`
+- `update_server/downloads/LAN-Messenger-Installer-<version>.dmg`
+
+## Host It
+
+Upload the full `update_server/` folder to any static host:
+
+- GitHub Pages
+- Cloudflare Pages
+- Netlify
+- S3 / CloudFront
+- Any normal web server
+
+In the app Settings, use either:
+
+- the direct manifest URL, such as `https://example.com/updates/lan-messenger-update.json`
+- or the folder URL, such as `https://example.com/updates/`
+
+The app will append `lan-messenger-update.json` automatically for folder URLs.
+
+## Manifest Format
+
+Required fields:
 
 - `version`
 - `downloads.windows`
 - `downloads.macos`
 
-Example hosting options:
-
-- GitHub Pages
-- Cloudflare Pages
-- Netlify
-- Any normal web server or CDN
+The download URLs can be absolute or relative. Relative URLs are resolved against the manifest URL, so the generated feed works cleanly on static hosting.

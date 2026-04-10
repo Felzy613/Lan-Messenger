@@ -1,8 +1,8 @@
 {
-  "version": "1.3.4",
-  "notes": "Initial remote update manifest. Replace these URLs with your hosted installers.",
+  "version": "1.4.0",
+  "notes": "Typing indicators, queued file transfers, improved thread deletion, and a generated static update feed.",
   "downloads": {
-    "windows": "https://example.com/downloads/LanMessengerSetup.exe",
-    "macos": "https://example.com/downloads/LAN-Messenger-Installer.dmg"
+    "windows": "downloads/LanMessengerSetup-1.4.0.exe",
+    "macos": "downloads/LAN-Messenger-Installer-1.4.0.dmg"
   }
 }

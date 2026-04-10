@@ -1,7 +1,7 @@
 [Setup]
 AppId={{D1F2044B-7D82-46A0-8D35-6A85D46F442C}
 AppName=LAN Messenger
-AppVersion=1.3.3
+AppVersion=1.4.0
 AppPublisher=Dave
 DefaultDirName={localappdata}\Programs\LAN Messenger
 DefaultGroupName=LAN Messenger
