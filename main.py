@@ -1,6 +1,7 @@
 import base64
 import importlib
 import json
+import math
 import os
 import queue
 import socket
@@ -96,6 +97,9 @@ UI_COLORS = {
 }
 UI_FONT = "Segoe UI"
 TRANSFER_STATUS_CLEAR_DELAY_MS = 1800
+COMPOSER_MIN_CHARS = 22
+COMPOSER_MAX_CHARS = 42
+COMPOSER_MAX_LINES = 4
 
 
 def resolve_ui_font_family(root: tk.Tk) -> str:
@@ -2064,12 +2068,16 @@ class BaseWindow(tk.Toplevel):
     def __init__(self, app: LanMessengerApp, title: str, size: str) -> None:
         super().__init__(app.root)
         self.app = app
+        self._active_scroll_canvas: tk.Canvas | None = None
         self.title(title)
         self.geometry(size)
         self.configure(bg=UI_COLORS["app_bg"])
         self.withdraw()
         self.protocol("WM_DELETE_WINDOW", self.hide)
         self._configure_window_chrome()
+        self.bind_all("<MouseWheel>", self._dispatch_mousewheel, add="+")
+        self.bind_all("<Button-4>", self._dispatch_mousewheel, add="+")
+        self.bind_all("<Button-5>", self._dispatch_mousewheel, add="+")
 
     def _configure_window_chrome(self) -> None:
         try:
@@ -2098,19 +2106,22 @@ class BaseWindow(tk.Toplevel):
             return False
 
     def _bind_mousewheel(self, canvas: tk.Canvas, *widgets: tk.Misc) -> None:
-        def bind(_event=None) -> None:
-            self.bind_all("<MouseWheel>", lambda event: self._on_mousewheel(canvas, event), add="+")
-            self.bind_all("<Button-4>", lambda event: self._on_mousewheel(canvas, event), add="+")
-            self.bind_all("<Button-5>", lambda event: self._on_mousewheel(canvas, event), add="+")
+        def activate(_event=None) -> None:
+            self._active_scroll_canvas = canvas
 
-        def unbind(_event=None) -> None:
-            self.unbind_all("<MouseWheel>")
-            self.unbind_all("<Button-4>")
-            self.unbind_all("<Button-5>")
+        def deactivate(_event=None) -> None:
+            if self._active_scroll_canvas is canvas:
+                self._active_scroll_canvas = None
 
         for widget in (canvas, *widgets):
-            widget.bind("<Enter>", bind, add="+")
-            widget.bind("<Leave>", unbind, add="+")
+            widget.bind("<Enter>", activate, add="+")
+            widget.bind("<Leave>", deactivate, add="+")
+
+    def _dispatch_mousewheel(self, event: Any) -> str | None:
+        canvas = self._active_scroll_canvas
+        if canvas is None or not self.is_visible():
+            return None
+        return self._on_mousewheel(canvas, event)
 
     def _on_mousewheel(self, canvas: tk.Canvas, event: Any) -> str:
         if getattr(event, "num", None) == 4:
@@ -2629,21 +2640,22 @@ class MainChatWindow(BaseWindow):
         )
         self.attach_button.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
-        entry_shell = RoundedPanel(
+        self.entry_shell = RoundedPanel(
             composer.content,
             background=UI_COLORS["card_bg"],
             fill=UI_COLORS["composer_bg"],
             border=UI_COLORS["border"],
             radius=18,
             padding=(8, 5),
-            stretch=True,
+            stretch=False,
         )
-        entry_shell.grid(row=0, column=1, sticky="ew")
-        entry_shell.content.columnconfigure(0, weight=1)
+        self.entry_shell.grid(row=0, column=1, sticky="w")
+        self.entry_shell.content.columnconfigure(0, weight=1)
 
         self.entry = tk.Text(
-            entry_shell.content,
+            self.entry_shell.content,
             height=1,
+            width=COMPOSER_MIN_CHARS,
             wrap="word",
             bg=UI_COLORS["composer_bg"],
             fg=UI_COLORS["text"],
@@ -2657,6 +2669,8 @@ class MainChatWindow(BaseWindow):
         )
         self.entry.grid(row=0, column=0, sticky="ew")
         self.entry.bind("<Return>", self.on_enter)
+        self.entry.bind("<KeyRelease>", self._schedule_composer_resize, add="+")
+        self.entry.bind("<<Paste>>", self._schedule_composer_resize, add="+")
 
         self.send_button = RoundedButton(
             composer.content,
@@ -2673,6 +2687,7 @@ class MainChatWindow(BaseWindow):
         self.send_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
         self._init_drop_target()
+        self.after_idle(self._resize_composer_to_content)
         self.refresh()
 
     def show(self) -> None:
@@ -2730,10 +2745,12 @@ class MainChatWindow(BaseWindow):
                 fg=UI_COLORS["muted"],
                 font=(UI_FONT, 10),
             ).pack(anchor="w")
+            self._bind_mousewheel_recursive(self.sidebar_list, self.sidebar_canvas)
             return
 
         for ip in conversation_ips:
             self._build_row(ip)
+        self._bind_mousewheel_recursive(self.sidebar_list, self.sidebar_canvas)
 
     def _build_row(self, ip: str) -> None:
         selected = ip == self.selected_ip
@@ -2856,7 +2873,9 @@ class MainChatWindow(BaseWindow):
         wraplength = max(min(self.history_canvas.winfo_width() - 220, 420), 220)
         for entry in entries:
             self._append_bubble(self.history_frame, self.app.username, entry, wraplength)
-        self.after_idle(lambda: self.history_canvas.yview_moveto(1.0))
+        self._bind_mousewheel_recursive(self.history_frame, self.history_canvas)
+        self.after_idle(self._scroll_history_to_latest)
+        self.after(25, self._scroll_history_to_latest)
 
     def refresh_transfer(self, ip: str | None = None) -> None:
         target_ip = ip or self.selected_ip
@@ -2880,6 +2899,50 @@ class MainChatWindow(BaseWindow):
             bg=UI_COLORS["success_bg"] if is_online else UI_COLORS["danger_bg"],
             fg=UI_COLORS["success"] if is_online else UI_COLORS["danger"],
         )
+
+    def _schedule_composer_resize(self, _event=None) -> None:
+        self.after_idle(self._resize_composer_to_content)
+
+    def _resize_composer_to_content(self) -> None:
+        try:
+            content = self.entry.get("1.0", "end-1c")
+        except tk.TclError:
+            return
+
+        lines = content.splitlines() or [""]
+        display_lines = 0
+        longest_line = 0
+        font = tkfont.Font(font=self.entry.cget("font"))
+        average_char_width = max(font.measure("0"), 1)
+        min_pixels = average_char_width * COMPOSER_MIN_CHARS
+        max_pixels = average_char_width * COMPOSER_MAX_CHARS
+
+        for line in lines:
+            measured = font.measure(line) if line else 0
+            longest_line = max(longest_line, measured)
+            wrapped = max(1, math.ceil(max(measured, 1) / max_pixels))
+            display_lines += wrapped
+
+        target_pixels = min(max(longest_line + average_char_width * 2, min_pixels), max_pixels)
+        target_chars = max(COMPOSER_MIN_CHARS, min(COMPOSER_MAX_CHARS, math.ceil(target_pixels / average_char_width)))
+        target_lines = max(1, min(COMPOSER_MAX_LINES, display_lines))
+
+        self.entry.configure(width=target_chars, height=target_lines)
+        self.entry_shell._queue_redraw()
+
+    def _bind_mousewheel_recursive(self, root: tk.Misc, canvas: tk.Canvas) -> None:
+        self._bind_mousewheel(canvas, root)
+        for child in root.winfo_children():
+            self._bind_mousewheel_recursive(child, canvas)
+
+    def _scroll_history_to_latest(self) -> None:
+        try:
+            self.history_frame.update_idletasks()
+            self.history_canvas.update_idletasks()
+            self.history_canvas.configure(scrollregion=self.history_canvas.bbox("all"))
+            self.history_canvas.yview_moveto(1.0)
+        except tk.TclError:
+            pass
 
     def _init_drop_target(self) -> None:
         if DND_FILES is None:
@@ -2914,6 +2977,7 @@ class MainChatWindow(BaseWindow):
         if not content:
             return
         self.entry.delete("1.0", "end")
+        self._resize_composer_to_content()
         self.app.send_text(self.selected_ip, content)
 
     def pick_file(self, ip: str | None = None) -> None:
