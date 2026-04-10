@@ -59,7 +59,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 APP_NAME = "LAN Messenger"
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 UPDATE_MANIFEST_FILENAME = "lan-messenger-update.json"
 DISCOVERY_PORT = 54231
@@ -97,8 +97,8 @@ UI_COLORS = {
 }
 UI_FONT = "Segoe UI"
 TRANSFER_STATUS_CLEAR_DELAY_MS = 1800
-COMPOSER_MIN_CHARS = 22
-COMPOSER_MAX_CHARS = 42
+COMPOSER_MIN_CHARS = 18
+COMPOSER_MAX_CHARS = 34
 COMPOSER_MAX_LINES = 4
 
 
@@ -1776,23 +1776,33 @@ class LanMessengerApp:
     def _handle_update_available(self, info: UpdateInfo, manual: bool) -> None:
         self.latest_update_info = info
         notes = f"\n\nRelease notes:\n{info.notes}" if info.notes else ""
-        open_download = messagebox.askyesno(
+        open_download = self.ask_centered_yes_no(
             "Update Available",
-            f"Version {info.version} is available.\n"
-            f"You are on {APP_VERSION}.{notes}\n\n"
-            "Open the download page now?",
-            parent=self.root,
+            (
+                f"Version {info.version} is available.\n"
+                f"You are on {APP_VERSION}.{notes}\n\n"
+                "Open the download page now?"
+            ),
+            parent=self.settings_window if self.settings_window is not None and self.settings_window.winfo_exists() else None,
         )
         if open_download:
             self.open_update_download(info.download_url)
 
     def _handle_no_update(self, manual: bool) -> None:
         if manual:
-            messagebox.showinfo("Updates", f"You are already on the latest version ({APP_VERSION}).", parent=self.root)
+            self.show_centered_info(
+                "Updates",
+                f"You are already on the latest version ({APP_VERSION}).",
+                parent=self.settings_window if self.settings_window is not None and self.settings_window.winfo_exists() else None,
+            )
 
     def _handle_update_error(self, message: str, manual: bool) -> None:
         if manual:
-            messagebox.showerror("Update Check Failed", message, parent=self.root)
+            self.show_centered_error(
+                "Update Check Failed",
+                message,
+                parent=self.settings_window if self.settings_window is not None and self.settings_window.winfo_exists() else None,
+            )
         else:
             self.notifications.notify("Update Check Failed", message)
 
@@ -1800,7 +1810,94 @@ class LanMessengerApp:
         try:
             webbrowser.open(download_url)
         except Exception:
-            messagebox.showerror("Updates", f"Could not open download URL:\n{download_url}", parent=self.root)
+            self.show_centered_error("Updates", f"Could not open download URL:\n{download_url}")
+
+    def _dialog_parent(self, parent: tk.Misc | None = None) -> tk.Misc:
+        candidates: list[tk.Misc] = []
+        if parent is not None:
+            candidates.append(parent)
+        if self.settings_window is not None and self.settings_window.winfo_exists() and self.settings_window.is_visible():
+            candidates.append(self.settings_window)
+        if self.main_window is not None and self.main_window.winfo_exists() and self.main_window.is_visible():
+            candidates.append(self.main_window)
+        if self.contacts_window is not None and self.contacts_window.winfo_exists() and self.contacts_window.is_visible():
+            candidates.append(self.contacts_window)
+
+        for candidate in candidates:
+            try:
+                candidate.update_idletasks()
+                return candidate
+            except Exception:
+                continue
+        self.prepare_window_host()
+        return self.root
+
+    def _create_centered_dialog_host(self, parent: tk.Misc | None = None) -> tk.Toplevel | None:
+        anchor = self._dialog_parent(parent)
+        if isinstance(anchor, tk.Toplevel):
+            try:
+                host = tk.Toplevel(anchor)
+                host.withdraw()
+                host.overrideredirect(True)
+                host.transient(anchor)
+                anchor.update_idletasks()
+                width = max(anchor.winfo_width(), anchor.winfo_reqwidth(), 1)
+                height = max(anchor.winfo_height(), anchor.winfo_reqheight(), 1)
+                x = anchor.winfo_rootx() + max((width - 1) // 2, 0)
+                y = anchor.winfo_rooty() + max((height - 1) // 2, 0)
+                host.geometry(f"1x1+{x}+{y}")
+                host.deiconify()
+                host.lift()
+                return host
+            except Exception:
+                return None
+        return None
+
+    def show_centered_info(self, title: str, message: str, parent: tk.Misc | None = None) -> None:
+        host = self._create_centered_dialog_host(parent)
+        try:
+            messagebox.showinfo(title, message, parent=host or self._dialog_parent(parent))
+        finally:
+            if host is not None and host.winfo_exists():
+                host.destroy()
+
+    def show_centered_error(self, title: str, message: str, parent: tk.Misc | None = None) -> None:
+        host = self._create_centered_dialog_host(parent)
+        try:
+            messagebox.showerror(title, message, parent=host or self._dialog_parent(parent))
+        finally:
+            if host is not None and host.winfo_exists():
+                host.destroy()
+
+    def ask_centered_yes_no(self, title: str, message: str, parent: tk.Misc | None = None) -> bool:
+        host = self._create_centered_dialog_host(parent)
+        try:
+            return bool(messagebox.askyesno(title, message, parent=host or self._dialog_parent(parent)))
+        finally:
+            if host is not None and host.winfo_exists():
+                host.destroy()
+
+    def show_conversation_info(self, ip: str, parent: tk.Misc | None = None) -> None:
+        peer = self.find_peer_by_ip(ip)
+        contact = self._find_contact_by_ip(ip)
+        status = "Online" if peer is not None else "Offline"
+        contact_name = self.conversation_name(ip)
+        display_ip = peer.ip if peer is not None else (contact.last_ip if contact is not None else ip)
+        self.show_centered_info(
+            "Chat Info",
+            f"Name: {contact_name}\nStatus: {status}\nIP Address: {display_ip}",
+            parent=parent,
+        )
+
+    def delete_conversation(self, ip: str) -> None:
+        self.message_history.pop(ip, None)
+        self.unread_counts.pop(ip, None)
+        self.transfer_statuses.pop(ip, None)
+        self.transfer_status_tokens.pop(ip, None)
+        self._save_message_history()
+        self.refresh_tray_menu()
+        if self.main_window is not None and self.main_window.winfo_exists():
+            self.main_window.refresh()
 
     def refresh_tray_menu(self) -> None:
         if self.icon is None:
@@ -2068,7 +2165,6 @@ class BaseWindow(tk.Toplevel):
     def __init__(self, app: LanMessengerApp, title: str, size: str) -> None:
         super().__init__(app.root)
         self.app = app
-        self._active_scroll_canvas: tk.Canvas | None = None
         self.title(title)
         self.geometry(size)
         self.configure(bg=UI_COLORS["app_bg"])
@@ -2089,6 +2185,7 @@ class BaseWindow(tk.Toplevel):
     def show(self) -> None:
         self.app.prepare_window_host()
         self.deiconify()
+        self.after_idle(self._center_on_screen)
         self.after_idle(self.lift)
         self.after_idle(self.focus_force)
         self.app.activate_application()
@@ -2106,19 +2203,11 @@ class BaseWindow(tk.Toplevel):
             return False
 
     def _bind_mousewheel(self, canvas: tk.Canvas, *widgets: tk.Misc) -> None:
-        def activate(_event=None) -> None:
-            self._active_scroll_canvas = canvas
-
-        def deactivate(_event=None) -> None:
-            if self._active_scroll_canvas is canvas:
-                self._active_scroll_canvas = None
-
         for widget in (canvas, *widgets):
-            widget.bind("<Enter>", activate, add="+")
-            widget.bind("<Leave>", deactivate, add="+")
+            setattr(widget, "_scroll_canvas_target", canvas)
 
     def _dispatch_mousewheel(self, event: Any) -> str | None:
-        canvas = self._active_scroll_canvas
+        canvas = self._scroll_canvas_for_widget(getattr(event, "widget", None))
         if canvas is None or not self.is_visible():
             return None
         return self._on_mousewheel(canvas, event)
@@ -2135,6 +2224,26 @@ class BaseWindow(tk.Toplevel):
         if delta:
             canvas.yview_scroll(delta, "units")
         return "break"
+
+    def _scroll_canvas_for_widget(self, widget: tk.Misc | None) -> tk.Canvas | None:
+        current = widget
+        while current is not None:
+            canvas = getattr(current, "_scroll_canvas_target", None)
+            if isinstance(canvas, tk.Canvas):
+                return canvas
+            current = cast(tk.Misc | None, getattr(current, "master", None))
+        return None
+
+    def _center_on_screen(self) -> None:
+        try:
+            self.update_idletasks()
+            width = max(self.winfo_width(), self.winfo_reqwidth())
+            height = max(self.winfo_height(), self.winfo_reqheight())
+            x = max((self.winfo_screenwidth() - width) // 2, 0)
+            y = max((self.winfo_screenheight() - height) // 2, 0)
+            self.geometry(f"{width}x{height}+{x}+{y}")
+        except Exception:
+            pass
 
     def _append_bubble(self, widget: tk.Frame, my_username: str, entry: MessageEntry, wraplength: int) -> None:
         timestamp = format_message_time(entry.timestamp)
@@ -2346,6 +2455,9 @@ class SettingsWindow(BaseWindow):
 
         self.settings_canvas = tk.Canvas(shell.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         self.settings_canvas.grid(row=0, column=0, sticky="nsew")
+        self.settings_scrollbar = ttk.Scrollbar(shell.content, orient="vertical", command=self.settings_canvas.yview)
+        self.settings_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.settings_canvas.configure(yscrollcommand=self.settings_scrollbar.set)
         self.settings_body = tk.Frame(self.settings_canvas, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         self.settings_window = self.settings_canvas.create_window((0, 0), window=self.settings_body, anchor="nw")
         self.settings_body.bind(
@@ -2480,9 +2592,10 @@ class SettingsWindow(BaseWindow):
 
 class MainChatWindow(BaseWindow):
     def __init__(self, app: LanMessengerApp) -> None:
-        super().__init__(app, f"{APP_NAME} - {APP_VERSION}", "700x520")
+        super().__init__(app, APP_NAME, "820x560")
         self.minsize(640, 480)
         self.selected_ip: str | None = None
+        self.row_menus: list[tk.Menu] = []
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
@@ -2496,12 +2609,11 @@ class MainChatWindow(BaseWindow):
         sidebar.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
         sidebar.grid_propagate(False)
 
-        ttk.Label(sidebar, text=f"Chats  {APP_VERSION}", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(sidebar, text="Chats", style="Heading.TLabel").pack(anchor="w")
         ttk.Label(sidebar, text="Fast local messaging with encrypted history.", style="Subheading.TLabel").pack(anchor="w", pady=(2, 10))
         sidebar_actions = ttk.Frame(sidebar)
         sidebar_actions.pack(fill="x", pady=(0, 10))
         ttk.Button(sidebar_actions, text="Contacts", command=self.app.show_contacts_window, style="Primary.TButton").pack(side="left")
-        ttk.Button(sidebar_actions, text="Search LAN", command=self.app.trigger_discovery_scan).pack(side="left", padx=(8, 0))
 
         sidebar_holder = RoundedPanel(
             sidebar,
@@ -2515,6 +2627,9 @@ class MainChatWindow(BaseWindow):
         sidebar_holder.pack(fill="both", expand=True)
         self.sidebar_canvas = tk.Canvas(sidebar_holder.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         self.sidebar_canvas.pack(side="left", fill="both", expand=True)
+        self.sidebar_scrollbar = ttk.Scrollbar(sidebar_holder.content, orient="vertical", command=self.sidebar_canvas.yview)
+        self.sidebar_scrollbar.pack(side="right", fill="y")
+        self.sidebar_canvas.configure(yscrollcommand=self.sidebar_scrollbar.set)
 
         self.sidebar_list = tk.Frame(self.sidebar_canvas, bg=UI_COLORS["panel_bg"])
         self.sidebar_window = self.sidebar_canvas.create_window((0, 0), window=self.sidebar_list, anchor="nw")
@@ -2585,6 +2700,9 @@ class MainChatWindow(BaseWindow):
         history_card.content.rowconfigure(0, weight=1)
         self.history_canvas = tk.Canvas(history_card.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         self.history_canvas.grid(row=0, column=0, sticky="nsew")
+        self.history_scrollbar = ttk.Scrollbar(history_card.content, orient="vertical", command=self.history_canvas.yview)
+        self.history_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.history_canvas.configure(yscrollcommand=self.history_scrollbar.set)
         self.history_frame = tk.Frame(self.history_canvas, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         self.history_window = self.history_canvas.create_window((0, 0), window=self.history_frame, anchor="nw")
         self.history_frame.bind(
@@ -2649,7 +2767,7 @@ class MainChatWindow(BaseWindow):
             padding=(8, 5),
             stretch=False,
         )
-        self.entry_shell.grid(row=0, column=1, sticky="w")
+        self.entry_shell.grid(row=0, column=1, sticky="ew")
         self.entry_shell.content.columnconfigure(0, weight=1)
 
         self.entry = tk.Text(
@@ -2664,7 +2782,7 @@ class MainChatWindow(BaseWindow):
             bd=0,
             highlightthickness=0,
             padx=8,
-            pady=6,
+            pady=4,
             font=(UI_FONT, 11),
         )
         self.entry.grid(row=0, column=0, sticky="ew")
@@ -2684,7 +2802,7 @@ class MainChatWindow(BaseWindow):
             disabled_text=UI_COLORS["muted"],
             min_width=76,
         )
-        self.send_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
+        self.send_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
 
         self._init_drop_target()
         self.after_idle(self._resize_composer_to_content)
@@ -2722,6 +2840,8 @@ class MainChatWindow(BaseWindow):
         self.refresh()
 
     def refresh_sidebar(self) -> None:
+        sidebar_y = self.sidebar_canvas.yview()[0] if self.sidebar_canvas.winfo_exists() else 0.0
+        self.row_menus.clear()
         for child in self.sidebar_list.winfo_children():
             child.destroy()
 
@@ -2746,11 +2866,13 @@ class MainChatWindow(BaseWindow):
                 font=(UI_FONT, 10),
             ).pack(anchor="w")
             self._bind_mousewheel_recursive(self.sidebar_list, self.sidebar_canvas)
+            self.after_idle(lambda: self.sidebar_canvas.yview_moveto(0.0))
             return
 
         for ip in conversation_ips:
             self._build_row(ip)
         self._bind_mousewheel_recursive(self.sidebar_list, self.sidebar_canvas)
+        self.after_idle(lambda value=sidebar_y: self.sidebar_canvas.yview_moveto(value))
 
     def _build_row(self, ip: str) -> None:
         selected = ip == self.selected_ip
@@ -2765,9 +2887,10 @@ class MainChatWindow(BaseWindow):
             stretch=True,
         )
         frame.pack(fill="x", pady=(0, 6))
+        frame.content.columnconfigure(0, weight=1)
 
         text_wrap = tk.Frame(frame.content, bg=bg, bd=0, highlightthickness=0)
-        text_wrap.pack(fill="both", expand=True)
+        text_wrap.grid(row=0, column=0, sticky="ew")
 
         name = self.app.conversation_name(ip)
         unread = self.app.unread_counts.get(ip, 0)
@@ -2821,8 +2944,33 @@ class MainChatWindow(BaseWindow):
                 font=(UI_FONT, 8),
             ).pack(side="left", padx=(6, 0))
 
-        for widget in (frame, text_wrap, title_label, preview_label, status_row, status_label):
+        menu_button = ttk.Button(frame.content, text="...", width=3)
+        menu_button.configure(command=lambda target_ip=ip, button=menu_button: self._show_row_menu(target_ip, button))
+        menu_button.grid(row=0, column=1, sticky="ne", padx=(10, 0))
+
+        for widget in (frame, frame.content, text_wrap, title_label, preview_label, status_row, status_label):
             widget.bind("<Button-1>", lambda _event, target_ip=ip: self.select_chat(target_ip))
+
+    def _show_row_menu(self, ip: str, button: tk.Widget) -> None:
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Show Info", command=lambda target_ip=ip: self._show_chat_info(target_ip))
+        menu.add_command(label="Delete Thread", command=lambda target_ip=ip: self._delete_thread(target_ip))
+        self.row_menus.append(menu)
+
+        try:
+            menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+        finally:
+            menu.grab_release()
+
+    def _show_chat_info(self, ip: str) -> None:
+        self.app.show_conversation_info(ip, parent=self)
+
+    def _delete_thread(self, ip: str) -> None:
+        if self.app.ask_centered_yes_no("Delete Thread", f"Delete the conversation with {self.app.conversation_name(ip)}?", parent=self):
+            self.app.delete_conversation(ip)
+            if self.selected_ip == ip:
+                self.selected_ip = None
+            self.refresh()
 
     def select_chat(self, ip: str | None) -> None:
         if ip is None:
@@ -2841,7 +2989,7 @@ class MainChatWindow(BaseWindow):
 
     def refresh_current_chat(self) -> None:
         if not self.selected_ip:
-            self.title(f"{APP_NAME} - {APP_VERSION}")
+            self.title(APP_NAME)
             self.header_name_var.set("No chat selected")
             self.header_status_var.set("Discovered contacts and saved contacts appear in the sidebar.")
             self._set_status_badge(False)
@@ -2853,11 +3001,12 @@ class MainChatWindow(BaseWindow):
             return
 
         ip = self.selected_ip
-        self.title(f"{APP_NAME} - {self.app.conversation_name(ip)} - {APP_VERSION}")
+        self.title(f"{APP_NAME} - {self.app.conversation_name(ip)}")
         self.header_name_var.set(self.app.conversation_name(ip))
         peer = self.app.find_peer_by_ip(ip)
         contact = self.app._find_contact_by_ip(ip)
-        self.header_status_var.set(peer.ip if peer is not None else (contact.last_ip if contact is not None and contact.last_ip else "Offline"))
+        display_ip = peer.ip if peer is not None else (contact.last_ip if contact is not None and contact.last_ip else "")
+        self.header_status_var.set(f"IP Address: {display_ip}" if display_ip else "IP Address: Offline")
         self._set_status_badge(peer is not None)
 
         self.attach_button.set_enabled(True)
@@ -2874,6 +3023,8 @@ class MainChatWindow(BaseWindow):
         for entry in entries:
             self._append_bubble(self.history_frame, self.app.username, entry, wraplength)
         self._bind_mousewheel_recursive(self.history_frame, self.history_canvas)
+        if not self._history_is_near_bottom():
+            return
         self.after_idle(self._scroll_history_to_latest)
         self.after(25, self._scroll_history_to_latest)
 
@@ -2934,6 +3085,13 @@ class MainChatWindow(BaseWindow):
         self._bind_mousewheel(canvas, root)
         for child in root.winfo_children():
             self._bind_mousewheel_recursive(child, canvas)
+
+    def _history_is_near_bottom(self) -> bool:
+        try:
+            _start, end = self.history_canvas.yview()
+            return end >= 0.97
+        except tk.TclError:
+            return True
 
     def _scroll_history_to_latest(self) -> None:
         try:
