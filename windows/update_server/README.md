@@ -14,7 +14,7 @@ What lives here:
 From the repo root:
 
 ```bash
-python3 update_server/build_update_server.py --version 1.4.0
+python3 update_server/build_update_server.py --version 1.5.0
 ```
 
 Default input files:

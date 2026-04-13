@@ -1,7 +1,6 @@
 import base64
 import importlib
 import json
-import math
 import os
 import queue
 import socket
@@ -48,9 +47,13 @@ try:
     appkit_module = importlib.import_module("AppKit")
     NSApp = getattr(appkit_module, "NSApp", None)
     NSApplicationActivationPolicyAccessory = getattr(appkit_module, "NSApplicationActivationPolicyAccessory", 1)
+    NSUserNotification = getattr(appkit_module, "NSUserNotification", None)
+    NSUserNotificationCenter = getattr(appkit_module, "NSUserNotificationCenter", None)
 except Exception:
     NSApp = None
     NSApplicationActivationPolicyAccessory = None
+    NSUserNotification = None
+    NSUserNotificationCenter = None
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
@@ -59,7 +62,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 APP_NAME = "LAN Messenger"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 UPDATE_MANIFEST_FILENAME = "lan-messenger-update.json"
 DISCOVERY_PORT = 54231
@@ -75,26 +78,163 @@ INBOX_DIR = CONFIG_DIR / "received"
 HISTORY_FILE = CONFIG_DIR / "history.enc"
 LOG_FILE = CONFIG_DIR / "app.log"
 
-UI_COLORS = {
-    "app_bg": "#eef3f8",
-    "panel_bg": "#f7fafc",
-    "card_bg": "#ffffff",
-    "card_selected": "#dceeff",
-    "border": "#d6dee8",
-    "shadow": "#dbe5f0",
-    "text": "#16202a",
-    "muted": "#5f6f82",
-    "accent": "#2f80ed",
-    "accent_active": "#1f6fd8",
-    "accent_soft": "#eaf3ff",
-    "success": "#1f9d68",
-    "success_bg": "#dff7eb",
-    "danger": "#cf3f4f",
-    "danger_bg": "#fde8eb",
-    "composer_bg": "#ffffff",
-    "incoming_bg": "#ffffff",
-    "outgoing_bg": "#dff1ff",
-}
+
+def current_ui_platform() -> str:
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("win"):
+        return "windows"
+    return "default"
+
+
+def build_ui_colors(platform_name: str) -> dict[str, str]:
+    if platform_name == "macos":
+        return {
+            "app_bg": "#eef1f5",
+            "shell_bg": "#e6ebf2",
+            "sidebar_bg": "#f5f7fb",
+            "panel_bg": "#f7f9fc",
+            "panel_alt": "#eef3f8",
+            "card_bg": "#ffffff",
+            "card_elevated": "#fbfcfe",
+            "card_selected": "#e4f0ff",
+            "border": "#d6dde8",
+            "border_strong": "#c3cedd",
+            "shadow": "#dbe3ee",
+            "text": "#18212d",
+            "muted": "#627082",
+            "subtle": "#8190a3",
+            "accent": "#0a84ff",
+            "accent_active": "#0062cc",
+            "accent_soft": "#e8f2ff",
+            "accent_contrast": "#ffffff",
+            "success": "#137a53",
+            "success_bg": "#dff7ea",
+            "danger": "#c23d4f",
+            "danger_bg": "#fde9ed",
+            "warning": "#a96a15",
+            "warning_bg": "#fff1d8",
+            "composer_bg": "#ffffff",
+            "incoming_bg": "#ffffff",
+            "outgoing_bg": "#e7f2ff",
+            "input_bg": "#f8fafc",
+            "input_focus": "#dcecff",
+        }
+    if platform_name == "windows":
+        return {
+            "app_bg": "#edf2f7",
+            "shell_bg": "#e4ebf3",
+            "sidebar_bg": "#f4f7fb",
+            "panel_bg": "#f7f9fc",
+            "panel_alt": "#edf3f9",
+            "card_bg": "#ffffff",
+            "card_elevated": "#fbfdff",
+            "card_selected": "#dfeeff",
+            "border": "#d4dce7",
+            "border_strong": "#b9c7d8",
+            "shadow": "#d8e1ed",
+            "text": "#17212b",
+            "muted": "#5c6e80",
+            "subtle": "#8293a6",
+            "accent": "#0f6cbd",
+            "accent_active": "#0c5a9e",
+            "accent_soft": "#e6f1fb",
+            "accent_contrast": "#ffffff",
+            "success": "#1a7f58",
+            "success_bg": "#dff6ea",
+            "danger": "#c93b52",
+            "danger_bg": "#fde8ed",
+            "warning": "#9f6718",
+            "warning_bg": "#fff1d9",
+            "composer_bg": "#ffffff",
+            "incoming_bg": "#ffffff",
+            "outgoing_bg": "#e4f1ff",
+            "input_bg": "#f8fafc",
+            "input_focus": "#dbeaff",
+        }
+    return {
+        "app_bg": "#eef3f8",
+        "shell_bg": "#e7edf5",
+        "sidebar_bg": "#f7fafc",
+        "panel_bg": "#f7fafc",
+        "panel_alt": "#eef3f8",
+        "card_bg": "#ffffff",
+        "card_elevated": "#fbfcfe",
+        "card_selected": "#dceeff",
+        "border": "#d6dee8",
+        "border_strong": "#c4cfdb",
+        "shadow": "#dbe5f0",
+        "text": "#16202a",
+        "muted": "#5f6f82",
+        "subtle": "#8090a2",
+        "accent": "#2f80ed",
+        "accent_active": "#1f6fd8",
+        "accent_soft": "#eaf3ff",
+        "accent_contrast": "#ffffff",
+        "success": "#1f9d68",
+        "success_bg": "#dff7eb",
+        "danger": "#cf3f4f",
+        "danger_bg": "#fde8eb",
+        "warning": "#aa6a16",
+        "warning_bg": "#fff0d8",
+        "composer_bg": "#ffffff",
+        "incoming_bg": "#ffffff",
+        "outgoing_bg": "#dff1ff",
+        "input_bg": "#f8fafc",
+        "input_focus": "#deecff",
+    }
+
+
+def build_ui_metrics(platform_name: str) -> dict[str, int]:
+    if platform_name == "macos":
+        return {
+            "radius_window": 30,
+            "radius_panel": 26,
+            "radius_card": 22,
+            "radius_chip": 16,
+            "radius_button": 17,
+            "sidebar_width": 330,
+            "main_width": 1220,
+            "main_height": 780,
+            "contacts_width": 980,
+            "contacts_height": 660,
+            "settings_width": 760,
+            "settings_height": 680,
+        }
+    if platform_name == "windows":
+        return {
+            "radius_window": 26,
+            "radius_panel": 24,
+            "radius_card": 20,
+            "radius_chip": 14,
+            "radius_button": 15,
+            "sidebar_width": 316,
+            "main_width": 1160,
+            "main_height": 740,
+            "contacts_width": 940,
+            "contacts_height": 640,
+            "settings_width": 740,
+            "settings_height": 650,
+        }
+    return {
+        "radius_window": 28,
+        "radius_panel": 24,
+        "radius_card": 20,
+        "radius_chip": 15,
+        "radius_button": 16,
+        "sidebar_width": 320,
+        "main_width": 1180,
+        "main_height": 760,
+        "contacts_width": 960,
+        "contacts_height": 650,
+        "settings_width": 750,
+        "settings_height": 660,
+    }
+
+
+UI_PLATFORM = current_ui_platform()
+UI_COLORS = build_ui_colors(UI_PLATFORM)
+UI_METRICS = build_ui_metrics(UI_PLATFORM)
 UI_FONT = "Segoe UI"
 TRANSFER_STATUS_CLEAR_DELAY_MS = 1800
 COMPOSER_MIN_CHARS = 18
@@ -104,6 +244,15 @@ TYPING_IDLE_TIMEOUT_MS = 1500
 TYPING_STATUS_TTL = 4.0
 TYPING_SEND_THROTTLE = 1.0
 
+AVATAR_SWATCHES = [
+    ("#1f6feb", "#ffffff"),
+    ("#0f9d8a", "#ffffff"),
+    ("#ef7d32", "#ffffff"),
+    ("#8a63d2", "#ffffff"),
+    ("#c54d73", "#ffffff"),
+    ("#5b8c2a", "#ffffff"),
+]
+
 
 def resolve_ui_font_family(root: tk.Tk) -> str:
     try:
@@ -111,7 +260,12 @@ def resolve_ui_font_family(root: tk.Tk) -> str:
     except Exception:
         return UI_FONT
 
-    candidates = ["Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial", "Helvetica"]
+    if UI_PLATFORM == "macos":
+        candidates = ["SF Pro Text", "SF Pro Display", "Helvetica Neue", "Arial", "Helvetica"]
+    elif UI_PLATFORM == "windows":
+        candidates = ["Segoe UI Variable Text", "Segoe UI", "Arial", "Helvetica"]
+    else:
+        candidates = ["Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial", "Helvetica"]
     for family in candidates:
         if family.lower() in available_fonts:
             return family
@@ -120,6 +274,39 @@ def resolve_ui_font_family(root: tk.Tk) -> str:
         return cast(str, tkfont.nametofont("TkDefaultFont").cget("family"))
     except Exception:
         return UI_FONT
+
+
+def truncate_text(value: str, limit: int) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: max(limit - 3, 1)].rstrip()}..."
+
+
+def initials_for_name(name: str) -> str:
+    parts = [part for part in name.strip().split() if part]
+    if not parts:
+        return "?"
+    if len(parts) == 1:
+        return parts[0][:2].upper()
+    return f"{parts[0][0]}{parts[-1][0]}".upper()
+
+
+def avatar_colors(name: str) -> tuple[str, str]:
+    index = sum(ord(char) for char in name) % len(AVATAR_SWATCHES)
+    return AVATAR_SWATCHES[index]
+
+
+def format_sidebar_timestamp(timestamp: float | None) -> str:
+    if not timestamp:
+        return ""
+    current = time.localtime()
+    then = time.localtime(timestamp)
+    if current.tm_year == then.tm_year and current.tm_yday == then.tm_yday:
+        return format_message_time(timestamp)
+    if current.tm_year == then.tm_year:
+        return time.strftime("%b %d", then)
+    return time.strftime("%m/%d/%y", then)
 
 
 def now() -> float:
@@ -420,6 +607,54 @@ class RoundedButton(tk.Canvas):
         self.create_text(width / 2, height / 2, text=self._text, fill=text_color, font=self._font)
 
 
+class AvatarBadge(tk.Canvas):
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        name: str,
+        diameter: int,
+        background: str,
+    ) -> None:
+        super().__init__(
+            parent,
+            width=diameter,
+            height=diameter,
+            bg=background,
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+        )
+        self._name = name
+        self._diameter = diameter
+        self._background = background
+        self._redraw()
+
+    def set_name(self, name: str) -> None:
+        self._name = name
+        self._redraw()
+
+    def _redraw(self) -> None:
+        fill, text_color = avatar_colors(self._name)
+        inset = 2
+        self.delete("all")
+        self.create_oval(
+            inset,
+            inset,
+            self._diameter - inset,
+            self._diameter - inset,
+            fill=fill,
+            outline="",
+        )
+        self.create_text(
+            self._diameter / 2,
+            self._diameter / 2,
+            text=initials_for_name(self._name),
+            fill=text_color,
+            font=(UI_FONT, max(10, self._diameter // 3), "bold"),
+        )
+
+
 @dataclass
 class Peer:
     ip: str
@@ -583,7 +818,23 @@ class CryptoBox:
 
 
 class NotificationManager:
+    def _notify_macos(self, title: str, message: str) -> bool:
+        if NSUserNotification is None or NSUserNotificationCenter is None:
+            return False
+        try:
+            notification = NSUserNotification.alloc().init()
+            notification.setTitle_(title)
+            notification.setInformativeText_(message)
+            notification.setSoundName_("NSUserNotificationDefaultSoundName")
+            center = NSUserNotificationCenter.defaultUserNotificationCenter()
+            center.deliverNotification_(notification)
+            return True
+        except Exception:
+            return False
+
     def notify(self, title: str, message: str) -> None:
+        if sys.platform == "darwin" and self._notify_macos(title, message):
+            return
         if notification_module is None:
             return
         try:
@@ -729,9 +980,12 @@ class LanMessengerApp:
         style.configure(".", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 10))
         style.configure("TFrame", background=UI_COLORS["app_bg"])
         style.configure("TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"])
-        style.configure("Muted.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["muted"], font=(UI_FONT, 9))
+        style.configure("AppTitle.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 18, "bold"))
         style.configure("Heading.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 16, "bold"))
+        style.configure("Section.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 13, "bold"))
         style.configure("Subheading.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["muted"], font=(UI_FONT, 10))
+        style.configure("Muted.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["muted"], font=(UI_FONT, 9))
+        style.configure("Caption.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["subtle"], font=(UI_FONT, 9))
         style.configure(
             "TButton",
             background=UI_COLORS["card_bg"],
@@ -742,49 +996,55 @@ class LanMessengerApp:
             padding=(12, 8),
             relief="flat",
         )
-        style.map("TButton", background=[("active", UI_COLORS["accent_soft"])])
+        style.map("TButton", background=[("active", UI_COLORS["accent_soft"])], foreground=[("active", UI_COLORS["text"])])
         style.configure(
             "Primary.TButton",
             background=UI_COLORS["accent"],
-            foreground="#ffffff",
+            foreground=UI_COLORS["accent_contrast"],
             borderwidth=0,
             focusthickness=0,
             focuscolor=UI_COLORS["accent"],
             padding=(14, 9),
             relief="flat",
         )
-        style.map("Primary.TButton", background=[("active", UI_COLORS["accent_active"])], foreground=[("active", "#ffffff")])
+        style.map(
+            "Primary.TButton",
+            background=[("active", UI_COLORS["accent_active"])],
+            foreground=[("active", UI_COLORS["accent_contrast"])],
+        )
         style.configure(
             "TEntry",
-            fieldbackground=UI_COLORS["card_bg"],
+            fieldbackground=UI_COLORS["input_bg"],
             foreground=UI_COLORS["text"],
             bordercolor=UI_COLORS["border"],
             insertcolor=UI_COLORS["text"],
-            padding=8,
+            padding=9,
             relief="flat",
         )
+        style.map("TEntry", fieldbackground=[("focus", UI_COLORS["card_bg"])])
         style.configure(
             "TCombobox",
-            fieldbackground=UI_COLORS["card_bg"],
+            fieldbackground=UI_COLORS["input_bg"],
             foreground=UI_COLORS["text"],
             bordercolor=UI_COLORS["border"],
             arrowsize=16,
-            padding=6,
+            padding=7,
             relief="flat",
         )
+        style.map("TCombobox", fieldbackground=[("readonly", UI_COLORS["input_bg"])], selectbackground=[("readonly", UI_COLORS["card_bg"])])
         style.configure(
             "Treeview",
             background=UI_COLORS["card_bg"],
             fieldbackground=UI_COLORS["card_bg"],
             foreground=UI_COLORS["text"],
             bordercolor=UI_COLORS["border"],
-            rowheight=32,
+            rowheight=36,
             relief="flat",
         )
         style.map("Treeview", background=[("selected", UI_COLORS["card_selected"])], foreground=[("selected", UI_COLORS["text"])])
         style.configure(
             "Treeview.Heading",
-            background=UI_COLORS["panel_bg"],
+            background=UI_COLORS["panel_alt"],
             foreground=UI_COLORS["muted"],
             borderwidth=0,
             relief="flat",
@@ -922,7 +1182,7 @@ class LanMessengerApp:
 
     def _dispatch_ui_action(self, action: str, args: tuple[Any, ...]) -> None:
         if action == "peer_update":
-            self.refresh_tray_menu()
+            self.refresh_tray_menu(refresh_windows=True)
         elif action == "message":
             ip, sender, text, message_id, timestamp = args
             self.add_message(ip, sender, text, incoming=True, show_popup=True, message_id=message_id, timestamp=timestamp)
@@ -1801,10 +2061,10 @@ class LanMessengerApp:
     def conversation_status(self, ip: str) -> str:
         peer = self.peers.get(ip)
         if peer is not None:
-            return f"Online  {peer.ip}"
+            return "Online"
         contact = self._find_contact_by_ip(ip)
         if contact is not None and contact.last_ip:
-            return f"Offline  {contact.last_ip}"
+            return "Offline"
         return "Offline"
 
     def conversation_preview(self, ip: str) -> str:
@@ -1888,7 +2148,7 @@ class LanMessengerApp:
         })
         contacts.sort(key=lambda item: str(item.get("username", "")).lower())
         self.config.save_contacts(contacts)
-        self.refresh_tray_menu()
+        self.refresh_tray_menu(refresh_windows=True)
 
     def remove_contact(self, public_key_b64: str) -> None:
         contacts = [contact for contact in self.config.contacts if contact.get("public_key_b64") != public_key_b64]
@@ -1898,7 +2158,7 @@ class LanMessengerApp:
             if pending.get("public_key_b64") != public_key_b64
         ]
         self.config.save_pending_messages(pending_messages)
-        self.refresh_tray_menu()
+        self.refresh_tray_menu(refresh_windows=True)
 
     def _queue_pending_message(self, message_id: str, public_key_b64: str, username: str, text: str) -> None:
         pending = self.config.pending_messages
@@ -1956,7 +2216,7 @@ class LanMessengerApp:
             messagebox.showerror("Invalid username", "Username cannot be empty.", parent=self.root)
             return
         self.config.username = value
-        self.refresh_tray_menu()
+        self.refresh_tray_menu(refresh_windows=True)
 
     def prompt_send_file(self, ip: str) -> None:
         paths = filedialog.askopenfilenames(parent=self.root)
@@ -2158,22 +2418,23 @@ class LanMessengerApp:
         self.active_file_transfers.discard(conversation_key)
         self.send_typing_state(ip, False, force=True)
         self._save_message_history()
-        self.refresh_tray_menu()
+        self.refresh_tray_menu(refresh_windows=True)
         if self.main_window is not None and self.main_window.winfo_exists():
             self.main_window.refresh()
 
-    def refresh_tray_menu(self) -> None:
-        if self.icon is None:
-            return
-        try:
-            self.icon.icon = self._tray_image()
-            self.icon.menu = self._build_tray_menu()
-            update_menu = getattr(self.icon, "update_menu", None)
-            if callable(update_menu):
-                update_menu()
-        except Exception:
-            pass
+    def refresh_tray_menu(self, *, refresh_windows: bool = False) -> None:
+        if self.icon is not None:
+            try:
+                self.icon.icon = self._tray_image()
+                self.icon.menu = self._build_tray_menu()
+                update_menu = getattr(self.icon, "update_menu", None)
+                if callable(update_menu):
+                    update_menu()
+            except Exception:
+                pass
 
+        if not refresh_windows:
+            return
         if self.contacts_window is not None and self.contacts_window.winfo_exists():
             self.contacts_window.refresh()
         if self.main_window is not None and self.main_window.winfo_exists():
@@ -2289,6 +2550,8 @@ class LanMessengerApp:
         if self.unread_counts.get(ip, 0):
             self.unread_counts[ip] = 0
             self.refresh_tray_menu()
+            if self.main_window is not None and self.main_window.winfo_exists():
+                self.main_window.refresh_sidebar()
 
         if receipts:
             self._save_message_history()
@@ -2473,8 +2736,8 @@ class BaseWindow(tk.Toplevel):
 
     def _configure_window_chrome(self) -> None:
         try:
-            if sys.platform.startswith("win"):
-                self.wm_attributes("-toolwindow", True)
+            if sys.platform == "darwin":
+                self.tk.call("::tk::unsupported::MacWindowStyle", "style", self._w, "document", "closeBox")
         except Exception:
             pass
 
@@ -2518,6 +2781,16 @@ class BaseWindow(tk.Toplevel):
         else:
             delta = -int(event.delta / 120) if event.delta else 0
         if delta:
+            try:
+                start, end = canvas.yview()
+                if delta < 0 and start <= 0.0:
+                    canvas.yview_moveto(0.0)
+                    return "break"
+                if delta > 0 and end >= 1.0:
+                    canvas.yview_moveto(1.0)
+                    return "break"
+            except tk.TclError:
+                return "break"
             canvas.yview_scroll(delta, "units")
         return "break"
 
@@ -2550,17 +2823,17 @@ class BaseWindow(tk.Toplevel):
             card = RoundedPanel(
                 widget,
                 background=UI_COLORS["panel_bg"],
-                fill=UI_COLORS["card_bg"],
+                fill=UI_COLORS["card_elevated"],
                 border=UI_COLORS["border"],
-                radius=16,
-                padding=(14, 10),
+                radius=UI_METRICS["radius_chip"],
+                padding=(16, 10),
             )
             card.pack(pady=(0, 10))
             tk.Label(
                 card.content,
                 text=f"{timestamp}\n{entry.text}",
                 justify="center",
-                bg=UI_COLORS["card_bg"],
+                bg=UI_COLORS["card_elevated"],
                 fg=UI_COLORS["muted"],
                 font=(UI_FONT, 10, "italic"),
                 wraplength=wraplength,
@@ -2569,9 +2842,6 @@ class BaseWindow(tk.Toplevel):
 
         direction = "outgoing" if normalized_sender == own_sender else "incoming"
         header = "You" if direction == "outgoing" else entry.sender
-        header_line = f"{header}  {timestamp}"
-        if direction == "outgoing" and entry.status:
-            header_line = f"{header_line}  {entry.status}"
         row = tk.Frame(widget, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         row.pack(fill="x", pady=(0, 10))
 
@@ -2581,24 +2851,42 @@ class BaseWindow(tk.Toplevel):
         justify = "right" if direction == "outgoing" else "left"
         anchor = "e" if direction == "outgoing" else "w"
         bubble_fill = UI_COLORS["outgoing_bg"] if direction == "outgoing" else UI_COLORS["incoming_bg"]
-        header_label = tk.Label(
-            align,
-            text=header_line,
+        meta_row = tk.Frame(align, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        meta_row.pack(anchor=anchor, fill="x", pady=(0, 4))
+        if direction == "incoming":
+            avatar = AvatarBadge(meta_row, name=entry.sender, diameter=26, background=UI_COLORS["panel_bg"])
+            avatar.pack(side="left", padx=(0, 8))
+        meta_text = tk.Frame(meta_row, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        meta_text.pack(side="left" if direction == "incoming" else "right")
+        tk.Label(
+            meta_text,
+            text=header,
+            justify=justify,
+            anchor=anchor,
+            bg=UI_COLORS["panel_bg"],
+            fg=UI_COLORS["text"],
+            font=(UI_FONT, 10, "bold"),
+        ).pack(anchor=anchor)
+        status_text = timestamp
+        if direction == "outgoing" and entry.status:
+            status_text = f"{status_text}  {entry.status}"
+        tk.Label(
+            meta_text,
+            text=status_text,
             justify=justify,
             anchor=anchor,
             bg=UI_COLORS["panel_bg"],
             fg=UI_COLORS["muted"],
             font=(UI_FONT, 9),
-        )
-        header_label.pack(anchor=anchor, padx=4, pady=(0, 4))
+        ).pack(anchor=anchor)
 
         bubble = RoundedPanel(
             align,
             background=UI_COLORS["panel_bg"],
             fill=bubble_fill,
             border=UI_COLORS["border"],
-            radius=18,
-            padding=(14, 11),
+            radius=UI_METRICS["radius_card"],
+            padding=(15, 12),
         )
         bubble.pack(anchor=anchor)
         tk.Label(
@@ -2615,56 +2903,183 @@ class BaseWindow(tk.Toplevel):
 
 class ContactsWindow(BaseWindow):
     def __init__(self, app: LanMessengerApp) -> None:
-        super().__init__(app, f"Contact List - {APP_TITLE}", "560x500")
-        self.minsize(540, 470)
+        super().__init__(
+            app,
+            f"Contacts - {APP_TITLE}",
+            f"{UI_METRICS['contacts_width']}x{UI_METRICS['contacts_height']}",
+        )
+        self.minsize(820, 560)
+        self._online_options: dict[str, str] = {}
 
         frame = ttk.Frame(self, padding=18)
-        frame.pack(fill="both", expand=True, padx=12, pady=12)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1)
+        frame.rowconfigure(1, weight=1)
 
-        ttk.Label(frame, text="Contact List", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(frame, text="Saved peers and live LAN discovery.", style="Subheading.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 12))
-
-        toolbar = ttk.Frame(frame)
-        toolbar.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        toolbar.columnconfigure(0, weight=1)
-        ttk.Button(toolbar, text="Search for New Contacts", command=self.search_for_contacts, style="Primary.TButton").pack(side="left")
-        ttk.Button(toolbar, text="Open Chat", command=self.chat_selected).pack(side="left", padx=(8, 0))
-        ttk.Button(toolbar, text="Remove", command=self.remove_selected).pack(side="left", padx=(8, 0))
-
-        table_card = RoundedPanel(
+        hero = RoundedPanel(
             frame,
             background=UI_COLORS["app_bg"],
             fill=UI_COLORS["card_bg"],
             border=UI_COLORS["border"],
-            radius=22,
-            padding=(12, 12),
+            radius=UI_METRICS["radius_panel"],
+            padding=(22, 20),
             stretch=True,
         )
-        table_card.grid(row=3, column=0, sticky="nsew")
-        table_card.content.columnconfigure(0, weight=1)
-        table_card.content.rowconfigure(0, weight=1)
+        hero.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        hero.content.columnconfigure(0, weight=1)
+        ttk.Label(hero.content, text="Contacts", style="AppTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            hero.content,
+            text="Manage saved people and live LAN discovery without touching the messaging backend.",
+            style="Subheading.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
+        hero_actions = tk.Frame(hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        hero_actions.grid(row=0, column=1, rowspan=2, sticky="e")
+        RoundedButton(
+            hero_actions,
+            text="Scan LAN",
+            command=self.search_for_contacts,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["accent"],
+            hover_fill=UI_COLORS["accent_active"],
+            text_color=UI_COLORS["accent_contrast"],
+            disabled_fill=UI_COLORS["accent_soft"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=112,
+        ).pack(side="left")
+        RoundedButton(
+            hero_actions,
+            text="Open Chat",
+            command=self.chat_selected,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["accent_soft"],
+            hover_fill=UI_COLORS["card_selected"],
+            text_color=UI_COLORS["accent"],
+            disabled_fill=UI_COLORS["panel_alt"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=112,
+        ).pack(side="left", padx=(10, 0))
 
-        self.tree = ttk.Treeview(table_card.content, columns=("name", "status", "ip"), show="headings", height=12)
+        content = ttk.Frame(frame)
+        content.grid(row=1, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        saved_card = RoundedPanel(
+            content,
+            background=UI_COLORS["app_bg"],
+            fill=UI_COLORS["panel_bg"],
+            border=UI_COLORS["border"],
+            radius=UI_METRICS["radius_panel"],
+            padding=(16, 16),
+            stretch=True,
+        )
+        saved_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        saved_card.content.columnconfigure(0, weight=1)
+        saved_card.content.rowconfigure(2, weight=1)
+
+        ttk.Label(saved_card.content, text="Saved Contacts", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        self.saved_summary_var = tk.StringVar(value="")
+        ttk.Label(saved_card.content, textvariable=self.saved_summary_var, style="Subheading.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 12))
+
+        self.tree = ttk.Treeview(saved_card.content, columns=("name", "status"), show="headings", height=14)
         self.tree.heading("name", text="Name")
-        self.tree.heading("status", text="Status")
-        self.tree.heading("ip", text="Last IP")
-        self.tree.column("name", width=200, anchor="w")
-        self.tree.column("status", width=110, anchor="center")
-        self.tree.column("ip", width=170, anchor="w")
-        self.tree.tag_configure("online", background="#eefaf4")
-        self.tree.tag_configure("offline", background="#fff4f6")
-        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.heading("status", text="Availability")
+        self.tree.column("name", width=250, anchor="w")
+        self.tree.column("status", width=150, anchor="w")
+        self.tree.tag_configure("online", background=UI_COLORS["success_bg"])
+        self.tree.tag_configure("offline", background=UI_COLORS["card_bg"])
+        self.tree.grid(row=2, column=0, sticky="nsew")
+        self.tree.bind("<Double-1>", lambda _event: self.chat_selected(), add="+")
 
-        online_frame = ttk.Frame(frame)
-        online_frame.grid(row=4, column=0, sticky="ew", pady=(12, 0))
-        online_frame.columnconfigure(0, weight=1)
-        ttk.Label(online_frame, text="Add new contact from discovered peers", style="Subheading.TLabel").pack(anchor="w", pady=(0, 6))
-        self.online_var = tk.StringVar()
-        self.online_combo = ttk.Combobox(online_frame, textvariable=self.online_var, state="readonly")
-        self.online_combo.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(online_frame, text="Add New Contact", command=self.add_selected_online, style="Primary.TButton").pack(side="right")
+        saved_actions = tk.Frame(saved_card.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        saved_actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        RoundedButton(
+            saved_actions,
+            text="Open Chat",
+            command=self.chat_selected,
+            background=UI_COLORS["panel_bg"],
+            fill=UI_COLORS["accent"],
+            hover_fill=UI_COLORS["accent_active"],
+            text_color=UI_COLORS["accent_contrast"],
+            disabled_fill=UI_COLORS["accent_soft"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=112,
+        ).pack(side="left")
+        RoundedButton(
+            saved_actions,
+            text="Remove",
+            command=self.remove_selected,
+            background=UI_COLORS["panel_bg"],
+            fill=UI_COLORS["danger_bg"],
+            hover_fill="#f9d8de",
+            text_color=UI_COLORS["danger"],
+            disabled_fill=UI_COLORS["panel_alt"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=112,
+        ).pack(side="left", padx=(10, 0))
+
+        discovered_card = RoundedPanel(
+            content,
+            background=UI_COLORS["app_bg"],
+            fill=UI_COLORS["panel_bg"],
+            border=UI_COLORS["border"],
+            radius=UI_METRICS["radius_panel"],
+            padding=(16, 16),
+            stretch=True,
+        )
+        discovered_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        discovered_card.content.columnconfigure(0, weight=1)
+        discovered_card.content.rowconfigure(2, weight=1)
+
+        ttk.Label(discovered_card.content, text="Live Discovery", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        self.discovered_summary_var = tk.StringVar(value="")
+        ttk.Label(discovered_card.content, textvariable=self.discovered_summary_var, style="Subheading.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 12))
+
+        self.discovered_tree = ttk.Treeview(discovered_card.content, columns=("name", "address"), show="headings", height=14)
+        self.discovered_tree.heading("name", text="Discovered Peer")
+        self.discovered_tree.heading("address", text="Address")
+        self.discovered_tree.column("name", width=250, anchor="w")
+        self.discovered_tree.column("address", width=150, anchor="w")
+        self.discovered_tree.grid(row=2, column=0, sticky="nsew")
+        self.discovered_tree.bind("<Double-1>", lambda _event: self.add_selected_online(), add="+")
+
+        discovered_actions = tk.Frame(discovered_card.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        discovered_actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        RoundedButton(
+            discovered_actions,
+            text="Add Contact",
+            command=self.add_selected_online,
+            background=UI_COLORS["panel_bg"],
+            fill=UI_COLORS["accent"],
+            hover_fill=UI_COLORS["accent_active"],
+            text_color=UI_COLORS["accent_contrast"],
+            disabled_fill=UI_COLORS["accent_soft"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=122,
+        ).pack(side="left")
+        RoundedButton(
+            discovered_actions,
+            text="Refresh",
+            command=self.search_for_contacts,
+            background=UI_COLORS["panel_bg"],
+            fill=UI_COLORS["accent_soft"],
+            hover_fill=UI_COLORS["card_selected"],
+            text_color=UI_COLORS["accent"],
+            disabled_fill=UI_COLORS["panel_alt"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=110,
+        ).pack(side="left", padx=(10, 0))
+
+        self.footer_var = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=self.footer_var, style="Caption.TLabel").grid(row=2, column=0, sticky="w", pady=(10, 0))
 
         self.refresh()
 
@@ -2675,30 +3090,50 @@ class ContactsWindow(BaseWindow):
     def refresh(self) -> None:
         for item_id in self.tree.get_children():
             self.tree.delete(item_id)
+        for item_id in self.discovered_tree.get_children():
+            self.discovered_tree.delete(item_id)
 
         for contact in sorted(self.app.contacts, key=lambda contact: contact.username.lower()):
             peer = self.app.find_peer_for_contact(contact)
             status = "Online" if peer is not None else "Offline"
-            display_ip = peer.ip if peer is not None else contact.last_ip
             tag = "online" if peer is not None else "offline"
-            self.tree.insert("", "end", iid=contact.public_key_b64, values=(contact.username, status, display_ip), tags=(tag,))
+            self.tree.insert("", "end", iid=contact.public_key_b64, values=(contact.username, status), tags=(tag,))
 
         online_peers = [
             peer for peer in sorted(self.app.peers.values(), key=lambda peer: peer.username.lower())
             if not self.app.is_contact(peer)
         ]
-        self._online_options = {f"{peer.username} ({peer.ip})": peer.ip for peer in online_peers}
-        self.online_combo["values"] = list(self._online_options.keys())
-        if self._online_options:
-            self.online_combo.current(0)
-        else:
-            self.online_var.set("")
+        self._online_options = {}
+        for peer in online_peers:
+            label = peer.username
+            suffix = 2
+            while label in self._online_options:
+                label = f"{peer.username} ({suffix})"
+                suffix += 1
+            self._online_options[label] = peer.ip
+            self.discovered_tree.insert("", "end", iid=peer.ip, values=(label, peer.ip))
+
+        saved_total = len(self.app.contacts)
+        online_total = sum(1 for contact in self.app.contacts if self.app.find_peer_for_contact(contact) is not None)
+        self.saved_summary_var.set(f"{saved_total} saved contact{'s' if saved_total != 1 else ''} • {online_total} online now")
+
+        discovered_total = len(online_peers)
+        self.discovered_summary_var.set(
+            "Peers currently visible on your LAN."
+            if discovered_total
+            else "No unsaved peers are visible right now."
+        )
+        self.footer_var.set(
+            f"Discovery: {discovered_total} peer{'s' if discovered_total != 1 else ''} available to add."
+        )
 
     def add_selected_online(self) -> None:
-        label = self.online_var.get()
-        ip = self._online_options.get(label)
-        if ip:
-            self.app.add_contact_from_peer(ip)
+        selection = self.discovered_tree.selection()
+        if not selection:
+            return
+        ip = selection[0]
+        self.app.add_contact_from_peer(ip)
+        self.refresh()
 
     def remove_selected(self) -> None:
         selection = self.tree.selection()
@@ -2726,129 +3161,206 @@ class ContactsWindow(BaseWindow):
 
 class SettingsWindow(BaseWindow):
     def __init__(self, app: LanMessengerApp) -> None:
-        super().__init__(app, f"Settings - {APP_TITLE}", "580x620")
-        self.minsize(540, 560)
+        super().__init__(
+            app,
+            f"Settings - {APP_TITLE}",
+            f"{UI_METRICS['settings_width']}x{UI_METRICS['settings_height']}",
+        )
+        self.minsize(680, 560)
 
         frame = ttk.Frame(self, padding=18)
-        frame.pack(fill="both", expand=True, padx=12, pady=12)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(1, weight=1)
 
-        ttk.Label(frame, text="Settings", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
+        hero = RoundedPanel(
+            frame,
+            background=UI_COLORS["app_bg"],
+            fill=UI_COLORS["card_bg"],
+            border=UI_COLORS["border"],
+            radius=UI_METRICS["radius_panel"],
+            padding=(22, 20),
+            stretch=True,
+        )
+        hero.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        hero.content.columnconfigure(0, weight=1)
+
+        ttk.Label(hero.content, text="Settings", style="AppTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            hero.content,
+            text="Identity, storage, and update behavior with the same secure local backend.",
+            style="Subheading.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
+
+        stats = tk.Frame(hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        stats.grid(row=2, column=0, sticky="w")
+        for index, text in enumerate((
+            f"Version {APP_VERSION}",
+            f"Local IP {self.app.local_ip}",
+            "Encrypted history enabled",
+        )):
+            label = tk.Label(
+                stats,
+                text=text,
+                bg=UI_COLORS["accent_soft"] if index == 0 else UI_COLORS["panel_alt"],
+                fg=UI_COLORS["accent"] if index == 0 else UI_COLORS["muted"],
+                font=(UI_FONT, 9, "bold"),
+                padx=10,
+                pady=6,
+            )
+            label.pack(side="left", padx=(0, 8))
+
+        hero_actions = tk.Frame(hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        hero_actions.grid(row=0, column=1, rowspan=3, sticky="ne")
+        RoundedButton(
+            hero_actions,
+            text="Check Updates",
+            command=lambda: self.app.check_for_updates(manual=True),
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["accent"],
+            hover_fill=UI_COLORS["accent_active"],
+            text_color=UI_COLORS["accent_contrast"],
+            disabled_fill=UI_COLORS["accent_soft"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=136,
+        ).pack(side="left")
 
         shell = RoundedPanel(
             frame,
             background=UI_COLORS["app_bg"],
             fill=UI_COLORS["panel_bg"],
             border=UI_COLORS["border"],
-            radius=24,
-            padding=(0, 0),
+            radius=UI_METRICS["radius_panel"],
+            padding=(18, 18),
             stretch=True,
         )
-        shell.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        shell.grid(row=1, column=0, sticky="nsew")
         shell.content.columnconfigure(0, weight=1)
-        shell.content.rowconfigure(0, weight=1)
 
-        self.settings_canvas = tk.Canvas(shell.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
-        self.settings_canvas.grid(row=0, column=0, sticky="nsew")
-        self.settings_scrollbar = ttk.Scrollbar(shell.content, orient="vertical", command=self.settings_canvas.yview)
-        self.settings_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.settings_canvas.configure(yscrollcommand=self.settings_scrollbar.set)
-        self.settings_body = tk.Frame(self.settings_canvas, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
-        self.settings_window = self.settings_canvas.create_window((0, 0), window=self.settings_body, anchor="nw")
-        self.settings_body.bind(
-            "<Configure>",
-            lambda _event: self.settings_canvas.configure(scrollregion=self.settings_canvas.bbox("all")),
-        )
-        self.settings_canvas.bind(
-            "<Configure>",
-            lambda event: self.settings_canvas.itemconfigure(self.settings_window, width=event.width),
-        )
-
-        self._bind_mousewheel(self.settings_canvas, self.settings_body)
-
+        self.settings_body = tk.Frame(shell.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        self.settings_body.grid(row=0, column=0, sticky="nsew")
         self.settings_body.columnconfigure(0, weight=1)
-        ttk.Label(
-            self.settings_body,
-            text="Identity, updates, and encrypted local storage.",
-            style="Subheading.TLabel",
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(18, 14))
+        self.settings_body.columnconfigure(1, weight=1)
+
+        self.username_var = tk.StringVar(value=self.app.username)
+        self.update_server_var = tk.StringVar(value=self.app.config.update_server_url)
+        self.inbox_dir_var = tk.StringVar(value=str(self.app.inbox_dir))
 
         profile_card = RoundedPanel(
             self.settings_body,
             background=UI_COLORS["panel_bg"],
             fill=UI_COLORS["card_bg"],
             border=UI_COLORS["border"],
-            radius=20,
+            radius=UI_METRICS["radius_card"],
             padding=(16, 16),
             stretch=True,
         )
-        profile_card.grid(row=1, column=0, sticky="ew", padx=18)
+        profile_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
         profile_card.content.columnconfigure(0, weight=1)
-
-        ttk.Label(profile_card.content, text="Profile", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(profile_card.content, text=f"Version: {APP_VERSION}", style="Subheading.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 12))
-        ttk.Label(profile_card.content, text="Username").grid(row=2, column=0, sticky="w")
-        self.username_var = tk.StringVar(value=self.app.username)
-        ttk.Entry(profile_card.content, textvariable=self.username_var).grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        ttk.Label(profile_card.content, text="Profile", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(profile_card.content, text="Shown to everyone on your LAN.", style="Subheading.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 12))
+        ttk.Label(profile_card.content, text="Display Name").grid(row=2, column=0, sticky="w")
+        ttk.Entry(profile_card.content, textvariable=self.username_var).grid(row=3, column=0, sticky="ew", pady=(6, 12))
+        ttk.Label(profile_card.content, text="App Version").grid(row=4, column=0, sticky="w")
+        ttk.Label(profile_card.content, text=APP_VERSION, style="Subheading.TLabel").grid(row=5, column=0, sticky="w", pady=(6, 0))
 
         updates_card = RoundedPanel(
             self.settings_body,
             background=UI_COLORS["panel_bg"],
             fill=UI_COLORS["card_bg"],
             border=UI_COLORS["border"],
-            radius=20,
+            radius=UI_METRICS["radius_card"],
             padding=(16, 16),
             stretch=True,
         )
-        updates_card.grid(row=2, column=0, sticky="ew", padx=18, pady=(12, 0))
+        updates_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
         updates_card.content.columnconfigure(0, weight=1)
-
-        ttk.Label(updates_card.content, text="Updates", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(updates_card.content, text="Update Server URL").grid(row=1, column=0, sticky="w", pady=(12, 0))
-        self.update_server_var = tk.StringVar(value=self.app.config.update_server_url)
-        ttk.Entry(updates_card.content, textvariable=self.update_server_var).grid(row=2, column=0, sticky="ew", pady=(6, 4))
+        ttk.Label(updates_card.content, text="Updates", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             updates_card.content,
-            text=(
-                "Host a manifest JSON file or a folder containing "
-                f"{UPDATE_MANIFEST_FILENAME}."
-            ),
-            justify="left",
+            text=f"Point the app at a manifest JSON or a folder containing {UPDATE_MANIFEST_FILENAME}.",
             style="Subheading.TLabel",
-        ).grid(row=3, column=0, sticky="w")
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
+        ttk.Label(updates_card.content, text="Update Server URL").grid(row=2, column=0, sticky="w")
+        ttk.Entry(updates_card.content, textvariable=self.update_server_var).grid(row=3, column=0, sticky="ew", pady=(6, 12))
+        ttk.Label(
+            updates_card.content,
+            text="Manual update checks open the platform download page when a newer version is found.",
+            style="Caption.TLabel",
+        ).grid(row=4, column=0, sticky="w")
 
         storage_card = RoundedPanel(
             self.settings_body,
             background=UI_COLORS["panel_bg"],
             fill=UI_COLORS["card_bg"],
             border=UI_COLORS["border"],
-            radius=20,
+            radius=UI_METRICS["radius_card"],
             padding=(16, 16),
             stretch=True,
         )
-        storage_card.grid(row=3, column=0, sticky="ew", padx=18, pady=(12, 0))
+        storage_card.grid(row=1, column=0, columnspan=2, sticky="nsew")
         storage_card.content.columnconfigure(0, weight=1)
-
-        ttk.Label(storage_card.content, text="Storage", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(storage_card.content, text="Received Files Folder").grid(row=1, column=0, sticky="w", pady=(12, 0))
-        inbox_row = ttk.Frame(storage_card.content)
-        inbox_row.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        inbox_row.columnconfigure(0, weight=1)
-        self.inbox_dir_var = tk.StringVar(value=str(self.app.inbox_dir))
-        ttk.Entry(inbox_row, textvariable=self.inbox_dir_var).grid(row=0, column=0, sticky="ew")
-        ttk.Button(inbox_row, text="Browse", command=self.pick_inbox_dir).grid(row=0, column=1, padx=(8, 0))
+        ttk.Label(storage_card.content, text="Storage", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             storage_card.content,
-            text="Chat history is encrypted and restored on launch.",
+            text="Received files are stored here, while conversation history remains encrypted on disk.",
             style="Subheading.TLabel",
-        ).grid(row=3, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
+        ttk.Label(storage_card.content, text="Received Files Folder").grid(row=2, column=0, sticky="w")
 
-        buttons = ttk.Frame(self.settings_body)
-        buttons.grid(row=4, column=0, sticky="ew", padx=18, pady=(16, 18))
-        ttk.Button(buttons, text="Save", command=self.save, style="Primary.TButton").pack(side="left")
-        ttk.Button(buttons, text="Check Updates", command=lambda: self.app.check_for_updates(manual=True)).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="Close", command=self.hide).pack(side="right")
+        inbox_row = tk.Frame(storage_card.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        inbox_row.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        inbox_row.columnconfigure(0, weight=1)
+        ttk.Entry(inbox_row, textvariable=self.inbox_dir_var).grid(row=0, column=0, sticky="ew")
+        RoundedButton(
+            inbox_row,
+            text="Browse",
+            command=self.pick_inbox_dir,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["accent_soft"],
+            hover_fill=UI_COLORS["card_selected"],
+            text_color=UI_COLORS["accent"],
+            disabled_fill=UI_COLORS["panel_alt"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=102,
+        ).grid(row=0, column=1, padx=(10, 0))
+
+        ttk.Label(
+            storage_card.content,
+            text="Tip: choose a synced folder if you want received files to surface in other tools automatically.",
+            style="Caption.TLabel",
+        ).grid(row=4, column=0, sticky="w", pady=(12, 0))
+
+        buttons = tk.Frame(frame, bg=UI_COLORS["app_bg"], bd=0, highlightthickness=0)
+        buttons.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        RoundedButton(
+            buttons,
+            text="Save Changes",
+            command=self.save,
+            background=UI_COLORS["app_bg"],
+            fill=UI_COLORS["accent"],
+            hover_fill=UI_COLORS["accent_active"],
+            text_color=UI_COLORS["accent_contrast"],
+            disabled_fill=UI_COLORS["accent_soft"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=138,
+        ).pack(side="left")
+        RoundedButton(
+            buttons,
+            text="Close",
+            command=self.hide,
+            background=UI_COLORS["app_bg"],
+            fill=UI_COLORS["card_bg"],
+            hover_fill=UI_COLORS["accent_soft"],
+            text_color=UI_COLORS["text"],
+            disabled_fill=UI_COLORS["panel_alt"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=102,
+        ).pack(side="right")
 
     def show(self) -> None:
         self.username_var.set(self.app.username)
@@ -2882,54 +3394,179 @@ class SettingsWindow(BaseWindow):
         except Exception as exc:
             messagebox.showerror("Invalid folder", f"Could not use that folder:\n{exc}", parent=self)
             return
-        self.app.refresh_tray_menu()
+        self.app.refresh_tray_menu(refresh_windows=True)
         self.hide()
 
 
 class MainChatWindow(BaseWindow):
     def __init__(self, app: LanMessengerApp) -> None:
-        super().__init__(app, APP_NAME, "820x560")
-        self.minsize(640, 480)
+        super().__init__(
+            app,
+            APP_NAME,
+            f"{UI_METRICS['main_width']}x{UI_METRICS['main_height']}",
+        )
+        self.minsize(940, 620)
         self.selected_ip: str | None = None
         self.row_menus: list[tk.Menu] = []
         self.typing_idle_job: str | None = None
         self.typing_target_ip: str | None = None
+        self.sidebar_search_var = tk.StringVar()
+        self.sidebar_search_var.trace_add("write", lambda *_args: self.refresh_sidebar())
+        self.sidebar_count_var = tk.StringVar(value="No conversations yet")
+        self.header_name_var = tk.StringVar(value=APP_NAME)
+        self.header_status_var = tk.StringVar(value="Secure local messaging on your network.")
+        self.header_meta_var = tk.StringVar(value="Select a conversation to begin.")
+        self.header_typing_var = tk.StringVar(value="")
+        self.composer_hint_var = tk.StringVar(
+            value="Enter to send. Shift+Enter for a new line. Drop files into the message area to queue them."
+        )
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
+        self.configure(bg=UI_COLORS["shell_bg"])
 
-        container = ttk.Frame(self, padding=14)
+        container = tk.Frame(self, bg=UI_COLORS["shell_bg"], bd=0, highlightthickness=0)
         container.grid(row=0, column=0, sticky="nsew")
+        container.configure(padx=18, pady=18)
         container.columnconfigure(1, weight=1)
         container.rowconfigure(0, weight=1)
 
-        sidebar = ttk.Frame(container, width=228)
+        sidebar = tk.Frame(
+            container,
+            bg=UI_COLORS["shell_bg"],
+            width=UI_METRICS["sidebar_width"],
+            bd=0,
+            highlightthickness=0,
+        )
         sidebar.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
         sidebar.grid_propagate(False)
 
-        ttk.Label(sidebar, text="Chats", style="Heading.TLabel").pack(anchor="w")
-        ttk.Label(sidebar, text="Fast local messaging with encrypted history.", style="Subheading.TLabel").pack(anchor="w", pady=(2, 10))
-        sidebar_actions = ttk.Frame(sidebar)
-        sidebar_actions.pack(fill="x", pady=(0, 10))
-        ttk.Button(sidebar_actions, text="Contacts", command=self.app.show_contacts_window, style="Primary.TButton").pack(side="left")
+        sidebar_hero = RoundedPanel(
+            sidebar,
+            background=UI_COLORS["shell_bg"],
+            fill=UI_COLORS["card_bg"],
+            border=UI_COLORS["border"],
+            radius=UI_METRICS["radius_panel"],
+            padding=(18, 18),
+        )
+        sidebar_hero.pack(fill="x", pady=(0, 12))
+        sidebar_hero.content.columnconfigure(0, weight=1)
+        ttk.Label(sidebar_hero.content, text="Chats", style="AppTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            sidebar_hero.content,
+            text="Modern local messaging with encrypted history, drag-and-drop files, and live LAN presence.",
+            style="Subheading.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
+
+        identity = tk.Frame(sidebar_hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        identity.grid(row=2, column=0, sticky="w")
+        tk.Label(
+            identity,
+            text=self.app.username,
+            bg=UI_COLORS["accent_soft"],
+            fg=UI_COLORS["accent"],
+            font=(UI_FONT, 9, "bold"),
+            padx=10,
+            pady=6,
+        ).pack(side="left", padx=(0, 8))
+        tk.Label(
+            identity,
+            text=self.app.local_ip,
+            bg=UI_COLORS["panel_alt"],
+            fg=UI_COLORS["muted"],
+            font=(UI_FONT, 9, "bold"),
+            padx=10,
+            pady=6,
+        ).pack(side="left")
+
+        sidebar_actions = tk.Frame(sidebar_hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        sidebar_actions.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        RoundedButton(
+            sidebar_actions,
+            text="Contacts",
+            command=self.app.show_contacts_window,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["accent"],
+            hover_fill=UI_COLORS["accent_active"],
+            text_color=UI_COLORS["accent_contrast"],
+            disabled_fill=UI_COLORS["accent_soft"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=110,
+        ).pack(side="left")
+        RoundedButton(
+            sidebar_actions,
+            text="Settings",
+            command=self.app.show_settings_window,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["accent_soft"],
+            hover_fill=UI_COLORS["card_selected"],
+            text_color=UI_COLORS["accent"],
+            disabled_fill=UI_COLORS["panel_alt"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=108,
+        ).pack(side="left", padx=(8, 0))
+        RoundedButton(
+            sidebar_actions,
+            text="Refresh",
+            command=self.app.trigger_discovery_scan,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["card_elevated"],
+            hover_fill=UI_COLORS["panel_alt"],
+            text_color=UI_COLORS["text"],
+            disabled_fill=UI_COLORS["panel_alt"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=98,
+        ).pack(side="left", padx=(8, 0))
 
         sidebar_holder = RoundedPanel(
             sidebar,
-            background=UI_COLORS["app_bg"],
+            background=UI_COLORS["shell_bg"],
             fill=UI_COLORS["panel_bg"],
             border=UI_COLORS["border"],
-            radius=20,
-            padding=(0, 0),
+            radius=UI_METRICS["radius_panel"],
+            padding=(16, 16),
             stretch=True,
         )
         sidebar_holder.pack(fill="both", expand=True)
-        self.sidebar_canvas = tk.Canvas(sidebar_holder.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
-        self.sidebar_canvas.pack(side="left", fill="both", expand=True)
-        self.sidebar_scrollbar = ttk.Scrollbar(sidebar_holder.content, orient="vertical", command=self.sidebar_canvas.yview)
-        self.sidebar_scrollbar.pack(side="right", fill="y")
-        self.sidebar_canvas.configure(yscrollcommand=self.sidebar_scrollbar.set)
+        sidebar_holder.content.columnconfigure(0, weight=1)
+        sidebar_holder.content.rowconfigure(3, weight=1)
 
-        self.sidebar_list = tk.Frame(self.sidebar_canvas, bg=UI_COLORS["panel_bg"])
+        top_row = tk.Frame(sidebar_holder.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        top_row.grid(row=0, column=0, sticky="ew")
+        ttk.Label(top_row, text="Recent Conversations", style="Section.TLabel").pack(side="left")
+        ttk.Label(top_row, textvariable=self.sidebar_count_var, style="Caption.TLabel").pack(side="right")
+
+        ttk.Label(
+            sidebar_holder.content,
+            text="Filter by name, address, or preview text.",
+            style="Caption.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 10))
+
+        search_card = RoundedPanel(
+            sidebar_holder.content,
+            background=UI_COLORS["panel_bg"],
+            fill=UI_COLORS["input_bg"],
+            border=UI_COLORS["border"],
+            radius=UI_METRICS["radius_chip"],
+            padding=(10, 8),
+            stretch=True,
+        )
+        search_card.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        search_card.content.columnconfigure(0, weight=1)
+        self.search_entry = ttk.Entry(search_card.content, textvariable=self.sidebar_search_var)
+        self.search_entry.grid(row=0, column=0, sticky="ew")
+
+        list_shell = tk.Frame(sidebar_holder.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        list_shell.grid(row=3, column=0, sticky="nsew")
+        list_shell.columnconfigure(0, weight=1)
+        list_shell.rowconfigure(0, weight=1)
+        self.sidebar_canvas = tk.Canvas(list_shell, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        self.sidebar_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.sidebar_list = tk.Frame(self.sidebar_canvas, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         self.sidebar_window = self.sidebar_canvas.create_window((0, 0), window=self.sidebar_list, anchor="nw")
         self.sidebar_list.bind(
             "<Configure>",
@@ -2941,49 +3578,55 @@ class MainChatWindow(BaseWindow):
         )
         self._bind_mousewheel(self.sidebar_canvas, self.sidebar_list)
 
-        chat = ttk.Frame(container)
+        chat = tk.Frame(container, bg=UI_COLORS["shell_bg"], bd=0, highlightthickness=0)
         chat.grid(row=0, column=1, sticky="nsew")
         chat.columnconfigure(0, weight=1)
         chat.rowconfigure(1, weight=1)
 
         header = RoundedPanel(
             chat,
-            background=UI_COLORS["app_bg"],
+            background=UI_COLORS["shell_bg"],
             fill=UI_COLORS["card_bg"],
             border=UI_COLORS["border"],
-            radius=22,
-            padding=(14, 12),
+            radius=UI_METRICS["radius_panel"],
+            padding=(18, 16),
             stretch=True,
         )
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        header.content.columnconfigure(0, weight=1)
-        self.header_name_var = tk.StringVar(value="No chat selected")
-        self.header_status_var = tk.StringVar(value="Discovered contacts will appear in the sidebar.")
+        header.content.columnconfigure(1, weight=1)
+        self.header_avatar = AvatarBadge(header.content, name=self.app.username, diameter=54, background=UI_COLORS["card_bg"])
+        self.header_avatar.grid(row=0, column=0, rowspan=4, sticky="w", padx=(0, 14))
         tk.Label(
             header.content,
             textvariable=self.header_name_var,
             bg=UI_COLORS["card_bg"],
             fg=UI_COLORS["text"],
-            font=(UI_FONT, 15, "bold"),
-        ).grid(row=0, column=0, sticky="w")
+            font=(UI_FONT, 16, "bold"),
+        ).grid(row=0, column=1, sticky="w")
         self.header_badge = tk.Label(
             header.content,
-            text="Offline",
-            bg=UI_COLORS["danger_bg"],
-            fg=UI_COLORS["danger"],
+            text="Idle",
+            bg=UI_COLORS["panel_alt"],
+            fg=UI_COLORS["muted"],
             font=(UI_FONT, 9, "bold"),
             padx=10,
             pady=4,
         )
-        self.header_badge.grid(row=0, column=1, sticky="e")
+        self.header_badge.grid(row=0, column=2, sticky="w", padx=(10, 0))
         tk.Label(
             header.content,
             textvariable=self.header_status_var,
             bg=UI_COLORS["card_bg"],
             fg=UI_COLORS["muted"],
             font=(UI_FONT, 10),
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self.header_typing_var = tk.StringVar(value="")
+        ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(6, 0))
+        tk.Label(
+            header.content,
+            textvariable=self.header_meta_var,
+            bg=UI_COLORS["card_bg"],
+            fg=UI_COLORS["subtle"],
+            font=(UI_FONT, 9),
+        ).grid(row=2, column=1, columnspan=2, sticky="w", pady=(3, 0))
         self.header_typing_label = tk.Label(
             header.content,
             textvariable=self.header_typing_var,
@@ -2991,19 +3634,59 @@ class MainChatWindow(BaseWindow):
             fg=UI_COLORS["accent"],
             font=(UI_FONT, 10, "italic"),
         )
-        self.header_typing_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.header_typing_label.grid(row=3, column=1, columnspan=2, sticky="w", pady=(6, 0))
 
-        header_actions = ttk.Frame(header.content)
-        header_actions.grid(row=0, column=2, rowspan=3, sticky="e", padx=(12, 0))
-        ttk.Button(header_actions, text="Info", command=self._show_active_chat_info).pack(side="left")
-        ttk.Button(header_actions, text="Delete Thread", command=self._delete_active_thread).pack(side="left", padx=(8, 0))
+        header_actions = tk.Frame(header.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        header_actions.grid(row=0, column=3, rowspan=4, sticky="e", padx=(18, 0))
+        self.file_button = RoundedButton(
+            header_actions,
+            text="Send File",
+            command=self.pick_file,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["accent"],
+            hover_fill=UI_COLORS["accent_active"],
+            text_color=UI_COLORS["accent_contrast"],
+            disabled_fill=UI_COLORS["accent_soft"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=118,
+        )
+        self.file_button.pack(side="left")
+        self.info_button = RoundedButton(
+            header_actions,
+            text="Info",
+            command=self._show_active_chat_info,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["accent_soft"],
+            hover_fill=UI_COLORS["card_selected"],
+            text_color=UI_COLORS["accent"],
+            disabled_fill=UI_COLORS["panel_alt"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=88,
+        )
+        self.info_button.pack(side="left", padx=(8, 0))
+        self.delete_button = RoundedButton(
+            header_actions,
+            text="Delete",
+            command=self._delete_active_thread,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["danger_bg"],
+            hover_fill="#f9d8de",
+            text_color=UI_COLORS["danger"],
+            disabled_fill=UI_COLORS["panel_alt"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=92,
+        )
+        self.delete_button.pack(side="left", padx=(8, 0))
 
         history_card = RoundedPanel(
             chat,
-            background=UI_COLORS["app_bg"],
+            background=UI_COLORS["shell_bg"],
             fill=UI_COLORS["panel_bg"],
             border=UI_COLORS["border"],
-            radius=22,
+            radius=UI_METRICS["radius_panel"],
             padding=(0, 0),
             stretch=True,
         )
@@ -3012,9 +3695,6 @@ class MainChatWindow(BaseWindow):
         history_card.content.rowconfigure(0, weight=1)
         self.history_canvas = tk.Canvas(history_card.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         self.history_canvas.grid(row=0, column=0, sticky="nsew")
-        self.history_scrollbar = ttk.Scrollbar(history_card.content, orient="vertical", command=self.history_canvas.yview)
-        self.history_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.history_canvas.configure(yscrollcommand=self.history_scrollbar.set)
         self.history_frame = tk.Frame(self.history_canvas, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         self.history_window = self.history_canvas.create_window((0, 0), window=self.history_frame, anchor="nw")
         self.history_frame.bind(
@@ -3029,15 +3709,22 @@ class MainChatWindow(BaseWindow):
 
         self.transfer_card = RoundedPanel(
             chat,
-            background=UI_COLORS["app_bg"],
-            fill=UI_COLORS["card_bg"],
+            background=UI_COLORS["shell_bg"],
+            fill=UI_COLORS["card_elevated"],
             border=UI_COLORS["border"],
-            radius=18,
-            padding=(12, 12),
+            radius=UI_METRICS["radius_card"],
+            padding=(14, 12),
             stretch=True,
         )
         self.transfer_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        self.transfer_label = ttk.Label(self.transfer_card.content, text="", style="Muted.TLabel")
+        self.transfer_label = tk.Label(
+            self.transfer_card.content,
+            text="",
+            bg=UI_COLORS["card_elevated"],
+            fg=UI_COLORS["text"],
+            font=(UI_FONT, 10, "bold"),
+            anchor="w",
+        )
         self.transfer_label.pack(anchor="w")
         self.transfer_bar = ttk.Progressbar(self.transfer_card.content, mode="determinate")
         self.transfer_bar.pack(fill="x", pady=(6, 0))
@@ -3045,15 +3732,15 @@ class MainChatWindow(BaseWindow):
 
         composer = RoundedPanel(
             chat,
-            background=UI_COLORS["app_bg"],
+            background=UI_COLORS["shell_bg"],
             fill=UI_COLORS["card_bg"],
             border=UI_COLORS["border"],
-            radius=22,
-            padding=(10, 10),
+            radius=UI_METRICS["radius_panel"],
+            padding=(12, 12),
             stretch=True,
         )
         composer.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        composer.content.columnconfigure(1, weight=1)
+        composer.content.columnconfigure(1, weight=1, minsize=200)
 
         self.attach_button = RoundedButton(
             composer.content,
@@ -3066,17 +3753,18 @@ class MainChatWindow(BaseWindow):
             disabled_fill=UI_COLORS["panel_bg"],
             disabled_text=UI_COLORS["muted"],
             font=(UI_FONT, 10, "bold"),
+            radius=UI_METRICS["radius_button"],
             min_width=82,
         )
-        self.attach_button.grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.attach_button.grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 10))
 
         self.entry_shell = RoundedPanel(
             composer.content,
             background=UI_COLORS["card_bg"],
-            fill=UI_COLORS["composer_bg"],
+            fill=UI_COLORS["input_bg"],
             border=UI_COLORS["border"],
-            radius=18,
-            padding=(8, 5),
+            radius=UI_METRICS["radius_card"],
+            padding=(8, 7),
             stretch=False,
         )
         self.entry_shell.grid(row=0, column=1, sticky="ew")
@@ -3085,9 +3773,9 @@ class MainChatWindow(BaseWindow):
         self.entry = tk.Text(
             self.entry_shell.content,
             height=1,
-            width=COMPOSER_MIN_CHARS,
+            width=1,
             wrap="word",
-            bg=UI_COLORS["composer_bg"],
+            bg=UI_COLORS["input_bg"],
             fg=UI_COLORS["text"],
             insertbackground=UI_COLORS["text"],
             relief="flat",
@@ -3103,6 +3791,19 @@ class MainChatWindow(BaseWindow):
         self.entry.bind("<KeyRelease>", self._handle_composer_change, add="+")
         self.entry.bind("<<Paste>>", self._schedule_composer_resize, add="+")
         self.entry.bind("<<Paste>>", self._handle_composer_change, add="+")
+        self.entry.bind("<FocusIn>", lambda _event: self._update_entry_placeholder(), add="+")
+        self.entry.bind("<FocusOut>", lambda _event: self._update_entry_placeholder(), add="+")
+
+        self.entry_placeholder = tk.Label(
+            self.entry_shell.content,
+            text="Write a message",
+            bg=UI_COLORS["input_bg"],
+            fg=UI_COLORS["subtle"],
+            font=(UI_FONT, 11),
+            cursor="xterm",
+        )
+        self.entry_placeholder.place(x=14, y=9)
+        self.entry_placeholder.bind("<Button-1>", lambda _event: self.entry.focus_set())
 
         self.send_button = RoundedButton(
             composer.content,
@@ -3111,12 +3812,22 @@ class MainChatWindow(BaseWindow):
             background=UI_COLORS["card_bg"],
             fill=UI_COLORS["accent"],
             hover_fill=UI_COLORS["accent_active"],
-            text_color="#ffffff",
+            text_color=UI_COLORS["accent_contrast"],
             disabled_fill=UI_COLORS["accent_soft"],
             disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
             min_width=76,
         )
-        self.send_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
+        self.send_button.grid(row=0, column=2, sticky="ne", padx=(10, 0))
+
+        tk.Label(
+            composer.content,
+            textvariable=self.composer_hint_var,
+            bg=UI_COLORS["card_bg"],
+            fg=UI_COLORS["muted"],
+            font=(UI_FONT, 9),
+            anchor="w",
+        ).grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
 
         self._init_drop_target()
         self.after_idle(self._resize_composer_to_content)
@@ -3128,6 +3839,8 @@ class MainChatWindow(BaseWindow):
             self.select_chat(None)
         elif self.selected_ip:
             self.app.mark_peer_read(self.selected_ip)
+        if self.selected_ip:
+            self.entry.focus_set()
 
     def hide(self) -> None:
         self._flush_typing_state()
@@ -3155,7 +3868,9 @@ class MainChatWindow(BaseWindow):
     def refresh_for_message(self, ip: str) -> None:
         if self.selected_ip is None:
             self.selected_ip = ip
-        self.refresh()
+        self.refresh_sidebar()
+        if self.selected_ip == ip:
+            self.refresh_current_chat()
 
     def _show_active_chat_info(self) -> None:
         if self.selected_ip:
@@ -3165,31 +3880,59 @@ class MainChatWindow(BaseWindow):
         if self.selected_ip:
             self._delete_thread(self.selected_ip)
 
+    def _filtered_conversation_targets(self) -> list[str]:
+        query = self.sidebar_search_var.get().strip().lower()
+        targets = self.app.conversation_targets()
+        if not query:
+            return targets
+
+        filtered: list[str] = []
+        for ip in targets:
+            haystack = " ".join((self.app.conversation_name(ip), ip, self.app.conversation_preview(ip))).lower()
+            if query in haystack:
+                filtered.append(ip)
+        return filtered
+
     def refresh_sidebar(self) -> None:
-        sidebar_y = self.sidebar_canvas.yview()[0] if self.sidebar_canvas.winfo_exists() else 0.0
+        try:
+            sidebar_y = self.sidebar_canvas.yview()[0] if self.sidebar_canvas.winfo_exists() else 0.0
+        except tk.TclError:
+            sidebar_y = 0.0
         self.row_menus.clear()
         for child in self.sidebar_list.winfo_children():
             child.destroy()
 
-        conversation_ips = self.app.conversation_targets()
+        conversation_ips = self._filtered_conversation_targets()
+        total_conversations = len(self.app.conversation_targets())
+        self.sidebar_count_var.set(
+            f"{len(conversation_ips)} shown"
+            if self.sidebar_search_var.get().strip()
+            else f"{total_conversations} total"
+        )
         if not conversation_ips:
             empty = RoundedPanel(
                 self.sidebar_list,
                 background=UI_COLORS["panel_bg"],
-                fill=UI_COLORS["card_bg"],
+                fill=UI_COLORS["card_elevated"],
                 border=UI_COLORS["border"],
-                radius=16,
-                padding=(14, 14),
+                radius=UI_METRICS["radius_card"],
+                padding=(16, 16),
                 stretch=True,
             )
             empty.pack(fill="x", pady=(2, 0))
+            message = (
+                "No conversations match your search."
+                if self.sidebar_search_var.get().strip()
+                else "No conversations yet.\nPeers discovered on your LAN will appear here."
+            )
             tk.Label(
                 empty.content,
-                text="No conversations yet.\nPeers discovered on your LAN will appear here.",
+                text=message,
                 justify="left",
-                bg=UI_COLORS["card_bg"],
+                bg=UI_COLORS["card_elevated"],
                 fg=UI_COLORS["muted"],
                 font=(UI_FONT, 10),
+                wraplength=220,
             ).pack(anchor="w")
             self._bind_mousewheel_recursive(self.sidebar_list, self.sidebar_canvas)
             self.after_idle(lambda: self.sidebar_canvas.yview_moveto(0.0))
@@ -3203,39 +3946,53 @@ class MainChatWindow(BaseWindow):
     def _build_row(self, ip: str) -> None:
         selected = ip == self.selected_ip
         bg = UI_COLORS["card_selected"] if selected else UI_COLORS["card_bg"]
+        border = UI_COLORS["accent"] if selected else UI_COLORS["border"]
         frame = RoundedPanel(
             self.sidebar_list,
             background=UI_COLORS["panel_bg"],
             fill=bg,
-            border=UI_COLORS["border"],
-            radius=16,
-            padding=(10, 10),
+            border=border,
+            radius=UI_METRICS["radius_card"],
+            padding=(12, 12),
             stretch=True,
         )
         frame.pack(fill="x", pady=(0, 6))
-        frame.content.columnconfigure(0, weight=1)
-
-        text_wrap = tk.Frame(frame.content, bg=bg, bd=0, highlightthickness=0)
-        text_wrap.grid(row=0, column=0, sticky="ew")
+        frame.content.columnconfigure(1, weight=1)
 
         name = self.app.conversation_name(ip)
         unread = self.app.unread_counts.get(ip, 0)
-        title = name if unread == 0 else f"{name} ({unread})"
-        preview = self.app.conversation_preview(ip)
+        preview = truncate_text(self.app.conversation_preview(ip), 78)
         online = self.app.find_peer_by_ip(ip) is not None
-        status_text = self.app.conversation_status(ip)
-        status = "Online" if online else "Offline"
-        status_detail = status_text.split("  ", 1)[1] if "  " in status_text else ""
+        timestamp = format_sidebar_timestamp(self._conversation_timestamp(ip))
+        status = "Online now" if online else "Saved contact" if self.app._find_contact_by_ip(ip) is not None else "Offline"
 
+        avatar = AvatarBadge(frame.content, name=name, diameter=42, background=bg)
+        avatar.grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 10))
+
+        text_wrap = tk.Frame(frame.content, bg=bg, bd=0, highlightthickness=0)
+        text_wrap.grid(row=0, column=1, sticky="ew")
+
+        title_row = tk.Frame(text_wrap, bg=bg, bd=0, highlightthickness=0)
+        title_row.pack(fill="x")
         title_label = tk.Label(
-            text_wrap,
-            text=title,
+            title_row,
+            text=name,
             anchor="w",
             bg=bg,
             fg=UI_COLORS["text"],
-            font=(UI_FONT, 10, "bold"),
+            font=(UI_FONT, 11, "bold"),
         )
-        title_label.pack(fill="x")
+        title_label.pack(side="left", fill="x", expand=True)
+        if timestamp:
+            tk.Label(
+                title_row,
+                text=timestamp,
+                anchor="e",
+                bg=bg,
+                fg=UI_COLORS["subtle"],
+                font=(UI_FONT, 9),
+            ).pack(side="right")
+
         preview_label = tk.Label(
             text_wrap,
             text=preview,
@@ -3244,37 +4001,48 @@ class MainChatWindow(BaseWindow):
             bg=bg,
             fg=UI_COLORS["muted"],
             font=(UI_FONT, 9),
-            wraplength=170,
+            wraplength=184,
         )
-        preview_label.pack(fill="x", pady=(2, 1))
+        preview_label.pack(fill="x", pady=(4, 2))
         status_row = tk.Frame(text_wrap, bg=bg, bd=0, highlightthickness=0)
         status_row.pack(fill="x", pady=(2, 0))
         status_label = tk.Label(
             status_row,
             text=status,
             anchor="w",
-            bg=UI_COLORS["success_bg"] if online else UI_COLORS["danger_bg"],
-            fg=UI_COLORS["success"] if online else UI_COLORS["danger"],
+            bg=UI_COLORS["success_bg"] if online else UI_COLORS["panel_alt"],
+            fg=UI_COLORS["success"] if online else UI_COLORS["muted"],
             font=(UI_FONT, 8, "bold"),
             padx=8,
             pady=3,
         )
         status_label.pack(side="left")
-        if status_detail:
+        if unread:
             tk.Label(
                 status_row,
-                text=status_detail,
-                anchor="w",
-                bg=bg,
-                fg=UI_COLORS["muted"],
-                font=(UI_FONT, 8),
-            ).pack(side="left", padx=(6, 0))
+                text=f"{unread} new",
+                anchor="e",
+                bg=UI_COLORS["accent"],
+                fg=UI_COLORS["accent_contrast"],
+                font=(UI_FONT, 8, "bold"),
+                padx=8,
+                pady=3,
+            ).pack(side="right")
 
-        menu_button = ttk.Button(frame.content, text="...", width=3)
-        menu_button.configure(command=lambda target_ip=ip, button=menu_button: self._show_row_menu(target_ip, button))
-        menu_button.grid(row=0, column=1, sticky="ne", padx=(10, 0))
+        menu_button = tk.Label(
+            frame.content,
+            text="...",
+            bg=bg,
+            fg=UI_COLORS["muted"],
+            font=(UI_FONT, 12, "bold"),
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        menu_button.bind("<Button-1>", lambda _event, target_ip=ip, button=menu_button: self._show_row_menu(target_ip, button))
+        menu_button.grid(row=0, column=2, sticky="ne", padx=(10, 0))
 
-        for widget in (frame, frame.content, text_wrap, title_label, preview_label, status_row, status_label):
+        for widget in (frame, frame.content, avatar, text_wrap, title_label, preview_label, status_row, status_label):
             widget.bind("<Button-1>", lambda _event, target_ip=ip: self.select_chat(target_ip))
 
     def _show_row_menu(self, ip: str, button: tk.Widget) -> None:
@@ -3320,30 +4088,50 @@ class MainChatWindow(BaseWindow):
     def refresh_current_chat(self) -> None:
         if not self.selected_ip:
             self.title(APP_NAME)
-            self.header_name_var.set("No chat selected")
-            self.header_status_var.set("Discovered contacts and saved contacts appear in the sidebar.")
+            self.header_name_var.set(APP_NAME)
+            self.header_status_var.set("Choose a conversation or scan your LAN to start chatting.")
+            self.header_meta_var.set(
+                "Contacts, live peers, and encrypted message history stay synchronized in the sidebar."
+            )
             self.header_typing_var.set("")
-            self._set_status_badge(False)
+            self.header_avatar.set_name(self.app.username)
+            self._set_status_badge("Idle", UI_COLORS["panel_alt"], UI_COLORS["muted"])
             self.attach_button.set_enabled(False)
             self.send_button.set_enabled(False)
-            self.entry.config(state="disabled")
+            self.file_button.set_enabled(False)
+            self.info_button.set_enabled(False)
+            self.delete_button.set_enabled(False)
+            self._set_entry_enabled(False)
             self._render_history([])
             self.transfer_card.grid_remove()
             return
 
         ip = self.selected_ip
+        contact = self.app._find_contact_by_ip(ip)
         self.title(f"{APP_NAME} - {self.app.conversation_name(ip)}")
         self.header_name_var.set(self.app.conversation_name(ip))
+        self.header_avatar.set_name(self.app.conversation_name(ip))
         peer = self.app.find_peer_by_ip(ip)
-        contact = self.app._find_contact_by_ip(ip)
-        display_ip = peer.ip if peer is not None else (contact.last_ip if contact is not None and contact.last_ip else "")
-        self.header_status_var.set(f"IP Address: {display_ip}" if display_ip else "IP Address: Offline")
+        if peer is not None:
+            self.header_status_var.set("Available on your LAN now.")
+            self.header_meta_var.set(f"Direct encrypted peer chat • {peer.ip}")
+            self._set_status_badge("Online", UI_COLORS["success_bg"], UI_COLORS["success"])
+        elif contact is not None and contact.last_ip:
+            self.header_status_var.set("Saved contact. Messages queue until this peer is seen again.")
+            self.header_meta_var.set(f"Last known address • {contact.last_ip}")
+            self._set_status_badge("Saved", UI_COLORS["warning_bg"], UI_COLORS["warning"])
+        else:
+            self.header_status_var.set("Peer is currently offline.")
+            self.header_meta_var.set(f"Conversation target • {ip}")
+            self._set_status_badge("Offline", UI_COLORS["danger_bg"], UI_COLORS["danger"])
         self.header_typing_var.set(self.app.typing_status_text(ip))
-        self._set_status_badge(peer is not None)
 
         self.attach_button.set_enabled(True)
         self.send_button.set_enabled(True)
-        self.entry.config(state="normal")
+        self.file_button.set_enabled(True)
+        self.info_button.set_enabled(True)
+        self.delete_button.set_enabled(True)
+        self._set_entry_enabled(True)
 
         self._render_history(self.app.message_history.get(ip, []))
         self.refresh_transfer(ip)
@@ -3351,6 +4139,29 @@ class MainChatWindow(BaseWindow):
     def _render_history(self, entries: list[MessageEntry]) -> None:
         for child in self.history_frame.winfo_children():
             child.destroy()
+        if not self.selected_ip:
+            self._render_history_placeholder(
+                "Select a conversation",
+                "Your recent chats, saved contacts, and live peers are listed on the left.",
+                primary_text="Open Contacts",
+                primary_command=self.app.show_contacts_window,
+                secondary_text="Refresh LAN",
+                secondary_command=self.app.trigger_discovery_scan,
+            )
+            self._bind_mousewheel_recursive(self.history_frame, self.history_canvas)
+            self.after_idle(self._scroll_history_to_latest)
+            return
+        if not entries:
+            self._render_history_placeholder(
+                f"Start a conversation with {self.app.conversation_name(self.selected_ip)}",
+                "Messages and file transfers stay local to your network and are saved with encrypted history.",
+                primary_text="Send File",
+                primary_command=lambda: self.pick_file(self.selected_ip),
+            )
+            self._bind_mousewheel_recursive(self.history_frame, self.history_canvas)
+            self.after_idle(self._scroll_history_to_latest)
+            return
+
         wraplength = max(min(self.history_canvas.winfo_width() - 220, 420), 220)
         for entry in entries:
             self._append_bubble(self.history_frame, self.app.username, entry, wraplength)
@@ -3376,12 +4187,8 @@ class MainChatWindow(BaseWindow):
         self.transfer_bar["maximum"] = max(total, 1)
         self.transfer_bar["value"] = current
 
-    def _set_status_badge(self, is_online: bool) -> None:
-        self.header_badge.config(
-            text="Online" if is_online else "Offline",
-            bg=UI_COLORS["success_bg"] if is_online else UI_COLORS["danger_bg"],
-            fg=UI_COLORS["success"] if is_online else UI_COLORS["danger"],
-        )
+    def _set_status_badge(self, text: str, background: str, foreground: str) -> None:
+        self.header_badge.config(text=text, bg=background, fg=foreground)
 
     def _schedule_composer_resize(self, _event=None) -> None:
         self.after_idle(self._resize_composer_to_content)
@@ -3392,26 +4199,23 @@ class MainChatWindow(BaseWindow):
         except tk.TclError:
             return
 
-        lines = content.splitlines() or [""]
-        display_lines = 0
-        longest_line = 0
-        font = tkfont.Font(font=self.entry.cget("font"))
-        average_char_width = max(font.measure("0"), 1)
-        min_pixels = average_char_width * COMPOSER_MIN_CHARS
-        max_pixels = average_char_width * COMPOSER_MAX_CHARS
+        if not content:
+            target_lines = 1
+        else:
+            self.entry.update_idletasks()
+            try:
+                count_result = self.entry.count("1.0", "end-1c", "displaylines")
+                if count_result:
+                    display_lines = int(count_result[0])
+                else:
+                    display_lines = len(content.splitlines()) or 1
+            except Exception:
+                display_lines = len(content.splitlines()) or 1
+            target_lines = max(1, min(COMPOSER_MAX_LINES, display_lines))
 
-        for line in lines:
-            measured = font.measure(line) if line else 0
-            longest_line = max(longest_line, measured)
-            wrapped = max(1, math.ceil(max(measured, 1) / max_pixels))
-            display_lines += wrapped
-
-        target_pixels = min(max(longest_line + average_char_width * 2, min_pixels), max_pixels)
-        target_chars = max(COMPOSER_MIN_CHARS, min(COMPOSER_MAX_CHARS, math.ceil(target_pixels / average_char_width)))
-        target_lines = max(1, min(COMPOSER_MAX_LINES, display_lines))
-
-        self.entry.configure(width=target_chars, height=target_lines)
+        self.entry.configure(height=target_lines)
         self.entry_shell._queue_redraw()
+        self._update_entry_placeholder()
 
     def _bind_mousewheel_recursive(self, root: tk.Misc, canvas: tk.Canvas) -> None:
         self._bind_mousewheel(canvas, root)
@@ -3433,6 +4237,102 @@ class MainChatWindow(BaseWindow):
             self.history_canvas.yview_moveto(1.0)
         except tk.TclError:
             pass
+
+    def _render_history_placeholder(
+        self,
+        title: str,
+        subtitle: str,
+        *,
+        primary_text: str,
+        primary_command,
+        secondary_text: str | None = None,
+        secondary_command=None,
+    ) -> None:
+        shell = tk.Frame(self.history_frame, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        shell.pack(fill="both", expand=True, pady=50)
+
+        card = RoundedPanel(
+            shell,
+            background=UI_COLORS["panel_bg"],
+            fill=UI_COLORS["card_bg"],
+            border=UI_COLORS["border"],
+            radius=UI_METRICS["radius_panel"],
+            padding=(24, 24),
+        )
+        card.pack()
+        card.content.columnconfigure(0, weight=1)
+
+        placeholder_avatar = AvatarBadge(card.content, name=title, diameter=60, background=UI_COLORS["card_bg"])
+        placeholder_avatar.grid(row=0, column=0, pady=(0, 14))
+        tk.Label(
+            card.content,
+            text=title,
+            bg=UI_COLORS["card_bg"],
+            fg=UI_COLORS["text"],
+            font=(UI_FONT, 15, "bold"),
+        ).grid(row=1, column=0)
+        tk.Label(
+            card.content,
+            text=subtitle,
+            justify="center",
+            bg=UI_COLORS["card_bg"],
+            fg=UI_COLORS["muted"],
+            font=(UI_FONT, 10),
+            wraplength=420,
+        ).grid(row=2, column=0, pady=(8, 16))
+
+        actions = tk.Frame(card.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        actions.grid(row=3, column=0)
+        RoundedButton(
+            actions,
+            text=primary_text,
+            command=primary_command,
+            background=UI_COLORS["card_bg"],
+            fill=UI_COLORS["accent"],
+            hover_fill=UI_COLORS["accent_active"],
+            text_color=UI_COLORS["accent_contrast"],
+            disabled_fill=UI_COLORS["accent_soft"],
+            disabled_text=UI_COLORS["muted"],
+            radius=UI_METRICS["radius_button"],
+            min_width=132,
+        ).pack(side="left")
+        if secondary_text and secondary_command is not None:
+            RoundedButton(
+                actions,
+                text=secondary_text,
+                command=secondary_command,
+                background=UI_COLORS["card_bg"],
+                fill=UI_COLORS["accent_soft"],
+                hover_fill=UI_COLORS["card_selected"],
+                text_color=UI_COLORS["accent"],
+                disabled_fill=UI_COLORS["panel_alt"],
+                disabled_text=UI_COLORS["muted"],
+                radius=UI_METRICS["radius_button"],
+                min_width=124,
+            ).pack(side="left", padx=(8, 0))
+
+    def _conversation_timestamp(self, ip: str) -> float | None:
+        history = self.app.message_history.get(ip, [])
+        if history:
+            return history[-1].timestamp
+        peer = self.app.find_peer_by_ip(ip)
+        if peer is not None:
+            return peer.last_seen
+        return None
+
+    def _set_entry_enabled(self, enabled: bool) -> None:
+        self.entry.config(state="normal" if enabled else "disabled")
+        self._update_entry_placeholder()
+
+    def _update_entry_placeholder(self) -> None:
+        try:
+            content = self.entry.get("1.0", "end-1c")
+        except tk.TclError:
+            return
+        if self.entry.cget("state") == "disabled" or content.strip():
+            self.entry_placeholder.place_forget()
+        else:
+            self.entry_placeholder.place(x=14, y=9)
 
     def _init_drop_target(self) -> None:
         if DND_FILES is None:
@@ -3466,6 +4366,7 @@ class MainChatWindow(BaseWindow):
             return
         self.entry.delete("1.0", "end")
         self._resize_composer_to_content()
+        self._update_entry_placeholder()
         self._flush_typing_state(self.selected_ip)
         self.app.send_text(self.selected_ip, content)
 
@@ -3479,6 +4380,7 @@ class MainChatWindow(BaseWindow):
         self.app.queue_files(target_ip, list(paths))
 
     def _handle_composer_change(self, _event=None) -> None:
+        self._update_entry_placeholder()
         if not self.selected_ip:
             return
         content = self.entry.get("1.0", "end-1c").strip()

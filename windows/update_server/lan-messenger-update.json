@@ -1,8 +1,8 @@
 {
-  "version": "1.4.0",
-  "notes": "Typing indicators, queued file transfers, improved thread deletion, and a generated static update feed.",
+  "version": "1.5.0",
+  "notes": "Redesigned the Windows and macOS UI with a cleaner chat shell, stronger hierarchy, faster contact workflows, and improved settings surfaces.",
   "downloads": {
-    "windows": "downloads/LanMessengerSetup-1.4.0.exe",
-    "macos": "downloads/LAN-Messenger-Installer-1.4.0.dmg"
+    "windows": "downloads/LanMessengerSetup-1.5.0.exe",
+    "macos": "downloads/LAN-Messenger-Installer-1.5.0.dmg"
   }
 }

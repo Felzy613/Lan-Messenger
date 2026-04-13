@@ -63,8 +63,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "LAN Messenger",
         "CFBundleDisplayName": "LAN Messenger",
-        "CFBundleShortVersionString": "1.1.1",
-        "CFBundleVersion": "1.1.1",
+        "CFBundleShortVersionString": "1.5.0",
+        "CFBundleVersion": "1.5.0",
         "LSUIElement": True,
     },
 )

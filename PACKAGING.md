@@ -74,5 +74,5 @@ Set the update server URL in the app Settings. You can use either:
 To generate a deployable update feed after building both installers:
 
 ```bash
-python3 update_server/build_update_server.py --version 1.4.0
+python3 update_server/build_update_server.py --version 1.5.0
 ```
