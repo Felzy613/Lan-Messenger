@@ -1,0 +1,72 @@
+<Window
+    x:Class="LanMessenger.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:sidebar="using:LanMessenger.UI.Sidebar"
+    xmlns:chat="using:LanMessenger.UI.Chat"
+    xmlns:settings="using:LanMessenger.UI.Settings"
+    xmlns:ui="using:LanMessenger.UI"
+    Title="LAN Messenger">
+
+    <Grid>
+        <NavigationView x:Name="NavView"
+                        PaneDisplayMode="Left"
+                        IsBackButtonVisible="Collapsed"
+                        IsSettingsVisible="False"
+                        OpenPaneLength="280"
+                        IsPaneOpen="True">
+
+            <!-- Left pane header -->
+            <NavigationView.PaneHeader>
+                <TextBlock Text="LAN Messenger"
+                           Style="{StaticResource TitleTextBlockStyle}"
+                           Margin="12,16,12,8" />
+            </NavigationView.PaneHeader>
+
+            <!-- Left pane custom content (sidebar) -->
+            <NavigationView.PaneFooter>
+                <StackPanel Orientation="Horizontal" Margin="8,0,8,8" Spacing="4">
+                    <Button x:Name="ContactsBtn" Content="Contacts"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Click="ContactsBtn_Click" />
+                    <Button x:Name="SettingsBtn" Content="⚙"
+                            Click="SettingsBtn_Click" />
+                </StackPanel>
+            </NavigationView.PaneFooter>
+
+            <!-- Sidebar conversation list fills the pane -->
+            <NavigationView.MenuItemsSource>
+                <x:String>placeholder</x:String>
+            </NavigationView.MenuItemsSource>
+
+            <NavigationView.MenuItemTemplate>
+                <DataTemplate>
+                    <NavigationViewItem />
+                </DataTemplate>
+            </NavigationView.MenuItemTemplate>
+
+            <!-- Content area -->
+            <Frame x:Name="ContentFrame" />
+        </NavigationView>
+
+        <!-- Custom sidebar overlay inside pane -->
+        <sidebar:SidebarControl x:Name="Sidebar"
+                                Width="280"
+                                HorizontalAlignment="Left"
+                                Margin="0,48,0,44"
+                                Visibility="Visible" />
+
+        <!-- Migration prompt dialog -->
+        <ContentDialog x:Name="MigrationDialog"
+                       Title="Import Existing Account?"
+                       PrimaryButtonText="Import Key"
+                       SecondaryButtonText="Start Fresh"
+                       CloseButtonText=""
+                       Visibility="Collapsed">
+            <TextBlock TextWrapping="Wrap">
+                A Python LAN Messenger account was found. Import your existing key
+                and chat history, or start with a fresh identity?
+            </TextBlock>
+        </ContentDialog>
+    </Grid>
+</Window>
