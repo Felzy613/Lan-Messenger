@@ -80,3 +80,13 @@ Thumbs.db
 # Local configuration
 .lan_messenger/
 config.json
+
+# Swift Package Manager build artefacts
+lan-messenger-native/macos/.build/
+lan-messenger-native/macos/build/
+
+# Xcode generated project (regenerated from project.yml via xcodegen)
+lan-messenger-native/macos/LanMessenger.xcodeproj/
+
+# macOS metadata
+.DS_Store
