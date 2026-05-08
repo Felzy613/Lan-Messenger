@@ -19,7 +19,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 from urllib.error import URLError
 from urllib.parse import urljoin
 from urllib.request import urlopen
-from typing import Any, cast
+from typing import Any, Callable, TypeAlias, cast
 
 from PIL import Image, ImageDraw
 
@@ -37,16 +37,16 @@ except Exception:
 
 try:
     tkinterdnd2_module = importlib.import_module("tkinterdnd2")
-    TkinterDnD = getattr(tkinterdnd2_module, "TkinterDnD", None)
     DND_FILES = getattr(tkinterdnd2_module, "DND_FILES", None)
 except Exception:
-    TkinterDnD = None
     DND_FILES = None
 
 try:
     appkit_module = importlib.import_module("AppKit")
     NSApp = getattr(appkit_module, "NSApp", None)
-    NSApplicationActivationPolicyAccessory = getattr(appkit_module, "NSApplicationActivationPolicyAccessory", 1)
+    NSApplicationActivationPolicyAccessory = getattr(
+        appkit_module, "NSApplicationActivationPolicyAccessory", 1
+    )
     NSUserNotification = getattr(appkit_module, "NSUserNotification", None)
     NSUserNotificationCenter = getattr(appkit_module, "NSUserNotificationCenter", None)
 except Exception:
@@ -59,7 +59,6 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 
 APP_NAME = "LAN Messenger"
 APP_VERSION = "1.5.0"
@@ -239,10 +238,46 @@ UI_FONT = "Segoe UI"
 TRANSFER_STATUS_CLEAR_DELAY_MS = 1800
 COMPOSER_MIN_CHARS = 18
 COMPOSER_MAX_CHARS = 34
-COMPOSER_MAX_LINES = 4
+COMPOSER_MIN_LINES = 2
+COMPOSER_MAX_LINES = 5
+COMPOSER_START_CHARS = 48
+MOUSEWHEEL_UNITS_PER_STEP = 3
+UI_QUEUE_BATCH_LIMIT = 64
+UI_QUEUE_ACTIVE_POLL_MS = 10
+UI_QUEUE_IDLE_POLL_MS = 50
+TRAY_REFRESH_DEBOUNCE_MS = 180
 TYPING_IDLE_TIMEOUT_MS = 1500
 TYPING_STATUS_TTL = 4.0
 TYPING_SEND_THROTTLE = 1.0
+
+JsonDict: TypeAlias = dict[str, Any]
+UiActionArgs: TypeAlias = tuple[Any, ...]
+ProgressCallback: TypeAlias = Callable[[int, int], None]
+
+
+def write_runtime_log(context: str, exc: BaseException) -> None:
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {context}\n")
+            handle.write(
+                "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            )
+            handle.write("\n")
+    except Exception:
+        pass
+
+
+def backup_invalid_file(path: Path) -> None:
+    if not path.exists():
+        return
+    timestamp = time.strftime("%Y%m%d%H%M%S")
+    backup_path = path.with_name(f"{path.name}.invalid-{timestamp}")
+    try:
+        path.replace(backup_path)
+    except OSError as exc:
+        write_runtime_log(f"Could not preserve invalid file: {path}", exc)
+
 
 AVATAR_SWATCHES = [
     ("#1f6feb", "#ffffff"),
@@ -261,7 +296,13 @@ def resolve_ui_font_family(root: tk.Tk) -> str:
         return UI_FONT
 
     if UI_PLATFORM == "macos":
-        candidates = ["SF Pro Text", "SF Pro Display", "Helvetica Neue", "Arial", "Helvetica"]
+        candidates = [
+            "SF Pro Text",
+            "SF Pro Display",
+            "Helvetica Neue",
+            "Arial",
+            "Helvetica",
+        ]
     elif UI_PLATFORM == "windows":
         candidates = ["Segoe UI Variable Text", "Segoe UI", "Arial", "Helvetica"]
     else:
@@ -313,15 +354,15 @@ def now() -> float:
     return time.time()
 
 
-def b64e(data: bytes) -> str:
+def base64_encode(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def b64d(value: str) -> bytes:
+def base64_decode(value: str) -> bytes:
     return base64.b64decode(value.encode("ascii"))
 
 
-def send_frame(sock: socket.socket, payload: dict) -> None:
+def send_frame(sock: socket.socket, payload: JsonDict) -> None:
     data = json.dumps(payload).encode("utf-8")
     sock.sendall(struct.pack("!I", len(data)))
     sock.sendall(data)
@@ -337,7 +378,7 @@ def recv_exact(sock: socket.socket, size: int) -> bytes | None:
     return bytes(chunks)
 
 
-def recv_frame(sock: socket.socket) -> dict | None:
+def recv_frame(sock: socket.socket) -> JsonDict | None:
     header = recv_exact(sock, 4)
     if not header:
         return None
@@ -347,7 +388,38 @@ def recv_frame(sock: socket.socket) -> dict | None:
     payload = recv_exact(sock, size)
     if not payload:
         return None
-    return json.loads(payload.decode("utf-8"))
+    decoded = json.loads(payload.decode("utf-8"))
+    if not isinstance(decoded, dict):
+        raise ValueError("Frame payload must be a JSON object")
+    return decoded
+
+
+def require_packet_text(packet: JsonDict, field_name: str) -> str:
+    value = packet.get(field_name)
+    if not isinstance(value, str):
+        raise ValueError(f"Packet field {field_name!r} must be text")
+    value = value.strip()
+    if not value:
+        raise ValueError(f"Packet field {field_name!r} is required")
+    return value
+
+
+def require_packet_int(packet: JsonDict, field_name: str, *, minimum: int = 0) -> int:
+    value = packet.get(field_name)
+    try:
+        parsed_value = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Packet field {field_name!r} must be an integer") from exc
+    if parsed_value < minimum:
+        raise ValueError(f"Packet field {field_name!r} must be at least {minimum}")
+    return parsed_value
+
+
+def packet_port(packet: JsonDict, default: int) -> int:
+    value = packet.get("port")
+    if value in (None, ""):
+        return default
+    return require_packet_int(packet, "port", minimum=1)
 
 
 def sanitize_filename(name: str) -> str:
@@ -401,7 +473,7 @@ def is_ipv4_address(value: str) -> bool:
 
 def create_root() -> tk.Tk:
     # Always use a plain Tk root. If tkinterdnd2 is installed but its native
-    # library fails to initialize on a packaged build, TkinterDnD.Tk() can
+    # library fails to initialize on a packaged build, its custom Tk root can
     # leave behind a stray default root window titled "tk".
     return tk.Tk()
 
@@ -425,26 +497,46 @@ def configure_hidden_root(root: tk.Tk) -> None:
 def rounded_rect_points(x1: int, y1: int, x2: int, y2: int, radius: int) -> list[int]:
     radius = max(0, min(radius, (x2 - x1) // 2, (y2 - y1) // 2))
     return [
-        x1 + radius, y1,
-        x1 + radius, y1,
-        x2 - radius, y1,
-        x2 - radius, y1,
-        x2, y1,
-        x2, y1 + radius,
-        x2, y1 + radius,
-        x2, y2 - radius,
-        x2, y2 - radius,
-        x2, y2,
-        x2 - radius, y2,
-        x2 - radius, y2,
-        x1 + radius, y2,
-        x1 + radius, y2,
-        x1, y2,
-        x1, y2 - radius,
-        x1, y2 - radius,
-        x1, y1 + radius,
-        x1, y1 + radius,
-        x1, y1,
+        x1 + radius,
+        y1,
+        x1 + radius,
+        y1,
+        x2 - radius,
+        y1,
+        x2 - radius,
+        y1,
+        x2,
+        y1,
+        x2,
+        y1 + radius,
+        x2,
+        y1 + radius,
+        x2,
+        y2 - radius,
+        x2,
+        y2 - radius,
+        x2,
+        y2,
+        x2 - radius,
+        y2,
+        x2 - radius,
+        y2,
+        x1 + radius,
+        y2,
+        x1 + radius,
+        y2,
+        x1,
+        y2,
+        x1,
+        y2 - radius,
+        x1,
+        y2 - radius,
+        x1,
+        y1 + radius,
+        x1,
+        y1 + radius,
+        x1,
+        y1,
     ]
 
 
@@ -460,7 +552,9 @@ class RoundedPanel(tk.Canvas):
         padding: tuple[int, int] = (14, 12),
         stretch: bool = False,
     ) -> None:
-        super().__init__(parent, bg=background, highlightthickness=0, bd=0, relief="flat")
+        super().__init__(
+            parent, bg=background, highlightthickness=0, bd=0, relief="flat"
+        )
         self.fill = fill
         self.border = border
         self.radius = radius
@@ -470,12 +564,14 @@ class RoundedPanel(tk.Canvas):
         self._redraw_pending = False
         self._redrawing = False
         self.content = tk.Frame(self, bg=fill, bd=0, highlightthickness=0)
-        self._window_id = self.create_window((self.pad_x, self.pad_y), window=self.content, anchor="nw")
+        self._window_id = self.create_window(
+            (self.pad_x, self.pad_y), window=self.content, anchor="nw"
+        )
         self.bind("<Configure>", self._queue_redraw)
         self.content.bind("<Configure>", self._queue_redraw)
         self.after_idle(self._redraw)
 
-    def _queue_redraw(self, _event=None) -> None:
+    def _queue_redraw(self, _event: Any = None) -> None:
         if self._redraw_pending or not self.winfo_exists():
             return
         self._redraw_pending = True
@@ -502,12 +598,18 @@ class RoundedPanel(tk.Canvas):
             self.coords(self._window_id, self.pad_x, self.pad_y)
             self.itemconfigure(
                 self._window_id,
-                width=inner_width if self.stretch else max(self.content.winfo_reqwidth(), 1),
+                width=(
+                    inner_width
+                    if self.stretch
+                    else max(self.content.winfo_reqwidth(), 1)
+                ),
             )
 
             self.delete("panel")
             self.create_polygon(
-                rounded_rect_points(3, 4, max(width - 2, 4), max(height - 2, 4), self.radius),
+                rounded_rect_points(
+                    3, 4, max(width - 2, 4), max(height - 2, 4), self.radius
+                ),
                 smooth=True,
                 splinesteps=36,
                 fill=UI_COLORS["shadow"],
@@ -516,7 +618,9 @@ class RoundedPanel(tk.Canvas):
                 tags="panel",
             )
             self.create_polygon(
-                rounded_rect_points(1, 1, max(width - 1, 2), max(height - 1, 2), self.radius),
+                rounded_rect_points(
+                    1, 1, max(width - 1, 2), max(height - 1, 2), self.radius
+                ),
                 smooth=True,
                 splinesteps=36,
                 fill=self.fill,
@@ -535,7 +639,7 @@ class RoundedButton(tk.Canvas):
         parent: tk.Misc,
         *,
         text: str,
-        command,
+        command: Callable[[], None],
         background: str,
         fill: str,
         hover_fill: str,
@@ -547,7 +651,14 @@ class RoundedButton(tk.Canvas):
         font: tuple[str, int, str] | tuple[str, int] | None = None,
         min_width: int = 0,
     ) -> None:
-        super().__init__(parent, bg=background, highlightthickness=0, bd=0, relief="flat", cursor="hand2")
+        super().__init__(
+            parent,
+            bg=background,
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            cursor="hand2",
+        )
         self._text = text
         self._command = command
         self._fill = fill
@@ -571,15 +682,15 @@ class RoundedButton(tk.Canvas):
         height = self._font.metrics("linespace") + (self._pad_y * 2)
         return width, height
 
-    def _on_enter(self, _event) -> None:
+    def _on_enter(self, _event: Any) -> None:
         self._hovered = True
         self._redraw()
 
-    def _on_leave(self, _event) -> None:
+    def _on_leave(self, _event: Any) -> None:
         self._hovered = False
         self._redraw()
 
-    def _on_click(self, _event) -> None:
+    def _on_click(self, _event: Any) -> None:
         if self._enabled:
             self._command()
 
@@ -597,14 +708,18 @@ class RoundedButton(tk.Canvas):
         text_color = self._text_color if self._enabled else self._disabled_text
         self.delete("all")
         self.create_polygon(
-            rounded_rect_points(1, 1, max(width - 1, 2), max(height - 1, 2), self._radius),
+            rounded_rect_points(
+                1, 1, max(width - 1, 2), max(height - 1, 2), self._radius
+            ),
             smooth=True,
             splinesteps=36,
             fill=fill,
             outline=fill,
             width=1,
         )
-        self.create_text(width / 2, height / 2, text=self._text, fill=text_color, font=self._font)
+        self.create_text(
+            width / 2, height / 2, text=self._text, fill=text_color, font=self._font
+        )
 
 
 class AvatarBadge(tk.Canvas):
@@ -668,15 +783,19 @@ class ConfigStore:
     def __init__(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         INBOX_DIR.mkdir(parents=True, exist_ok=True)
-        self.data = self._load()
+        self.data: JsonDict = self._load()
         self.inbox_dir.mkdir(parents=True, exist_ok=True)
 
-    def _load(self) -> dict:
+    def _load(self) -> JsonDict:
         if CONFIG_FILE.exists():
             try:
-                return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("Config file must contain a JSON object")
+                return data
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                write_runtime_log("Config load failed; creating a fresh config", exc)
+                backup_invalid_file(CONFIG_FILE)
 
         private_key = x25519.X25519PrivateKey.generate()
         data = {
@@ -685,7 +804,7 @@ class ConfigStore:
             "hidden_conversations": [],
             "update_server_url": "",
             "inbox_dir": str(INBOX_DIR),
-            "private_key_b64": b64e(
+            "private_key_b64": base64_encode(
                 private_key.private_bytes(
                     encoding=serialization.Encoding.Raw,
                     format=serialization.PrivateFormat.Raw,
@@ -696,8 +815,12 @@ class ConfigStore:
         self._save(data)
         return data
 
-    def _save(self, data: dict) -> None:
-        CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    def _save(self, data: JsonDict) -> None:
+        try:
+            CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError as exc:
+            write_runtime_log("Config save failed", exc)
+            raise
 
     @property
     def username(self) -> str:
@@ -710,7 +833,9 @@ class ConfigStore:
 
     @property
     def private_key(self) -> x25519.X25519PrivateKey:
-        return x25519.X25519PrivateKey.from_private_bytes(b64d(self.data["private_key_b64"]))
+        return x25519.X25519PrivateKey.from_private_bytes(
+            base64_decode(self.data["private_key_b64"])
+        )
 
     @property
     def contacts(self) -> list[dict[str, str]]:
@@ -779,26 +904,44 @@ class CryptoBox:
             encryption_algorithm=serialization.NoEncryption(),
         )
         self.public_key = private_key.public_key()
-        self.public_key_b64 = b64e(
+        self.public_key_b64 = base64_encode(
             self.public_key.public_bytes(
                 encoding=serialization.Encoding.Raw,
                 format=serialization.PublicFormat.Raw,
             )
         )
 
-    def encrypt_for_peer(self, peer_public_key_b64: str, plaintext: bytes, aad: bytes = b"") -> tuple[str, str]:
-        peer_public_key = x25519.X25519PublicKey.from_public_bytes(b64d(peer_public_key_b64))
+    def encrypt_for_peer(
+        self, peer_public_key_b64: str, plaintext: bytes, aad: bytes = b""
+    ) -> tuple[str, str]:
+        peer_public_key = x25519.X25519PublicKey.from_public_bytes(
+            base64_decode(peer_public_key_b64)
+        )
         shared = self.private_key.exchange(peer_public_key)
-        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"lan-messenger").derive(shared)
+        key = HKDF(
+            algorithm=hashes.SHA256(), length=32, salt=None, info=b"lan-messenger"
+        ).derive(shared)
         nonce = os.urandom(12)
         ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
-        return b64e(nonce), b64e(ciphertext)
+        return base64_encode(nonce), base64_encode(ciphertext)
 
-    def decrypt_from_peer(self, peer_public_key_b64: str, nonce_b64: str, ciphertext_b64: str, aad: bytes = b"") -> bytes:
-        peer_public_key = x25519.X25519PublicKey.from_public_bytes(b64d(peer_public_key_b64))
+    def decrypt_from_peer(
+        self,
+        peer_public_key_b64: str,
+        nonce_b64: str,
+        ciphertext_b64: str,
+        aad: bytes = b"",
+    ) -> bytes:
+        peer_public_key = x25519.X25519PublicKey.from_public_bytes(
+            base64_decode(peer_public_key_b64)
+        )
         shared = self.private_key.exchange(peer_public_key)
-        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"lan-messenger").derive(shared)
-        return AESGCM(key).decrypt(b64d(nonce_b64), b64d(ciphertext_b64), aad)
+        key = HKDF(
+            algorithm=hashes.SHA256(), length=32, salt=None, info=b"lan-messenger"
+        ).derive(shared)
+        return AESGCM(key).decrypt(
+            base64_decode(nonce_b64), base64_decode(ciphertext_b64), aad
+        )
 
     def _history_key(self) -> bytes:
         return HKDF(
@@ -811,10 +954,14 @@ class CryptoBox:
     def encrypt_local(self, plaintext: bytes, aad: bytes = b"") -> tuple[str, str]:
         nonce = os.urandom(12)
         ciphertext = AESGCM(self._history_key()).encrypt(nonce, plaintext, aad)
-        return b64e(nonce), b64e(ciphertext)
+        return base64_encode(nonce), base64_encode(ciphertext)
 
-    def decrypt_local(self, nonce_b64: str, ciphertext_b64: str, aad: bytes = b"") -> bytes:
-        return AESGCM(self._history_key()).decrypt(b64d(nonce_b64), b64d(ciphertext_b64), aad)
+    def decrypt_local(
+        self, nonce_b64: str, ciphertext_b64: str, aad: bytes = b""
+    ) -> bytes:
+        return AESGCM(self._history_key()).decrypt(
+            base64_decode(nonce_b64), base64_decode(ciphertext_b64), aad
+        )
 
 
 class NotificationManager:
@@ -838,7 +985,9 @@ class NotificationManager:
         if notification_module is None:
             return
         try:
-            notification_module.notify(title=title, message=message, app_name=APP_NAME, timeout=5)
+            notification_module.notify(
+                title=title, message=message, app_name=APP_NAME, timeout=5
+            )
         except Exception:
             pass
 
@@ -894,15 +1043,18 @@ class LanMessengerApp:
         self.unread_counts: dict[str, int] = {}
         self.transfer_statuses: dict[str, tuple[str, int, int]] = {}
         self.transfer_status_tokens: dict[str, int] = {}
-        self.incoming_files: dict[tuple[str, str], dict] = {}
+        self.incoming_files: dict[tuple[str, str], JsonDict] = {}
         self.file_queues: dict[str, list[dict[str, Any]]] = {}
         self.active_file_transfers: set[str] = set()
         self.typing_states: dict[str, dict[str, Any]] = {}
         self.typing_state_tokens: dict[str, int] = {}
         self.outgoing_typing_state: dict[str, bool] = {}
         self.outgoing_typing_sent_at: dict[str, float] = {}
-        self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
+        self.ui_queue: queue.Queue[tuple[str, UiActionArgs]] = queue.Queue()
         self.running = True
+        self._tray_refresh_job: str | None = None
+        self._tray_image_cache: tuple[bool, Image.Image] | None = None
+        self._last_tray_unread_state: bool | None = None
         self.local_ips = self._detect_local_ips()
         self.local_ip = self._preferred_local_ip()
         self.main_window: "MainChatWindow | None" = None
@@ -915,10 +1067,16 @@ class LanMessengerApp:
 
         self.icon = self._create_tray_icon()
 
-        self.discovery_thread = threading.Thread(target=self.discovery_broadcast_loop, daemon=True)
-        self.discovery_listener_thread = threading.Thread(target=self.discovery_listener_loop, daemon=True)
+        self.discovery_thread = threading.Thread(
+            target=self.discovery_broadcast_loop, daemon=True
+        )
+        self.discovery_listener_thread = threading.Thread(
+            target=self.discovery_listener_loop, daemon=True
+        )
         self.server_thread = threading.Thread(target=self.tcp_server_loop, daemon=True)
-        self.cleanup_thread = threading.Thread(target=self.peer_cleanup_loop, daemon=True)
+        self.cleanup_thread = threading.Thread(
+            target=self.peer_cleanup_loop, daemon=True
+        )
 
         self.discovery_thread.start()
         self.discovery_listener_thread.start()
@@ -964,7 +1122,14 @@ class LanMessengerApp:
         global UI_FONT
         UI_FONT = resolve_ui_font_family(self.root)
 
-        for font_name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkIconFont", "TkTooltipFont"):
+        for font_name in (
+            "TkDefaultFont",
+            "TkTextFont",
+            "TkMenuFont",
+            "TkHeadingFont",
+            "TkIconFont",
+            "TkTooltipFont",
+        ):
             try:
                 tkfont.nametofont(font_name).configure(family=UI_FONT, size=10)
             except Exception:
@@ -977,15 +1142,52 @@ class LanMessengerApp:
         except Exception:
             pass
 
-        style.configure(".", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 10))
+        style.configure(
+            ".",
+            background=UI_COLORS["app_bg"],
+            foreground=UI_COLORS["text"],
+            font=(UI_FONT, 10),
+        )
         style.configure("TFrame", background=UI_COLORS["app_bg"])
-        style.configure("TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"])
-        style.configure("AppTitle.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 18, "bold"))
-        style.configure("Heading.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 16, "bold"))
-        style.configure("Section.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"], font=(UI_FONT, 13, "bold"))
-        style.configure("Subheading.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["muted"], font=(UI_FONT, 10))
-        style.configure("Muted.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["muted"], font=(UI_FONT, 9))
-        style.configure("Caption.TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["subtle"], font=(UI_FONT, 9))
+        style.configure(
+            "TLabel", background=UI_COLORS["app_bg"], foreground=UI_COLORS["text"]
+        )
+        style.configure(
+            "AppTitle.TLabel",
+            background=UI_COLORS["app_bg"],
+            foreground=UI_COLORS["text"],
+            font=(UI_FONT, 18, "bold"),
+        )
+        style.configure(
+            "Heading.TLabel",
+            background=UI_COLORS["app_bg"],
+            foreground=UI_COLORS["text"],
+            font=(UI_FONT, 16, "bold"),
+        )
+        style.configure(
+            "Section.TLabel",
+            background=UI_COLORS["app_bg"],
+            foreground=UI_COLORS["text"],
+            font=(UI_FONT, 13, "bold"),
+        )
+        style.configure(
+            "Subheading.TLabel",
+            background=UI_COLORS["app_bg"],
+            foreground=UI_COLORS["muted"],
+            font=(UI_FONT, 10),
+        )
+        style.configure(
+            "Muted.TLabel",
+            background=UI_COLORS["app_bg"],
+            foreground=UI_COLORS["muted"],
+            font=(UI_FONT, 9),
+        )
+        style.configure(
+            "Caption.TLabel",
+            background=UI_COLORS["app_bg"],
+            foreground=UI_COLORS["subtle"],
+            font=(UI_FONT, 9),
+        )
         style.configure(
             "TButton",
             background=UI_COLORS["card_bg"],
@@ -996,7 +1198,11 @@ class LanMessengerApp:
             padding=(12, 8),
             relief="flat",
         )
-        style.map("TButton", background=[("active", UI_COLORS["accent_soft"])], foreground=[("active", UI_COLORS["text"])])
+        style.map(
+            "TButton",
+            background=[("active", UI_COLORS["accent_soft"])],
+            foreground=[("active", UI_COLORS["text"])],
+        )
         style.configure(
             "Primary.TButton",
             background=UI_COLORS["accent"],
@@ -1031,7 +1237,11 @@ class LanMessengerApp:
             padding=7,
             relief="flat",
         )
-        style.map("TCombobox", fieldbackground=[("readonly", UI_COLORS["input_bg"])], selectbackground=[("readonly", UI_COLORS["card_bg"])])
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", UI_COLORS["input_bg"])],
+            selectbackground=[("readonly", UI_COLORS["card_bg"])],
+        )
         style.configure(
             "Treeview",
             background=UI_COLORS["card_bg"],
@@ -1041,7 +1251,11 @@ class LanMessengerApp:
             rowheight=36,
             relief="flat",
         )
-        style.map("Treeview", background=[("selected", UI_COLORS["card_selected"])], foreground=[("selected", UI_COLORS["text"])])
+        style.map(
+            "Treeview",
+            background=[("selected", UI_COLORS["card_selected"])],
+            foreground=[("selected", UI_COLORS["text"])],
+        )
         style.configure(
             "Treeview.Heading",
             background=UI_COLORS["panel_alt"],
@@ -1072,13 +1286,14 @@ class LanMessengerApp:
                 return {}
             decrypted = self.crypto.decrypt_local(nonce, ciphertext, aad=b"history-v1")
             raw_history = json.loads(decrypted.decode("utf-8"))
-        except Exception:
+            if not isinstance(raw_history, dict):
+                raise ValueError("Message history must contain a JSON object")
+        except Exception as exc:
+            self.log_runtime_error("Message history load failed", exc)
+            backup_invalid_file(HISTORY_FILE)
             return {}
 
         history: dict[str, list[MessageEntry]] = {}
-        if not isinstance(raw_history, dict):
-            return history
-
         for ip, entries in raw_history.items():
             if not isinstance(ip, str) or not isinstance(entries, list):
                 continue
@@ -1086,15 +1301,17 @@ class LanMessengerApp:
             for item in entries:
                 if not isinstance(item, dict):
                     continue
-                parsed.append(MessageEntry(
-                    sender=str(item.get("sender", "")).strip() or "Unknown",
-                    text=str(item.get("text", "")),
-                    incoming=bool(item.get("incoming")),
-                    timestamp=float(item.get("timestamp") or now()),
-                    message_id=str(item.get("message_id", "")).strip() or None,
-                    status=str(item.get("status", "")),
-                    read_receipt_sent=bool(item.get("read_receipt_sent")),
-                ))
+                parsed.append(
+                    MessageEntry(
+                        sender=str(item.get("sender", "")).strip() or "Unknown",
+                        text=str(item.get("text", "")),
+                        incoming=bool(item.get("incoming")),
+                        timestamp=float(item.get("timestamp") or now()),
+                        message_id=str(item.get("message_id", "")).strip() or None,
+                        status=str(item.get("status", "")),
+                        read_receipt_sent=bool(item.get("read_receipt_sent")),
+                    )
+                )
             if parsed:
                 history[ip] = parsed[-200:]
         return history
@@ -1125,8 +1342,8 @@ class LanMessengerApp:
                     json.dumps({"nonce": nonce, "ciphertext": ciphertext}),
                     encoding="utf-8",
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            self.log_runtime_error("Message history save failed", exc)
 
     @property
     def username(self) -> str:
@@ -1143,11 +1360,13 @@ class LanMessengerApp:
             public_key = str(contact.get("public_key_b64", "")).strip()
             if not public_key:
                 continue
-            items.append(Contact(
-                public_key_b64=public_key,
-                username=str(contact.get("username", "")).strip() or "Unknown",
-                last_ip=str(contact.get("last_ip", "")).strip(),
-            ))
+            items.append(
+                Contact(
+                    public_key_b64=public_key,
+                    username=str(contact.get("username", "")).strip() or "Unknown",
+                    last_ip=str(contact.get("last_ip", "")).strip(),
+                )
+            )
         return items
 
     @property
@@ -1158,34 +1377,38 @@ class LanMessengerApp:
             text = str(pending.get("text", ""))
             if not public_key or not text:
                 continue
-            items.append(PendingMessage(
-                message_id=str(pending.get("message_id", "")).strip() or uuid.uuid4().hex,
-                public_key_b64=public_key,
-                username=str(pending.get("username", "")).strip() or "Unknown",
-                text=text,
-                queued_at=float(pending.get("queued_at") or now()),
-            ))
+            items.append(
+                PendingMessage(
+                    message_id=str(pending.get("message_id", "")).strip()
+                    or uuid.uuid4().hex,
+                    public_key_b64=public_key,
+                    username=str(pending.get("username", "")).strip() or "Unknown",
+                    text=text,
+                    queued_at=float(pending.get("queued_at") or now()),
+                )
+            )
         return items
 
-    def enqueue_ui(self, action: str, *args) -> None:
+    def enqueue_ui(self, action: str, *args: Any) -> None:
         self.ui_queue.put((action, args))
 
     def log_runtime_error(self, context: str, exc: BaseException) -> None:
-        try:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            with LOG_FILE.open("a", encoding="utf-8") as handle:
-                handle.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {context}\n")
-                handle.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
-                handle.write("\n")
-        except Exception:
-            pass
+        write_runtime_log(context, exc)
 
     def _dispatch_ui_action(self, action: str, args: tuple[Any, ...]) -> None:
         if action == "peer_update":
             self.refresh_tray_menu(refresh_windows=True)
         elif action == "message":
             ip, sender, text, message_id, timestamp = args
-            self.add_message(ip, sender, text, incoming=True, show_popup=True, message_id=message_id, timestamp=timestamp)
+            self.add_message(
+                ip,
+                sender,
+                text,
+                incoming=True,
+                show_popup=True,
+                message_id=message_id,
+                timestamp=timestamp,
+            )
         elif action == "message_status":
             ip, message_id, status = args
             self.update_message_status(ip, message_id, status)
@@ -1197,7 +1420,13 @@ class LanMessengerApp:
             self.finish_transfer_status(ip, label)
         elif action == "incoming_file":
             ip, sender, path = args
-            self.add_message(ip, "System", f"Received file: {Path(path).name}", incoming=False, show_popup=True)
+            self.add_message(
+                ip,
+                "System",
+                f"Received file: {Path(path).name}",
+                incoming=False,
+                show_popup=True,
+            )
             self.notifications.notify(f"File from {sender}", f"Saved to {path}")
         elif action == "typing_state":
             ip, sender, is_typing = args
@@ -1220,11 +1449,15 @@ class LanMessengerApp:
             manual = bool(args[0]) if args else True
             self.check_for_updates(manual=manual)
         elif action == "update_available":
-            self._handle_update_available(args[0], bool(args[1]) if len(args) > 1 else True)
+            self._handle_update_available(
+                args[0], bool(args[1]) if len(args) > 1 else True
+            )
         elif action == "update_not_available":
             self._handle_no_update(bool(args[0]) if args else True)
         elif action == "update_error":
-            self._handle_update_error(str(args[0]), bool(args[1]) if len(args) > 1 else True)
+            self._handle_update_error(
+                str(args[0]), bool(args[1]) if len(args) > 1 else True
+            )
         elif action == "prompt_username":
             self.prompt_username_change()
         elif action == "add_contact":
@@ -1243,7 +1476,8 @@ class LanMessengerApp:
 
     def process_ui_queue(self) -> None:
         try:
-            while True:
+            processed = 0
+            while processed < UI_QUEUE_BATCH_LIMIT:
                 try:
                     action, args = self.ui_queue.get_nowait()
                 except queue.Empty:
@@ -1253,16 +1487,24 @@ class LanMessengerApp:
                     self._dispatch_ui_action(action, args)
                 except Exception as exc:
                     self.log_runtime_error(f"UI action failed: {action}", exc)
+                processed += 1
         finally:
             if self.running:
-                self.root.after(100, self.process_ui_queue)
+                delay = (
+                    UI_QUEUE_ACTIVE_POLL_MS
+                    if not self.ui_queue.empty()
+                    else UI_QUEUE_IDLE_POLL_MS
+                )
+                self.root.after(delay, self.process_ui_queue)
 
     def _detect_local_ips(self) -> set[str]:
         addresses: set[str] = set()
 
         for host in {socket.gethostname(), socket.getfqdn()}:
             try:
-                infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_DGRAM)
+                infos = socket.getaddrinfo(
+                    host, None, socket.AF_INET, socket.SOCK_DGRAM
+                )
             except OSError:
                 continue
             for info in infos:
@@ -1301,7 +1543,7 @@ class LanMessengerApp:
             return "macos"
         return "unknown"
 
-    def discovery_payload(self, packet_type: str = "discovery") -> dict:
+    def discovery_payload(self, packet_type: str = "discovery") -> JsonDict:
         return {
             "type": packet_type,
             "username": self.username,
@@ -1319,7 +1561,11 @@ class LanMessengerApp:
 
         for contact in self.contacts:
             candidate = contact.last_ip.strip()
-            if candidate and candidate not in self.local_ips and is_ipv4_address(candidate):
+            if (
+                candidate
+                and candidate not in self.local_ips
+                and is_ipv4_address(candidate)
+            ):
                 targets.add(candidate)
 
         for peer in self.peers.values():
@@ -1334,7 +1580,9 @@ class LanMessengerApp:
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             try:
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, DISCOVERY_MULTICAST_TTL)
+                sock.setsockopt(
+                    socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, DISCOVERY_MULTICAST_TTL
+                )
             except OSError:
                 pass
             for target in self.discovery_targets():
@@ -1351,12 +1599,16 @@ class LanMessengerApp:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, DISCOVERY_MULTICAST_TTL)
+                sock.setsockopt(
+                    socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, DISCOVERY_MULTICAST_TTL
+                )
             except OSError:
                 pass
             while self.running:
                 try:
-                    payload = json.dumps(self.discovery_payload("discovery")).encode("utf-8")
+                    payload = json.dumps(self.discovery_payload("discovery")).encode(
+                        "utf-8"
+                    )
                     for target in self.discovery_targets():
                         try:
                             sock.sendto(payload, (target, DISCOVERY_PORT))
@@ -1378,7 +1630,9 @@ class LanMessengerApp:
                 pass
             sock.bind(("", DISCOVERY_PORT))
             try:
-                membership = socket.inet_aton(DISCOVERY_MULTICAST_GROUP) + socket.inet_aton("0.0.0.0")
+                membership = socket.inet_aton(
+                    DISCOVERY_MULTICAST_GROUP
+                ) + socket.inet_aton("0.0.0.0")
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
             except OSError:
                 pass
@@ -1415,7 +1669,9 @@ class LanMessengerApp:
                 )
                 if packet_type == "discovery":
                     try:
-                        reply = json.dumps(self.discovery_payload("discovery_reply")).encode("utf-8")
+                        reply = json.dumps(
+                            self.discovery_payload("discovery_reply")
+                        ).encode("utf-8")
                         sock.sendto(reply, (ip, DISCOVERY_PORT))
                     except OSError:
                         pass
@@ -1427,7 +1683,8 @@ class LanMessengerApp:
     def peer_cleanup_loop(self) -> None:
         while self.running:
             expired = [
-                ip for ip, peer in list(self.peers.items())
+                ip
+                for ip, peer in list(self.peers.items())
                 if now() - peer.last_seen > PEER_TIMEOUT
             ]
             for ip in expired:
@@ -1449,24 +1706,40 @@ class LanMessengerApp:
                     conn, addr = server.accept()
                 except OSError:
                     break
-                threading.Thread(target=self.handle_connection, args=(conn, addr), daemon=True).start()
+                threading.Thread(
+                    target=self.handle_connection, args=(conn, addr), daemon=True
+                ).start()
         finally:
             server.close()
 
     def handle_connection(self, conn: socket.socket, addr: tuple[str, int]) -> None:
         ip = addr[0]
+        active_transfer_ids: set[str] = set()
         try:
             with conn:
                 while self.running:
                     packet = recv_frame(conn)
                     if packet is None:
                         break
+                    transfer_id = str(packet.get("transfer_id", "")).strip()
+                    if transfer_id:
+                        active_transfer_ids.add(transfer_id)
                     self.process_packet(ip, packet)
+                    if transfer_id and packet.get("type") == "file_end":
+                        active_transfer_ids.discard(transfer_id)
         except Exception:
-            self.enqueue_ui("network_error", ip, "A network packet could not be processed.")
+            self.enqueue_ui(
+                "network_error", ip, "A network packet could not be processed."
+            )
+        finally:
+            for transfer_id in active_transfer_ids:
+                self._discard_incoming_transfer(ip, transfer_id)
 
-    def process_packet(self, ip: str, packet: dict) -> None:
+    def process_packet(self, ip: str, packet: JsonDict) -> None:
         packet_type = packet.get("type")
+        if not isinstance(packet_type, str):
+            raise ValueError("Packet type is required")
+
         transfer_id = str(packet.get("transfer_id", "")).strip()
         transfer = self.incoming_files.get((ip, transfer_id)) if transfer_id else None
         if packet.get("sender_public_key_b64") == self.crypto.public_key_b64:
@@ -1477,27 +1750,36 @@ class LanMessengerApp:
             peer, changed = self._upsert_peer(
                 ip=ip,
                 username=str(packet.get("sender") or ip),
-                port=int(packet.get("port") or TCP_PORT),
+                port=packet_port(packet, TCP_PORT),
                 public_key_b64=public_key_b64,
             )
             if changed:
                 self.enqueue_ui("peer_update")
         elif transfer is not None:
             stored_key = str(transfer.get("public_key_b64", "")).strip()
-            peer = self.find_peer_by_public_key(stored_key) if stored_key else self.find_peer_by_ip(ip)
+            peer = (
+                self.find_peer_by_public_key(stored_key)
+                if stored_key
+                else self.find_peer_by_ip(ip)
+            )
 
         if peer is None:
             return
 
         if packet_type == "text":
-            aad = packet["message_id"].encode("utf-8")
-            plaintext = self.crypto.decrypt_from_peer(peer.public_key_b64, packet["nonce"], packet["ciphertext"], aad=aad)
+            message_id = require_packet_text(packet, "message_id")
+            nonce = require_packet_text(packet, "nonce")
+            ciphertext = require_packet_text(packet, "ciphertext")
+            aad = message_id.encode("utf-8")
+            plaintext = self.crypto.decrypt_from_peer(
+                peer.public_key_b64, nonce, ciphertext, aad=aad
+            )
             text = plaintext.decode("utf-8", errors="replace")
             sender = packet.get("sender") or peer.username
             timestamp = float(packet.get("timestamp") or now())
             self.enqueue_ui("typing_state", ip, sender, False)
-            self.enqueue_ui("message", ip, sender, text, packet["message_id"], timestamp)
-            self._send_receipt_to_peer(peer, "sent_receipt", packet["message_id"])
+            self.enqueue_ui("message", ip, sender, text, message_id, timestamp)
+            self._send_receipt_to_peer(peer, "sent_receipt", message_id)
             self.notifications.notify(f"Message from {sender}", text[:120])
             return
 
@@ -1519,30 +1801,42 @@ class LanMessengerApp:
             return
 
         if packet_type == "file_start":
-            transfer_id = packet["transfer_id"]
+            transfer_id = require_packet_text(packet, "transfer_id")
             sender = packet.get("sender") or peer.username
-            filename = sanitize_filename(packet["filename"])
+            filename = sanitize_filename(require_packet_text(packet, "filename"))
+            file_size = require_packet_int(packet, "size", minimum=0)
             temp_path = self.inbox_dir / f"{transfer_id}_{filename}.part"
             handle = temp_path.open("wb")
             self.incoming_files[(ip, transfer_id)] = {
                 "handle": handle,
                 "path": temp_path,
                 "filename": filename,
-                "size": int(packet["size"]),
+                "size": file_size,
                 "received": 0,
                 "sender": sender,
                 "public_key_b64": peer.public_key_b64,
             }
-            self.enqueue_ui("transfer_progress", ip, f"Receiving {filename}", 0, int(packet["size"]))
+            self.enqueue_ui(
+                "transfer_progress", ip, f"Receiving {filename}", 0, file_size
+            )
             return
 
         if packet_type == "file_chunk":
-            transfer = self.incoming_files.get((ip, packet["transfer_id"]))
+            transfer_id = require_packet_text(packet, "transfer_id")
+            transfer = self.incoming_files.get((ip, transfer_id))
             if not transfer:
                 return
-            aad = packet["transfer_id"].encode("utf-8")
-            chunk = self.crypto.decrypt_from_peer(peer.public_key_b64, packet["nonce"], packet["ciphertext"], aad=aad)
-            transfer["handle"].write(chunk)
+            nonce = require_packet_text(packet, "nonce")
+            ciphertext = require_packet_text(packet, "ciphertext")
+            aad = transfer_id.encode("utf-8")
+            try:
+                chunk = self.crypto.decrypt_from_peer(
+                    peer.public_key_b64, nonce, ciphertext, aad=aad
+                )
+                cast(Any, transfer["handle"]).write(chunk)
+            except Exception as exc:
+                self._discard_incoming_transfer(ip, transfer_id)
+                raise ValueError("Invalid encrypted file chunk") from exc
             transfer["received"] += len(chunk)
             self.enqueue_ui(
                 "transfer_progress",
@@ -1554,15 +1848,33 @@ class LanMessengerApp:
             return
 
         if packet_type == "file_end":
-            transfer = self.incoming_files.pop((ip, packet["transfer_id"]), None)
+            transfer_id = require_packet_text(packet, "transfer_id")
+            transfer = self.incoming_files.pop((ip, transfer_id), None)
             if not transfer:
                 return
-            transfer["handle"].close()
+            cast(Any, transfer["handle"]).close()
             final_path = self._unique_inbox_path(transfer["filename"])
             transfer["path"].replace(final_path)
-            self.enqueue_ui("transfer_complete", ip, f"Receiving {transfer['filename']}")
+            self.enqueue_ui(
+                "transfer_complete", ip, f"Receiving {transfer['filename']}"
+            )
             self.enqueue_ui("incoming_file", ip, transfer["sender"], str(final_path))
             return
+
+    def _discard_incoming_transfer(self, ip: str, transfer_id: str) -> None:
+        transfer = self.incoming_files.pop((ip, transfer_id), None)
+        if transfer is None:
+            return
+        try:
+            cast(Any, transfer.get("handle")).close()
+        except Exception:
+            pass
+        path = transfer.get("path")
+        if isinstance(path, Path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _unique_inbox_path(self, filename: str) -> Path:
         target = self.inbox_dir / sanitize_filename(filename)
@@ -1583,13 +1895,26 @@ class LanMessengerApp:
         history_ip = peer.ip if peer is not None else ip
         self._reveal_conversation(history_ip)
         self.send_typing_state(history_ip, False, force=True)
-        self.add_message(history_ip, self.username, text, incoming=False, message_id=message_id, status=initial_status)
+        self.add_message(
+            history_ip,
+            self.username,
+            text,
+            incoming=False,
+            message_id=message_id,
+            status=initial_status,
+        )
 
         if not peer:
             contact = self._find_contact_by_ip(ip)
             if contact is not None:
-                self._queue_pending_message(message_id, contact.public_key_b64, contact.username, text)
-                self.enqueue_ui("network_error", ip, f"{contact.username} is offline. Message queued for delivery.")
+                self._queue_pending_message(
+                    message_id, contact.public_key_b64, contact.username, text
+                )
+                self.enqueue_ui(
+                    "network_error",
+                    ip,
+                    f"{contact.username} is offline. Message queued for delivery.",
+                )
             else:
                 self.enqueue_ui("network_error", ip, "Peer is no longer available.")
                 self.enqueue_ui("message_status", history_ip, message_id, "Failed")
@@ -1597,16 +1922,29 @@ class LanMessengerApp:
 
         def worker() -> None:
             if not self._send_text_to_peer(peer, text, message_id=message_id):
-                self._queue_pending_message(message_id, peer.public_key_b64, peer.username, text)
+                self._queue_pending_message(
+                    message_id, peer.public_key_b64, peer.username, text
+                )
                 self.enqueue_ui("message_status", peer.ip, message_id, "Queued")
-                self.enqueue_ui("network_error", peer.ip, f"{peer.username} went offline. Message queued for delivery.")
+                self.enqueue_ui(
+                    "network_error",
+                    peer.ip,
+                    f"{peer.username} went offline. Message queued for delivery.",
+                )
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def send_file(self, ip: str, path: str, progress_callback=None) -> None:
+    def send_file(
+        self, ip: str, path: str, progress_callback: ProgressCallback | None = None
+    ) -> None:
         self.queue_files(ip, [path], progress_callback=progress_callback)
 
-    def queue_files(self, ip: str, paths: list[str], progress_callback=None) -> None:
+    def queue_files(
+        self,
+        ip: str,
+        paths: list[str],
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
         if not paths:
             return
 
@@ -1618,21 +1956,31 @@ class LanMessengerApp:
         for raw_path in paths:
             file_path = Path(raw_path).expanduser()
             if not file_path.exists() or not file_path.is_file():
-                self.enqueue_ui("network_error", ip, f"File not found: {file_path.name or raw_path}")
+                self.enqueue_ui(
+                    "network_error", ip, f"File not found: {file_path.name or raw_path}"
+                )
                 continue
-            queued_items.append({
-                "path": str(file_path),
-                "filename": file_path.name,
-                "queued_at": now(),
-                "progress_callback": progress_callback,
-                "conversation_ip": ip,
-            })
+            queued_items.append(
+                {
+                    "path": str(file_path),
+                    "filename": file_path.name,
+                    "queued_at": now(),
+                    "progress_callback": progress_callback,
+                    "conversation_ip": ip,
+                }
+            )
             valid_added += 1
-            queue_depth = len(queued_items) - (1 if conversation_key in self.active_file_transfers else 0)
+            queue_depth = len(queued_items) - (
+                1 if conversation_key in self.active_file_transfers else 0
+            )
             if had_work or queue_depth > 1:
-                self.add_message(ip, "System", f"Queued file: {file_path.name}", incoming=False)
+                self.add_message(
+                    ip, "System", f"Queued file: {file_path.name}", incoming=False
+                )
             else:
-                self.add_message(ip, "System", f"Sending file: {file_path.name}", incoming=False)
+                self.add_message(
+                    ip, "System", f"Sending file: {file_path.name}", incoming=False
+                )
             had_work = True
 
         if valid_added == 0:
@@ -1664,7 +2012,11 @@ class LanMessengerApp:
         file_path = Path(str(item.get("path", "")))
         if not file_path.exists() or not file_path.is_file():
             queued_items.pop(0)
-            self.enqueue_ui("network_error", peer.ip, f"Queued file is missing: {item.get('filename', file_path.name)}")
+            self.enqueue_ui(
+                "network_error",
+                peer.ip,
+                f"Queued file is missing: {item.get('filename', file_path.name)}",
+            )
             self.enqueue_ui("refresh_file_queue", conversation_key)
             self._start_next_file_transfer(conversation_key)
             return
@@ -1677,53 +2029,80 @@ class LanMessengerApp:
             success = False
             progress_cb = item.get("progress_callback")
             try:
-                with socket.create_connection((peer.ip, peer.port), timeout=5) as sock, file_path.open("rb") as handle:
-                    send_frame(sock, {
-                        "type": "file_start",
-                        "transfer_id": transfer_id,
-                        "filename": file_path.name,
-                        "size": total_size,
-                        "sender": self.username,
-                        "sender_public_key_b64": self.crypto.public_key_b64,
-                        "port": TCP_PORT,
-                    })
+                with socket.create_connection(
+                    (peer.ip, peer.port), timeout=5
+                ) as sock, file_path.open("rb") as handle:
+                    send_frame(
+                        sock,
+                        {
+                            "type": "file_start",
+                            "transfer_id": transfer_id,
+                            "filename": file_path.name,
+                            "size": total_size,
+                            "sender": self.username,
+                            "sender_public_key_b64": self.crypto.public_key_b64,
+                            "port": TCP_PORT,
+                        },
+                    )
                     sent = 0
-                    self.enqueue_ui("transfer_progress", peer.ip, f"Sending {file_path.name}", 0, total_size)
+                    self.enqueue_ui(
+                        "transfer_progress",
+                        peer.ip,
+                        f"Sending {file_path.name}",
+                        0,
+                        total_size,
+                    )
                     while True:
                         chunk = handle.read(BUFFER_SIZE)
                         if not chunk:
                             break
                         aad = transfer_id.encode("utf-8")
-                        nonce, ciphertext = self.crypto.encrypt_for_peer(peer.public_key_b64, chunk, aad=aad)
-                        send_frame(sock, {
-                            "type": "file_chunk",
+                        nonce, ciphertext = self.crypto.encrypt_for_peer(
+                            peer.public_key_b64, chunk, aad=aad
+                        )
+                        send_frame(
+                            sock,
+                            {
+                                "type": "file_chunk",
+                                "transfer_id": transfer_id,
+                                "sender": self.username,
+                                "sender_public_key_b64": self.crypto.public_key_b64,
+                                "port": TCP_PORT,
+                                "nonce": nonce,
+                                "ciphertext": ciphertext,
+                            },
+                        )
+                        sent += len(chunk)
+                        self.enqueue_ui(
+                            "transfer_progress",
+                            peer.ip,
+                            f"Sending {file_path.name}",
+                            sent,
+                            total_size,
+                        )
+                        if callable(progress_cb):
+                            progress_cb(sent, total_size)
+
+                    send_frame(
+                        sock,
+                        {
+                            "type": "file_end",
                             "transfer_id": transfer_id,
                             "sender": self.username,
                             "sender_public_key_b64": self.crypto.public_key_b64,
                             "port": TCP_PORT,
-                            "nonce": nonce,
-                            "ciphertext": ciphertext,
-                        })
-                        sent += len(chunk)
-                        self.enqueue_ui("transfer_progress", peer.ip, f"Sending {file_path.name}", sent, total_size)
-                        if callable(progress_cb):
-                            progress_cb(sent, total_size)
-
-                    send_frame(sock, {
-                        "type": "file_end",
-                        "transfer_id": transfer_id,
-                        "sender": self.username,
-                        "sender_public_key_b64": self.crypto.public_key_b64,
-                        "port": TCP_PORT,
-                    })
-                    self.enqueue_ui("transfer_complete", peer.ip, f"Sending {file_path.name}")
+                        },
+                    )
+                    self.enqueue_ui(
+                        "transfer_complete", peer.ip, f"Sending {file_path.name}"
+                    )
                     success = True
             except Exception:
-                self.enqueue_ui(
-                    "network_error",
-                    peer.ip,
-                    f"File transfer paused for {file_path.name}. It will retry when {peer.username} is available.",
+                message = (
+                    f"File transfer paused for {file_path.name}. "
+                    f"It will retry when {peer.username} is available."
                 )
+                self.enqueue_ui("network_error", peer.ip, message)
             finally:
                 self.active_file_transfers.discard(conversation_key)
                 current_items = self.file_queues.get(conversation_key, [])
@@ -1736,7 +2115,7 @@ class LanMessengerApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _send_packets(self, peer: Peer, packets: list[dict]) -> bool:
+    def _send_packets(self, peer: Peer, packets: list[JsonDict]) -> bool:
         attempts = [(peer.ip, peer.port)]
         replacement_peer = self.find_peer_by_public_key(peer.public_key_b64)
         if replacement_peer is not None and replacement_peer.ip != peer.ip:
@@ -1744,24 +2123,42 @@ class LanMessengerApp:
 
         for attempt_ip, attempt_port in attempts:
             try:
-                with socket.create_connection((attempt_ip, attempt_port), timeout=5) as sock:
+                with socket.create_connection(
+                    (attempt_ip, attempt_port), timeout=5
+                ) as sock:
                     for packet in packets:
                         send_frame(sock, packet)
                 if attempt_ip != peer.ip:
-                    self._rebind_peer_state(peer.ip, attempt_ip, replacement_peer.username if replacement_peer is not None else peer.username)
+                    self._rebind_peer_state(
+                        peer.ip,
+                        attempt_ip,
+                        (
+                            replacement_peer.username
+                            if replacement_peer is not None
+                            else peer.username
+                        ),
+                    )
                     self.enqueue_ui("peer_update")
                 return True
             except Exception:
                 continue
         return False
 
-    def _send_text_to_peer(self, peer: Peer, text: str, message_id: str | None = None, timestamp: float | None = None) -> bool:
+    def _send_text_to_peer(
+        self,
+        peer: Peer,
+        text: str,
+        message_id: str | None = None,
+        timestamp: float | None = None,
+    ) -> bool:
         if message_id is None:
             message_id = uuid.uuid4().hex
         if timestamp is None:
             timestamp = now()
         aad = message_id.encode("utf-8")
-        nonce, ciphertext = self.crypto.encrypt_for_peer(peer.public_key_b64, text.encode("utf-8"), aad=aad)
+        nonce, ciphertext = self.crypto.encrypt_for_peer(
+            peer.public_key_b64, text.encode("utf-8"), aad=aad
+        )
         packet = {
             "type": "text",
             "message_id": message_id,
@@ -1774,7 +2171,9 @@ class LanMessengerApp:
         }
         return self._send_packets(peer, [packet])
 
-    def _send_receipt_to_peer(self, peer: Peer, receipt_type: str, message_id: str) -> bool:
+    def _send_receipt_to_peer(
+        self, peer: Peer, receipt_type: str, message_id: str
+    ) -> bool:
         packet = {
             "type": receipt_type,
             "message_id": message_id,
@@ -1806,7 +2205,9 @@ class LanMessengerApp:
             "sender_public_key_b64": self.crypto.public_key_b64,
             "port": TCP_PORT,
         }
-        threading.Thread(target=lambda: self._send_packets(peer, [packet]), daemon=True).start()
+        threading.Thread(
+            target=lambda: self._send_packets(peer, [packet]), daemon=True
+        ).start()
 
     def set_typing_state(self, ip: str, sender: str, is_typing: bool) -> None:
         if is_typing:
@@ -1816,7 +2217,12 @@ class LanMessengerApp:
                 "sender": sender.strip() or self.conversation_name(ip),
                 "expires_at": now() + TYPING_STATUS_TTL,
             }
-            self.root.after(int(TYPING_STATUS_TTL * 1000), lambda target_ip=ip, target_token=token: self._expire_typing_state(target_ip, target_token))
+            self.root.after(
+                int(TYPING_STATUS_TTL * 1000),
+                lambda target_ip=ip, target_token=token: self._expire_typing_state(
+                    target_ip, target_token
+                ),
+            )
         else:
             self.typing_state_tokens[ip] = self.typing_state_tokens.get(ip, 0) + 1
             self.typing_states.pop(ip, None)
@@ -1882,7 +2288,9 @@ class LanMessengerApp:
             self.main_window.rebind_peer(old_ip, new_ip, peer_name)
         self._save_message_history()
 
-    def _upsert_peer(self, ip: str, username: str, port: int, public_key_b64: str) -> tuple[Peer, bool]:
+    def _upsert_peer(
+        self, ip: str, username: str, port: int, public_key_b64: str
+    ) -> tuple[Peer, bool]:
         changed = False
         existing_by_key = self.find_peer_by_public_key(public_key_b64)
         if existing_by_key is not None and existing_by_key.ip != ip:
@@ -2074,7 +2482,9 @@ class LanMessengerApp:
 
         history = self.message_history.get(ip, [])
         if not history:
-            return "Ready to chat" if self.peers.get(ip) is not None else "No messages yet"
+            return (
+                "Ready to chat" if self.peers.get(ip) is not None else "No messages yet"
+            )
 
         entry = history[-1]
         if entry.sender.strip().lower() == "system" or entry.incoming:
@@ -2102,7 +2512,11 @@ class LanMessengerApp:
         return sorted(
             targets,
             key=lambda ip: (
-                -(self.message_history.get(ip, [])[-1].timestamp if self.message_history.get(ip) else 0.0),
+                -(
+                    self.message_history.get(ip, [])[-1].timestamp
+                    if self.message_history.get(ip)
+                    else 0.0
+                ),
                 0 if self.peers.get(ip) is not None else 1,
                 self.conversation_name(ip).lower(),
             ),
@@ -2110,14 +2524,17 @@ class LanMessengerApp:
 
     def online_peers(self) -> list[Peer]:
         peers = [
-            peer for peer in self.peers.values()
+            peer
+            for peer in self.peers.values()
             if peer.public_key_b64 != self.crypto.public_key_b64
         ]
         peers.sort(key=lambda peer: peer.username.lower())
         return peers
 
     def is_contact(self, peer: Peer) -> bool:
-        return any(contact.public_key_b64 == peer.public_key_b64 for contact in self.contacts)
+        return any(
+            contact.public_key_b64 == peer.public_key_b64 for contact in self.contacts
+        )
 
     def _update_contact_last_seen(self, peer: Peer) -> None:
         changed = False
@@ -2140,40 +2557,56 @@ class LanMessengerApp:
         peer = self.peers.get(ip)
         if peer is None:
             return
-        contacts = [contact for contact in self.config.contacts if contact.get("public_key_b64") != peer.public_key_b64]
-        contacts.append({
-            "public_key_b64": peer.public_key_b64,
-            "username": peer.username,
-            "last_ip": peer.ip,
-        })
+        contacts = [
+            contact
+            for contact in self.config.contacts
+            if contact.get("public_key_b64") != peer.public_key_b64
+        ]
+        contacts.append(
+            {
+                "public_key_b64": peer.public_key_b64,
+                "username": peer.username,
+                "last_ip": peer.ip,
+            }
+        )
         contacts.sort(key=lambda item: str(item.get("username", "")).lower())
         self.config.save_contacts(contacts)
         self.refresh_tray_menu(refresh_windows=True)
 
     def remove_contact(self, public_key_b64: str) -> None:
-        contacts = [contact for contact in self.config.contacts if contact.get("public_key_b64") != public_key_b64]
+        contacts = [
+            contact
+            for contact in self.config.contacts
+            if contact.get("public_key_b64") != public_key_b64
+        ]
         self.config.save_contacts(contacts)
         pending_messages = [
-            pending for pending in self.config.pending_messages
+            pending
+            for pending in self.config.pending_messages
             if pending.get("public_key_b64") != public_key_b64
         ]
         self.config.save_pending_messages(pending_messages)
         self.refresh_tray_menu(refresh_windows=True)
 
-    def _queue_pending_message(self, message_id: str, public_key_b64: str, username: str, text: str) -> None:
+    def _queue_pending_message(
+        self, message_id: str, public_key_b64: str, username: str, text: str
+    ) -> None:
         pending = self.config.pending_messages
-        pending.append({
-            "message_id": message_id,
-            "public_key_b64": public_key_b64,
-            "username": username,
-            "text": text,
-            "queued_at": now(),
-        })
+        pending.append(
+            {
+                "message_id": message_id,
+                "public_key_b64": public_key_b64,
+                "username": username,
+                "text": text,
+                "queued_at": now(),
+            }
+        )
         self.config.save_pending_messages(pending)
 
     def _deliver_pending_messages_for_peer(self, peer: Peer) -> None:
         pending_for_peer = [
-            pending for pending in self.pending_messages
+            pending
+            for pending in self.pending_messages
             if pending.public_key_b64 == peer.public_key_b64
         ]
         if not pending_for_peer:
@@ -2187,7 +2620,9 @@ class LanMessengerApp:
                     remaining.append(pending)
                     continue
 
-                message_id = str(pending.get("message_id", "")).strip() or uuid.uuid4().hex
+                message_id = (
+                    str(pending.get("message_id", "")).strip() or uuid.uuid4().hex
+                )
                 text = str(pending.get("text", ""))
                 self.enqueue_ui("message_status", peer.ip, message_id, "Sending")
                 if text and self._send_text_to_peer(peer, text, message_id=message_id):
@@ -2199,21 +2634,28 @@ class LanMessengerApp:
 
             self.config.save_pending_messages(remaining)
             if delivered:
-                self.enqueue_ui(
-                    "network_error",
-                    peer.ip,
-                    f"Delivered {delivered} queued message{'s' if delivered != 1 else ''} to {peer.username}.",
+                message = (
+                    f"Delivered {delivered} queued message"
+                    f"{'s' if delivered != 1 else ''} to {peer.username}."
                 )
+                self.enqueue_ui("network_error", peer.ip, message)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def prompt_username_change(self) -> None:
-        value = simpledialog.askstring("Username", "Enter your username:", initialvalue=self.username, parent=self.root)
+        value = simpledialog.askstring(
+            "Username",
+            "Enter your username:",
+            initialvalue=self.username,
+            parent=self.root,
+        )
         if value is None:
             return
         value = value.strip()
         if not value:
-            messagebox.showerror("Invalid username", "Username cannot be empty.", parent=self.root)
+            messagebox.showerror(
+                "Invalid username", "Username cannot be empty.", parent=self.root
+            )
             return
         self.config.username = value
         self.refresh_tray_menu(refresh_windows=True)
@@ -2242,7 +2684,11 @@ class LanMessengerApp:
                 with urlopen(manifest_url, timeout=10) as response:
                     payload = json.loads(response.read().decode("utf-8"))
             except URLError as exc:
-                self.enqueue_ui("update_error", f"Could not reach the update server: {exc.reason}", manual)
+                self.enqueue_ui(
+                    "update_error",
+                    f"Could not reach the update server: {exc.reason}",
+                    manual,
+                )
                 return
             except Exception as exc:
                 self.enqueue_ui("update_error", f"Update check failed: {exc}", manual)
@@ -2250,7 +2696,11 @@ class LanMessengerApp:
 
             info = self._parse_update_manifest(payload, manifest_url)
             if info is None:
-                self.enqueue_ui("update_error", "The update manifest is missing required fields.", manual)
+                self.enqueue_ui(
+                    "update_error",
+                    "The update manifest is missing required fields.",
+                    manual,
+                )
                 return
 
             if parse_version_parts(info.version) > parse_version_parts(APP_VERSION):
@@ -2260,7 +2710,9 @@ class LanMessengerApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _parse_update_manifest(self, payload: dict[str, Any], manifest_url: str) -> UpdateInfo | None:
+    def _parse_update_manifest(
+        self, payload: dict[str, Any], manifest_url: str
+    ) -> UpdateInfo | None:
         version = str(payload.get("version", "")).strip()
         notes = str(payload.get("notes", "")).strip()
         downloads = payload.get("downloads", {})
@@ -2292,7 +2744,12 @@ class LanMessengerApp:
                 f"You are on {APP_VERSION}.{notes}\n\n"
                 "Open the download page now?"
             ),
-            parent=self.settings_window if self.settings_window is not None and self.settings_window.winfo_exists() else None,
+            parent=(
+                self.settings_window
+                if self.settings_window is not None
+                and self.settings_window.winfo_exists()
+                else None
+            ),
         )
         if open_download:
             self.open_update_download(info.download_url)
@@ -2302,7 +2759,12 @@ class LanMessengerApp:
             self.show_centered_info(
                 "Updates",
                 f"You are already on the latest version ({APP_VERSION}).",
-                parent=self.settings_window if self.settings_window is not None and self.settings_window.winfo_exists() else None,
+                parent=(
+                    self.settings_window
+                    if self.settings_window is not None
+                    and self.settings_window.winfo_exists()
+                    else None
+                ),
             )
 
     def _handle_update_error(self, message: str, manual: bool) -> None:
@@ -2310,7 +2772,12 @@ class LanMessengerApp:
             self.show_centered_error(
                 "Update Check Failed",
                 message,
-                parent=self.settings_window if self.settings_window is not None and self.settings_window.winfo_exists() else None,
+                parent=(
+                    self.settings_window
+                    if self.settings_window is not None
+                    and self.settings_window.winfo_exists()
+                    else None
+                ),
             )
         else:
             self.notifications.notify("Update Check Failed", message)
@@ -2319,17 +2786,31 @@ class LanMessengerApp:
         try:
             webbrowser.open(download_url)
         except Exception:
-            self.show_centered_error("Updates", f"Could not open download URL:\n{download_url}")
+            self.show_centered_error(
+                "Updates", f"Could not open download URL:\n{download_url}"
+            )
 
     def _dialog_parent(self, parent: tk.Misc | None = None) -> tk.Misc:
         candidates: list[tk.Misc] = []
         if parent is not None:
             candidates.append(parent)
-        if self.settings_window is not None and self.settings_window.winfo_exists() and self.settings_window.is_visible():
+        if (
+            self.settings_window is not None
+            and self.settings_window.winfo_exists()
+            and self.settings_window.is_visible()
+        ):
             candidates.append(self.settings_window)
-        if self.main_window is not None and self.main_window.winfo_exists() and self.main_window.is_visible():
+        if (
+            self.main_window is not None
+            and self.main_window.winfo_exists()
+            and self.main_window.is_visible()
+        ):
             candidates.append(self.main_window)
-        if self.contacts_window is not None and self.contacts_window.winfo_exists() and self.contacts_window.is_visible():
+        if (
+            self.contacts_window is not None
+            and self.contacts_window.winfo_exists()
+            and self.contacts_window.is_visible()
+        ):
             candidates.append(self.contacts_window)
 
         for candidate in candidates:
@@ -2341,7 +2822,9 @@ class LanMessengerApp:
         self.prepare_window_host()
         return self.root
 
-    def _create_centered_dialog_host(self, parent: tk.Misc | None = None) -> tk.Toplevel | None:
+    def _create_centered_dialog_host(
+        self, parent: tk.Misc | None = None
+    ) -> tk.Toplevel | None:
         anchor = self._dialog_parent(parent)
         if isinstance(anchor, tk.Toplevel):
             try:
@@ -2362,26 +2845,40 @@ class LanMessengerApp:
                 return None
         return None
 
-    def show_centered_info(self, title: str, message: str, parent: tk.Misc | None = None) -> None:
+    def show_centered_info(
+        self, title: str, message: str, parent: tk.Misc | None = None
+    ) -> None:
         host = self._create_centered_dialog_host(parent)
         try:
-            messagebox.showinfo(title, message, parent=host or self._dialog_parent(parent))
+            messagebox.showinfo(
+                title, message, parent=host or self._dialog_parent(parent)
+            )
         finally:
             if host is not None and host.winfo_exists():
                 host.destroy()
 
-    def show_centered_error(self, title: str, message: str, parent: tk.Misc | None = None) -> None:
+    def show_centered_error(
+        self, title: str, message: str, parent: tk.Misc | None = None
+    ) -> None:
         host = self._create_centered_dialog_host(parent)
         try:
-            messagebox.showerror(title, message, parent=host or self._dialog_parent(parent))
+            messagebox.showerror(
+                title, message, parent=host or self._dialog_parent(parent)
+            )
         finally:
             if host is not None and host.winfo_exists():
                 host.destroy()
 
-    def ask_centered_yes_no(self, title: str, message: str, parent: tk.Misc | None = None) -> bool:
+    def ask_centered_yes_no(
+        self, title: str, message: str, parent: tk.Misc | None = None
+    ) -> bool:
         host = self._create_centered_dialog_host(parent)
         try:
-            return bool(messagebox.askyesno(title, message, parent=host or self._dialog_parent(parent)))
+            return bool(
+                messagebox.askyesno(
+                    title, message, parent=host or self._dialog_parent(parent)
+                )
+            )
         finally:
             if host is not None and host.winfo_exists():
                 host.destroy()
@@ -2391,7 +2888,11 @@ class LanMessengerApp:
         contact = self._find_contact_by_ip(ip)
         status = "Online" if peer is not None else "Offline"
         contact_name = self.conversation_name(ip)
-        display_ip = peer.ip if peer is not None else (contact.last_ip if contact is not None else ip)
+        display_ip = (
+            peer.ip
+            if peer is not None
+            else (contact.last_ip if contact is not None else ip)
+        )
         self.show_centered_info(
             "Chat Info",
             f"Name: {contact_name}\nStatus: {status}\nIP Address: {display_ip}",
@@ -2404,7 +2905,8 @@ class LanMessengerApp:
         if conversation_key.startswith("pk:"):
             public_key_b64 = conversation_key[3:]
             pending_messages = [
-                pending for pending in self.config.pending_messages
+                pending
+                for pending in self.config.pending_messages
                 if pending.get("public_key_b64") != public_key_b64
             ]
             self.config.save_pending_messages(pending_messages)
@@ -2423,22 +2925,37 @@ class LanMessengerApp:
             self.main_window.refresh()
 
     def refresh_tray_menu(self, *, refresh_windows: bool = False) -> None:
-        if self.icon is not None:
-            try:
-                self.icon.icon = self._tray_image()
-                self.icon.menu = self._build_tray_menu()
-                update_menu = getattr(self.icon, "update_menu", None)
-                if callable(update_menu):
-                    update_menu()
-            except Exception:
-                pass
-
         if not refresh_windows:
+            self._schedule_tray_refresh()
             return
         if self.contacts_window is not None and self.contacts_window.winfo_exists():
             self.contacts_window.refresh()
         if self.main_window is not None and self.main_window.winfo_exists():
             self.main_window.refresh()
+        self._schedule_tray_refresh()
+
+    def _schedule_tray_refresh(self) -> None:
+        if self.icon is None or self._tray_refresh_job is not None:
+            return
+        try:
+            self._tray_refresh_job = self.root.after(
+                TRAY_REFRESH_DEBOUNCE_MS, self._flush_tray_refresh
+            )
+        except tk.TclError:
+            self._tray_refresh_job = None
+
+    def _flush_tray_refresh(self) -> None:
+        self._tray_refresh_job = None
+        if self.icon is None:
+            return
+        unread_state = sum(self.unread_counts.values()) > 0
+        if unread_state == self._last_tray_unread_state:
+            return
+        try:
+            self.icon.icon = self._tray_image()
+            self._last_tray_unread_state = unread_state
+        except Exception as exc:
+            self.log_runtime_error("Tray refresh failed", exc)
 
     def _tray_item(self, *args: Any, **kwargs: Any) -> Any:
         tray_item_factory = cast(Any, TrayItem)
@@ -2452,54 +2969,21 @@ class LanMessengerApp:
             raise RuntimeError("pystray is unavailable.")
         return module
 
-    def _quick_chat_menu_items(self) -> list[Any]:
-        peers = self.online_peers()[:10]
-        items: list[Any] = []
-        for peer in peers:
-            unread = self.unread_counts.get(peer.ip, 0)
-            label = peer.username if unread == 0 else f"{peer.username} ({unread})"
-            items.append(self._tray_item(label, lambda _, __, ip=peer.ip: self.enqueue_ui("show_quick_chat", ip)))
-        if not items:
-            items.append(self._tray_item("No peers online", lambda *_: None, enabled=False))
-        return items
-
-    def _chat_menu_items(self) -> list[Any]:
-        peers = self.online_peers()
-        if not peers:
-            return [self._tray_item("No peers online", lambda *_: None, enabled=False)]
-
-        items: list[Any] = []
-        for peer in peers[:20]:
-            unread = self.unread_counts.get(peer.ip, 0)
-            status = "online"
-            label = f"{peer.username} [{status}]"
-            if unread:
-                label = f"{label} ({unread})"
-            items.append(self._tray_item(label, lambda _, __, ip=peer.ip: self.enqueue_ui("show_quick_chat", ip)))
-        return items
-
-    def _file_transfer_menu_items(self) -> list[Any]:
-        peers = self.online_peers()
-        if not peers:
-            return [self._tray_item("No peers online", lambda *_: None, enabled=False)]
-
-        return [
-            self._tray_item(peer.username, lambda _, __, ip=peer.ip: self.enqueue_ui("prompt_send_file", ip))
-            for peer in peers[:20]
-        ]
-
-    def _build_tray_menu(self):
+    def _build_tray_menu(self) -> Any:
         return self._pystray_module().Menu(
             self._tray_item(APP_TITLE, lambda *_: None, enabled=False),
-            self._tray_item("Open Chat", lambda *_: self.enqueue_ui("show_main_chat"), default=True),
-            self._tray_item("Contact List", lambda *_: self.enqueue_ui("show_contacts")),
-            self._tray_item("Check for Updates", lambda *_: self.enqueue_ui("check_updates", True)),
+            self._tray_item(
+                "Open Chat", lambda *_: self.enqueue_ui("show_main_chat"), default=True
+            ),
+            self._tray_item(
+                "Contact List", lambda *_: self.enqueue_ui("show_contacts")
+            ),
+            self._tray_item(
+                "Check for Updates", lambda *_: self.enqueue_ui("check_updates", True)
+            ),
             self._tray_item("Settings", lambda *_: self.enqueue_ui("show_settings")),
             self._tray_item("Exit", lambda *_: self.enqueue_ui("shutdown_from_tray")),
         )
-
-    def _open_first_peer(self, *_args) -> None:
-        self.enqueue_ui("show_main_chat")
 
     def add_message(
         self,
@@ -2517,14 +3001,16 @@ class LanMessengerApp:
             self.typing_states.pop(ip, None)
             self.typing_state_tokens[ip] = self.typing_state_tokens.get(ip, 0) + 1
         history = self.message_history.setdefault(ip, [])
-        history.append(MessageEntry(
-            sender=sender,
-            text=text,
-            incoming=incoming,
-            timestamp=now() if timestamp is None else timestamp,
-            message_id=message_id,
-            status=status,
-        ))
+        history.append(
+            MessageEntry(
+                sender=sender,
+                text=text,
+                incoming=incoming,
+                timestamp=now() if timestamp is None else timestamp,
+                message_id=message_id,
+                status=status,
+            )
+        )
         if len(history) > 200:
             del history[:-200]
 
@@ -2551,7 +3037,7 @@ class LanMessengerApp:
             self.unread_counts[ip] = 0
             self.refresh_tray_menu()
             if self.main_window is not None and self.main_window.winfo_exists():
-                self.main_window.refresh_sidebar()
+                self.main_window._schedule_sidebar_refresh()
 
         if receipts:
             self._save_message_history()
@@ -2573,7 +3059,8 @@ class LanMessengerApp:
         updated = False
         candidate_histories = [self.message_history.get(ip, [])]
         candidate_histories.extend(
-            history for history_ip, history in self.message_history.items()
+            history
+            for history_ip, history in self.message_history.items()
             if history_ip != ip
         )
 
@@ -2596,7 +3083,9 @@ class LanMessengerApp:
         self._save_message_history()
         self.refresh_tray_menu()
 
-    def update_transfer_status(self, ip: str, label: str, current: int, total: int) -> None:
+    def update_transfer_status(
+        self, ip: str, label: str, current: int, total: int
+    ) -> None:
         self._reveal_conversation(ip)
         self.transfer_status_tokens[ip] = self.transfer_status_tokens.get(ip, 0) + 1
         self.transfer_statuses[ip] = (label, current, total)
@@ -2611,7 +3100,10 @@ class LanMessengerApp:
         self.transfer_statuses[ip] = (f"{label} complete", total, total)
         if self.main_window is not None and self.main_window.winfo_exists():
             self.main_window.refresh_transfer(ip)
-        self.root.after(TRANSFER_STATUS_CLEAR_DELAY_MS, lambda: self._clear_transfer_status(ip, token))
+        self.root.after(
+            TRANSFER_STATUS_CLEAR_DELAY_MS,
+            lambda: self._clear_transfer_status(ip, token),
+        )
 
     def _clear_transfer_status(self, ip: str, token: int) -> None:
         if self.transfer_status_tokens.get(ip) != token:
@@ -2641,7 +3133,9 @@ class LanMessengerApp:
         label = f"Queued {next_item['filename']}"
         if len(queued_items) > 1:
             label = f"{label} (+{len(queued_items) - 1} more)"
-        self.transfer_status_tokens[display_ip] = self.transfer_status_tokens.get(display_ip, 0) + 1
+        self.transfer_status_tokens[display_ip] = (
+            self.transfer_status_tokens.get(display_ip, 0) + 1
+        )
         self.transfer_statuses[display_ip] = (label, 0, 1)
         if self.main_window is not None and self.main_window.winfo_exists():
             self.main_window.refresh_transfer(display_ip)
@@ -2667,11 +3161,13 @@ class LanMessengerApp:
             self.settings_window = SettingsWindow(self)
         self.settings_window.show()
 
-    def _create_tray_icon(self):
+    def _create_tray_icon(self) -> Any:
         if pystray is None or TrayItem is None:
             return None
         try:
-            return pystray.Icon(APP_NAME, self._tray_image(), APP_TITLE, self._build_tray_menu())
+            return pystray.Icon(
+                APP_NAME, self._tray_image(), APP_TITLE, self._build_tray_menu()
+            )
         except Exception as exc:
             self.log_runtime_error("Tray icon initialization failed", exc)
             return None
@@ -2691,14 +3187,25 @@ class LanMessengerApp:
             threading.Thread(target=self.icon.run, daemon=True).start()
 
     def _tray_image(self) -> Image.Image:
+        unread_state = sum(self.unread_counts.values()) > 0
+        if self._tray_image_cache is not None:
+            cached_state, cached_image = self._tray_image_cache
+            if cached_state == unread_state:
+                return cached_image
         image = Image.new("RGBA", (64, 64), (20, 28, 38, 0))
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle((8, 8, 56, 56), radius=14, fill=(25, 132, 197, 255))
         draw.ellipse((18, 18, 31, 31), fill=(255, 255, 255, 255))
         draw.ellipse((33, 18, 46, 31), fill=(255, 255, 255, 255))
         draw.rounded_rectangle((18, 34, 46, 45), radius=5, fill=(255, 255, 255, 255))
-        if sum(self.unread_counts.values()) > 0:
-            draw.ellipse((42, 6, 58, 22), fill=(220, 53, 69, 255), outline=(255, 255, 255, 255), width=2)
+        if unread_state:
+            draw.ellipse(
+                (42, 6, 58, 22),
+                fill=(220, 53, 69, 255),
+                outline=(255, 255, 255, 255),
+                width=2,
+            )
+        self._tray_image_cache = (unread_state, image)
         return image
 
     def quit(self) -> None:
@@ -2724,6 +3231,7 @@ class BaseWindow(tk.Toplevel):
     def __init__(self, app: LanMessengerApp, title: str, size: str) -> None:
         super().__init__(app.root)
         self.app = app
+        self._scroll_canvases: list[tk.Canvas] = []
         self.title(title)
         self.geometry(size)
         self.configure(bg=UI_COLORS["app_bg"])
@@ -2737,7 +3245,13 @@ class BaseWindow(tk.Toplevel):
     def _configure_window_chrome(self) -> None:
         try:
             if sys.platform == "darwin":
-                self.tk.call("::tk::unsupported::MacWindowStyle", "style", self._w, "document", "closeBox")
+                self.tk.call(
+                    "::tk::unsupported::MacWindowStyle",
+                    "style",
+                    self._w,
+                    "document",
+                    "closeBox",
+                )
         except Exception:
             pass
 
@@ -2762,11 +3276,15 @@ class BaseWindow(tk.Toplevel):
             return False
 
     def _bind_mousewheel(self, canvas: tk.Canvas, *widgets: tk.Misc) -> None:
+        if canvas not in self._scroll_canvases:
+            self._scroll_canvases.append(canvas)
         for widget in (canvas, *widgets):
             setattr(widget, "_scroll_canvas_target", canvas)
 
     def _dispatch_mousewheel(self, event: Any) -> str | None:
         canvas = self._scroll_canvas_for_widget(getattr(event, "widget", None))
+        if canvas is None:
+            canvas = self._scroll_canvas_at_pointer(event)
         if canvas is None or not self.is_visible():
             return None
         return self._on_mousewheel(canvas, event)
@@ -2791,7 +3309,7 @@ class BaseWindow(tk.Toplevel):
                     return "break"
             except tk.TclError:
                 return "break"
-            canvas.yview_scroll(delta, "units")
+            canvas.yview_scroll(delta * MOUSEWHEEL_UNITS_PER_STEP, "units")
         return "break"
 
     def _scroll_canvas_for_widget(self, widget: tk.Misc | None) -> tk.Canvas | None:
@@ -2801,6 +3319,27 @@ class BaseWindow(tk.Toplevel):
             if isinstance(canvas, tk.Canvas):
                 return canvas
             current = cast(tk.Misc | None, getattr(current, "master", None))
+        return None
+
+    def _scroll_canvas_at_pointer(self, event: Any) -> tk.Canvas | None:
+        try:
+            pointer_x = int(event.x_root)
+            pointer_y = int(event.y_root)
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+        for canvas in reversed(self._scroll_canvases):
+            try:
+                if not canvas.winfo_exists():
+                    continue
+                left = canvas.winfo_rootx()
+                top = canvas.winfo_rooty()
+                right = left + canvas.winfo_width()
+                bottom = top + canvas.winfo_height()
+            except tk.TclError:
+                continue
+            if left <= pointer_x <= right and top <= pointer_y <= bottom:
+                return canvas
         return None
 
     def _center_on_screen(self) -> None:
@@ -2814,7 +3353,9 @@ class BaseWindow(tk.Toplevel):
         except Exception:
             pass
 
-    def _append_bubble(self, widget: tk.Frame, my_username: str, entry: MessageEntry, wraplength: int) -> None:
+    def _append_bubble(
+        self, widget: tk.Frame, my_username: str, entry: MessageEntry, wraplength: int
+    ) -> None:
         timestamp = format_message_time(entry.timestamp)
         normalized_sender = entry.sender.strip().lower()
         own_sender = my_username.strip().lower()
@@ -2850,13 +3391,24 @@ class BaseWindow(tk.Toplevel):
 
         justify = "right" if direction == "outgoing" else "left"
         anchor = "e" if direction == "outgoing" else "w"
-        bubble_fill = UI_COLORS["outgoing_bg"] if direction == "outgoing" else UI_COLORS["incoming_bg"]
+        bubble_fill = (
+            UI_COLORS["outgoing_bg"]
+            if direction == "outgoing"
+            else UI_COLORS["incoming_bg"]
+        )
         meta_row = tk.Frame(align, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
         meta_row.pack(anchor=anchor, fill="x", pady=(0, 4))
         if direction == "incoming":
-            avatar = AvatarBadge(meta_row, name=entry.sender, diameter=26, background=UI_COLORS["panel_bg"])
+            avatar = AvatarBadge(
+                meta_row,
+                name=entry.sender,
+                diameter=26,
+                background=UI_COLORS["panel_bg"],
+            )
             avatar.pack(side="left", padx=(0, 8))
-        meta_text = tk.Frame(meta_row, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        meta_text = tk.Frame(
+            meta_row, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
         meta_text.pack(side="left" if direction == "incoming" else "right")
         tk.Label(
             meta_text,
@@ -2927,13 +3479,20 @@ class ContactsWindow(BaseWindow):
         )
         hero.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         hero.content.columnconfigure(0, weight=1)
-        ttk.Label(hero.content, text="Contacts", style="AppTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(hero.content, text="Contacts", style="AppTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Label(
             hero.content,
-            text="Manage saved people and live LAN discovery without touching the messaging backend.",
+            text=(
+                "Manage saved people and live LAN discovery without touching "
+                "the messaging backend."
+            ),
             style="Subheading.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
-        hero_actions = tk.Frame(hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        hero_actions = tk.Frame(
+            hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0
+        )
         hero_actions.grid(row=0, column=1, rowspan=2, sticky="e")
         RoundedButton(
             hero_actions,
@@ -2981,11 +3540,19 @@ class ContactsWindow(BaseWindow):
         saved_card.content.columnconfigure(0, weight=1)
         saved_card.content.rowconfigure(2, weight=1)
 
-        ttk.Label(saved_card.content, text="Saved Contacts", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            saved_card.content, text="Saved Contacts", style="Section.TLabel"
+        ).grid(row=0, column=0, sticky="w")
         self.saved_summary_var = tk.StringVar(value="")
-        ttk.Label(saved_card.content, textvariable=self.saved_summary_var, style="Subheading.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 12))
+        ttk.Label(
+            saved_card.content,
+            textvariable=self.saved_summary_var,
+            style="Subheading.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
 
-        self.tree = ttk.Treeview(saved_card.content, columns=("name", "status"), show="headings", height=14)
+        self.tree = ttk.Treeview(
+            saved_card.content, columns=("name", "status"), show="headings", height=14
+        )
         self.tree.heading("name", text="Name")
         self.tree.heading("status", text="Availability")
         self.tree.column("name", width=250, anchor="w")
@@ -2995,7 +3562,9 @@ class ContactsWindow(BaseWindow):
         self.tree.grid(row=2, column=0, sticky="nsew")
         self.tree.bind("<Double-1>", lambda _event: self.chat_selected(), add="+")
 
-        saved_actions = tk.Frame(saved_card.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        saved_actions = tk.Frame(
+            saved_card.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
         saved_actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         RoundedButton(
             saved_actions,
@@ -3037,19 +3606,37 @@ class ContactsWindow(BaseWindow):
         discovered_card.content.columnconfigure(0, weight=1)
         discovered_card.content.rowconfigure(2, weight=1)
 
-        ttk.Label(discovered_card.content, text="Live Discovery", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            discovered_card.content, text="Live Discovery", style="Section.TLabel"
+        ).grid(row=0, column=0, sticky="w")
         self.discovered_summary_var = tk.StringVar(value="")
-        ttk.Label(discovered_card.content, textvariable=self.discovered_summary_var, style="Subheading.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 12))
+        ttk.Label(
+            discovered_card.content,
+            textvariable=self.discovered_summary_var,
+            style="Subheading.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
 
-        self.discovered_tree = ttk.Treeview(discovered_card.content, columns=("name", "address"), show="headings", height=14)
+        self.discovered_tree = ttk.Treeview(
+            discovered_card.content,
+            columns=("name", "address"),
+            show="headings",
+            height=14,
+        )
         self.discovered_tree.heading("name", text="Discovered Peer")
         self.discovered_tree.heading("address", text="Address")
         self.discovered_tree.column("name", width=250, anchor="w")
         self.discovered_tree.column("address", width=150, anchor="w")
         self.discovered_tree.grid(row=2, column=0, sticky="nsew")
-        self.discovered_tree.bind("<Double-1>", lambda _event: self.add_selected_online(), add="+")
+        self.discovered_tree.bind(
+            "<Double-1>", lambda _event: self.add_selected_online(), add="+"
+        )
 
-        discovered_actions = tk.Frame(discovered_card.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        discovered_actions = tk.Frame(
+            discovered_card.content,
+            bg=UI_COLORS["panel_bg"],
+            bd=0,
+            highlightthickness=0,
+        )
         discovered_actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         RoundedButton(
             discovered_actions,
@@ -3079,7 +3666,9 @@ class ContactsWindow(BaseWindow):
         ).pack(side="left", padx=(10, 0))
 
         self.footer_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=self.footer_var, style="Caption.TLabel").grid(row=2, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(frame, textvariable=self.footer_var, style="Caption.TLabel").grid(
+            row=2, column=0, sticky="w", pady=(10, 0)
+        )
 
         self.refresh()
 
@@ -3093,14 +3682,25 @@ class ContactsWindow(BaseWindow):
         for item_id in self.discovered_tree.get_children():
             self.discovered_tree.delete(item_id)
 
-        for contact in sorted(self.app.contacts, key=lambda contact: contact.username.lower()):
+        for contact in sorted(
+            self.app.contacts, key=lambda contact: contact.username.lower()
+        ):
             peer = self.app.find_peer_for_contact(contact)
             status = "Online" if peer is not None else "Offline"
             tag = "online" if peer is not None else "offline"
-            self.tree.insert("", "end", iid=contact.public_key_b64, values=(contact.username, status), tags=(tag,))
+            self.tree.insert(
+                "",
+                "end",
+                iid=contact.public_key_b64,
+                values=(contact.username, status),
+                tags=(tag,),
+            )
 
         online_peers = [
-            peer for peer in sorted(self.app.peers.values(), key=lambda peer: peer.username.lower())
+            peer
+            for peer in sorted(
+                self.app.peers.values(), key=lambda peer: peer.username.lower()
+            )
             if not self.app.is_contact(peer)
         ]
         self._online_options = {}
@@ -3114,8 +3714,15 @@ class ContactsWindow(BaseWindow):
             self.discovered_tree.insert("", "end", iid=peer.ip, values=(label, peer.ip))
 
         saved_total = len(self.app.contacts)
-        online_total = sum(1 for contact in self.app.contacts if self.app.find_peer_for_contact(contact) is not None)
-        self.saved_summary_var.set(f"{saved_total} saved contact{'s' if saved_total != 1 else ''} • {online_total} online now")
+        online_total = sum(
+            1
+            for contact in self.app.contacts
+            if self.app.find_peer_for_contact(contact) is not None
+        )
+        self.saved_summary_var.set(
+            f"{saved_total} saved contact{'s' if saved_total != 1 else ''} "
+            f"• {online_total} online now"
+        )
 
         discovered_total = len(online_peers)
         self.discovered_summary_var.set(
@@ -3124,7 +3731,8 @@ class ContactsWindow(BaseWindow):
             else "No unsaved peers are visible right now."
         )
         self.footer_var.set(
-            f"Discovery: {discovered_total} peer{'s' if discovered_total != 1 else ''} available to add."
+            f"Discovery: {discovered_total} "
+            f"peer{'s' if discovered_total != 1 else ''} available to add."
         )
 
     def add_selected_online(self) -> None:
@@ -3154,7 +3762,11 @@ class ContactsWindow(BaseWindow):
             self.app.open_quick_chat(peer.ip)
             return
         if not contact.last_ip:
-            messagebox.showinfo("Offline", "That contact is currently offline and has no saved address yet.", parent=self)
+            messagebox.showinfo(
+                "Offline",
+                "That contact is currently offline and has no saved address yet.",
+                parent=self,
+            )
             return
         self.app.open_quick_chat(contact.last_ip)
 
@@ -3185,20 +3797,26 @@ class SettingsWindow(BaseWindow):
         hero.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         hero.content.columnconfigure(0, weight=1)
 
-        ttk.Label(hero.content, text="Settings", style="AppTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(hero.content, text="Settings", style="AppTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Label(
             hero.content,
             text="Identity, storage, and update behavior with the same secure local backend.",
             style="Subheading.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
-        stats = tk.Frame(hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        stats = tk.Frame(
+            hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0
+        )
         stats.grid(row=2, column=0, sticky="w")
-        for index, text in enumerate((
-            f"Version {APP_VERSION}",
-            f"Local IP {self.app.local_ip}",
-            "Encrypted history enabled",
-        )):
+        for index, text in enumerate(
+            (
+                f"Version {APP_VERSION}",
+                f"Local IP {self.app.local_ip}",
+                "Encrypted history enabled",
+            )
+        ):
             label = tk.Label(
                 stats,
                 text=text,
@@ -3210,7 +3828,9 @@ class SettingsWindow(BaseWindow):
             )
             label.pack(side="left", padx=(0, 8))
 
-        hero_actions = tk.Frame(hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        hero_actions = tk.Frame(
+            hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0
+        )
         hero_actions.grid(row=0, column=1, rowspan=3, sticky="ne")
         RoundedButton(
             hero_actions,
@@ -3238,7 +3858,9 @@ class SettingsWindow(BaseWindow):
         shell.grid(row=1, column=0, sticky="nsew")
         shell.content.columnconfigure(0, weight=1)
 
-        self.settings_body = tk.Frame(shell.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        self.settings_body = tk.Frame(
+            shell.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
         self.settings_body.grid(row=0, column=0, sticky="nsew")
         self.settings_body.columnconfigure(0, weight=1)
         self.settings_body.columnconfigure(1, weight=1)
@@ -3258,12 +3880,26 @@ class SettingsWindow(BaseWindow):
         )
         profile_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
         profile_card.content.columnconfigure(0, weight=1)
-        ttk.Label(profile_card.content, text="Profile", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(profile_card.content, text="Shown to everyone on your LAN.", style="Subheading.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 12))
-        ttk.Label(profile_card.content, text="Display Name").grid(row=2, column=0, sticky="w")
-        ttk.Entry(profile_card.content, textvariable=self.username_var).grid(row=3, column=0, sticky="ew", pady=(6, 12))
-        ttk.Label(profile_card.content, text="App Version").grid(row=4, column=0, sticky="w")
-        ttk.Label(profile_card.content, text=APP_VERSION, style="Subheading.TLabel").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(profile_card.content, text="Profile", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            profile_card.content,
+            text="Shown to everyone on your LAN.",
+            style="Subheading.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
+        ttk.Label(profile_card.content, text="Display Name").grid(
+            row=2, column=0, sticky="w"
+        )
+        ttk.Entry(profile_card.content, textvariable=self.username_var).grid(
+            row=3, column=0, sticky="ew", pady=(6, 12)
+        )
+        ttk.Label(profile_card.content, text="App Version").grid(
+            row=4, column=0, sticky="w"
+        )
+        ttk.Label(
+            profile_card.content, text=APP_VERSION, style="Subheading.TLabel"
+        ).grid(row=5, column=0, sticky="w", pady=(6, 0))
 
         updates_card = RoundedPanel(
             self.settings_body,
@@ -3276,17 +3912,29 @@ class SettingsWindow(BaseWindow):
         )
         updates_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
         updates_card.content.columnconfigure(0, weight=1)
-        ttk.Label(updates_card.content, text="Updates", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(updates_card.content, text="Updates", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Label(
             updates_card.content,
-            text=f"Point the app at a manifest JSON or a folder containing {UPDATE_MANIFEST_FILENAME}.",
+            text=(
+                "Point the app at a manifest JSON or a folder containing "
+                f"{UPDATE_MANIFEST_FILENAME}."
+            ),
             style="Subheading.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 12))
-        ttk.Label(updates_card.content, text="Update Server URL").grid(row=2, column=0, sticky="w")
-        ttk.Entry(updates_card.content, textvariable=self.update_server_var).grid(row=3, column=0, sticky="ew", pady=(6, 12))
+        ttk.Label(updates_card.content, text="Update Server URL").grid(
+            row=2, column=0, sticky="w"
+        )
+        ttk.Entry(updates_card.content, textvariable=self.update_server_var).grid(
+            row=3, column=0, sticky="ew", pady=(6, 12)
+        )
         ttk.Label(
             updates_card.content,
-            text="Manual update checks open the platform download page when a newer version is found.",
+            text=(
+                "Manual update checks open the platform download page when "
+                "a newer version is found."
+            ),
             style="Caption.TLabel",
         ).grid(row=4, column=0, sticky="w")
 
@@ -3301,18 +3949,29 @@ class SettingsWindow(BaseWindow):
         )
         storage_card.grid(row=1, column=0, columnspan=2, sticky="nsew")
         storage_card.content.columnconfigure(0, weight=1)
-        ttk.Label(storage_card.content, text="Storage", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(storage_card.content, text="Storage", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Label(
             storage_card.content,
-            text="Received files are stored here, while conversation history remains encrypted on disk.",
+            text=(
+                "Received files are stored here, while conversation history "
+                "remains encrypted on disk."
+            ),
             style="Subheading.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 12))
-        ttk.Label(storage_card.content, text="Received Files Folder").grid(row=2, column=0, sticky="w")
+        ttk.Label(storage_card.content, text="Received Files Folder").grid(
+            row=2, column=0, sticky="w"
+        )
 
-        inbox_row = tk.Frame(storage_card.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        inbox_row = tk.Frame(
+            storage_card.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0
+        )
         inbox_row.grid(row=3, column=0, sticky="ew", pady=(6, 0))
         inbox_row.columnconfigure(0, weight=1)
-        ttk.Entry(inbox_row, textvariable=self.inbox_dir_var).grid(row=0, column=0, sticky="ew")
+        ttk.Entry(inbox_row, textvariable=self.inbox_dir_var).grid(
+            row=0, column=0, sticky="ew"
+        )
         RoundedButton(
             inbox_row,
             text="Browse",
@@ -3329,7 +3988,10 @@ class SettingsWindow(BaseWindow):
 
         ttk.Label(
             storage_card.content,
-            text="Tip: choose a synced folder if you want received files to surface in other tools automatically.",
+            text=(
+                "Tip: choose a synced folder if you want received files to "
+                "surface in other tools automatically."
+            ),
             style="Caption.TLabel",
         ).grid(row=4, column=0, sticky="w", pady=(12, 0))
 
@@ -3369,30 +4031,40 @@ class SettingsWindow(BaseWindow):
         super().show()
 
     def pick_inbox_dir(self) -> None:
-        selected = filedialog.askdirectory(parent=self, initialdir=self.inbox_dir_var.get() or str(self.app.inbox_dir))
+        selected = filedialog.askdirectory(
+            parent=self, initialdir=self.inbox_dir_var.get() or str(self.app.inbox_dir)
+        )
         if selected:
             self.inbox_dir_var.set(selected)
             try:
                 self.app.config.inbox_dir = selected
             except Exception as exc:
-                messagebox.showerror("Invalid folder", f"Could not use that folder:\n{exc}", parent=self)
+                messagebox.showerror(
+                    "Invalid folder", f"Could not use that folder:\n{exc}", parent=self
+                )
                 self.inbox_dir_var.set(str(self.app.inbox_dir))
 
     def save(self) -> None:
         value = self.username_var.get().strip()
         if not value:
-            messagebox.showerror("Invalid username", "Username cannot be empty.", parent=self)
+            messagebox.showerror(
+                "Invalid username", "Username cannot be empty.", parent=self
+            )
             return
         inbox_dir = self.inbox_dir_var.get().strip()
         if not inbox_dir:
-            messagebox.showerror("Invalid folder", "Choose a folder for received files.", parent=self)
+            messagebox.showerror(
+                "Invalid folder", "Choose a folder for received files.", parent=self
+            )
             return
         self.app.config.username = value
         self.app.config.update_server_url = self.update_server_var.get().strip()
         try:
             self.app.config.inbox_dir = inbox_dir
         except Exception as exc:
-            messagebox.showerror("Invalid folder", f"Could not use that folder:\n{exc}", parent=self)
+            messagebox.showerror(
+                "Invalid folder", f"Could not use that folder:\n{exc}", parent=self
+            )
             return
         self.app.refresh_tray_menu(refresh_windows=True)
         self.hide()
@@ -3411,14 +4083,23 @@ class MainChatWindow(BaseWindow):
         self.typing_idle_job: str | None = None
         self.typing_target_ip: str | None = None
         self.sidebar_search_var = tk.StringVar()
-        self.sidebar_search_var.trace_add("write", lambda *_args: self.refresh_sidebar())
+        self.sidebar_search_var.trace_add(
+            "write", lambda *_args: self._schedule_sidebar_refresh()
+        )
+        self._sidebar_refresh_job: str | None = None
+        self._history_render_key: tuple[Any, ...] | None = None
         self.sidebar_count_var = tk.StringVar(value="No conversations yet")
         self.header_name_var = tk.StringVar(value=APP_NAME)
-        self.header_status_var = tk.StringVar(value="Secure local messaging on your network.")
+        self.header_status_var = tk.StringVar(
+            value="Secure local messaging on your network."
+        )
         self.header_meta_var = tk.StringVar(value="Select a conversation to begin.")
         self.header_typing_var = tk.StringVar(value="")
         self.composer_hint_var = tk.StringVar(
-            value="Enter to send. Shift+Enter for a new line. Drop files into the message area to queue them."
+            value=(
+                "Enter to send. Shift+Enter for a new line. Drop files into "
+                "the message area to queue them."
+            )
         )
 
         self.columnconfigure(0, weight=1)
@@ -3451,14 +4132,21 @@ class MainChatWindow(BaseWindow):
         )
         sidebar_hero.pack(fill="x", pady=(0, 12))
         sidebar_hero.content.columnconfigure(0, weight=1)
-        ttk.Label(sidebar_hero.content, text="Chats", style="AppTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(sidebar_hero.content, text="Chats", style="AppTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Label(
             sidebar_hero.content,
-            text="Modern local messaging with encrypted history, drag-and-drop files, and live LAN presence.",
+            text=(
+                "Modern local messaging with encrypted history, "
+                "drag-and-drop files, and live LAN presence."
+            ),
             style="Subheading.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
-        identity = tk.Frame(sidebar_hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        identity = tk.Frame(
+            sidebar_hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0
+        )
         identity.grid(row=2, column=0, sticky="w")
         tk.Label(
             identity,
@@ -3479,7 +4167,9 @@ class MainChatWindow(BaseWindow):
             pady=6,
         ).pack(side="left")
 
-        sidebar_actions = tk.Frame(sidebar_hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        sidebar_actions = tk.Frame(
+            sidebar_hero.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0
+        )
         sidebar_actions.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         RoundedButton(
             sidebar_actions,
@@ -3534,10 +4224,16 @@ class MainChatWindow(BaseWindow):
         sidebar_holder.content.columnconfigure(0, weight=1)
         sidebar_holder.content.rowconfigure(3, weight=1)
 
-        top_row = tk.Frame(sidebar_holder.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        top_row = tk.Frame(
+            sidebar_holder.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
         top_row.grid(row=0, column=0, sticky="ew")
-        ttk.Label(top_row, text="Recent Conversations", style="Section.TLabel").pack(side="left")
-        ttk.Label(top_row, textvariable=self.sidebar_count_var, style="Caption.TLabel").pack(side="right")
+        ttk.Label(top_row, text="Recent Conversations", style="Section.TLabel").pack(
+            side="left"
+        )
+        ttk.Label(
+            top_row, textvariable=self.sidebar_count_var, style="Caption.TLabel"
+        ).pack(side="right")
 
         ttk.Label(
             sidebar_holder.content,
@@ -3556,25 +4252,39 @@ class MainChatWindow(BaseWindow):
         )
         search_card.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         search_card.content.columnconfigure(0, weight=1)
-        self.search_entry = ttk.Entry(search_card.content, textvariable=self.sidebar_search_var)
+        self.search_entry = ttk.Entry(
+            search_card.content, textvariable=self.sidebar_search_var
+        )
         self.search_entry.grid(row=0, column=0, sticky="ew")
 
-        list_shell = tk.Frame(sidebar_holder.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        list_shell = tk.Frame(
+            sidebar_holder.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
         list_shell.grid(row=3, column=0, sticky="nsew")
         list_shell.columnconfigure(0, weight=1)
         list_shell.rowconfigure(0, weight=1)
-        self.sidebar_canvas = tk.Canvas(list_shell, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        self.sidebar_canvas = tk.Canvas(
+            list_shell, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
         self.sidebar_canvas.grid(row=0, column=0, sticky="nsew")
 
-        self.sidebar_list = tk.Frame(self.sidebar_canvas, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
-        self.sidebar_window = self.sidebar_canvas.create_window((0, 0), window=self.sidebar_list, anchor="nw")
+        self.sidebar_list = tk.Frame(
+            self.sidebar_canvas, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
+        self.sidebar_window = self.sidebar_canvas.create_window(
+            (0, 0), window=self.sidebar_list, anchor="nw"
+        )
         self.sidebar_list.bind(
             "<Configure>",
-            lambda _event: self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all")),
+            lambda _event: self.sidebar_canvas.configure(
+                scrollregion=self.sidebar_canvas.bbox("all")
+            ),
         )
         self.sidebar_canvas.bind(
             "<Configure>",
-            lambda event: self.sidebar_canvas.itemconfigure(self.sidebar_window, width=event.width),
+            lambda event: self.sidebar_canvas.itemconfigure(
+                self.sidebar_window, width=event.width
+            ),
         )
         self._bind_mousewheel(self.sidebar_canvas, self.sidebar_list)
 
@@ -3594,7 +4304,12 @@ class MainChatWindow(BaseWindow):
         )
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         header.content.columnconfigure(1, weight=1)
-        self.header_avatar = AvatarBadge(header.content, name=self.app.username, diameter=54, background=UI_COLORS["card_bg"])
+        self.header_avatar = AvatarBadge(
+            header.content,
+            name=self.app.username,
+            diameter=54,
+            background=UI_COLORS["card_bg"],
+        )
         self.header_avatar.grid(row=0, column=0, rowspan=4, sticky="w", padx=(0, 14))
         tk.Label(
             header.content,
@@ -3634,9 +4349,13 @@ class MainChatWindow(BaseWindow):
             fg=UI_COLORS["accent"],
             font=(UI_FONT, 10, "italic"),
         )
-        self.header_typing_label.grid(row=3, column=1, columnspan=2, sticky="w", pady=(6, 0))
+        self.header_typing_label.grid(
+            row=3, column=1, columnspan=2, sticky="w", pady=(6, 0)
+        )
 
-        header_actions = tk.Frame(header.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        header_actions = tk.Frame(
+            header.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0
+        )
         header_actions.grid(row=0, column=3, rowspan=4, sticky="e", padx=(18, 0))
         self.file_button = RoundedButton(
             header_actions,
@@ -3693,17 +4412,27 @@ class MainChatWindow(BaseWindow):
         history_card.grid(row=1, column=0, sticky="nsew")
         history_card.content.columnconfigure(0, weight=1)
         history_card.content.rowconfigure(0, weight=1)
-        self.history_canvas = tk.Canvas(history_card.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        self.history_canvas = tk.Canvas(
+            history_card.content, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
         self.history_canvas.grid(row=0, column=0, sticky="nsew")
-        self.history_frame = tk.Frame(self.history_canvas, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
-        self.history_window = self.history_canvas.create_window((0, 0), window=self.history_frame, anchor="nw")
+        self.history_frame = tk.Frame(
+            self.history_canvas, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
+        self.history_window = self.history_canvas.create_window(
+            (0, 0), window=self.history_frame, anchor="nw"
+        )
         self.history_frame.bind(
             "<Configure>",
-            lambda _event: self.history_canvas.configure(scrollregion=self.history_canvas.bbox("all")),
+            lambda _event: self.history_canvas.configure(
+                scrollregion=self.history_canvas.bbox("all")
+            ),
         )
         self.history_canvas.bind(
             "<Configure>",
-            lambda event: self.history_canvas.itemconfigure(self.history_window, width=event.width),
+            lambda event: self.history_canvas.itemconfigure(
+                self.history_window, width=event.width
+            ),
         )
         self._bind_mousewheel(self.history_canvas, self.history_frame)
 
@@ -3726,7 +4455,9 @@ class MainChatWindow(BaseWindow):
             anchor="w",
         )
         self.transfer_label.pack(anchor="w")
-        self.transfer_bar = ttk.Progressbar(self.transfer_card.content, mode="determinate")
+        self.transfer_bar = ttk.Progressbar(
+            self.transfer_card.content, mode="determinate"
+        )
         self.transfer_bar.pack(fill="x", pady=(6, 0))
         self.transfer_card.grid_remove()
 
@@ -3740,7 +4471,7 @@ class MainChatWindow(BaseWindow):
             stretch=True,
         )
         composer.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        composer.content.columnconfigure(1, weight=1, minsize=200)
+        composer.content.columnconfigure(1, weight=1, minsize=360)
 
         self.attach_button = RoundedButton(
             composer.content,
@@ -3765,15 +4496,15 @@ class MainChatWindow(BaseWindow):
             border=UI_COLORS["border"],
             radius=UI_METRICS["radius_card"],
             padding=(8, 7),
-            stretch=False,
+            stretch=True,
         )
         self.entry_shell.grid(row=0, column=1, sticky="ew")
         self.entry_shell.content.columnconfigure(0, weight=1)
 
         self.entry = tk.Text(
             self.entry_shell.content,
-            height=1,
-            width=1,
+            height=COMPOSER_MIN_LINES,
+            width=COMPOSER_START_CHARS,
             wrap="word",
             bg=UI_COLORS["input_bg"],
             fg=UI_COLORS["text"],
@@ -3791,8 +4522,12 @@ class MainChatWindow(BaseWindow):
         self.entry.bind("<KeyRelease>", self._handle_composer_change, add="+")
         self.entry.bind("<<Paste>>", self._schedule_composer_resize, add="+")
         self.entry.bind("<<Paste>>", self._handle_composer_change, add="+")
-        self.entry.bind("<FocusIn>", lambda _event: self._update_entry_placeholder(), add="+")
-        self.entry.bind("<FocusOut>", lambda _event: self._update_entry_placeholder(), add="+")
+        self.entry.bind(
+            "<FocusIn>", lambda _event: self._update_entry_placeholder(), add="+"
+        )
+        self.entry.bind(
+            "<FocusOut>", lambda _event: self._update_entry_placeholder(), add="+"
+        )
 
         self.entry_placeholder = tk.Label(
             self.entry_shell.content,
@@ -3868,9 +4603,21 @@ class MainChatWindow(BaseWindow):
     def refresh_for_message(self, ip: str) -> None:
         if self.selected_ip is None:
             self.selected_ip = ip
-        self.refresh_sidebar()
+        self._schedule_sidebar_refresh()
         if self.selected_ip == ip:
             self.refresh_current_chat()
+
+    def _schedule_sidebar_refresh(self) -> None:
+        if self._sidebar_refresh_job is not None:
+            return
+        try:
+            self._sidebar_refresh_job = self.after(80, self._flush_sidebar_refresh)
+        except tk.TclError:
+            self._sidebar_refresh_job = None
+
+    def _flush_sidebar_refresh(self) -> None:
+        self._sidebar_refresh_job = None
+        self.refresh_sidebar()
 
     def _show_active_chat_info(self) -> None:
         if self.selected_ip:
@@ -3888,14 +4635,20 @@ class MainChatWindow(BaseWindow):
 
         filtered: list[str] = []
         for ip in targets:
-            haystack = " ".join((self.app.conversation_name(ip), ip, self.app.conversation_preview(ip))).lower()
+            haystack = " ".join(
+                (self.app.conversation_name(ip), ip, self.app.conversation_preview(ip))
+            ).lower()
             if query in haystack:
                 filtered.append(ip)
         return filtered
 
     def refresh_sidebar(self) -> None:
         try:
-            sidebar_y = self.sidebar_canvas.yview()[0] if self.sidebar_canvas.winfo_exists() else 0.0
+            sidebar_y = (
+                self.sidebar_canvas.yview()[0]
+                if self.sidebar_canvas.winfo_exists()
+                else 0.0
+            )
         except tk.TclError:
             sidebar_y = 0.0
         self.row_menus.clear()
@@ -3964,7 +4717,15 @@ class MainChatWindow(BaseWindow):
         preview = truncate_text(self.app.conversation_preview(ip), 78)
         online = self.app.find_peer_by_ip(ip) is not None
         timestamp = format_sidebar_timestamp(self._conversation_timestamp(ip))
-        status = "Online now" if online else "Saved contact" if self.app._find_contact_by_ip(ip) is not None else "Offline"
+        status = (
+            "Online now"
+            if online
+            else (
+                "Saved contact"
+                if self.app._find_contact_by_ip(ip) is not None
+                else "Offline"
+            )
+        )
 
         avatar = AvatarBadge(frame.content, name=name, diameter=42, background=bg)
         avatar.grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 10))
@@ -4039,20 +4800,44 @@ class MainChatWindow(BaseWindow):
             padx=0,
             pady=0,
         )
-        menu_button.bind("<Button-1>", lambda _event, target_ip=ip, button=menu_button: self._show_row_menu(target_ip, button))
+        menu_button.bind(
+            "<Button-1>",
+            lambda _event, target_ip=ip, button=menu_button: self._show_row_menu(
+                target_ip, button
+            ),
+        )
         menu_button.grid(row=0, column=2, sticky="ne", padx=(10, 0))
 
-        for widget in (frame, frame.content, avatar, text_wrap, title_label, preview_label, status_row, status_label):
-            widget.bind("<Button-1>", lambda _event, target_ip=ip: self.select_chat(target_ip))
+        for widget in (
+            frame,
+            frame.content,
+            avatar,
+            text_wrap,
+            title_label,
+            preview_label,
+            status_row,
+            status_label,
+        ):
+            widget.bind(
+                "<Button-1>", lambda _event, target_ip=ip: self.select_chat(target_ip)
+            )
 
     def _show_row_menu(self, ip: str, button: tk.Widget) -> None:
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label="Show Info", command=lambda target_ip=ip: self._show_chat_info(target_ip))
-        menu.add_command(label="Delete Thread", command=lambda target_ip=ip: self._delete_thread(target_ip))
+        menu.add_command(
+            label="Show Info",
+            command=lambda target_ip=ip: self._show_chat_info(target_ip),
+        )
+        menu.add_command(
+            label="Delete Thread",
+            command=lambda target_ip=ip: self._delete_thread(target_ip),
+        )
         self.row_menus.append(menu)
 
         try:
-            menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+            menu.tk_popup(
+                button.winfo_rootx(), button.winfo_rooty() + button.winfo_height()
+            )
         finally:
             menu.grab_release()
 
@@ -4060,7 +4845,11 @@ class MainChatWindow(BaseWindow):
         self.app.show_conversation_info(ip, parent=self)
 
     def _delete_thread(self, ip: str) -> None:
-        if self.app.ask_centered_yes_no("Delete Thread", f"Delete the conversation with {self.app.conversation_name(ip)}?", parent=self):
+        if self.app.ask_centered_yes_no(
+            "Delete Thread",
+            f"Delete the conversation with {self.app.conversation_name(ip)}?",
+            parent=self,
+        ):
             self.app.delete_conversation(ip)
             if self.selected_ip == ip:
                 self.selected_ip = None
@@ -4089,9 +4878,12 @@ class MainChatWindow(BaseWindow):
         if not self.selected_ip:
             self.title(APP_NAME)
             self.header_name_var.set(APP_NAME)
-            self.header_status_var.set("Choose a conversation or scan your LAN to start chatting.")
+            self.header_status_var.set(
+                "Choose a conversation or scan your LAN to start chatting."
+            )
             self.header_meta_var.set(
-                "Contacts, live peers, and encrypted message history stay synchronized in the sidebar."
+                "Contacts, live peers, and encrypted message history stay "
+                "synchronized in the sidebar."
             )
             self.header_typing_var.set("")
             self.header_avatar.set_name(self.app.username)
@@ -4115,15 +4907,23 @@ class MainChatWindow(BaseWindow):
         if peer is not None:
             self.header_status_var.set("Available on your LAN now.")
             self.header_meta_var.set(f"Direct encrypted peer chat • {peer.ip}")
-            self._set_status_badge("Online", UI_COLORS["success_bg"], UI_COLORS["success"])
+            self._set_status_badge(
+                "Online", UI_COLORS["success_bg"], UI_COLORS["success"]
+            )
         elif contact is not None and contact.last_ip:
-            self.header_status_var.set("Saved contact. Messages queue until this peer is seen again.")
+            self.header_status_var.set(
+                "Saved contact. Messages queue until this peer is seen again."
+            )
             self.header_meta_var.set(f"Last known address • {contact.last_ip}")
-            self._set_status_badge("Saved", UI_COLORS["warning_bg"], UI_COLORS["warning"])
+            self._set_status_badge(
+                "Saved", UI_COLORS["warning_bg"], UI_COLORS["warning"]
+            )
         else:
             self.header_status_var.set("Peer is currently offline.")
             self.header_meta_var.set(f"Conversation target • {ip}")
-            self._set_status_badge("Offline", UI_COLORS["danger_bg"], UI_COLORS["danger"])
+            self._set_status_badge(
+                "Offline", UI_COLORS["danger_bg"], UI_COLORS["danger"]
+            )
         self.header_typing_var.set(self.app.typing_status_text(ip))
 
         self.attach_button.set_enabled(True)
@@ -4137,6 +4937,26 @@ class MainChatWindow(BaseWindow):
         self.refresh_transfer(ip)
 
     def _render_history(self, entries: list[MessageEntry]) -> None:
+        wraplength = max(min(self.history_canvas.winfo_width() - 220, 420), 220)
+        render_key = (
+            self.selected_ip,
+            wraplength,
+            tuple(
+                (
+                    entry.message_id,
+                    entry.status,
+                    entry.read_receipt_sent,
+                    entry.timestamp,
+                    entry.sender,
+                    entry.text,
+                )
+                for entry in entries
+            ),
+        )
+        if render_key == self._history_render_key:
+            return
+        self._history_render_key = render_key
+
         for child in self.history_frame.winfo_children():
             child.destroy()
         if not self.selected_ip:
@@ -4154,7 +4974,8 @@ class MainChatWindow(BaseWindow):
         if not entries:
             self._render_history_placeholder(
                 f"Start a conversation with {self.app.conversation_name(self.selected_ip)}",
-                "Messages and file transfers stay local to your network and are saved with encrypted history.",
+                "Messages and file transfers stay local to your network and "
+                "are saved with encrypted history.",
                 primary_text="Send File",
                 primary_command=lambda: self.pick_file(self.selected_ip),
             )
@@ -4162,9 +4983,10 @@ class MainChatWindow(BaseWindow):
             self.after_idle(self._scroll_history_to_latest)
             return
 
-        wraplength = max(min(self.history_canvas.winfo_width() - 220, 420), 220)
         for entry in entries:
-            self._append_bubble(self.history_frame, self.app.username, entry, wraplength)
+            self._append_bubble(
+                self.history_frame, self.app.username, entry, wraplength
+            )
         self._bind_mousewheel_recursive(self.history_frame, self.history_canvas)
         if not self._history_is_near_bottom():
             return
@@ -4183,14 +5005,16 @@ class MainChatWindow(BaseWindow):
 
         label, current, total = transfer
         self.transfer_card.grid()
-        self.transfer_label.config(text=f"{label} ({format_bytes(current)} / {format_bytes(total)})")
+        self.transfer_label.config(
+            text=f"{label} ({format_bytes(current)} / {format_bytes(total)})"
+        )
         self.transfer_bar["maximum"] = max(total, 1)
         self.transfer_bar["value"] = current
 
     def _set_status_badge(self, text: str, background: str, foreground: str) -> None:
         self.header_badge.config(text=text, bg=background, fg=foreground)
 
-    def _schedule_composer_resize(self, _event=None) -> None:
+    def _schedule_composer_resize(self, _event: Any = None) -> None:
         self.after_idle(self._resize_composer_to_content)
 
     def _resize_composer_to_content(self) -> None:
@@ -4200,7 +5024,7 @@ class MainChatWindow(BaseWindow):
             return
 
         if not content:
-            target_lines = 1
+            target_lines = COMPOSER_MIN_LINES
         else:
             self.entry.update_idletasks()
             try:
@@ -4211,7 +5035,9 @@ class MainChatWindow(BaseWindow):
                     display_lines = len(content.splitlines()) or 1
             except Exception:
                 display_lines = len(content.splitlines()) or 1
-            target_lines = max(1, min(COMPOSER_MAX_LINES, display_lines))
+            target_lines = max(
+                COMPOSER_MIN_LINES, min(COMPOSER_MAX_LINES, display_lines)
+            )
 
         self.entry.configure(height=target_lines)
         self.entry_shell._queue_redraw()
@@ -4219,8 +5045,6 @@ class MainChatWindow(BaseWindow):
 
     def _bind_mousewheel_recursive(self, root: tk.Misc, canvas: tk.Canvas) -> None:
         self._bind_mousewheel(canvas, root)
-        for child in root.winfo_children():
-            self._bind_mousewheel_recursive(child, canvas)
 
     def _history_is_near_bottom(self) -> bool:
         try:
@@ -4244,11 +5068,13 @@ class MainChatWindow(BaseWindow):
         subtitle: str,
         *,
         primary_text: str,
-        primary_command,
+        primary_command: Callable[[], None],
         secondary_text: str | None = None,
-        secondary_command=None,
+        secondary_command: Callable[[], None] | None = None,
     ) -> None:
-        shell = tk.Frame(self.history_frame, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0)
+        shell = tk.Frame(
+            self.history_frame, bg=UI_COLORS["panel_bg"], bd=0, highlightthickness=0
+        )
         shell.pack(fill="both", expand=True, pady=50)
 
         card = RoundedPanel(
@@ -4262,7 +5088,9 @@ class MainChatWindow(BaseWindow):
         card.pack()
         card.content.columnconfigure(0, weight=1)
 
-        placeholder_avatar = AvatarBadge(card.content, name=title, diameter=60, background=UI_COLORS["card_bg"])
+        placeholder_avatar = AvatarBadge(
+            card.content, name=title, diameter=60, background=UI_COLORS["card_bg"]
+        )
         placeholder_avatar.grid(row=0, column=0, pady=(0, 14))
         tk.Label(
             card.content,
@@ -4281,7 +5109,9 @@ class MainChatWindow(BaseWindow):
             wraplength=420,
         ).grid(row=2, column=0, pady=(8, 16))
 
-        actions = tk.Frame(card.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0)
+        actions = tk.Frame(
+            card.content, bg=UI_COLORS["card_bg"], bd=0, highlightthickness=0
+        )
         actions.grid(row=3, column=0)
         RoundedButton(
             actions,
@@ -4348,11 +5178,15 @@ class MainChatWindow(BaseWindow):
         if not self.selected_ip:
             return
         paths = self.tk.splitlist(event.data)
-        queued_paths = [raw_path.strip("{}") for raw_path in paths if Path(raw_path.strip("{}")).is_file()]
+        queued_paths = [
+            raw_path.strip("{}")
+            for raw_path in paths
+            if Path(raw_path.strip("{}")).is_file()
+        ]
         if queued_paths:
             self.app.queue_files(self.selected_ip, queued_paths)
 
-    def on_enter(self, event) -> str | None:
+    def on_enter(self, event: Any) -> str | None:
         if event.state & 0x0001:
             return None
         self.send_text()
@@ -4379,7 +5213,7 @@ class MainChatWindow(BaseWindow):
             return
         self.app.queue_files(target_ip, list(paths))
 
-    def _handle_composer_change(self, _event=None) -> None:
+    def _handle_composer_change(self, _event: Any = None) -> None:
         self._update_entry_placeholder()
         if not self.selected_ip:
             return
@@ -4389,7 +5223,9 @@ class MainChatWindow(BaseWindow):
             self.app.send_typing_state(self.selected_ip, True)
             if self.typing_idle_job is not None:
                 self.after_cancel(self.typing_idle_job)
-            self.typing_idle_job = self.after(TYPING_IDLE_TIMEOUT_MS, self._flush_typing_state)
+            self.typing_idle_job = self.after(
+                TYPING_IDLE_TIMEOUT_MS, self._flush_typing_state
+            )
         else:
             self._flush_typing_state(self.selected_ip)
 

@@ -2,13 +2,13 @@
 
 from PyInstaller.utils.hooks import collect_submodules
 
-
-hiddenimports = collect_submodules("pystray")
-
-try:
-    hiddenimports += collect_submodules("plyer")
-except Exception:
-    pass
+hiddenimports = [
+    "pystray",
+    "pystray._base",
+    "pystray._darwin",
+    "pystray._info",
+    "pystray._util",
+]
 
 try:
     hiddenimports += collect_submodules("tkinterdnd2")

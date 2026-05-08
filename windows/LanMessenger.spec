@@ -2,11 +2,21 @@
 
 from PyInstaller.utils.hooks import collect_submodules
 
-
-hiddenimports = collect_submodules("pystray")
+hiddenimports = [
+    "pystray",
+    "pystray._base",
+    "pystray._info",
+    "pystray._util",
+    "pystray._win32",
+]
 
 try:
-    hiddenimports += collect_submodules("plyer")
+    hiddenimports += [
+        "plyer",
+        "plyer.platforms",
+        "plyer.platforms.win",
+        "plyer.platforms.win.notification",
+    ]
 except Exception:
     pass
 
