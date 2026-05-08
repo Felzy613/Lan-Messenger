@@ -14,13 +14,6 @@
     <key>com.apple.security.network.server</key>
     <true/>
 
-    <!-- Required for multicast UDP (239.255.42.99).
-         Needs explicit Apple approval: mail apple-sa@apple.com with your bundle ID.
-         Without approval the app falls back to subnet broadcasts (x.x.x.255),
-         which still works on single-subnet LANs. -->
-    <key>com.apple.developer.networking.multicast</key>
-    <true/>
-
     <!-- User notifications -->
     <key>com.apple.security.personal-information.calendars</key>
     <false/>
