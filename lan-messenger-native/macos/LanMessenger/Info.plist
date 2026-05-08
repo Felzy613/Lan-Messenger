@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>LAN Messenger</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>LAN Messenger</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.social-networking</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026</string>
+    <!-- Required for local network discovery (macOS 12+) -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>LAN Messenger uses the local network to discover and message nearby peers.</string>
+    <!-- Notifications -->
+    <key>NSUserNotificationAlertStyle</key>
+    <string>alert</string>
+    <!-- Bonjour services that will be browsed (required alongside NSLocalNetworkUsageDescription) -->
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_lan-messenger._tcp</string>
+    </array>
+</dict>
+</plist>
