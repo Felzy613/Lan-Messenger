@@ -1,0 +1,24 @@
+<UserControl
+    x:Class="LanMessenger.UI.Chat.FileTransferBannerControl"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Background="{ThemeResource ControlFillColorSecondaryBrush}"
+            Padding="12,8">
+        <StackPanel Spacing="4">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="LabelText"
+                           Style="{StaticResource BodyStrongTextBlockStyle}"
+                           TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="BytesText"
+                           Grid.Column="1"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </Grid>
+            <ProgressBar x:Name="Progress" Minimum="0" Maximum="1" />
+        </StackPanel>
+    </Border>
+</UserControl>

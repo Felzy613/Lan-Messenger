@@ -1,0 +1,72 @@
+<Page
+    x:Class="LanMessenger.UI.Chat.ChatPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:LanMessenger.UI.Chat"
+    xmlns:ui="using:LanMessenger.UI">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Header: avatar + name + online dot + typing -->
+        <Grid Grid.Row="0"
+              Padding="16,12"
+              ColumnSpacing="12"
+              BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+              BorderThickness="0,0,0,1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0">
+                <ui:AvatarControl x:Name="HeaderAvatar" Width="36" Height="36" />
+                <Ellipse x:Name="HeaderOnlineDot"
+                         Width="10" Height="10"
+                         Fill="{ThemeResource SystemAccentColor}"
+                         Stroke="White" StrokeThickness="2"
+                         HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                         Visibility="Collapsed" />
+            </Grid>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                <TextBlock x:Name="HeaderName"
+                           Style="{StaticResource SubtitleTextBlockStyle}" />
+                <TextBlock x:Name="HeaderSubtext"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- File transfer banner -->
+        <local:FileTransferBannerControl x:Name="TransferBanner"
+                                          Grid.Row="1"
+                                          Visibility="Collapsed" />
+
+        <!-- Messages list -->
+        <ScrollViewer x:Name="MessagesScroll"
+                      Grid.Row="2"
+                      VerticalScrollMode="Enabled"
+                      VerticalScrollBarVisibility="Auto"
+                      Padding="16,8">
+            <ItemsControl x:Name="MessagesList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="local:MessageRowViewModel">
+                        <local:MessageBubbleControl Row="{Binding}" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <!-- Composer -->
+        <local:ComposerControl x:Name="Composer"
+                               Grid.Row="3"
+                               BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                               BorderThickness="0,1,0,0" />
+    </Grid>
+</Page>
