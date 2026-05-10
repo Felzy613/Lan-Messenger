@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/windows-native/**'
       - '.github/workflows/windows-build.yml'
+  workflow_dispatch:
 
 jobs:
   build-and-release:
