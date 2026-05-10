@@ -5,6 +5,7 @@ using LanMessenger.Core.Persistence;
 using LanMessenger.Core.Protocol;
 using LanMessenger.Core.Services;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
