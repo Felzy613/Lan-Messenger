@@ -1,0 +1,64 @@
+<Page
+    x:Class="LanMessenger.UI.Settings.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer>
+        <StackPanel Padding="32,24" Spacing="20" MaxWidth="640">
+            <TextBlock Text="Settings"
+                       Style="{StaticResource TitleTextBlockStyle}" />
+
+            <!-- Username -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Display name"
+                           Style="{StaticResource BodyStrongTextBlockStyle}" />
+                <TextBox x:Name="UsernameBox"
+                         PlaceholderText="Your name"
+                         LostFocus="UsernameBox_LostFocus" />
+            </StackPanel>
+
+            <!-- Inbox directory -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Received files folder"
+                           Style="{StaticResource BodyStrongTextBlockStyle}" />
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="InboxBox"
+                             Grid.Column="0"
+                             IsReadOnly="True" />
+                    <Button Grid.Column="1"
+                            Content="Browse…"
+                            Click="BrowseInbox_Click" />
+                </Grid>
+            </StackPanel>
+
+            <!-- Update server -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Update server URL"
+                           Style="{StaticResource BodyStrongTextBlockStyle}" />
+                <TextBox x:Name="UpdateUrlBox"
+                         PlaceholderText="https://example.com"
+                         LostFocus="UpdateUrlBox_LostFocus" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="CheckUpdatesBtn"
+                            Content="Check for Updates"
+                            Click="CheckUpdates_Click" />
+                    <TextBlock x:Name="UpdateStatusText"
+                               VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Version -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="About"
+                           Style="{StaticResource BodyStrongTextBlockStyle}" />
+                <TextBlock x:Name="VersionText"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

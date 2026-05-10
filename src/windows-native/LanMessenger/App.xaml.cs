@@ -5,13 +5,13 @@ namespace LanMessenger;
 
 public partial class App : Application
 {
-    private MainWindow? _window;
+    public MainWindow? MainWindow { get; private set; }
 
     public App() => InitializeComponent();
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        _window = new MainWindow();
-        _window.Activate();
+        MainWindow = new MainWindow();
+        MainWindow.Activate();
     }
 }
