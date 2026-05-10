@@ -1,4 +1,5 @@
 using NSec.Cryptography;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace LanMessenger.Core.Crypto;
@@ -59,8 +60,8 @@ public static class SessionCrypto
         if (ciphertextWithTag.Length < 16) throw new CryptographicException("Ciphertext too short");
 
         // NSec Aes256Gcm.Decrypt expects ciphertext ‖ tag together (same format we wrote)
-        if (!_aes.Decrypt(key, nonce, aad, ciphertextWithTag, out byte[]? plaintext) || plaintext is null)
-            throw new CryptographicException("Decryption failed (authentication error)");
+        var plaintext = _aes.Decrypt(key, nonce, aad, ciphertextWithTag)
+            ?? throw new CryptographicException("Decryption failed (authentication error)");
 
         return plaintext;
     }

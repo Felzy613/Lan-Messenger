@@ -31,11 +31,9 @@ public static class HistoryCrypto
     public static Key HistoryKey(Key privateKey)
     {
         byte[] raw = privateKey.Export(KeyBlobFormat.RawPrivateKey);
-        // HKDF with the raw private key as IKM (no key agreement — same as Python)
-        // NSec HkdfSha256 Extract+Expand: use raw bytes as InputKeyingMaterial via a secret
-        // We use ExtractAndExpand with empty salt.
-        var ikm = new SharedSecret(raw);  // treat raw private key bytes as a shared secret for HKDF input
-        return _hkdf.DeriveKey(ikm, _empty, _info, _aes,
+        // NSec 24.x removed the public SharedSecret constructor; use BCL HKDF with raw IKM instead.
+        byte[] keyBytes = HKDF.DeriveKey(HashAlgorithmName.SHA256, raw, 32, salt: _empty, info: _info);
+        return Key.Import(_aes, keyBytes, KeyBlobFormat.RawSymmetricKey,
             new KeyCreationParameters { ExportPolicy = KeyExportPolicies.AllowPlaintextExport });
     }
 
@@ -74,8 +72,8 @@ public static class HistoryCrypto
 
         using var key = HistoryKey(privateKey);
 
-        if (!_aes.Decrypt(key, nonce, Aad, ciphertextWithTag, out byte[]? plaintext) || plaintext is null)
-            throw new CryptographicException("History decryption failed");
+        var plaintext = _aes.Decrypt(key, nonce, Aad, ciphertextWithTag)
+            ?? throw new CryptographicException("History decryption failed");
 
         return plaintext;
     }
