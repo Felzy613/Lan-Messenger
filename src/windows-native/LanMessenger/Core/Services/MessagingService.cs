@@ -248,5 +248,5 @@ public sealed class MessagingService
         catch { return false; }
     }
 
-    private void Dispatch(Action action) => _dq?.TryEnqueue(action);
+    private void Dispatch(Action action) => _dq?.TryEnqueue(() => action());
 }
