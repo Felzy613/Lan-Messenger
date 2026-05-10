@@ -37,16 +37,22 @@ struct SidebarView: View {
         .overlay {
             if model.conversations.isEmpty {
                 VStack(spacing: 12) {
-                    Image(systemName: "antenna.radiowaves.left.and.right")
+                    Image(systemName: "person.2.slash")
                         .font(.system(size: 36))
                         .foregroundStyle(.secondary)
-                    Text("No peers online")
+                    Text("No contacts")
                         .font(.headline)
                         .foregroundStyle(.secondary)
-                    Text("Waiting for peers on the LAN…")
+                    Text("Add a contact or wait for peers to appear on the LAN.")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 200)
+                    Button("Add Contact") { showContacts = true }
+                        .buttonStyle(.borderedProminent)
+                        .padding(.top, 4)
                 }
+                .padding()
             }
         }
     }

@@ -1,0 +1,65 @@
+name: macOS Build & Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/macos/**'
+      - '.github/workflows/macos-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: src/macos
+        run: xcodegen generate --spec project.yml --project .
+
+      - name: Set version
+        id: version
+        run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      - name: Build
+        working-directory: src/macos
+        run: |
+          xcodebuild \
+            -project LanMessenger.xcodeproj \
+            -scheme  LanMessenger \
+            -configuration Release \
+            -derivedDataPath build/derived \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Locate .app
+        id: app
+        working-directory: src/macos
+        run: |
+          APP=$(find build/derived -name "LAN Messenger.app" -o -name "LanMessenger.app" | head -1)
+          echo "path=$APP" >> $GITHUB_OUTPUT
+          echo "name=$(basename "$APP")" >> $GITHUB_OUTPUT
+
+      - name: Zip .app
+        run: |
+          cd "$(dirname "${{ steps.app.outputs.path }}")"
+          zip -r --symlinks "$GITHUB_WORKSPACE/LanMessenger-macOS-${{ steps.version.outputs.version }}.zip" \
+            "${{ steps.app.outputs.name }}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "macos-v${{ steps.version.outputs.version }}" \
+            --title "LAN Messenger macOS v${{ steps.version.outputs.version }}" \
+            --generate-notes \
+            "LanMessenger-macOS-${{ steps.version.outputs.version }}.zip"

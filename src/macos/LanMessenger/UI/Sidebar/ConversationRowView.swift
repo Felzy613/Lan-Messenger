@@ -7,6 +7,12 @@ struct ConversationRowView: View {
     var body: some View {
         HStack(spacing: 10) {
             AvatarView(name: conv.peerName, size: 44)
+                .overlay(alignment: .bottomTrailing) {
+                    Circle()
+                        .fill(conv.isOnline ? Color.green : Color.gray.opacity(0.45))
+                        .frame(width: 11, height: 11)
+                        .offset(x: 2, y: 2)
+                }
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(conv.peerName)

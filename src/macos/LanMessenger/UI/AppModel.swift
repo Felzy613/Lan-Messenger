@@ -24,6 +24,7 @@ struct ConversationViewModel: Identifiable {
     var unreadCount: Int
     var isTyping: Bool
     var typingSender: String
+    var isOnline: Bool
 }
 
 // Root state object. Wires up all services and is the single source of truth for the UI.
@@ -61,6 +62,11 @@ final class AppModel: ObservableObject {
         loadHistory()
         startPeerTimeoutTimer()
         checkMigration()
+        applyDockPolicy()
+    }
+
+    func applyDockPolicy() {
+        NSApp.setActivationPolicy(ConfigStore.shared.config.hideFromDock ? .accessory : .regular)
     }
 
     // MARK: - Migration
@@ -113,8 +119,11 @@ final class AppModel: ObservableObject {
         var result: [ConversationViewModel] = []
         let hidden = Set(ConfigStore.shared.config.hiddenConversations)
 
+        // Online peers first
+        var seenIPs = Set<String>()
         for (keyB64, peer) in peers {
             guard !hidden.contains(peer.ip) else { continue }
+            seenIPs.insert(peer.ip)
             let entries = messages[peer.ip] ?? []
             let last = entries.last
             let typing = typingStates[peer.ip]
@@ -126,11 +135,35 @@ final class AppModel: ObservableObject {
                 lastTimestamp: last.map { Date(timeIntervalSince1970: $0.timestamp) },
                 unreadCount: entries.filter { $0.incoming && $0.status.isEmpty }.count,
                 isTyping: typing?.active ?? false,
-                typingSender: typing?.sender ?? ""
+                typingSender: typing?.sender ?? "",
+                isOnline: true
             ))
         }
+
+        // Saved contacts that are currently offline
+        for contact in ConfigStore.shared.config.contacts {
+            guard !hidden.contains(contact.lastIP), !seenIPs.contains(contact.lastIP) else { continue }
+            let entries = messages[contact.lastIP] ?? []
+            result.append(ConversationViewModel(
+                peerIP: contact.lastIP,
+                peerName: contact.username,
+                peerPublicKeyB64: contact.publicKeyB64,
+                lastMessage: entries.last?.text ?? "",
+                lastTimestamp: entries.last.map { Date(timeIntervalSince1970: $0.timestamp) },
+                unreadCount: 0,
+                isTyping: false,
+                typingSender: "",
+                isOnline: false
+            ))
+        }
+
         result.sort { ($0.lastTimestamp ?? .distantPast) > ($1.lastTimestamp ?? .distantPast) }
         conversations = result
+    }
+
+    // Trigger a manual UDP discovery broadcast.
+    func scan() {
+        coordinator.discovery.sendBeacon()
     }
 
     // MARK: - Messaging

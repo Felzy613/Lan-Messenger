@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var username = ConfigStore.shared.config.username
     @State private var updateServerURL = ConfigStore.shared.config.updateServerURL
     @State private var inboxDir = ConfigStore.shared.config.inboxDir
+    @State private var hideFromDock = ConfigStore.shared.config.hideFromDock
     @State private var updateStatus = ""
     @State private var isCheckingUpdates = false
 
@@ -17,11 +18,25 @@ struct SettingsView: View {
                     TextField("Display name", text: $username)
                 }
 
+                Section("Appearance") {
+                    Toggle("Hide from Dock (menu bar only)", isOn: $hideFromDock)
+                }
+
                 Section("Files") {
-                    HStack {
-                        TextField("Inbox directory (leave empty for default)", text: $inboxDir)
-                        Button("Choose…") { pickInboxDir() }
-                            .buttonStyle(.bordered)
+                    LabeledContent("Save location") {
+                        HStack(spacing: 8) {
+                            Text(inboxDir.isEmpty ? "Default" : inboxDir)
+                                .foregroundStyle(inboxDir.isEmpty ? .secondary : .primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 0)
+                            if !inboxDir.isEmpty {
+                                Button("Reset") { inboxDir = "" }
+                                    .buttonStyle(.bordered)
+                            }
+                            Button("Choose…") { pickInboxDir() }
+                                .buttonStyle(.bordered)
+                        }
                     }
                 }
 
@@ -83,7 +98,9 @@ struct SettingsView: View {
         ConfigStore.shared.config.username = username
         ConfigStore.shared.config.updateServerURL = updateServerURL
         ConfigStore.shared.config.inboxDir = inboxDir
+        ConfigStore.shared.config.hideFromDock = hideFromDock
         ConfigStore.shared.save()
+        model.applyDockPolicy()
     }
 
     private func pickInboxDir() {

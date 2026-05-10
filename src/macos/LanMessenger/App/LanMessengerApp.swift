@@ -90,7 +90,7 @@ struct TrayMenuView: View {
             }
         }
         if model.conversations.isEmpty {
-            Text("No peers online")
+            Text("No contacts")
                 .foregroundStyle(.secondary)
         }
         Divider()

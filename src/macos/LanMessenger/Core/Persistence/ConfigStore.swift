@@ -35,6 +35,7 @@ struct AppConfig: Codable {
     var pendingMessages: [PendingMessageConfig] = []
     var updateServerURL: String = ""
     var inboxDir: String = ""
+    var hideFromDock: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case username, contacts
@@ -42,6 +43,7 @@ struct AppConfig: Codable {
         case pendingMessages = "pending_messages"
         case updateServerURL = "update_server_url"
         case inboxDir = "inbox_dir"
+        case hideFromDock = "hide_from_dock"
     }
 }
 

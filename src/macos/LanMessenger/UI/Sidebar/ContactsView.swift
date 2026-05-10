@@ -28,6 +28,12 @@ struct ContactsView: View {
             }
             .navigationTitle("Contacts")
             .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button { model.scan() } label: {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                    }
+                    .help("Scan for peers")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { showAddContact = true } label: {
                         Image(systemName: "person.badge.plus")

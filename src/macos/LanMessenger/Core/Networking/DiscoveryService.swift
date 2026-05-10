@@ -74,7 +74,7 @@ final class DiscoveryService {
         sendTimer = timer
     }
 
-    private func sendBeacon() {
+    func sendBeacon() {
         guard let payload = buildPayload?() else { return }
         guard let data = try? JSONEncoder().encode(payload) else { return }
         var targets = broadcastTargets()
