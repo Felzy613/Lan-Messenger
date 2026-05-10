@@ -77,24 +77,24 @@ jobs:
           security find-identity -v -p codesigning
 
       - name: Sign .app
-        working-directory: src/macos
         run: |
-          APP=$(find build/derived -name "LanMessenger.app" -o -name "LAN Messenger.app" | head -1)
+          APP=$(find "$GITHUB_WORKSPACE/src/macos/build/derived" \
+            \( -name "LanMessenger.app" -o -name "LAN Messenger.app" \) | head -1)
           echo "Signing: $APP"
           codesign --deep --force --options runtime \
             --sign "Apple Development: davefelzy20@gmail.com (7FAZT3258V)" \
-            --entitlements LanMessenger/LanMessenger.entitlements \
+            --entitlements "$GITHUB_WORKSPACE/src/macos/LanMessenger/LanMessenger.entitlements" \
             "$APP"
           codesign --verify --deep --strict "$APP" && echo "✅ Signature valid"
-          echo "app_path=$APP" >> $GITHUB_ENV
-          echo "app_name=$(basename "$APP")" >> $GITHUB_ENV
+          echo "APP_PATH=$APP" >> $GITHUB_ENV
+          echo "APP_NAME=$(basename "$APP")" >> $GITHUB_ENV
 
       - name: Zip .app
         run: |
-          cd "$(dirname "$app_path")"
+          cd "$(dirname "$APP_PATH")"
           zip -r --symlinks \
             "$GITHUB_WORKSPACE/LanMessenger-macOS-${{ steps.version.outputs.version }}.zip" \
-            "$app_name"
+            "$APP_NAME"
 
       - name: Create GitHub release
         env:
