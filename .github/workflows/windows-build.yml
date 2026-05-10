@@ -1,4 +1,4 @@
-name: Windows Build
+name: Windows Build & Release
 
 on:
   push:
@@ -6,15 +6,12 @@ on:
     paths:
       - 'src/windows-native/**'
       - '.github/workflows/windows-build.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/windows-native/**'
-      - '.github/workflows/windows-build.yml'
 
 jobs:
-  build-and-test:
+  build-and-release:
     runs-on: windows-2022
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -27,11 +24,36 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Set version
+        id: version
+        shell: bash
+        run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+
       - name: Restore
         working-directory: src/windows-native
         run: msbuild LanMessenger.sln /t:Restore /p:Configuration=Release /p:Platform=x64
 
-      - name: Build
+      - name: Publish
         working-directory: src/windows-native
-        run: msbuild LanMessenger.sln /p:Configuration=Release /p:Platform=x64
+        run: >
+          msbuild LanMessenger/LanMessenger.csproj
+          /t:Publish
+          /p:Configuration=Release
+          /p:Platform=x64
+          /p:RuntimeIdentifier=win-x64
+          /p:SelfContained=true
 
+      - name: Build installer
+        shell: cmd
+        run: |
+          "C:\Program Files (x86)\Inno Setup 6\iscc.exe" /DMyAppVersion=${{ steps.version.outputs.version }} "src\windows-native\LanMessenger.iss"
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "LAN Messenger v${{ steps.version.outputs.version }}" \
+            --generate-notes \
+            "src/windows-native/Output/LanMessenger-Setup-${{ steps.version.outputs.version }}.exe"
