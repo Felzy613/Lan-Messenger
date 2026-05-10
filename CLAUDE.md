@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LAN Messenger is a peer-to-peer local-network chat app. The Python/Tkinter app at `src/windows/main.py` is the **reference implementation** — it defines the canonical wire protocol and must not be deleted. The active work is replacing it with two native apps:
+LAN Messenger is a peer-to-peer local-network chat app with two native implementations:
 
 - **macOS**: Swift/SwiftUI, SPM package at `src/macos/`
 - **Windows**: C#/WinUI 3, VS solution at `src/windows-native/`
 
-All three must remain wire-protocol compatible so they can interoperate during the transition. The authoritative protocol spec is `PROTOCOL.md`.
+Both must remain wire-protocol compatible so they can interoperate. The authoritative protocol spec is `PROTOCOL.md`.
 
 ## Build & Test Commands
 
@@ -35,20 +35,11 @@ dotnet test LanMessenger.Tests         # run unit tests
 
 Target: .NET 8, Windows 10 (19041+), x64 only.
 
-### Python reference app
-
-```bash
-cd src/windows
-pip install -r requirements.txt
-python main.py
-```
-
 ## Repository Layout
 
 ```
 PROTOCOL.md                   # Authoritative wire-protocol spec — read this first
 src/
-  windows/main.py             # Python/Tkinter reference implementation (~4400 lines)
   macos/                      # Swift/SPM native app (Phases 2–3 complete)
     Package.swift
     LanMessenger/

@@ -10,9 +10,8 @@ A peer-to-peer local-network chat app with end-to-end encryption. No servers, no
 |---|---|---|
 | **macOS** | Swift / SwiftUI | Active |
 | **Windows** | C# / WinUI 3 | Active |
-| **Python (reference)** | Python / Tkinter | Stable (wire-protocol reference) |
 
-All three implementations speak the same wire protocol and interoperate freely. See [`PROTOCOL.md`](PROTOCOL.md) for the spec.
+Both implementations speak the same wire protocol and interoperate freely. See [`PROTOCOL.md`](PROTOCOL.md) for the spec.
 
 ---
 
@@ -52,14 +51,6 @@ dotnet build LanMessenger.sln
 
 Run the resulting binary, or press F5 in Visual Studio.
 
-### Python reference app
-
-```bash
-cd src/windows
-pip install -r requirements.txt
-python main.py
-```
-
 ---
 
 ## Running Tests
@@ -98,7 +89,6 @@ Full spec: [`PROTOCOL.md`](PROTOCOL.md)
 ```
 PROTOCOL.md                   # Wire-protocol spec — read before touching networking/crypto
 src/
-  windows/main.py             # Python/Tkinter reference implementation
   macos/                      # Swift/SPM native app
     Package.swift
     LanMessenger/
