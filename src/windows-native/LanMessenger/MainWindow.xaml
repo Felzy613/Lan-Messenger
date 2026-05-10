@@ -47,16 +47,5 @@
         <!-- Content area -->
         <Frame x:Name="ContentFrame"
                Grid.Column="1" />
-
-        <!-- Migration prompt dialog -->
-        <ContentDialog x:Name="MigrationDialog"
-                       Title="Import Existing Account?"
-                       PrimaryButtonText="Import Key"
-                       SecondaryButtonText="Start Fresh">
-            <TextBlock TextWrapping="Wrap">
-                A Python LAN Messenger account was found. Import your existing key
-                and chat history, or start with a fresh identity?
-            </TextBlock>
-        </ContentDialog>
     </Grid>
 </Window>

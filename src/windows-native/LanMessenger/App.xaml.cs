@@ -45,7 +45,19 @@ public partial class App : Application
                 "LanMessenger");
             Directory.CreateDirectory(logDir);
             logPath = Path.Combine(logDir, "crash.log");
-            File.AppendAllText(logPath, $"[{DateTime.Now:u}] HResult: 0x{ex.HResult:X8}\n{ex}\n\n");
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"[{DateTime.UtcNow:u}] HResult: 0x{ex.HResult:X8}");
+            sb.AppendLine(ex.ToString());
+            var chain = ex.InnerException;
+            int depth = 0;
+            while (chain != null && depth++ < 5)
+            {
+                sb.AppendLine($"  -- Inner ({depth}): {chain.GetType().Name}: {chain.Message}");
+                chain = chain.InnerException;
+            }
+            sb.AppendLine();
+            File.AppendAllText(logPath, sb.ToString());
         }
         catch { }
 

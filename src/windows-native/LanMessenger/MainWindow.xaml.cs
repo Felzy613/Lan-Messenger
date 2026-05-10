@@ -44,8 +44,20 @@ public sealed partial class MainWindow : Window
 
     private async void ShowMigrationDialog()
     {
-        MigrationDialog.XamlRoot = Content.XamlRoot;
-        var result = await MigrationDialog.ShowAsync();
+        var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
+        {
+            Title = "Import Existing Account?",
+            PrimaryButtonText = "Import Key",
+            SecondaryButtonText = "Start Fresh",
+            Content = new TextBlock
+            {
+                Text = "A LAN Messenger account was found. Import your existing key and chat " +
+                       "history, or start with a fresh identity?",
+                TextWrapping = TextWrapping.Wrap
+            },
+            XamlRoot = Content.XamlRoot
+        };
+        var result = await dialog.ShowAsync();
         if (result == Microsoft.UI.Xaml.Controls.ContentDialogResult.Primary)
             Model.AcceptMigrationWithExistingKey();
         else
