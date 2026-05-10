@@ -45,13 +45,15 @@ public partial class App : Application
                 "LanMessenger");
             Directory.CreateDirectory(logDir);
             logPath = Path.Combine(logDir, "crash.log");
-            File.AppendAllText(logPath, $"[{DateTime.Now:u}] {ex}\n\n");
+            File.AppendAllText(logPath, $"[{DateTime.Now:u}] HResult: 0x{ex.HResult:X8}\n{ex}\n\n");
         }
         catch { }
 
-        var detail = logPath.Length > 0 ? $"\n\nDetails saved to:\n{logPath}" : "";
+        var inner = ex.InnerException != null ? $"\nCause: {ex.InnerException.Message}" : "";
+        var hr    = $"\nHResult: 0x{ex.HResult:X8}";
+        var detail = logPath.Length > 0 ? $"\n\nLog: {logPath}" : "";
         MessageBox(0,
-            $"LAN Messenger failed to start:\n\n{ex.Message}{detail}",
+            $"LAN Messenger failed to start:\n\n{ex.Message}{inner}{hr}{detail}",
             "LAN Messenger – Startup Error",
             0x10 /* MB_ICONERROR */);
     }
