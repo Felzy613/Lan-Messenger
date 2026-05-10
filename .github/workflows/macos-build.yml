@@ -10,9 +10,12 @@ on:
 
 jobs:
   build-and-release:
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
+
+    env:
+      TEAM_ID: 7FAZT3258V
 
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +31,35 @@ jobs:
         id: version
         run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
 
-      - name: Build
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          # Create a temporary keychain
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the certificate
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          echo "$CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/xcodebuild
+
+          # Make keychain available to codesign
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+      - name: Build (signed)
         working-directory: src/macos
         run: |
           xcodebuild \
@@ -36,9 +67,8 @@ jobs:
             -scheme  LanMessenger \
             -configuration Release \
             -derivedDataPath build/derived \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
             build
 
       - name: Locate .app
@@ -52,7 +82,8 @@ jobs:
       - name: Zip .app
         run: |
           cd "$(dirname "${{ steps.app.outputs.path }}")"
-          zip -r --symlinks "$GITHUB_WORKSPACE/LanMessenger-macOS-${{ steps.version.outputs.version }}.zip" \
+          zip -r --symlinks \
+            "$GITHUB_WORKSPACE/LanMessenger-macOS-${{ steps.version.outputs.version }}.zip" \
             "${{ steps.app.outputs.name }}"
 
       - name: Create GitHub release
@@ -63,3 +94,7 @@ jobs:
             --title "LAN Messenger macOS v${{ steps.version.outputs.version }}" \
             --generate-notes \
             "LanMessenger-macOS-${{ steps.version.outputs.version }}.zip"
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/build.keychain" || true
