@@ -24,14 +24,17 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Restore dependencies
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore
         working-directory: src/windows-native
-        run: dotnet restore LanMessenger.sln
+        run: msbuild LanMessenger.sln /t:Restore /p:Configuration=Release /p:Platform=x64
 
       - name: Build
         working-directory: src/windows-native
-        run: dotnet build LanMessenger.sln --no-restore -c Release
+        run: msbuild LanMessenger.sln /p:Configuration=Release /p:Platform=x64
 
       - name: Test
         working-directory: src/windows-native
-        run: dotnet test LanMessenger.Tests --no-build -c Release --logger "console;verbosity=normal"
+        run: dotnet vstest "LanMessenger.Tests\bin\x64\Release\net8.0-windows10.0.19041.0\LanMessenger.Tests.dll" --logger:"console;verbosity=normal"
