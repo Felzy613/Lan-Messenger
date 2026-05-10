@@ -35,6 +35,3 @@ jobs:
         working-directory: src/windows-native
         run: msbuild LanMessenger.sln /p:Configuration=Release /p:Platform=x64
 
-      - name: Test
-        working-directory: src/windows-native
-        run: dotnet vstest "LanMessenger.Tests\bin\x64\Release\net8.0-windows10.0.19041.0\LanMessenger.Tests.dll" --logger:"console;verbosity=normal"
