@@ -1,18 +1,21 @@
-name: macOS Build & Release
+name: Build & Release
 
 on:
   push:
     branches: [main]
     paths:
       - 'src/macos/**'
-      - '.github/workflows/macos-build.yml'
+      - 'src/windows-native/**'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 jobs:
-  build-and-release:
+  build-macos:
     runs-on: macos-15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +31,6 @@ jobs:
         id: version
         run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
 
-      # ── Compile (no signing — codesign handles it below) ──────────────────
       - name: Build
         working-directory: src/macos
         run: |
@@ -40,7 +42,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      # ── Import cert + sign the .app ───────────────────────────────────────
       - name: Import signing certificate
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE }}
@@ -50,29 +51,23 @@ jobs:
           KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PWD="$(openssl rand -hex 20)"
 
-          # Decode certificate (macOS base64 -D flag)
           echo "$CERTIFICATE_BASE64" | base64 -D -o "$CERT_PATH"
 
-          # Create and unlock temporary keychain
           security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
 
-          # Import cert + private key
           security import "$CERT_PATH" \
             -k "$KEYCHAIN_PATH" \
             -P "$P12_PASSWORD" \
             -A -t cert -f pkcs12
 
-          # Grant codesign access without UI prompts
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
 
-          # Add to search list
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-          # Confirm identity is visible
           echo "=== Available signing identities ==="
           security find-identity -v -p codesigning
 
@@ -96,15 +91,82 @@ jobs:
             "$GITHUB_WORKSPACE/LanMessenger-macOS-${{ steps.version.outputs.version }}.zip" \
             "$APP_NAME"
 
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "macos-v${{ steps.version.outputs.version }}" \
-            --title "LAN Messenger macOS v${{ steps.version.outputs.version }}" \
-            --generate-notes \
-            "LanMessenger-macOS-${{ steps.version.outputs.version }}.zip"
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: LanMessenger-macOS-${{ steps.version.outputs.version }}.zip
 
       - name: Clean up keychain
         if: always()
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+  build-windows:
+    runs-on: windows-2022
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Set version
+        id: version
+        shell: bash
+        run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      - name: Restore
+        working-directory: src/windows-native
+        run: msbuild LanMessenger.sln /t:Restore /p:Configuration=Release /p:Platform=x64
+
+      - name: Publish
+        working-directory: src/windows-native
+        run: >
+          msbuild LanMessenger/LanMessenger.csproj
+          /t:Publish
+          /p:Configuration=Release
+          /p:Platform=x64
+          /p:RuntimeIdentifier=win-x64
+          /p:SelfContained=true
+
+      - name: Build installer
+        shell: cmd
+        run: |
+          "C:\Program Files (x86)\Inno Setup 6\iscc.exe" /DMyAppVersion=${{ steps.version.outputs.version }} "src\windows-native\LanMessenger.iss"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: src/windows-native/Output/LanMessenger-Setup-${{ steps.version.outputs.version }}.exe
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build-macos.outputs.version }}
+        run: |
+          gh release create "v$VERSION" \
+            --repo "${{ github.repository }}" \
+            --title "LAN Messenger v$VERSION" \
+            --generate-notes \
+            "macos-build/LanMessenger-macOS-$VERSION.zip" \
+            "windows-build/LanMessenger-Setup-$VERSION.exe"
