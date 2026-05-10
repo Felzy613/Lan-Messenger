@@ -104,7 +104,7 @@ public sealed class DiscoveryService : IDisposable
         _recvSocket = new UdpClient();
         _recvSocket.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         _recvSocket.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
-        _recvSocket.JoinMulticastGroup(IPAddress.Parse(MulticastGroup));
+        try { _recvSocket.JoinMulticastGroup(IPAddress.Parse(MulticastGroup)); } catch { }
         _recvSocket.Client.ReceiveTimeout = 1000; // 1 s so loop checks cancellation
     }
 

@@ -65,7 +65,19 @@ public sealed partial class AppModel : ObservableObject
     private void Start()
     {
         var localIPs = GetLocalIPAddresses();
-        Coordinator.Start(ConfigStore.Shared.Config.Username, [..localIPs], _dq);
+        try
+        {
+            Coordinator.Start(ConfigStore.Shared.Config.Username, [..localIPs], _dq);
+        }
+        catch (Exception ex)
+        {
+            // Port conflict or network error — app still opens, just without discovery/messaging.
+            System.Diagnostics.Debug.WriteLine($"[AppModel] Network start failed: {ex.Message}");
+            throw new InvalidOperationException(
+                $"Could not bind network ports (54231/54232).\n\n" +
+                $"Another instance may already be running, or a firewall is blocking the ports.\n\n" +
+                $"Error: {ex.Message}", ex);
+        }
         NotificationService.Shared.Register();
         LoadHistory();
         StartPeerTimeoutTimer();

@@ -118,7 +118,7 @@ public sealed class NetworkCoordinator : IDisposable
     {
         _listener = new TcpListener(IPAddress.Any, TcpPort);
         _listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        _listener.Start(backlog: 16);
+        _listener.Start(backlog: 16); // throws SocketException if port is already bound
         Task.Run(() => AcceptLoop(_cts.Token));
     }
 
