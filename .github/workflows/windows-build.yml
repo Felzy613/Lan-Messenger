@@ -1,0 +1,37 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/windows-native/**'
+      - '.github/workflows/windows-build.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/windows-native/**'
+      - '.github/workflows/windows-build.yml'
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        working-directory: src/windows-native
+        run: dotnet restore LanMessenger.sln -r win-x64
+
+      - name: Build
+        working-directory: src/windows-native
+        run: dotnet build LanMessenger.sln --no-restore -c Release -r win-x64 --self-contained false
+
+      - name: Test
+        working-directory: src/windows-native
+        run: dotnet test LanMessenger.Tests --no-build -c Release -r win-x64 --logger "console;verbosity=normal"
