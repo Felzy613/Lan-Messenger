@@ -59,10 +59,13 @@ struct ContactsView: View {
                         Text("No saved contacts")
                             .font(.headline)
                             .foregroundStyle(.secondary)
-                        Text("Tap + to add a contact by name and IP address.")
+                        Text("Add a contact by name and IP address.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .multilineTextAlignment(.center)
+                        Button("Add Contact") { showAddContact = true }
+                            .buttonStyle(.borderedProminent)
+                            .padding(.top, 4)
                     }
                     .padding()
                 }
