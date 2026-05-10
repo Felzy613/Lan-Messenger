@@ -26,12 +26,12 @@ jobs:
 
       - name: Restore dependencies
         working-directory: src/windows-native
-        run: dotnet restore LanMessenger.sln -r win-x64
+        run: dotnet restore LanMessenger.sln
 
       - name: Build
         working-directory: src/windows-native
-        run: dotnet build LanMessenger.sln --no-restore -c Release -r win-x64 --self-contained false
+        run: dotnet build LanMessenger.sln --no-restore -c Release
 
       - name: Test
         working-directory: src/windows-native
-        run: dotnet test LanMessenger.Tests --no-build -c Release -r win-x64 --logger "console;verbosity=normal"
+        run: dotnet test LanMessenger.Tests --no-build -c Release --logger "console;verbosity=normal"
