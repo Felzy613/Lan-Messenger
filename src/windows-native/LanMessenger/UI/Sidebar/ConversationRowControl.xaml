@@ -17,7 +17,7 @@
             <!-- Online indicator dot -->
             <Ellipse x:Name="OnlineDot"
                      Width="10" Height="10"
-                     Fill="{ThemeResource SystemAccentColor}"
+                     Fill="{ThemeResource AccentFillColorDefaultBrush}"
                      Stroke="White" StrokeThickness="2"
                      HorizontalAlignment="Right" VerticalAlignment="Bottom"
                      Visibility="Collapsed" />
@@ -41,7 +41,7 @@
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                        HorizontalAlignment="Right" />
             <Border x:Name="UnreadBadge"
-                    Background="{ThemeResource SystemAccentColor}"
+                    Background="{ThemeResource AccentFillColorDefaultBrush}"
                     CornerRadius="10"
                     MinWidth="20" Height="20"
                     Padding="4,0"
