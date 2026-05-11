@@ -4,7 +4,7 @@ struct ContactsView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
     @State private var contacts = ConfigStore.shared.config.contacts
-    @State private var showAddContact = false
+    @State private var showPeerScanner = false
 
     var body: some View {
         NavigationStack {
@@ -18,6 +18,12 @@ struct ContactsView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        Spacer()
+                        if model.peers.values.contains(where: { $0.ip == contact.lastIP }) {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 8, height: 8)
+                        }
                     }
                     .padding(.vertical, 2)
                 }
@@ -28,27 +34,19 @@ struct ContactsView: View {
             }
             .navigationTitle("Contacts")
             .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button { model.scan() } label: {
-                        Image(systemName: "antenna.radiowaves.left.and.right")
-                    }
-                    .help("Scan for peers")
-                }
                 ToolbarItem(placement: .primaryAction) {
-                    Button { showAddContact = true } label: {
+                    Button { showPeerScanner = true } label: {
                         Image(systemName: "person.badge.plus")
                     }
-                    .help("Add contact")
+                    .help("Add from nearby peers")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showAddContact) {
-                AddContactView { newContact in
-                    contacts.append(newContact)
-                    persist()
-                }
+            .sheet(isPresented: $showPeerScanner) {
+                PeerScannerView(savedContacts: $contacts, onSave: persist)
+                    .environmentObject(model)
             }
             .overlay {
                 if contacts.isEmpty {
@@ -59,11 +57,11 @@ struct ContactsView: View {
                         Text("No saved contacts")
                             .font(.headline)
                             .foregroundStyle(.secondary)
-                        Text("Add a contact by name and IP address.")
+                        Text("Scan for nearby peers to add them as contacts.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .multilineTextAlignment(.center)
-                        Button("Add Contact") { showAddContact = true }
+                        Button("Scan for Peers") { showPeerScanner = true }
                             .buttonStyle(.borderedProminent)
                             .padding(.top, 4)
                     }
@@ -80,56 +78,106 @@ struct ContactsView: View {
     }
 }
 
-// MARK: - Add Contact sheet
+// MARK: - Peer Scanner sheet
 
-struct AddContactView: View {
+struct PeerScannerView: View {
+    @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
-    var onSave: (ContactConfig) -> Void
+    @Binding var savedContacts: [ContactConfig]
+    var onSave: () -> Void
 
-    @State private var username = ""
-    @State private var ip = ""
+    @State private var isScanning = false
 
-    private var isValid: Bool {
-        !username.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !ip.trimmingCharacters(in: .whitespaces).isEmpty
+    private var discoverablePeers: [PeerInfo] {
+        let savedIPs = Set(savedContacts.map(\.lastIP))
+        return model.peers.values
+            .filter { !savedIPs.contains($0.ip) }
+            .sorted { $0.username < $1.username }
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Contact details") {
-                    TextField("Name", text: $username)
-                    TextField("IP address (e.g. 192.168.1.42)", text: $ip)
-                        .textContentType(.none)
-                }
-                Section {
-                    Text("The app will ping this IP during discovery, which helps reach peers on different subnets. The public key will be learned automatically when they come online.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Group {
+                if discoverablePeers.isEmpty {
+                    VStack(spacing: 16) {
+                        if isScanning {
+                            ProgressView()
+                                .scaleEffect(1.2)
+                            Text("Scanning for peers…")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                .font(.system(size: 40))
+                                .foregroundStyle(.secondary)
+                            Text("No peers found")
+                                .font(.headline)
+                                .foregroundStyle(.secondary)
+                            Text("Make sure other devices are on the same network and running LAN Messenger.")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 240)
+                            Button("Scan Again") { triggerScan() }
+                                .buttonStyle(.borderedProminent)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(discoverablePeers) { peer in
+                        HStack(spacing: 10) {
+                            AvatarView(name: peer.username, size: 36)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(peer.username).font(.headline)
+                                Text(peer.ip)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Add") {
+                                addContact(peer)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(Theme.accent)
+                        }
+                        .padding(.vertical, 2)
+                    }
                 }
             }
-            .formStyle(.grouped)
-            .navigationTitle("Add Contact")
+            .navigationTitle("Nearby Peers")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        triggerScan()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .help("Scan for peers")
+                    .disabled(isScanning)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        let contact = ContactConfig(
-                            publicKeyB64: UUID().uuidString,   // placeholder until seen on LAN
-                            username: username.trimmingCharacters(in: .whitespaces),
-                            lastIP: ip.trimmingCharacters(in: .whitespaces)
-                        )
-                        onSave(contact)
-                        dismiss()
-                    }
-                    .disabled(!isValid)
-                    .buttonStyle(.borderedProminent)
-                    .tint(Theme.accent)
+                    Button("Done") { dismiss() }
                 }
             }
         }
-        .frame(minWidth: 320, minHeight: 260)
+        .frame(minWidth: 320, minHeight: 380)
+        .onAppear { triggerScan() }
+    }
+
+    private func triggerScan() {
+        isScanning = true
+        model.scan()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            isScanning = false
+        }
+    }
+
+    private func addContact(_ peer: PeerInfo) {
+        let contact = ContactConfig(
+            publicKeyB64: peer.publicKeyB64,
+            username: peer.username,
+            lastIP: peer.ip
+        )
+        savedContacts.append(contact)
+        onSave()
     }
 }
