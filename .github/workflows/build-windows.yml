@@ -1,0 +1,84 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/windows-native/**'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Windows Installer
+    runs-on: windows-2022
+    permissions:
+      contents: write
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(cat src/windows-native/VERSION | tr -d '[:space:]')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building Windows v$VERSION"
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore
+        working-directory: src/windows-native
+        run: msbuild LanMessenger.sln /t:Restore /p:Configuration=Release /p:Platform=x64
+
+      - name: Publish
+        working-directory: src/windows-native
+        run: >
+          msbuild LanMessenger/LanMessenger.csproj
+          /t:Publish
+          /p:Configuration=Release
+          /p:Platform=x64
+          /p:RuntimeIdentifier=win-x64
+          /p:SelfContained=true
+
+      - name: Build installer
+        shell: cmd
+        run: |
+          "C:\Program Files (x86)\Inno Setup 6\iscc.exe" /DMyAppVersion=${{ steps.version.outputs.version }} "src\windows-native\LanMessenger.iss"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: src/windows-native/Output/LanMessenger-Setup-${{ steps.version.outputs.version }}.exe
+          retention-days: 90
+
+      - name: Update rolling Windows release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          TAG="rolling-windows"
+          ARTIFACT="src/windows-native/Output/LanMessenger-Setup-$VERSION.exe"
+
+          # Remove the old rolling release and tag so we can recreate it cleanly
+          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          git push origin --delete "$TAG" 2>/dev/null || true
+
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Windows Latest Build (v$VERSION)" \
+            --notes "Automated rolling build — Windows v$VERSION from commit \`${{ github.sha }}\`." \
+            --prerelease \
+            "$ARTIFACT"

@@ -1,0 +1,125 @@
+name: Build macOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/macos/**'
+      - '.github/workflows/build-macos.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Sign macOS
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat src/macos/VERSION | tr -d '[:space:]')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building macOS v$VERSION"
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: src/macos
+        run: xcodegen generate --spec project.yml --project .
+
+      - name: Build
+        working-directory: src/macos
+        run: |
+          xcodebuild \
+            -project LanMessenger.xcodeproj \
+            -scheme  LanMessenger \
+            -configuration Release \
+            -derivedDataPath build/derived \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PWD="$(openssl rand -hex 20)"
+
+          echo "$CERTIFICATE_BASE64" | base64 -D -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$P12_PASSWORD" \
+            -A -t cert -f pkcs12
+
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          echo "=== Available signing identities ==="
+          security find-identity -v -p codesigning
+
+      - name: Sign .app
+        run: |
+          APP=$(find "$GITHUB_WORKSPACE/src/macos/build/derived" \
+            \( -name "LanMessenger.app" -o -name "LAN Messenger.app" \) | head -1)
+          echo "Signing: $APP"
+          codesign --deep --force --options runtime \
+            --sign "Apple Development: davefelzy20@gmail.com (7FAZT3258V)" \
+            --entitlements "$GITHUB_WORKSPACE/src/macos/LanMessenger/LanMessenger.entitlements" \
+            "$APP"
+          codesign --verify --deep --strict "$APP" && echo "✅ Signature valid"
+          echo "APP_PATH=$APP" >> $GITHUB_ENV
+          echo "APP_NAME=$(basename "$APP")" >> $GITHUB_ENV
+
+      - name: Package .app
+        run: |
+          ARTIFACT="LanMessenger-macOS-${{ steps.version.outputs.version }}.zip"
+          cd "$(dirname "$APP_PATH")"
+          zip -r --symlinks "$GITHUB_WORKSPACE/$ARTIFACT" "$APP_NAME"
+          echo "ARTIFACT=$ARTIFACT" >> $GITHUB_ENV
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: ${{ env.ARTIFACT }}
+          retention-days: 90
+
+      - name: Update rolling macOS release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG="rolling-macos"
+
+          # Remove the old rolling release and tag so we can recreate it cleanly
+          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          git push origin --delete "$TAG" 2>/dev/null || true
+
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "macOS Latest Build (v$VERSION)" \
+            --notes "Automated rolling build — macOS v$VERSION from commit \`${{ github.sha }}\`." \
+            --prerelease \
+            "${{ env.ARTIFACT }}"
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
