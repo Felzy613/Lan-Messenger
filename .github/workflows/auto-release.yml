@@ -3,8 +3,10 @@ name: Auto Release
 # Fires after either platform's build workflow completes on main.
 # Downloads both rolling pre-release artifacts and creates a versioned
 # GitHub Release tagged with the triggering platform's current version.
-# Skips if a release for that tag already exists (e.g. rebuild without
-# a version bump).
+# Both platform artifacts are always required; the job fails if either
+# rolling release is missing.
+# Skips if a release for that tag already exists (rebuild without a
+# version bump).
 
 on:
   workflow_run:
@@ -61,14 +63,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p artifacts/macos
-          if gh release download rolling-macos \
-               --repo "${{ github.repository }}" \
-               --dir  artifacts/macos 2>/dev/null; then
-            echo "MACOS_FILE=$(find artifacts/macos -type f | head -1)" >> $GITHUB_ENV
-          else
-            echo "rolling-macos pre-release not found — macOS artifact will be omitted."
-            echo "MACOS_FILE=" >> $GITHUB_ENV
-          fi
+          gh release download rolling-macos \
+            --repo "${{ github.repository }}" \
+            --dir  artifacts/macos
+          echo "MACOS_FILE=$(find artifacts/macos -type f | head -1)" >> $GITHUB_ENV
 
       - name: Download Windows artifact
         if: steps.check.outputs.exists == 'false'
@@ -76,34 +74,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p artifacts/windows
-          if gh release download rolling-windows \
-               --repo "${{ github.repository }}" \
-               --dir  artifacts/windows 2>/dev/null; then
-            echo "WIN_FILE=$(find artifacts/windows -type f | head -1)" >> $GITHUB_ENV
-          else
-            echo "rolling-windows pre-release not found — Windows artifact will be omitted."
-            echo "WIN_FILE=" >> $GITHUB_ENV
-          fi
+          gh release download rolling-windows \
+            --repo "${{ github.repository }}" \
+            --dir  artifacts/windows
+          echo "WIN_FILE=$(find artifacts/windows -type f | head -1)" >> $GITHUB_ENV
 
       - name: Create versioned release
         if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG:          ${{ steps.meta.outputs.tag }}
-          PLATFORM:     ${{ steps.meta.outputs.platform }}
+          TAG:           ${{ steps.meta.outputs.tag }}
+          PLATFORM:      ${{ steps.meta.outputs.platform }}
           MACOS_VERSION: ${{ steps.meta.outputs.macos }}
           WIN_VERSION:   ${{ steps.meta.outputs.windows }}
         run: |
-          # Build the asset list — only include files that actually exist
-          ASSETS=()
-          [[ -n "$MACOS_FILE" && -f "$MACOS_FILE" ]] && ASSETS+=("$MACOS_FILE")
-          [[ -n "$WIN_FILE"   && -f "$WIN_FILE"   ]] && ASSETS+=("$WIN_FILE")
-
-          if [[ ${#ASSETS[@]} -eq 0 ]]; then
-            echo "No artifacts available — aborting release creation."
-            exit 1
-          fi
-
           gh release create "$TAG" \
             --repo  "${{ github.repository }}" \
             --title "LAN Messenger ${TAG}" \
@@ -117,4 +101,5 @@ jobs:
           | Windows  | v${WIN_VERSION} |
 
           Download the installer for your platform below." \
-            "${ASSETS[@]}"
+            "$MACOS_FILE" \
+            "$WIN_FILE"
