@@ -23,7 +23,7 @@
 
             <TextBlock Grid.Row="0"
                        Text="LAN Messenger"
-                       Style="{StaticResource TitleTextBlockStyle}"
+                       Style="{ThemeResource TitleTextBlockStyle}"
                        Margin="16,16,16,8" />
 
             <sidebar:SidebarControl x:Name="Sidebar"

@@ -37,7 +37,7 @@
                     Visibility="Collapsed">
             <TextBlock Text="No peers online"
                        HorizontalAlignment="Center"
-                       Style="{StaticResource SubtitleTextBlockStyle}"
+                       Style="{ThemeResource SubtitleTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <TextBlock Text="Looking for devices on your network…"
                        HorizontalAlignment="Center"

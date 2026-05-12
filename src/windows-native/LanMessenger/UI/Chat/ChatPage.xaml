@@ -36,9 +36,9 @@
 
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
                 <TextBlock x:Name="HeaderName"
-                           Style="{StaticResource SubtitleTextBlockStyle}" />
+                           Style="{ThemeResource SubtitleTextBlockStyle}" />
                 <TextBlock x:Name="HeaderSubtext"
-                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </StackPanel>
         </Grid>

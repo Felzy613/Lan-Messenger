@@ -33,7 +33,7 @@
         <Button x:Name="SendBtn"
                 Grid.Column="2"
                 Content="Send"
-                Style="{StaticResource AccentButtonStyle}"
+                Style="{ThemeResource AccentButtonStyle}"
                 Click="SendBtn_Click" />
     </Grid>
 </UserControl>

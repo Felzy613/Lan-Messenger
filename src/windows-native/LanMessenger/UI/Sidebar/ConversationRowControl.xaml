@@ -26,10 +26,10 @@
         <!-- Name + preview -->
         <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
             <TextBlock x:Name="NameText"
-                       Style="{StaticResource BodyStrongTextBlockStyle}"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}"
                        TextTrimming="CharacterEllipsis" />
             <TextBlock x:Name="PreviewText"
-                       Style="{StaticResource CaptionTextBlockStyle}"
+                       Style="{ThemeResource CaptionTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        TextTrimming="CharacterEllipsis" />
         </StackPanel>
@@ -37,7 +37,7 @@
         <!-- Timestamp + unread badge -->
         <StackPanel Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="4">
             <TextBlock x:Name="TimestampText"
-                       Style="{StaticResource CaptionTextBlockStyle}"
+                       Style="{ThemeResource CaptionTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                        HorizontalAlignment="Right" />
             <Border x:Name="UnreadBadge"
