@@ -1,0 +1,127 @@
+name: Auto Release
+
+# Fires after either platform's build workflow completes on main.
+# Downloads both rolling pre-release artifacts and creates a versioned
+# GitHub Release tagged with the triggering platform's current version.
+# Both platform artifacts are always required; the job fails if either
+# rolling release is missing.
+# Skips if a release for that tag already exists (rebuild without a
+# version bump).
+
+on:
+  workflow_run:
+    workflows: ["Build macOS", "Build Windows"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  auto-release:
+    name: Create Combined Release
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Read versions and determine tag
+        id: meta
+        run: |
+          MACOS_VERSION=$(cat src/macos/VERSION | tr -d '[:space:]')
+          WIN_VERSION=$(cat src/windows-native/VERSION | tr -d '[:space:]')
+          echo "macos=$MACOS_VERSION" >> $GITHUB_OUTPUT
+          echo "windows=$WIN_VERSION" >> $GITHUB_OUTPUT
+
+          WORKFLOW="${{ github.event.workflow_run.name }}"
+          if [[ "$WORKFLOW" == "Build macOS" ]]; then
+            echo "tag=macos-v${MACOS_VERSION}" >> $GITHUB_OUTPUT
+            echo "platform=macOS" >> $GITHUB_OUTPUT
+          else
+            echo "tag=windows-v${WIN_VERSION}" >> $GITHUB_OUTPUT
+            echo "platform=Windows" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "${{ github.repository }}" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release $TAG already exists — skipping (no version bump detected)."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download macOS artifact
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p artifacts/macos
+          if ! gh release download rolling-macos \
+                 --repo "${{ github.repository }}" \
+                 --dir  artifacts/macos 2>/dev/null; then
+            echo "rolling-macos not found — falling back to latest versioned macOS release."
+            LATEST=$(gh release list --repo "${{ github.repository }}" --limit 50 \
+              --json tagName --jq '[.[] | select(.tagName | startswith("macos-v"))] | first | .tagName')
+            if [[ -z "$LATEST" ]]; then
+              echo "::error::No macOS release found (rolling or versioned). Build macOS first."
+              exit 1
+            fi
+            gh release download "$LATEST" \
+              --repo "${{ github.repository }}" \
+              --dir  artifacts/macos
+          fi
+          echo "MACOS_FILE=$(find artifacts/macos -type f | head -1)" >> $GITHUB_ENV
+
+      - name: Download Windows artifact
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p artifacts/windows
+          if ! gh release download rolling-windows \
+                 --repo "${{ github.repository }}" \
+                 --dir  artifacts/windows 2>/dev/null; then
+            echo "rolling-windows not found — falling back to latest versioned Windows release."
+            LATEST=$(gh release list --repo "${{ github.repository }}" --limit 50 \
+              --json tagName --jq '[.[] | select(.tagName | startswith("windows-v"))] | first | .tagName')
+            if [[ -z "$LATEST" ]]; then
+              echo "::error::No Windows release found (rolling or versioned). Build Windows first."
+              exit 1
+            fi
+            gh release download "$LATEST" \
+              --repo "${{ github.repository }}" \
+              --dir  artifacts/windows
+          fi
+          echo "WIN_FILE=$(find artifacts/windows -type f | head -1)" >> $GITHUB_ENV
+
+      - name: Create versioned release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG:           ${{ steps.meta.outputs.tag }}
+          PLATFORM:      ${{ steps.meta.outputs.platform }}
+          MACOS_VERSION: ${{ steps.meta.outputs.macos }}
+          WIN_VERSION:   ${{ steps.meta.outputs.windows }}
+        run: |
+          gh release create "$TAG" \
+            --repo  "${{ github.repository }}" \
+            --title "LAN Messenger ${TAG}" \
+            --notes "## LAN Messenger ${TAG}
+
+          Triggered by: **${PLATFORM}** build (commit \`${{ github.event.workflow_run.head_sha }}\`)
+
+          | Platform | Version |
+          |----------|---------|
+          | macOS    | v${MACOS_VERSION} |
+          | Windows  | v${WIN_VERSION} |
+
+          Download the installer for your platform below." \
+            "$MACOS_FILE" \
+            "$WIN_FILE"
