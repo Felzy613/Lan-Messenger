@@ -11,11 +11,11 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="LabelText"
-                           Style="{StaticResource BodyStrongTextBlockStyle}"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}"
                            TextTrimming="CharacterEllipsis" />
                 <TextBlock x:Name="BytesText"
                            Grid.Column="1"
-                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </Grid>
             <ProgressBar x:Name="Progress" Minimum="0" Maximum="1" />

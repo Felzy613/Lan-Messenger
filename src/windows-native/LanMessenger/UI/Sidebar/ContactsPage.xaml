@@ -13,7 +13,7 @@
 
         <TextBlock Grid.Row="0"
                    Text="Saved Contacts"
-                   Style="{StaticResource TitleTextBlockStyle}" />
+                   Style="{ThemeResource TitleTextBlockStyle}" />
 
         <ListView x:Name="ContactsList"
                   Grid.Row="1"
@@ -41,9 +41,9 @@
                                     VerticalAlignment="Center"
                                     Spacing="2">
                             <TextBlock Text="{x:Bind Username}"
-                                       Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
                             <TextBlock Text="{x:Bind LastIP}"
-                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         </StackPanel>
 
@@ -63,7 +63,7 @@
                     Spacing="6"
                     Visibility="Collapsed">
             <TextBlock Text="No saved contacts"
-                       Style="{StaticResource SubtitleTextBlockStyle}"
+                       Style="{ThemeResource SubtitleTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <TextBlock Text="Contacts you message are saved automatically."
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />

@@ -22,10 +22,10 @@
                             Spacing="6"
                             HorizontalAlignment="Right">
                     <TextBlock x:Name="TimestampText"
-                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
                                Opacity="0.7" />
                     <TextBlock x:Name="StatusText"
-                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
                                Opacity="0.7" />
                 </StackPanel>
             </StackPanel>

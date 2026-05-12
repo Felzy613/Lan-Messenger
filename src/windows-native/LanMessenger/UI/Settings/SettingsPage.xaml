@@ -6,12 +6,12 @@
     <ScrollViewer>
         <StackPanel Padding="32,24" Spacing="20" MaxWidth="640">
             <TextBlock Text="Settings"
-                       Style="{StaticResource TitleTextBlockStyle}" />
+                       Style="{ThemeResource TitleTextBlockStyle}" />
 
             <!-- Username -->
             <StackPanel Spacing="6">
                 <TextBlock Text="Display name"
-                           Style="{StaticResource BodyStrongTextBlockStyle}" />
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
                 <TextBox x:Name="UsernameBox"
                          PlaceholderText="Your name"
                          LostFocus="UsernameBox_LostFocus" />
@@ -20,7 +20,7 @@
             <!-- Inbox directory -->
             <StackPanel Spacing="6">
                 <TextBlock Text="Received files folder"
-                           Style="{StaticResource BodyStrongTextBlockStyle}" />
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
                 <Grid ColumnSpacing="8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -38,7 +38,7 @@
             <!-- Update server -->
             <StackPanel Spacing="6">
                 <TextBlock Text="Update server URL"
-                           Style="{StaticResource BodyStrongTextBlockStyle}" />
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
                 <TextBox x:Name="UpdateUrlBox"
                          PlaceholderText="https://example.com"
                          LostFocus="UpdateUrlBox_LostFocus" />
@@ -55,7 +55,7 @@
             <!-- Version -->
             <StackPanel Spacing="6">
                 <TextBlock Text="About"
-                           Style="{StaticResource BodyStrongTextBlockStyle}" />
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
                 <TextBlock x:Name="VersionText"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </StackPanel>
