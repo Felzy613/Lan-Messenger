@@ -24,7 +24,8 @@ jobs:
       - name: Read version
         id: version
         run: |
-          VERSION=$(cat src/macos/VERSION | tr -d '[:space:]')
+          BASE=$(cat src/macos/VERSION | tr -d '[:space:]')
+          VERSION="${BASE}.${{ github.run_number }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Building macOS v$VERSION"
 
@@ -117,7 +118,6 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "macOS Latest Build (v$VERSION)" \
             --notes "Automated rolling build — macOS v$VERSION from commit \`${{ github.sha }}\`." \
-            --prerelease \
             "${{ env.ARTIFACT }}"
 
       - name: Clean up keychain
