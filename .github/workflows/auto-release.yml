@@ -27,38 +27,17 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Read versions and determine tag
+      - name: Determine triggering platform
         id: meta
         run: |
-          MACOS_VERSION=$(cat src/macos/VERSION | tr -d '[:space:]')
-          WIN_VERSION=$(cat src/windows-native/VERSION | tr -d '[:space:]')
-          echo "macos=$MACOS_VERSION" >> $GITHUB_OUTPUT
-          echo "windows=$WIN_VERSION" >> $GITHUB_OUTPUT
-
           WORKFLOW="${{ github.event.workflow_run.name }}"
           if [[ "$WORKFLOW" == "Build macOS" ]]; then
-            echo "tag=macos-v${MACOS_VERSION}" >> $GITHUB_OUTPUT
             echo "platform=macOS" >> $GITHUB_OUTPUT
           else
-            echo "tag=windows-v${WIN_VERSION}" >> $GITHUB_OUTPUT
             echo "platform=Windows" >> $GITHUB_OUTPUT
           fi
 
-      - name: Check if release already exists
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          if gh release view "$TAG" --repo "${{ github.repository }}" &>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Release $TAG already exists — skipping (no version bump detected)."
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Download macOS artifact
-        if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -77,10 +56,13 @@ jobs:
               --repo "${{ github.repository }}" \
               --dir  artifacts/macos
           fi
-          echo "MACOS_FILE=$(find artifacts/macos -type f | head -1)" >> $GITHUB_ENV
+          MACOS_FILE=$(find artifacts/macos -type f | head -1)
+          echo "MACOS_FILE=$MACOS_FILE" >> $GITHUB_ENV
+          # Extract version from filename: LanMessenger-macOS-<version>.zip
+          MACOS_VERSION=$(basename "$MACOS_FILE" | sed 's/LanMessenger-macOS-//;s/\.zip//')
+          echo "MACOS_VERSION=$MACOS_VERSION" >> $GITHUB_ENV
 
       - name: Download Windows artifact
-        if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -99,16 +81,37 @@ jobs:
               --repo "${{ github.repository }}" \
               --dir  artifacts/windows
           fi
-          echo "WIN_FILE=$(find artifacts/windows -type f | head -1)" >> $GITHUB_ENV
+          WIN_FILE=$(find artifacts/windows -type f | head -1)
+          echo "WIN_FILE=$WIN_FILE" >> $GITHUB_ENV
+          # Extract version from filename: LanMessenger-Setup-<version>.exe
+          WIN_VERSION=$(basename "$WIN_FILE" | sed 's/LanMessenger-Setup-//;s/\.exe//')
+          echo "WIN_VERSION=$WIN_VERSION" >> $GITHUB_ENV
+
+      - name: Determine tag and check if release exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ steps.meta.outputs.platform }}
+        run: |
+          if [[ "$PLATFORM" == "macOS" ]]; then
+            TAG="macos-v${MACOS_VERSION}"
+          else
+            TAG="windows-v${WIN_VERSION}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          if gh release view "$TAG" --repo "${{ github.repository }}" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release $TAG already exists — skipping."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create versioned release
         if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG:           ${{ steps.meta.outputs.tag }}
-          PLATFORM:      ${{ steps.meta.outputs.platform }}
-          MACOS_VERSION: ${{ steps.meta.outputs.macos }}
-          WIN_VERSION:   ${{ steps.meta.outputs.windows }}
+          TAG:      ${{ steps.check.outputs.tag }}
+          PLATFORM: ${{ steps.meta.outputs.platform }}
         run: |
           gh release create "$TAG" \
             --repo  "${{ github.repository }}" \

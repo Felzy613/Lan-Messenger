@@ -25,7 +25,8 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION=$(cat src/windows-native/VERSION | tr -d '[:space:]')
+          BASE=$(cat src/windows-native/VERSION | tr -d '[:space:]')
+          VERSION="${BASE}.${{ github.run_number }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Building Windows v$VERSION"
 
@@ -80,5 +81,4 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "Windows Latest Build (v$VERSION)" \
             --notes "Automated rolling build — Windows v$VERSION from commit \`${{ github.sha }}\`." \
-            --prerelease \
             "$ARTIFACT"
