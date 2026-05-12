@@ -16,9 +16,9 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Title = "LAN Messenger";
         Model = new AppModel(DispatcherQueue.GetForCurrentThread());
 
-        // Set window size
         var appWindow = AppWindow;
         appWindow.Resize(new Windows.Graphics.SizeInt32(900, 660));
 

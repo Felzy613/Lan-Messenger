@@ -2,8 +2,7 @@
     x:Class="LanMessenger.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:sidebar="using:LanMessenger.UI.Sidebar"
-    Title="LAN Messenger">
+    xmlns:sidebar="using:LanMessenger.UI.Sidebar">
 
     <Grid>
         <Grid.ColumnDefinitions>
@@ -38,14 +37,15 @@
                         Content="Contacts"
                         Click="ContactsBtn_Click" />
                 <Button x:Name="SettingsBtn"
-                        Content="⚙"
-                        ToolTipService.ToolTip="Settings"
+                        Content="Settings"
                         Click="SettingsBtn_Click" />
             </StackPanel>
         </Grid>
 
         <!-- Content area -->
-        <Frame x:Name="ContentFrame"
-               Grid.Column="1" />
+        <ContentControl x:Name="ContentFrame"
+                        Grid.Column="1"
+                        HorizontalContentAlignment="Stretch"
+                        VerticalContentAlignment="Stretch" />
     </Grid>
 </Window>
