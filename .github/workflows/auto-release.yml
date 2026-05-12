@@ -63,9 +63,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p artifacts/macos
-          gh release download rolling-macos \
-            --repo "${{ github.repository }}" \
-            --dir  artifacts/macos
+          if ! gh release download rolling-macos \
+                 --repo "${{ github.repository }}" \
+                 --dir  artifacts/macos 2>/dev/null; then
+            echo "rolling-macos not found — falling back to latest versioned macOS release."
+            LATEST=$(gh release list --repo "${{ github.repository }}" --limit 50 \
+              --json tagName --jq '[.[] | select(.tagName | startswith("macos-v"))] | first | .tagName')
+            if [[ -z "$LATEST" ]]; then
+              echo "::error::No macOS release found (rolling or versioned). Build macOS first."
+              exit 1
+            fi
+            gh release download "$LATEST" \
+              --repo "${{ github.repository }}" \
+              --dir  artifacts/macos
+          fi
           echo "MACOS_FILE=$(find artifacts/macos -type f | head -1)" >> $GITHUB_ENV
 
       - name: Download Windows artifact
@@ -74,9 +85,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p artifacts/windows
-          gh release download rolling-windows \
-            --repo "${{ github.repository }}" \
-            --dir  artifacts/windows
+          if ! gh release download rolling-windows \
+                 --repo "${{ github.repository }}" \
+                 --dir  artifacts/windows 2>/dev/null; then
+            echo "rolling-windows not found — falling back to latest versioned Windows release."
+            LATEST=$(gh release list --repo "${{ github.repository }}" --limit 50 \
+              --json tagName --jq '[.[] | select(.tagName | startswith("windows-v"))] | first | .tagName')
+            if [[ -z "$LATEST" ]]; then
+              echo "::error::No Windows release found (rolling or versioned). Build Windows first."
+              exit 1
+            fi
+            gh release download "$LATEST" \
+              --repo "${{ github.repository }}" \
+              --dir  artifacts/windows
+          fi
           echo "WIN_FILE=$(find artifacts/windows -type f | head -1)" >> $GITHUB_ENV
 
       - name: Create versioned release
