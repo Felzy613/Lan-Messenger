@@ -87,11 +87,13 @@ struct PeerScannerView: View {
     var onSave: () -> Void
 
     @State private var isScanning = false
+    @State private var addedKeys: Set<String> = []
 
     private var discoverablePeers: [PeerInfo] {
-        let savedIPs = Set(savedContacts.map(\.lastIP))
+        // Only filter contacts that existed before this sheet opened (not ones added this session).
+        let preExistingIPs = Set(savedContacts.filter { !addedKeys.contains($0.publicKeyB64) }.map(\.lastIP))
         return model.peers.values
-            .filter { !savedIPs.contains($0.ip) }
+            .filter { !preExistingIPs.contains($0.ip) }
             .sorted { $0.username < $1.username }
     }
 
@@ -124,6 +126,7 @@ struct PeerScannerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(discoverablePeers) { peer in
+                        let alreadyAdded = addedKeys.contains(peer.publicKeyB64)
                         HStack(spacing: 10) {
                             AvatarView(name: peer.username, size: 36)
                             VStack(alignment: .leading, spacing: 2) {
@@ -133,13 +136,26 @@ struct PeerScannerView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Button("Add") {
-                                addContact(peer)
+                            if alreadyAdded {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                    .font(.system(size: 20))
+                            } else {
+                                Button {
+                                    addContact(peer)
+                                } label: {
+                                    Image(systemName: "plus.circle")
+                                        .font(.system(size: 20))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(Theme.accent)
                             }
-                            .buttonStyle(.bordered)
-                            .tint(Theme.accent)
                         }
                         .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if !alreadyAdded { addContact(peer) }
+                        }
                     }
                 }
             }
@@ -178,6 +194,7 @@ struct PeerScannerView: View {
             lastIP: peer.ip
         )
         savedContacts.append(contact)
+        addedKeys.insert(peer.publicKeyB64)
         onSave()
     }
 }

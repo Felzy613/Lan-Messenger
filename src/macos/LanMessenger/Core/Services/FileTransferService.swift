@@ -10,7 +10,7 @@ final class FileTransferService {
     static let shared = FileTransferService()
 
     var onProgress: ((String, String, Int64, Int64) -> Void)?   // peerIP, label, bytes, total
-    var onComplete: ((String, String) -> Void)?                 // peerIP, label
+    var onComplete: ((String, String, URL?) -> Void)?            // peerIP, label, localURL (non-nil on sender side)
     var onIncomingFile: ((String, String, URL) -> Void)?        // peerIP, sender, finalURL
 
     private let chunkSize = 64 * 1024   // 64 KiB
@@ -71,7 +71,7 @@ final class FileTransferService {
             inboxDir: ConfigStore.shared.inboxDirectory
         ) else { return }
 
-        onComplete?(ip, "Receiving \(filename)")
+        onComplete?(ip, "Receiving \(filename)", nil)
         onIncomingFile?(ip, sender, finalURL)
     }
 
@@ -173,7 +173,7 @@ final class FileTransferService {
         guard let endFrame = try? FrameCodec.encodeDict(endPacket),
               rawSend(fd: fd, data: endFrame) else { return false }
 
-        await MainActor.run { self.onComplete?(peerIP, "Sending \(filename)") }
+        await MainActor.run { self.onComplete?(peerIP, "Sending \(filename)", url) }
         return true
     }
 

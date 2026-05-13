@@ -144,7 +144,7 @@ final class NetworkCoordinator: NSObject {
             input.open()
             defer { input.close() }
 
-            while input.streamStatus == .open {
+            while true {
                 guard let frameData = try? FrameCodec.readFrame(from: input),
                       let json = try? FrameCodec.parseJSON(from: frameData) else { break }
                 let result = PacketValidator.validate(

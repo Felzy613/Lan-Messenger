@@ -49,22 +49,5 @@ struct ConversationRowView: View {
             }
         }
         .padding(.vertical, 4)
-        .contextMenu {
-            Button(role: .destructive) {
-                hideConversation()
-            } label: {
-                Label("Hide Conversation", systemImage: "eye.slash")
-            }
-        }
-    }
-
-    private func hideConversation() {
-        if !ConfigStore.shared.config.hiddenConversations.contains(conv.peerIP) {
-            ConfigStore.shared.config.hiddenConversations.append(conv.peerIP)
-            ConfigStore.shared.save()
-        }
-        if model.selectedPeerIP == conv.peerIP {
-            model.selectedPeerIP = nil
-        }
     }
 }

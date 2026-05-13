@@ -24,27 +24,28 @@ struct ComposerView: View {
             .padding(.bottom, 4)
             .help("Send file")
 
-            ZStack(alignment: .topLeading) {
-                // Hidden Text drives the container height
-                Text(draft.isEmpty ? " " : draft)
-                    .font(.system(size: 14))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .opacity(0)
-
-                if draft.isEmpty {
-                    Text("Message")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                }
-
-                ComposerTextEditor(text: $draft, onSubmit: send)
-            }
-            .frame(minHeight: minHeight, maxHeight: maxHeight)
+            // Hidden Text drives the container height; NSScrollView is overlaid so it
+            // cannot influence the ZStack's ideal size (which would pin it at maxHeight).
+            Text(draft.isEmpty ? " " : draft)
+                .font(.system(size: 14))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .opacity(0)
+                .frame(minHeight: minHeight, maxHeight: maxHeight)
+                .overlay(
+                    ZStack(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text("Message")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
+                        ComposerTextEditor(text: $draft, onSubmit: send)
+                    }
+                )
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
             .overlay(
                 RoundedRectangle(cornerRadius: 18)

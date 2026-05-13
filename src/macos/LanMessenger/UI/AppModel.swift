@@ -10,7 +10,7 @@ struct PeerInfo: Identifiable {
     var port: Int
     var publicKeyB64: String
     var lastSeen: Date
-    var isOnline: Bool { Date().timeIntervalSince(lastSeen) < 7 }
+    var isOnline: Bool { Date().timeIntervalSince(lastSeen) < 20 }
 }
 
 // ViewModel for one conversation row in the sidebar.
@@ -117,12 +117,10 @@ final class AppModel: ObservableObject {
 
     private func refreshConversations() {
         var result: [ConversationViewModel] = []
-        let hidden = Set(ConfigStore.shared.config.hiddenConversations)
 
         // Online peers first
         var seenIPs = Set<String>()
         for (keyB64, peer) in peers {
-            guard !hidden.contains(peer.ip) else { continue }
             seenIPs.insert(peer.ip)
             let entries = messages[peer.ip] ?? []
             let last = entries.last
@@ -142,7 +140,7 @@ final class AppModel: ObservableObject {
 
         // Saved contacts that are currently offline
         for contact in ConfigStore.shared.config.contacts {
-            guard !hidden.contains(contact.lastIP), !seenIPs.contains(contact.lastIP) else { continue }
+            guard !seenIPs.contains(contact.lastIP) else { continue }
             let entries = messages[contact.lastIP] ?? []
             result.append(ConversationViewModel(
                 peerIP: contact.lastIP,
@@ -159,6 +157,12 @@ final class AppModel: ObservableObject {
 
         result.sort { ($0.lastTimestamp ?? .distantPast) > ($1.lastTimestamp ?? .distantPast) }
         conversations = result
+    }
+
+    private func touchPeer(publicKeyB64: String) {
+        guard var info = peers[publicKeyB64] else { return }
+        info.lastSeen = Date()
+        peers[publicKeyB64] = info
     }
 
     // Trigger a manual UDP discovery broadcast.
@@ -225,8 +229,23 @@ final class AppModel: ObservableObject {
         FileTransferService.shared.onProgress = { [weak self] ip, label, bytes, total in
             self?.activeTransfers[ip] = (label, bytes, total)
         }
-        FileTransferService.shared.onComplete = { [weak self] ip, _ in
-            self?.activeTransfers.removeValue(forKey: ip)
+        FileTransferService.shared.onComplete = { [weak self] ip, _, localURL in
+            guard let self else { return }
+            self.activeTransfers.removeValue(forKey: ip)
+            guard let url = localURL else { return }   // receiver side — no outgoing bubble needed
+            let entry = MessageEntry(
+                sender: ConfigStore.shared.config.username,
+                text: "__FILE__:\(url.path)",
+                incoming: false,
+                timestamp: Date().timeIntervalSince1970,
+                messageId: nil,
+                status: "Sent",
+                readReceiptSent: false
+            )
+            var list = self.messages[ip] ?? []
+            list.append(entry)
+            self.messages[ip] = list
+            self.refreshConversations()
         }
         FileTransferService.shared.onIncomingFile = { [weak self] ip, sender, url in
             guard let self else { return }
@@ -279,6 +298,8 @@ final class AppModel: ObservableObject {
 
 extension AppModel: NetworkCoordinatorDelegate {
     func coordinator(_ c: NetworkCoordinator, didReceivePacket packet: ValidatedPacket) {
+        // Refresh lastSeen for the sender so TCP activity keeps them online.
+        if let key = packet.senderPublicKeyB64 { touchPeer(publicKeyB64: key) }
         switch packet {
         case .text, .typing, .receipt:
             MessagingService.shared.handlePacket(packet)

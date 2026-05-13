@@ -11,7 +11,7 @@ struct UpdateInfo {
 final class UpdateService {
 
     static let shared = UpdateService()
-    static let appVersion = "2.0.0"
+    static let appVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
 
     private init() {}
 
