@@ -8,8 +8,6 @@ namespace LanMessenger.Core.Crypto;
 // The raw 32-byte private key is DPAPI-encrypted on disk; reconstructed on every load.
 public sealed class KeyManager
 {
-    public static KeyManager Shared { get; } = new();
-
     private static readonly X25519 _algorithm = KeyAgreementAlgorithm.X25519;
     private static readonly string _keyPath = Path.Combine(ResolveAppDataDir(), "private.key.dpapi");
 
@@ -24,6 +22,8 @@ public sealed class KeyManager
                 "AppData", "Roaming");
         return Path.Combine(appData, "LanMessenger");
     }
+
+    public static KeyManager Shared { get; } = new();
 
     private Key _privateKey;
 

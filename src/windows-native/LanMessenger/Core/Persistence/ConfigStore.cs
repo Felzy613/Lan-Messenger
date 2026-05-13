@@ -33,8 +33,6 @@ public sealed class AppConfig
 // The private key is NOT stored here — it lives in a DPAPI-protected file (KeyManager).
 public sealed class ConfigStore
 {
-    public static ConfigStore Shared { get; } = new();
-
     private static readonly string _appDataDir = ResolveAppDataDir();
 
     private static string ResolveAppDataDir()
@@ -48,6 +46,8 @@ public sealed class ConfigStore
                 "AppData", "Roaming");
         return Path.Combine(appData, "LanMessenger");
     }
+
+    public static ConfigStore Shared { get; } = new();
 
     private readonly string _configPath;
     // Python app's config path for migration detection
