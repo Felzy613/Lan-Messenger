@@ -11,9 +11,19 @@ public sealed class KeyManager
     public static KeyManager Shared { get; } = new();
 
     private static readonly X25519 _algorithm = KeyAgreementAlgorithm.X25519;
-    private static readonly string _keyPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "LanMessenger", "private.key.dpapi");
+    private static readonly string _keyPath = Path.Combine(ResolveAppDataDir(), "private.key.dpapi");
+
+    private static string ResolveAppDataDir()
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (string.IsNullOrEmpty(appData))
+            appData = Environment.GetEnvironmentVariable("APPDATA");
+        if (string.IsNullOrEmpty(appData))
+            appData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "AppData", "Roaming");
+        return Path.Combine(appData, "LanMessenger");
+    }
 
     private Key _privateKey;
 

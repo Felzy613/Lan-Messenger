@@ -35,8 +35,19 @@ public sealed class ConfigStore
 {
     public static ConfigStore Shared { get; } = new();
 
-    private static readonly string _appDataDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LanMessenger");
+    private static readonly string _appDataDir = ResolveAppDataDir();
+
+    private static string ResolveAppDataDir()
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (string.IsNullOrEmpty(appData))
+            appData = Environment.GetEnvironmentVariable("APPDATA");
+        if (string.IsNullOrEmpty(appData))
+            appData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "AppData", "Roaming");
+        return Path.Combine(appData, "LanMessenger");
+    }
 
     private readonly string _configPath;
     // Python app's config path for migration detection
