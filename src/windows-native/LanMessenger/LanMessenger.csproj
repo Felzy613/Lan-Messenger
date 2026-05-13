@@ -27,4 +27,21 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <!--
+    msbuild /t:Publish on an unpackaged WinUI 3 self-contained app does not copy
+    the generated resources.pri (compiled XAML / MRT resources) from $(OutDir)
+    into $(PublishDir). Without it, Application.LoadComponent("ms-appx:///*.xaml")
+    throws XamlParseException 0x802B000A ("Cannot locate resource from
+    'ms-appx:///MainWindow.xaml'") at runtime. See microsoft/WindowsAppSDK#3451.
+  -->
+  <Target Name="IncludePriFileInPublishOutput" AfterTargets="Publish">
+    <ItemGroup>
+      <_PriFilesToPublish Include="$(OutDir)*.pri" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_PriFilesToPublish)"
+          DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_PriFilesToPublish)' != ''" />
+  </Target>
 </Project>
