@@ -127,36 +127,45 @@ struct PeerScannerView: View {
                 } else {
                     List(discoverablePeers) { peer in
                         let alreadyAdded = addedKeys.contains(peer.publicKeyB64)
-                        HStack(spacing: 10) {
-                            AvatarView(name: peer.username, size: 36)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(peer.username).font(.headline)
-                                Text(peer.ip)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if alreadyAdded {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                                    .font(.system(size: 20))
-                            } else {
-                                Button {
-                                    addContact(peer)
-                                } label: {
-                                    Image(systemName: "plus.circle")
-                                        .font(.system(size: 20))
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(Theme.accent)
-                            }
-                        }
-                        .padding(.vertical, 2)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
+                        Button {
                             if !alreadyAdded { addContact(peer) }
+                        } label: {
+                            HStack(spacing: 10) {
+                                AvatarView(name: peer.username, size: 36)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(peer.username)
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                    Text(peer.ip)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if alreadyAdded {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.green)
+                                            .font(.system(size: 20))
+                                        Text("Added")
+                                            .font(.caption)
+                                            .foregroundStyle(.green)
+                                    }
+                                } else {
+                                    Text("Add")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 5)
+                                        .background(Theme.accent, in: Capsule())
+                                }
+                            }
+                            .padding(.vertical, 4)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .disabled(alreadyAdded)
                     }
+                    .listStyle(.inset)
                 }
             }
             .navigationTitle("Nearby Peers")

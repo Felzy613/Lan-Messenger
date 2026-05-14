@@ -136,17 +136,14 @@ final class NetworkCoordinator: NSObject {
     private func handleInbound(socket: Int32, fromIP: String) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             defer { Darwin.close(socket) }
-            var cfRead: Unmanaged<CFReadStream>?
-            var cfWrite: Unmanaged<CFWriteStream>?
-            CFStreamCreatePairWithSocket(nil, socket, &cfRead, &cfWrite)
-            guard let inputRef = cfRead?.takeRetainedValue() else { return }
-            let input = inputRef as InputStream
-            input.open()
-            defer { input.close() }
+
+            // 30 s read timeout — kills stuck readers without losing fresh data
+            var tv = timeval(tv_sec: 30, tv_usec: 0)
+            setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
             while true {
-                guard let frameData = try? FrameCodec.readFrame(from: input),
-                      let json = try? FrameCodec.parseJSON(from: frameData) else { break }
+                guard let frameData = Self.recvFrame(socket: socket) else { break }
+                guard let json = try? JSONSerialization.jsonObject(with: frameData) as? [String: Any] else { break }
                 let result = PacketValidator.validate(
                     json: json,
                     senderIP: fromIP,
@@ -160,6 +157,31 @@ final class NetworkCoordinator: NSObject {
                 }
             }
         }
+    }
+
+    // Reads one length-prefixed frame directly from the socket using recv().
+    // CFStream wrappers around accepted sockets have been unreliable in practice;
+    // raw recv() with a socket-level read timeout works deterministically.
+    private static func recvFrame(socket: Int32) -> Data? {
+        var header = [UInt8](repeating: 0, count: 4)
+        guard recvExact(socket: socket, buffer: &header, count: 4) else { return nil }
+        let length = Int(UInt32(bigEndian: header.withUnsafeBytes { $0.load(as: UInt32.self) }))
+        guard length > 0, length <= FrameCodec.maxFrameSize else { return nil }
+        var body = [UInt8](repeating: 0, count: length)
+        guard recvExact(socket: socket, buffer: &body, count: length) else { return nil }
+        return Data(body)
+    }
+
+    private static func recvExact(socket: Int32, buffer: inout [UInt8], count: Int) -> Bool {
+        var total = 0
+        while total < count {
+            let n = buffer.withUnsafeMutableBytes { ptr in
+                Darwin.recv(socket, ptr.baseAddress!.advanced(by: total), count - total, 0)
+            }
+            if n <= 0 { return false }
+            total += n
+        }
+        return true
     }
 
     // MARK: - Helpers

@@ -8,9 +8,14 @@ struct ComposerView: View {
 
     @State private var draft = ""
     @State private var isDragTargeted = false
+    @State private var measuredHeight: CGFloat = 36
 
     private let minHeight: CGFloat = 36
     private let maxHeight: CGFloat = 120
+
+    private var clampedHeight: CGFloat {
+        min(max(measuredHeight, minHeight), maxHeight)
+    }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -24,28 +29,34 @@ struct ComposerView: View {
             .padding(.bottom, 4)
             .help("Send file")
 
-            // Hidden Text drives the container height; NSScrollView is overlaid so it
-            // cannot influence the ZStack's ideal size (which would pin it at maxHeight).
-            Text(draft.isEmpty ? " " : draft)
-                .font(.system(size: 14))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .opacity(0)
-                .frame(minHeight: minHeight, maxHeight: maxHeight)
-                .overlay(
-                    ZStack(alignment: .topLeading) {
-                        if draft.isEmpty {
-                            Text("Message")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.tertiary)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .allowsHitTesting(false)
-                        }
-                        ComposerTextEditor(text: $draft, onSubmit: send)
-                    }
-                )
+            ZStack(alignment: .topLeading) {
+                // Hidden, off-screen text used to measure ideal height for the draft string.
+                Text(draft.isEmpty ? " " : draft)
+                    .font(.system(size: 14))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(GeometryReader { geo in
+                        Color.clear
+                            .preference(key: ComposerHeightKey.self, value: geo.size.height)
+                    })
+                    .hidden()
+
+                if draft.isEmpty {
+                    Text("Message")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+
+                ComposerTextEditor(text: $draft, onSubmit: send)
+            }
+            .frame(height: clampedHeight)
+            .onPreferenceChange(ComposerHeightKey.self) { newValue in
+                measuredHeight = newValue
+            }
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
             .overlay(
                 RoundedRectangle(cornerRadius: 18)
@@ -146,5 +157,14 @@ struct ComposerTextEditor: NSViewRepresentable {
             }
             return false
         }
+    }
+}
+
+// MARK: - Height measurement preference key
+
+private struct ComposerHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 36
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

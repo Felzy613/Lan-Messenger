@@ -7,8 +7,9 @@ struct MessageBubbleView: View {
     @Environment(\.colorScheme) var colorScheme
 
     // File messages use a "__FILE__:/path/to/file" prefix stored by AppModel.
+    // Works for both incoming (sender="System") and outgoing (sender=username) entries.
     private var filePath: String? {
-        entry.sender == "System" && entry.text.hasPrefix("__FILE__:")
+        entry.text.hasPrefix("__FILE__:")
             ? String(entry.text.dropFirst("__FILE__:".count))
             : nil
     }
@@ -44,6 +45,7 @@ struct MessageBubbleView: View {
         let url  = URL(fileURLWithPath: path)
         let name = url.lastPathComponent
         let exists = FileManager.default.fileExists(atPath: path)
+        let bg = entry.incoming ? Theme.incomingBubble(colorScheme) : Theme.outgoingBubble(colorScheme)
 
         return HStack(spacing: 10) {
             Image(systemName: "doc.fill")
@@ -78,11 +80,11 @@ struct MessageBubbleView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Theme.incomingBubble(colorScheme),
+        .background(bg,
                     in: UnevenRoundedRectangle(
                         topLeadingRadius: 16,
-                        bottomLeadingRadius: isFirstInRun ? 4 : 16,
-                        bottomTrailingRadius: 16,
+                        bottomLeadingRadius: entry.incoming ? (isFirstInRun ? 4 : 16) : 16,
+                        bottomTrailingRadius: entry.incoming ? 16 : (isFirstInRun ? 4 : 16),
                         topTrailingRadius: 16
                     ))
         .frame(maxWidth: 280)
