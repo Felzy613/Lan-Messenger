@@ -5,56 +5,135 @@
     xmlns:local="using:LanMessenger.UI.Sidebar"
     xmlns:ui="using:LanMessenger.UI">
 
-    <Grid Padding="24" RowSpacing="16">
+    <Grid RowSpacing="0">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0"
-                       Text="Saved Contacts"
-                       Style="{ThemeResource TitleTextBlockStyle}" />
-            <Button Grid.Column="1"
-                    Content="Add from Nearby Peers"
-                    Click="AddFromPeers_Click" />
-        </Grid>
+        <!-- Search bar -->
+        <Border Grid.Row="0"
+                Padding="12,10">
+            <Grid ColumnSpacing="8"
+                  Padding="10,6"
+                  Background="{ThemeResource ControlFillColorDefaultBrush}"
+                  CornerRadius="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <FontIcon Grid.Column="0"
+                          FontFamily="Segoe MDL2 Assets"
+                          Glyph="&#xE721;"
+                          FontSize="14"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBox x:Name="SearchBox"
+                         Grid.Column="1"
+                         PlaceholderText="Search contacts"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         TextChanged="SearchBox_TextChanged">
+                    <TextBox.Resources>
+                        <SolidColorBrush x:Key="TextControlBorderBrushFocused"     Color="Transparent"/>
+                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent"/>
+                        <SolidColorBrush x:Key="TextControlBackgroundFocused"      Color="Transparent"/>
+                        <SolidColorBrush x:Key="TextControlBackgroundPointerOver"  Color="Transparent"/>
+                    </TextBox.Resources>
+                </TextBox>
+                <Button x:Name="ClearSearchBtn"
+                        Grid.Column="2"
+                        Width="24" Height="24"
+                        Padding="0"
+                        CornerRadius="12"
+                        BorderThickness="0"
+                        Background="Transparent"
+                        Visibility="Collapsed"
+                        Click="ClearSearch_Click">
+                    <FontIcon FontFamily="Segoe MDL2 Assets"
+                              Glyph="&#xE711;"
+                              FontSize="10"
+                              Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </Button>
+            </Grid>
+        </Border>
 
+        <!-- "New contact" / Search LAN row, WhatsApp-style -->
+        <Button Grid.Row="1"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Stretch"
+                Background="Transparent"
+                BorderThickness="0"
+                Padding="16,10"
+                Click="AddFromPeers_Click">
+            <Grid ColumnSpacing="14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0"
+                        Width="44" Height="44"
+                        CornerRadius="22"
+                        Background="#25D366">
+                    <FontIcon FontFamily="Segoe MDL2 Assets"
+                              Glyph="&#xE8FA;"
+                              FontSize="18"
+                              Foreground="White" />
+                </Border>
+                <TextBlock Grid.Column="1"
+                           Text="Search LAN"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}"
+                           VerticalAlignment="Center" />
+            </Grid>
+        </Button>
+
+        <Rectangle Grid.Row="2"
+                   Height="1"
+                   Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
+                   Margin="16,0" />
+
+        <!-- Contact list -->
         <ListView x:Name="ContactsList"
-                  Grid.Row="1"
+                  Grid.Row="3"
                   SelectionMode="None">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                    <Setter Property="Padding" Value="8,6" />
+                    <Setter Property="Padding" Value="16,6" />
                 </Style>
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="local:ContactRowViewModel">
-                    <Grid ColumnSpacing="12" Padding="4">
+                    <Grid ColumnSpacing="12" Padding="0,2">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
-                        <ui:AvatarControl Grid.Column="0"
-                                          Width="44" Height="44"
-                                          NameText="{x:Bind Username, Mode=OneWay}"
-                                          PhotoB64="{x:Bind PhotoB64, Mode=OneWay}" />
+                        <!-- Avatar with online dot -->
+                        <Grid Grid.Column="0">
+                            <ui:AvatarControl Width="44" Height="44"
+                                              NameText="{x:Bind Username, Mode=OneWay}"
+                                              PhotoB64="{x:Bind PhotoB64, Mode=OneWay}" />
+                            <Ellipse Width="11" Height="11"
+                                     Fill="#25D366"
+                                     Stroke="White" StrokeThickness="2"
+                                     HorizontalAlignment="Right"
+                                     VerticalAlignment="Bottom"
+                                     Visibility="{x:Bind IsOnlineVisibility, Mode=OneWay}" />
+                        </Grid>
 
                         <StackPanel Grid.Column="1"
                                     VerticalAlignment="Center"
                                     Spacing="2">
                             <TextBlock Text="{x:Bind Username, Mode=OneWay}"
                                        Style="{ThemeResource BodyStrongTextBlockStyle}" />
-                            <TextBlock Text="{x:Bind LastIP, Mode=OneWay}"
+                            <TextBlock Text="{x:Bind StatusText, Mode=OneWay}"
                                        Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                       Foreground="{x:Bind StatusBrush, Mode=OneWay}" />
                         </StackPanel>
 
                         <Button Grid.Column="2"
@@ -62,7 +141,7 @@
                                 BorderBrush="Transparent"
                                 Tag="{x:Bind PublicKeyB64}"
                                 ToolTipService.ToolTip="Contact options">
-                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE712;" />
+                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE712;" FontSize="14" />
                             <Button.Flyout>
                                 <MenuFlyout>
                                     <MenuFlyoutItem Text="Edit…"
@@ -88,15 +167,24 @@
         </ListView>
 
         <StackPanel x:Name="EmptyState"
-                    Grid.Row="1"
+                    Grid.Row="3"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
-                    Spacing="6"
+                    Spacing="10"
                     Visibility="Collapsed">
-            <TextBlock Text="No saved contacts"
+            <FontIcon FontFamily="Segoe MDL2 Assets"
+                      Glyph="&#xE779;"
+                      FontSize="44"
+                      Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <TextBlock x:Name="EmptyTitle"
+                       Text="No saved contacts"
                        Style="{ThemeResource SubtitleTextBlockStyle}"
+                       HorizontalAlignment="Center"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            <TextBlock Text="Tap “Add from Nearby Peers” to scan your network."
+            <TextBlock x:Name="EmptySubtitle"
+                       Text="Tap &quot;Search LAN&quot; to find peers on your network."
+                       HorizontalAlignment="Center"
+                       TextAlignment="Center"
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
         </StackPanel>
     </Grid>

@@ -1,6 +1,7 @@
 using LanMessenger.Core.Persistence;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 
@@ -35,10 +36,9 @@ public sealed class MessageRowViewModel : INotifyPropertyChanged
 
 public sealed partial class ChatPage : Page
 {
-    // Rows are owned by the page and bound ONCE; we mutate the collection
-    // instead of reassigning ItemsSource so scroll position and focus survive.
     private readonly ObservableCollection<MessageRowViewModel> _rows = [];
     private string? _boundPeerIP;
+    private ScrollViewer? _scroll;   // inner scroll viewer of MessagesList, cached after layout
 
     private AppModel? _model;
     public AppModel? Model
@@ -65,6 +65,31 @@ public sealed partial class ChatPage : Page
     {
         InitializeComponent();
         MessagesList.ItemsSource = _rows;
+
+        // Cache the inner ScrollViewer once the visual tree is built so we can
+        // query scroll position without walking the tree on every message update.
+        EventHandler<object>? layoutHandler = null;
+        layoutHandler = (_, _) =>
+        {
+            var sv = FindDescendant<ScrollViewer>(MessagesList);
+            if (sv is null) return;
+            _scroll = sv;
+            MessagesList.LayoutUpdated -= layoutHandler;
+        };
+        MessagesList.LayoutUpdated += layoutHandler;
+    }
+
+    private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T t) return t;
+            var found = FindDescendant<T>(child);
+            if (found is not null) return found;
+        }
+        return null;
     }
 
     // PropertyChanged handler is small and targeted — only touch what changed.
@@ -118,18 +143,22 @@ public sealed partial class ChatPage : Page
         if (ip is not null) _model.MarkConversationRead(ip);
 
         // Scroll to the latest message after layout settles.
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            MessagesScroll.ChangeView(null, MessagesScroll.ScrollableHeight, null, disableAnimation: true));
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
     }
 
     private void UpdateHeaderName()
     {
         if (_model is null || _model.SelectedPeerIP is null) return;
         var ip = _model.SelectedPeerIP;
-        var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
+        var peer    = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
         var contact = LanMessenger.Core.Persistence.ConfigStore.Shared.Config.Contacts
             .FirstOrDefault(c => c.LastIP == ip);
-        var name = peer?.Username ?? contact?.Username ?? ip;
+        // Fall back to the sender name from the most recent incoming message so that
+        // offline peers whose conversation exists in history show their name, not the raw IP.
+        string? historyName = null;
+        if (_model.Messages.TryGetValue(ip, out var msgs))
+            historyName = msgs.LastOrDefault(e => e.Incoming)?.Sender;
+        var name = peer?.Username ?? contact?.Username ?? historyName ?? ip;
         HeaderAvatar.NameText = name;
         HeaderName.Text       = name;
     }
@@ -194,8 +223,7 @@ public sealed partial class ChatPage : Page
                 _rows.Add(MapEntry(entries[i]));
 
             if (wasAtBottom)
-                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-                    MessagesScroll.ChangeView(null, MessagesScroll.ScrollableHeight, null));
+                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
 
             // Auto-read any newly-arrived incoming messages for the open chat.
             if (entries.Any(e => e.Incoming && !e.ReadReceiptSent))
@@ -204,18 +232,26 @@ public sealed partial class ChatPage : Page
         }
 
         // Fallback — rebuild but try to preserve scroll position.
-        var verticalOffset = MessagesScroll.VerticalOffset;
+        var verticalOffset = _scroll?.VerticalOffset ?? 0;
         _rows.Clear();
         foreach (var e in entries) _rows.Add(MapEntry(e));
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            MessagesScroll.ChangeView(null, verticalOffset, null, disableAnimation: true));
+            _scroll?.ChangeView(null, verticalOffset, null, disableAnimation: true));
+    }
+
+    private void ScrollToBottom()
+    {
+        if (_scroll is not null)
+            _scroll.ChangeView(null, _scroll.ScrollableHeight, null, disableAnimation: true);
+        else if (_rows.Count > 0)
+            MessagesList.ScrollIntoView(_rows[^1]);
     }
 
     private bool IsScrolledToBottom()
     {
-        // Consider "at bottom" if within ~40px of the bottom (covers small composer overlap).
-        return MessagesScroll.ScrollableHeight <= 0
-            || (MessagesScroll.ScrollableHeight - MessagesScroll.VerticalOffset) < 40;
+        if (_scroll is null) return true;
+        return _scroll.ScrollableHeight <= 0
+            || (_scroll.ScrollableHeight - _scroll.VerticalOffset) < 40;
     }
 
     private static bool SameMessage(MessageRowViewModel row, MessageEntry entry)

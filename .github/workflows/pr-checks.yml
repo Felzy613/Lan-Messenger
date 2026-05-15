@@ -1,0 +1,151 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write   # needed to post/update the PR comment
+
+jobs:
+  # ── macOS unit tests ──────────────────────────────────────────────────────────
+  test-macos:
+    name: macOS Unit Tests
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: src/macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Swift build artifacts
+        uses: actions/cache@v4
+        with:
+          path: src/macos/.build
+          key: swift-${{ runner.os }}-${{ hashFiles('src/macos/Package.swift') }}
+          restore-keys: swift-${{ runner.os }}-
+
+      - name: Run unit tests
+        run: swift test --parallel 2>&1 | tee ../../test-output-macos.txt; exit ${PIPESTATUS[0]}
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-macos-pr-${{ github.run_id }}
+          path: test-output-macos.txt
+          retention-days: 14
+
+  # ── Windows unit tests ────────────────────────────────────────────────────────
+  test-windows:
+    name: Windows Unit Tests
+    runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: src/windows-native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('src/windows-native/**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore dependencies
+        run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
+
+      - name: Build test project
+        shell: pwsh
+        run: |
+          msbuild LanMessenger.Tests\LanMessenger.Tests.csproj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            2>&1 | Tee-Object -FilePath ..\..\test-output-windows.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          $testDll = Get-ChildItem -Path "LanMessenger.Tests\bin" `
+                       -Filter "LanMessenger.Tests.dll" -Recurse |
+                     Select-Object -First 1
+          if (-not $testDll) { Write-Error "Test DLL not found"; exit 1 }
+          dotnet vstest $testDll.FullName --logger:"console;verbosity=normal" `
+            2>&1 | Tee-Object -Append -FilePath ..\..\test-output-windows.txt
+          exit $LASTEXITCODE
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-windows-pr-${{ github.run_id }}
+          path: test-output-windows.txt
+          retention-days: 14
+
+  # ── Post / update a single summary comment on the PR ─────────────────────────
+  comment:
+    name: Post PR Summary
+    needs: [test-macos, test-windows]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post or update check comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const mac = '${{ needs.test-macos.result }}';
+            const win = '${{ needs.test-windows.result }}';
+
+            const icon = r => r === 'success' ? '✅' : r === 'skipped' ? '⏭️' : '❌';
+            const allPassed = mac === 'success' && win === 'success';
+            const header = allPassed ? '✅ All checks passed' : '❌ One or more checks failed';
+
+            const body = [
+              '<!-- pr-ci-check -->',
+              `## ${header}`,
+              '',
+              '| Platform | Unit Tests |',
+              '|----------|------------|',
+              `| 🍎 macOS   | ${icon(mac)} ${mac} |`,
+              `| 🪟 Windows | ${icon(win)} ${win} |`,
+              '',
+              `[View workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(
+              c => c.user.type === 'Bot' && c.body.includes('<!-- pr-ci-check -->')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

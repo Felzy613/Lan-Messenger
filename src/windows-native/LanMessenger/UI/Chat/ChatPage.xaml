@@ -50,21 +50,27 @@
                                           Grid.Row="1"
                                           Visibility="Collapsed" />
 
-        <!-- Messages list -->
-        <ScrollViewer x:Name="MessagesScroll"
-                      Grid.Row="2"
-                      VerticalScrollMode="Enabled"
-                      VerticalScrollBarVisibility="Auto"
-                      Padding="12,8"
-                      Background="#E5DDD5">
-            <ItemsControl x:Name="MessagesList">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="local:MessageRowViewModel">
-                        <local:MessageBubbleControl Row="{Binding}" />
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-        </ScrollViewer>
+        <!-- Messages list — ListView provides built-in virtualization for smooth scrolling -->
+        <ListView x:Name="MessagesList"
+                  Grid.Row="2"
+                  SelectionMode="None"
+                  IsItemClickEnabled="False"
+                  Padding="12,8"
+                  Background="#E5DDD5">
+            <ListView.ItemTemplate>
+                <DataTemplate x:DataType="local:MessageRowViewModel">
+                    <local:MessageBubbleControl Row="{Binding}" />
+                </DataTemplate>
+            </ListView.ItemTemplate>
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="Padding" Value="0,2" />
+                    <Setter Property="MinHeight" Value="0" />
+                    <Setter Property="Background" Value="Transparent" />
+                </Style>
+            </ListView.ItemContainerStyle>
+        </ListView>
 
         <!-- Reply banner (shown when replying) -->
         <Border x:Name="ReplyBanner"
