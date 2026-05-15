@@ -19,28 +19,64 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <TextBlock Grid.Row="0"
-                       Text="LAN Messenger"
-                       Style="{ThemeResource TitleTextBlockStyle}"
-                       Margin="16,16,16,8" />
+            <!-- Header: title on left, icon buttons on right — matches macOS toolbar placement -->
+            <Grid Grid.Row="0" Padding="16,12,8,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="Chats"
+                           Style="{ThemeResource TitleTextBlockStyle}"
+                           VerticalAlignment="Center" />
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            Spacing="2">
+                    <Button x:Name="ContactsBtn"
+                            Width="36" Height="36"
+                            Padding="0"
+                            CornerRadius="18"
+                            BorderThickness="0"
+                            ToolTipService.ToolTip="Contacts"
+                            Click="ContactsBtn_Click">
+                        <Button.Resources>
+                            <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
+                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
+                            <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                            <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
+                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                        </Button.Resources>
+                        <FontIcon FontFamily="Segoe MDL2 Assets"
+                                  Glyph="&#xE77B;"
+                                  FontSize="16" />
+                    </Button>
+                    <Button x:Name="SettingsBtn"
+                            Width="36" Height="36"
+                            Padding="0"
+                            CornerRadius="18"
+                            BorderThickness="0"
+                            ToolTipService.ToolTip="Settings"
+                            Click="SettingsBtn_Click">
+                        <Button.Resources>
+                            <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
+                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
+                            <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                            <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
+                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                        </Button.Resources>
+                        <FontIcon FontFamily="Segoe MDL2 Assets"
+                                  Glyph="&#xE713;"
+                                  FontSize="16" />
+                    </Button>
+                </StackPanel>
+            </Grid>
 
             <sidebar:SidebarControl x:Name="Sidebar"
                                     Grid.Row="1" />
-
-            <StackPanel Grid.Row="2"
-                        Orientation="Horizontal"
-                        Padding="12,8"
-                        Spacing="8">
-                <Button x:Name="ContactsBtn"
-                        Content="Contacts"
-                        Click="ContactsBtn_Click" />
-                <Button x:Name="SettingsBtn"
-                        Content="Settings"
-                        Click="SettingsBtn_Click" />
-            </StackPanel>
         </Grid>
 
         <!-- Content area -->

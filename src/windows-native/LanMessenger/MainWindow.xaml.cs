@@ -19,10 +19,9 @@ public sealed partial class MainWindow : Window
 
     // Cached so we don't blow away scroll position / TextBox focus every time the
     // user clicks a conversation or a peer goes online/offline.
-    private ChatPage?     _chatPage;
-    private ContactsPage? _contactsPage;
-    private SettingsPage? _settingsPage;
-    private ArchivedPage? _archivedPage;
+    private ChatPage?       _chatPage;
+    private ArchivedPage?   _archivedPage;
+    private ContentDialog?  _activeDialog;
 
     // True after the user has explicitly requested Quit (tray menu or AppDelegate); causes
     // closing the window to actually exit the process rather than hide.
@@ -75,18 +74,34 @@ public sealed partial class MainWindow : Window
             ContentFrame.Content = _chatPage;
     }
 
-    private void ShowContactsPage()
+    private async void ShowContactsPage()
     {
-        if (_contactsPage is null) _contactsPage = new ContactsPage { Model = Model };
-        if (!ReferenceEquals(ContentFrame.Content, _contactsPage))
-            ContentFrame.Content = _contactsPage;
+        if (_activeDialog is not null) return;
+        var dialog = new ContentDialog
+        {
+            Title           = "Contacts",
+            CloseButtonText = "Done",
+            Content         = new ContactsPage { Model = Model },
+            XamlRoot        = Content.XamlRoot,
+        };
+        _activeDialog = dialog;
+        try { await dialog.ShowAsync(); }
+        finally { _activeDialog = null; }
     }
 
-    private void ShowSettingsPage()
+    private async void ShowSettingsPage()
     {
-        if (_settingsPage is null) _settingsPage = new SettingsPage { Model = Model };
-        if (!ReferenceEquals(ContentFrame.Content, _settingsPage))
-            ContentFrame.Content = _settingsPage;
+        if (_activeDialog is not null) return;
+        var dialog = new ContentDialog
+        {
+            Title           = "Settings",
+            CloseButtonText = "Done",
+            Content         = new SettingsPage { Model = Model },
+            XamlRoot        = Content.XamlRoot,
+        };
+        _activeDialog = dialog;
+        try { await dialog.ShowAsync(); }
+        finally { _activeDialog = null; }
     }
 
     private void ShowArchivedPage()

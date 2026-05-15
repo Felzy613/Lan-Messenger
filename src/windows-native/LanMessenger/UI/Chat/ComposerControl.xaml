@@ -13,20 +13,30 @@
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
-        <!-- Attach button -->
+        <!-- Attach button — solid subtle background ensures full hit-test area -->
         <Button x:Name="AttachBtn"
                 Grid.Column="0"
-                Content="📎"
-                FontSize="18"
-                Width="40" Height="40"
+                Width="38" Height="38"
                 Padding="0"
-                CornerRadius="20"
-                Background="Transparent"
+                CornerRadius="19"
                 BorderThickness="0"
                 ToolTipService.ToolTip="Attach file"
-                Click="AttachBtn_Click" />
+                Click="AttachBtn_Click">
+            <Button.Resources>
+                <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
+                <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
+                <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
+                <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
+            </Button.Resources>
+            <TextBlock Text="📎"
+                       FontSize="18"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center" />
+        </Button>
 
-        <!-- Input box (rounded) -->
+        <!-- Input box — custom Border keeps the WhatsApp rounded style at all focus states -->
         <Border Grid.Column="1"
                 Background="{ThemeResource ControlFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
@@ -35,7 +45,7 @@
                 Padding="12,4">
             <TextBox x:Name="InputBox"
                      PlaceholderText="Type a message"
-                     AcceptsReturn="True"
+                     AcceptsReturn="False"
                      TextWrapping="Wrap"
                      MinHeight="32"
                      MaxHeight="120"
@@ -43,19 +53,37 @@
                      Background="Transparent"
                      VerticalContentAlignment="Center"
                      KeyDown="InputBox_KeyDown"
-                     TextChanged="InputBox_TextChanged" />
+                     TextChanged="InputBox_TextChanged">
+                <!-- Suppress TextBox's own focus/hover chrome so the outer Border stays visible -->
+                <TextBox.Resources>
+                    <SolidColorBrush x:Key="TextControlBorderBrushFocused"      Color="Transparent"/>
+                    <SolidColorBrush x:Key="TextControlBorderBrushPointerOver"  Color="Transparent"/>
+                    <SolidColorBrush x:Key="TextControlBackgroundFocused"       Color="Transparent"/>
+                    <SolidColorBrush x:Key="TextControlBackgroundPointerOver"   Color="Transparent"/>
+                </TextBox.Resources>
+            </TextBox>
         </Border>
 
-        <!-- Round send button (WhatsApp green) -->
+        <!-- Send button — WhatsApp green, hover darkens slightly, icon stays white -->
         <Button x:Name="SendBtn"
                 Grid.Column="2"
-                Width="40" Height="40"
+                Width="38" Height="38"
                 Padding="0"
-                CornerRadius="20"
+                CornerRadius="19"
                 BorderThickness="0"
-                Background="#25D366"
                 Click="SendBtn_Click"
                 ToolTipService.ToolTip="Send">
+            <Button.Resources>
+                <SolidColorBrush x:Key="ButtonBackground"             Color="#25D366"/>
+                <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#1EBE5D"/>
+                <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#1AAD54"/>
+                <SolidColorBrush x:Key="ButtonForeground"             Color="White"/>
+                <SolidColorBrush x:Key="ButtonForegroundPointerOver"  Color="White"/>
+                <SolidColorBrush x:Key="ButtonForegroundPressed"      Color="White"/>
+                <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
+                <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
+            </Button.Resources>
             <TextBlock Text="➤"
                        FontSize="16"
                        Foreground="White"

@@ -169,13 +169,19 @@ public sealed partial class AppModel : ObservableObject
 
     private void StartPeerTimeoutTimer()
     {
+        // Keep peers in the dictionary even when they go offline — their public key
+        // is needed to queue outgoing messages for delivery when they reconnect.
+        // IsOnline is computed from LastSeen, so the UI still shows them as offline.
         _peerTimeoutTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        var _lastOnlineSet = new HashSet<string>();
         _peerTimeoutTimer.Tick += (_, _) =>
         {
-            var before = Peers.Count;
-            var filtered = Peers.Where(kv => kv.Value.IsOnline)
-                .ToDictionary(kv => kv.Key, kv => kv.Value);
-            if (filtered.Count != before) { Peers = filtered; RefreshConversations(); }
+            var nowOnline = Peers.Keys.Where(k => Peers[k].IsOnline).ToHashSet();
+            if (!nowOnline.SetEquals(_lastOnlineSet))
+            {
+                _lastOnlineSet = nowOnline;
+                RefreshConversations();
+            }
         };
         _peerTimeoutTimer.Start();
     }
@@ -622,10 +628,11 @@ public sealed partial class AppModel : ObservableObject
 
     private void LoadHistory()
     {
+        // Use new List<> to break the reference shared with HistoryStore — otherwise
+        // OnMessageReceived would add entries twice (once via HistoryStore.Append, once
+        // via list.Add), showing every message twice in the chat.
         Messages = HistoryStore.Shared.History
-            .ToDictionary(kv => kv.Key, kv => kv.Value);
-        // Critical: refresh conversation list now so threads are visible immediately,
-        // not only after the first discovery beacon arrives.
+            .ToDictionary(kv => kv.Key, kv => new List<MessageEntry>(kv.Value));
         RefreshConversations();
     }
 

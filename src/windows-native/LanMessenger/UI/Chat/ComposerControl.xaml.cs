@@ -25,9 +25,20 @@ public sealed partial class ComposerControl : UserControl
 
         var shift = (Microsoft.UI.Input.InputKeyboardSource
             .GetKeyStateForCurrentThread(VirtualKey.Shift) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
-        if (shift) return;
 
-        e.Handled = true;
+        e.Handled = true;  // always consume Enter so TextBox never inserts a literal newline
+
+        if (shift)
+        {
+            // AcceptsReturn is false, so we insert the newline ourselves.
+            var start = InputBox.SelectionStart;
+            var selLen = InputBox.SelectionLength;
+            var old = InputBox.Text;
+            InputBox.Text = old[..start] + "\r\n" + old[(start + selLen)..];
+            InputBox.SelectionStart = start + 2;
+            return;
+        }
+
         DoSend();
     }
 
@@ -57,15 +68,19 @@ public sealed partial class ComposerControl : UserControl
 
     private async void AttachBtn_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
-        picker.FileTypeFilter.Add("*");
+        try
+        {
+            if (Application.Current is not App app || app.MainWindow is null) return;
+            var picker = new Windows.Storage.Pickers.FileOpenPicker();
+            WinRT.Interop.InitializeWithWindow.Initialize(
+                picker, WinRT.Interop.WindowNative.GetWindowHandle(app.MainWindow));
+            picker.FileTypeFilter.Add("*");
 
-        var files = await picker.PickMultipleFilesAsync();
-        if (files is null || files.Count == 0) return;
-
-        FilesDropped?.Invoke(files.Select(f => f.Path).ToList());
+            var files = await picker.PickMultipleFilesAsync();
+            if (files is null || files.Count == 0) return;
+            FilesDropped?.Invoke(files.Select(f => f.Path).ToList());
+        }
+        catch { /* picker cancelled or window handle unavailable */ }
     }
 
     private void OnDragOver(object sender, DragEventArgs e)
