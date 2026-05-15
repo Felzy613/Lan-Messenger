@@ -85,6 +85,11 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      # VS MSBuild is required to build the WinUI 3 project (dotnet SDK MSBuild
+      # lacks the Windows SDK Pri packaging tasks used by WindowsAppSDK targets).
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
       - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
@@ -93,17 +98,25 @@ jobs:
           restore-keys: nuget-${{ runner.os }}-
 
       - name: Restore dependencies
-        run: dotnet restore LanMessenger.sln -p:Platform=x64
+        run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
+
+      - name: Build test project (via MSBuild)
+        shell: pwsh
+        run: |
+          msbuild LanMessenger.Tests\LanMessenger.Tests.csproj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            2>&1 | Tee-Object -FilePath ..\..\test-output-windows.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run unit tests
         shell: pwsh
         run: |
           dotnet test LanMessenger.Tests `
             --configuration Release `
-            -p:Platform=x64 `
-            --no-restore `
+            --no-build `
             --logger "console;verbosity=normal" `
-            2>&1 | Tee-Object -FilePath ..\..\test-output-windows.txt
+            2>&1 | Tee-Object -Append -FilePath ..\..\test-output-windows.txt
           exit $LASTEXITCODE
 
       - name: Upload test results
