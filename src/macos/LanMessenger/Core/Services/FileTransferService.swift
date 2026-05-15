@@ -125,12 +125,28 @@ final class FileTransferService {
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = UInt16(tcpPort).bigEndian
         addr.sin_addr.s_addr = inet_addr(peerIP)
-        let connected = withUnsafePointer(to: &addr) { ptr in
+
+        // Non-blocking connect with a 5-second timeout so a stale or unreachable
+        // peer IP doesn't hang the task for the OS default (~75 s).
+        let sockFlags = fcntl(fd, F_GETFL, 0)
+        _ = fcntl(fd, F_SETFL, sockFlags | O_NONBLOCK)
+        let connectResult = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sp in
                 Darwin.connect(fd, sp, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        guard connected == 0 else { return false }
+        if connectResult != 0 {
+            guard errno == EINPROGRESS else { return false }
+            var pfd = pollfd()
+            pfd.fd = fd
+            pfd.events = Int16(POLLOUT)
+            guard Darwin.poll(&pfd, 1, 5000) > 0 else { return false }
+            var sockErr: Int32 = 0
+            var errLen = socklen_t(MemoryLayout<Int32>.size)
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockErr, &errLen)
+            guard sockErr == 0 else { return false }
+        }
+        _ = fcntl(fd, F_SETFL, sockFlags)  // restore blocking mode for send()
 
         let transferId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let myKey = KeyManager.shared.publicKeyB64

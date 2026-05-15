@@ -65,6 +65,7 @@ final class AppModel: ObservableObject {
         let localIPs = localIPAddresses()
         coordinator.start(username: ConfigStore.shared.config.username, localIPs: Set(localIPs))
         NotificationService.shared.requestAuthorization()
+        removeOwnContact()
         loadHistory()
         startPeerTimeoutTimer()
         checkMigration()
@@ -72,8 +73,28 @@ final class AppModel: ObservableObject {
         scheduleAutoUpdateCheck()
     }
 
+    // Remove any saved contact whose public key matches our own.
+    // This cleans up contacts that were accidentally added during testing.
+    private func removeOwnContact() {
+        let ownKey = KeyManager.shared.publicKeyB64
+        let before = ConfigStore.shared.config.contacts.count
+        ConfigStore.shared.config.contacts.removeAll { $0.publicKeyB64 == ownKey }
+        if ConfigStore.shared.config.contacts.count != before {
+            ConfigStore.shared.save()
+        }
+    }
+
     func applyDockPolicy() {
-        NSApp.setActivationPolicy(ConfigStore.shared.config.hideFromDock ? .accessory : .regular)
+        let target: NSApplication.ActivationPolicy = ConfigStore.shared.config.hideFromDock ? .accessory : .regular
+        guard NSApp.activationPolicy() != target else { return }
+        NSApp.setActivationPolicy(target)
+        if target == .regular {
+            NSApp.activate(ignoringOtherApps: true)
+            for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
+                w.makeKeyAndOrderFront(nil)
+                break
+            }
+        }
     }
 
     // MARK: - Migration

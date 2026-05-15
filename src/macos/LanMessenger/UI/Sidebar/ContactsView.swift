@@ -352,32 +352,50 @@ struct PeerScannerView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List(discoverablePeers) { peer in
-                        let selected = selectedKeys.contains(peer.publicKeyB64)
-                        Button {
-                            toggle(peer.publicKeyB64)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 20))
-                                    .foregroundStyle(selected ? Theme.accent : .secondary)
-                                AvatarView(name: peer.username, size: 36)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(peer.username)
-                                        .font(.headline)
-                                        .foregroundStyle(.primary)
-                                    Text(peer.ip)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                    VStack(spacing: 0) {
+                        List(discoverablePeers) { peer in
+                            let selected = selectedKeys.contains(peer.publicKeyB64)
+                            Button {
+                                toggle(peer.publicKeyB64)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 20))
+                                        .foregroundStyle(selected ? Theme.accent : .secondary)
+                                    AvatarView(name: peer.username, size: 36)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(peer.username)
+                                            .font(.headline)
+                                            .foregroundStyle(.primary)
+                                        Text(peer.ip)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
                                 }
-                                Spacer()
+                                .padding(.vertical, 4)
+                                .contentShape(Rectangle())
                             }
-                            .padding(.vertical, 4)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                        .listStyle(.inset)
+                        Divider()
+                        Button {
+                            triggerScan()
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isScanning {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                Text(isScanning ? "Scanning…" : "Scan Again")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isScanning)
+                        .padding(10)
                     }
-                    .listStyle(.inset)
                 }
             }
             .navigationTitle("Find Contacts")
