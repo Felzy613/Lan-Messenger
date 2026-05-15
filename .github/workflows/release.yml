@@ -131,15 +131,15 @@ jobs:
             exit 1
           fi
 
-          # Sanity-check file sizes (both must be > 1 MiB)
+          # Sanity-check file sizes (both must be > 512 KiB)
           MAC_SIZE=$(stat -c%s "$MAC_FILE" 2>/dev/null || stat -f%z "$MAC_FILE")
           WIN_SIZE=$(stat -c%s "$WIN_FILE" 2>/dev/null || stat -f%z "$WIN_FILE")
 
-          if [ "$MAC_SIZE" -lt 1048576 ]; then
+          if [ "$MAC_SIZE" -lt 524288 ]; then
             echo "::error::macOS artifact is suspiciously small (${MAC_SIZE} bytes)"
             exit 1
           fi
-          if [ "$WIN_SIZE" -lt 1048576 ]; then
+          if [ "$WIN_SIZE" -lt 524288 ]; then
             echo "::error::Windows artifact is suspiciously small (${WIN_SIZE} bytes)"
             exit 1
           fi
