@@ -3,12 +3,23 @@ name: Release Orchestration
 # Triggers whenever either platform build completes successfully on main.
 # Finds the latest per-platform releases, validates both exist, then creates
 # an atomic combined release containing both artifacts.
+#
+# Race-condition safety: when both platforms are built from the same commit,
+# whichever finishes first waits up to 45 minutes for the sibling build to
+# complete before proceeding. This prevents pairing a new artifact with a
+# stale one from the other platform.
 on:
   workflow_run:
     workflows: ['Build macOS', 'Build Windows']
     types: [completed]
     branches: [main]
   workflow_dispatch: {}
+
+# Serialize release creation — if both builds finish nearly simultaneously,
+# the second instance queues and then hits the idempotency check and exits.
+concurrency:
+  group: release-orchestration
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -19,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     # Proceed when triggered by a successful build or manually dispatched
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    timeout-minutes: 60
     permissions:
       contents: write
     env:
@@ -33,9 +45,68 @@ jobs:
           echo "Triggered by: $WORKFLOW"
           if [[ "$WORKFLOW" == *"macOS"* ]]; then
             echo "rebuilt=macos" >> $GITHUB_OUTPUT
-          else
+            echo "other_workflow=Build Windows" >> $GITHUB_OUTPUT
+          elif [[ "$WORKFLOW" == *"Windows"* ]]; then
             echo "rebuilt=windows" >> $GITHUB_OUTPUT
+            echo "other_workflow=Build macOS" >> $GITHUB_OUTPUT
+          else
+            echo "rebuilt=unknown" >> $GITHUB_OUTPUT
+            echo "other_workflow=" >> $GITHUB_OUTPUT
           fi
+
+      # ── Wait for sibling build ───────────────────────────────────────────────
+      # When both platforms are changed in the same commit, one build will finish
+      # first and reach here while the other is still compiling. We poll GitHub's
+      # API every 30 s for up to 45 min waiting for the sibling to finish.
+      # If no sibling run exists for this commit, we skip the wait immediately.
+      - name: Wait for sibling platform build
+        if: |
+          github.event_name != 'workflow_dispatch' &&
+          steps.platform.outputs.other_workflow != ''
+        env:
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+          OTHER_WORKFLOW: ${{ steps.platform.outputs.other_workflow }}
+        run: |
+          echo "Commit: $TRIGGER_SHA"
+          echo "Checking if '$OTHER_WORKFLOW' is building this commit..."
+
+          MAX_WAIT=2700   # 45 minutes
+          ELAPSED=0
+          POLL=30
+
+          while true; do
+            STATUS=$(gh run list \
+              --workflow "$OTHER_WORKFLOW" \
+              --branch main \
+              --json status,headSha \
+              --limit 20 \
+              | jq -r ".[] | select(.headSha == \"$TRIGGER_SHA\") | .status" \
+              | head -1)
+
+            if [ -z "$STATUS" ]; then
+              echo "No '$OTHER_WORKFLOW' run found for this commit — proceeding immediately"
+              break
+            fi
+
+            echo "  '$OTHER_WORKFLOW' status: $STATUS (elapsed: ${ELAPSED}s)"
+
+            case "$STATUS" in
+              in_progress|queued|waiting|requested|pending)
+                ;;
+              *)
+                echo "  '$OTHER_WORKFLOW' finished with: $STATUS"
+                break
+                ;;
+            esac
+
+            if [ $ELAPSED -ge $MAX_WAIT ]; then
+              echo "::warning::Waited ${MAX_WAIT}s for '$OTHER_WORKFLOW' — proceeding with latest available artifact"
+              break
+            fi
+
+            sleep $POLL
+            ELAPSED=$((ELAPSED + POLL))
+          done
 
       - name: Find latest per-platform releases
         id: tags
