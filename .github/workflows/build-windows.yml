@@ -112,10 +112,19 @@ jobs:
       - name: Run unit tests
         shell: pwsh
         run: |
-          dotnet test LanMessenger.Tests `
-            --configuration Release `
-            --no-build `
-            --logger "console;verbosity=normal" `
+          # VS MSBuild (Platform=x64) outputs to bin\x64\Release\ while
+          # 'dotnet test --no-build' resolves to bin\Release\, so we locate
+          # the DLL ourselves and pass it directly to dotnet vstest.
+          $testDll = Get-ChildItem -Path "LanMessenger.Tests\bin" `
+                       -Filter "LanMessenger.Tests.dll" -Recurse |
+                     Select-Object -First 1
+          if (-not $testDll) {
+            Write-Error "Test DLL not found under LanMessenger.Tests\bin\"
+            exit 1
+          }
+          Write-Host "Running tests from: $($testDll.FullName)"
+          dotnet vstest $testDll.FullName `
+            --logger:"console;verbosity=normal" `
             2>&1 | Tee-Object -Append -FilePath ..\..\test-output-windows.txt
           exit $LASTEXITCODE
 
