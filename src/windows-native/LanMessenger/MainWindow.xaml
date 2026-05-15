@@ -90,13 +90,6 @@
                         ToolTipText="LAN Messenger"
                         NoLeftClickDelay="True"
                         LeftClickCommand="{x:Bind ShowFromTrayCommand, Mode=OneWay}">
-            <tb:TaskbarIcon.GeneratedIcon>
-                <tb:GeneratedIcon Text="LM"
-                                  Foreground="White"
-                                  Background="#25D366"
-                                  FontFamily="Segoe UI"
-                                  FontWeight="Bold" />
-            </tb:TaskbarIcon.GeneratedIcon>
             <tb:TaskbarIcon.ContextFlyout>
                 <MenuFlyout>
                     <MenuFlyoutItem Text="Open LAN Messenger" Click="TrayOpen_Click" />

@@ -182,7 +182,7 @@
                        HorizontalAlignment="Center"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <TextBlock x:Name="EmptySubtitle"
-                       Text="Tap "Search LAN" to find peers on your network."
+                       Text="Tap &quot;Search LAN&quot; to find peers on your network."
                        HorizontalAlignment="Center"
                        TextAlignment="Center"
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
