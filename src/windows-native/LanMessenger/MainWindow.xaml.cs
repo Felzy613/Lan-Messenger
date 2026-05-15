@@ -1,15 +1,12 @@
-using H.NotifyIcon;
 using LanMessenger.Core.Persistence;
 using LanMessenger.UI;
 using LanMessenger.UI.Chat;
 using LanMessenger.UI.Settings;
 using LanMessenger.UI.Sidebar;
 using Microsoft.UI.Dispatching;
-using Microsoft.UI.Text;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
 using System.Runtime.InteropServices;
 using System.Windows.Input;
 using WinRT.Interop;
@@ -41,15 +38,6 @@ public sealed partial class MainWindow : Window
 
         var appWindow = AppWindow;
         appWindow.Resize(new Windows.Graphics.SizeInt32(960, 700));
-
-        TrayIcon.GeneratedIcon = new GeneratedIcon
-        {
-            Text = "LM",
-            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 37, 211, 102)),
-            FontFamily = new FontFamily("Segoe UI"),
-            FontWeight = FontWeights.Bold,
-        };
 
         Sidebar.Model = Model;
         Sidebar.ConversationSelected += ip =>
