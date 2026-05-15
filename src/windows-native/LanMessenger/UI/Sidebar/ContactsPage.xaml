@@ -11,9 +11,18 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0"
-                   Text="Saved Contacts"
-                   Style="{ThemeResource TitleTextBlockStyle}" />
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       Text="Saved Contacts"
+                       Style="{ThemeResource TitleTextBlockStyle}" />
+            <Button Grid.Column="1"
+                    Content="Add from Nearby Peers"
+                    Click="AddFromPeers_Click" />
+        </Grid>
 
         <ListView x:Name="ContactsList"
                   Grid.Row="1"
@@ -34,23 +43,45 @@
                         </Grid.ColumnDefinitions>
 
                         <ui:AvatarControl Grid.Column="0"
-                                          Width="40" Height="40"
-                                          NameText="{x:Bind Username}" />
+                                          Width="44" Height="44"
+                                          NameText="{x:Bind Username, Mode=OneWay}"
+                                          PhotoB64="{x:Bind PhotoB64, Mode=OneWay}" />
 
                         <StackPanel Grid.Column="1"
                                     VerticalAlignment="Center"
                                     Spacing="2">
-                            <TextBlock Text="{x:Bind Username}"
+                            <TextBlock Text="{x:Bind Username, Mode=OneWay}"
                                        Style="{ThemeResource BodyStrongTextBlockStyle}" />
-                            <TextBlock Text="{x:Bind LastIP}"
+                            <TextBlock Text="{x:Bind LastIP, Mode=OneWay}"
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         </StackPanel>
 
                         <Button Grid.Column="2"
-                                Content="Delete"
+                                Background="Transparent"
+                                BorderBrush="Transparent"
                                 Tag="{x:Bind PublicKeyB64}"
-                                Click="DeleteBtn_Click" />
+                                ToolTipService.ToolTip="Contact options">
+                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE712;" />
+                            <Button.Flyout>
+                                <MenuFlyout>
+                                    <MenuFlyoutItem Text="Edit…"
+                                                    Tag="{x:Bind PublicKeyB64}"
+                                                    Click="EditBtn_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE70F;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutItem Text="Remove"
+                                                    Tag="{x:Bind PublicKeyB64}"
+                                                    Click="DeleteBtn_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE74D;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
                     </Grid>
                 </DataTemplate>
             </ListView.ItemTemplate>
@@ -65,7 +96,7 @@
             <TextBlock Text="No saved contacts"
                        Style="{ThemeResource SubtitleTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            <TextBlock Text="Contacts you message are saved automatically."
+            <TextBlock Text="Tap “Add from Nearby Peers” to scan your network."
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
         </StackPanel>
     </Grid>

@@ -5,11 +5,29 @@ struct ContactConfig: Codable, Identifiable {
     var publicKeyB64: String
     var username: String
     var lastIP: String
+    // Base64-encoded profile picture (PNG/JPEG). Optional.
+    var photoB64: String?
 
     enum CodingKeys: String, CodingKey {
         case publicKeyB64 = "public_key_b64"
         case username
         case lastIP = "last_ip"
+        case photoB64 = "photo_b64"
+    }
+
+    init(publicKeyB64: String, username: String, lastIP: String, photoB64: String? = nil) {
+        self.publicKeyB64 = publicKeyB64
+        self.username = username
+        self.lastIP = lastIP
+        self.photoB64 = photoB64
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        publicKeyB64 = try c.decode(String.self, forKey: .publicKeyB64)
+        username = try c.decode(String.self, forKey: .username)
+        lastIP = try c.decode(String.self, forKey: .lastIP)
+        photoB64 = try c.decodeIfPresent(String.self, forKey: .photoB64)
     }
 }
 
@@ -28,22 +46,64 @@ struct PendingMessageConfig: Codable {
     }
 }
 
+// File queued for an offline peer; delivered when the peer comes online.
+struct PendingFileConfig: Codable {
+    var filePath: String
+    var peerPublicKeyB64: String
+    var peerUsername: String
+    var timestamp: Double
+
+    enum CodingKeys: String, CodingKey {
+        case filePath = "file_path"
+        case peerPublicKeyB64 = "peer_public_key_b64"
+        case peerUsername = "peer_username"
+        case timestamp
+    }
+}
+
 struct AppConfig: Codable {
     var username: String = "User"
     var contacts: [ContactConfig] = []
     var hiddenConversations: [String] = []
+    var archivedConversations: [String] = []
     var pendingMessages: [PendingMessageConfig] = []
+    var pendingFiles: [PendingFileConfig] = []
     var updateServerURL: String = ""
     var inboxDir: String = ""
     var hideFromDock: Bool = false
+    // GitHub repo to source updates from (owner/repo).
+    var updateRepo: String = "felzy613/lan-messenger"
+    // Last update check time (Unix seconds). Used to throttle background checks.
+    var lastUpdateCheck: Double = 0
 
     enum CodingKeys: String, CodingKey {
         case username, contacts
         case hiddenConversations = "hidden_conversations"
+        case archivedConversations = "archived_conversations"
         case pendingMessages = "pending_messages"
+        case pendingFiles = "pending_files"
         case updateServerURL = "update_server_url"
         case inboxDir = "inbox_dir"
         case hideFromDock = "hide_from_dock"
+        case updateRepo = "update_repo"
+        case lastUpdateCheck = "last_update_check"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        username = (try c.decodeIfPresent(String.self, forKey: .username)) ?? "User"
+        contacts = (try c.decodeIfPresent([ContactConfig].self, forKey: .contacts)) ?? []
+        hiddenConversations = (try c.decodeIfPresent([String].self, forKey: .hiddenConversations)) ?? []
+        archivedConversations = (try c.decodeIfPresent([String].self, forKey: .archivedConversations)) ?? []
+        pendingMessages = (try c.decodeIfPresent([PendingMessageConfig].self, forKey: .pendingMessages)) ?? []
+        pendingFiles = (try c.decodeIfPresent([PendingFileConfig].self, forKey: .pendingFiles)) ?? []
+        updateServerURL = (try c.decodeIfPresent(String.self, forKey: .updateServerURL)) ?? ""
+        inboxDir = (try c.decodeIfPresent(String.self, forKey: .inboxDir)) ?? ""
+        hideFromDock = (try c.decodeIfPresent(Bool.self, forKey: .hideFromDock)) ?? false
+        updateRepo = (try c.decodeIfPresent(String.self, forKey: .updateRepo)) ?? "felzy613/lan-messenger"
+        lastUpdateCheck = (try c.decodeIfPresent(Double.self, forKey: .lastUpdateCheck)) ?? 0
     }
 }
 
@@ -88,6 +148,10 @@ final class ConfigStore {
     var logsDirectory: URL {
         FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Logs/LanMessenger")
+    }
+
+    var updateStagingDirectory: URL {
+        configDir.appendingPathComponent("Updates")
     }
 
     // MARK: - Persistence

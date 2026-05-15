@@ -2,7 +2,8 @@
     x:Class="LanMessenger.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:sidebar="using:LanMessenger.UI.Sidebar">
+    xmlns:sidebar="using:LanMessenger.UI.Sidebar"
+    xmlns:tb="using:H.NotifyIcon">
 
     <Grid>
         <Grid.ColumnDefinitions>
@@ -47,5 +48,26 @@
                         Grid.Column="1"
                         HorizontalContentAlignment="Stretch"
                         VerticalContentAlignment="Stretch" />
+
+        <!-- System tray icon (lives off-screen but is rendered in the notification area) -->
+        <tb:TaskbarIcon x:Name="TrayIcon"
+                        ToolTipText="LAN Messenger"
+                        NoLeftClickDelay="True"
+                        LeftClickCommand="{x:Bind ShowFromTrayCommand, Mode=OneWay}">
+            <tb:TaskbarIcon.GeneratedIcon>
+                <tb:GeneratedIcon Text="LM"
+                                  Foreground="White"
+                                  Background="#25D366"
+                                  FontFamily="Segoe UI"
+                                  FontWeight="Bold" />
+            </tb:TaskbarIcon.GeneratedIcon>
+            <tb:TaskbarIcon.ContextFlyout>
+                <MenuFlyout>
+                    <MenuFlyoutItem Text="Open LAN Messenger" Click="TrayOpen_Click" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="Quit" Click="TrayQuit_Click" />
+                </MenuFlyout>
+            </tb:TaskbarIcon.ContextFlyout>
+        </tb:TaskbarIcon>
     </Grid>
 </Window>

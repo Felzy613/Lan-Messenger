@@ -19,6 +19,13 @@ public sealed class ConversationRowViewModel : INotifyPropertyChanged
         set { if (_peerName != value) { _peerName = value; Notify(nameof(PeerName)); } }
     }
 
+    private string? _photoB64;
+    public string? PhotoB64
+    {
+        get => _photoB64;
+        set { if (_photoB64 != value) { _photoB64 = value; Notify(nameof(PhotoB64)); } }
+    }
+
     private string _lastMessage = "";
     public string LastMessage
     {
@@ -54,6 +61,13 @@ public sealed class ConversationRowViewModel : INotifyPropertyChanged
         set { if (_isOnline != value) { _isOnline = value; Notify(nameof(IsOnline)); } }
     }
 
+    private bool _isArchived;
+    public bool IsArchived
+    {
+        get => _isArchived;
+        set { if (_isArchived != value) { _isArchived = value; Notify(nameof(IsArchived)); } }
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Notify(string name) => PropertyChanged?.Invoke(this, new(name));
 }
@@ -62,6 +76,7 @@ public sealed partial class SidebarControl : UserControl
 {
     public event Action<string>? ConversationSelected;
     public event Action?         SettingsRequested;
+    public event Action?         ArchivedRequested;
 
     // Keep a single ObservableCollection bound to the ListView — never reassign ItemsSource,
     // and mutate this collection in place so item containers (and selection) survive refreshes.
@@ -87,11 +102,13 @@ public sealed partial class SidebarControl : UserControl
     {
         InitializeComponent();
         ConversationList.ItemsSource = _rows;
+        ConversationList.ContainerContentChanging += OnContainerContentChanging;
     }
 
     private void OnModelPropertyChanged(object? s, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(AppModel.Conversations) or nameof(AppModel.Peers))
+        if (e.PropertyName is nameof(AppModel.Conversations) or nameof(AppModel.Peers) or
+            nameof(AppModel.ArchivedConversations) or nameof(AppModel.Messages))
             Refresh();
     }
 
@@ -112,15 +129,15 @@ public sealed partial class SidebarControl : UserControl
             var preview = c.IsTyping ? $"{c.TypingSender} is typing…" : c.LastMessage;
             if (byIP.TryGetValue(c.PeerIP, out var existing))
             {
-                // Mutate in place.
                 existing.PeerName    = c.PeerName;
+                existing.PhotoB64    = c.PhotoB64;
                 existing.LastMessage = preview;
                 existing.Timestamp   = Theme.FormatTimestamp(c.LastTimestamp);
                 existing.UnreadCount = c.UnreadCount;
                 existing.IsTyping    = c.IsTyping;
                 existing.IsOnline    = online;
+                existing.IsArchived  = c.IsArchived;
 
-                // Move row to the correct index if it drifted.
                 var currentIdx = _rows.IndexOf(existing);
                 if (currentIdx != i && currentIdx >= 0)
                     _rows.Move(currentIdx, i);
@@ -131,11 +148,13 @@ public sealed partial class SidebarControl : UserControl
                 {
                     PeerIP      = c.PeerIP,
                     PeerName    = c.PeerName,
+                    PhotoB64    = c.PhotoB64,
                     LastMessage = preview,
                     Timestamp   = Theme.FormatTimestamp(c.LastTimestamp),
                     UnreadCount = c.UnreadCount,
                     IsTyping    = c.IsTyping,
                     IsOnline    = online,
+                    IsArchived  = c.IsArchived,
                 });
             }
         }
@@ -149,6 +168,18 @@ public sealed partial class SidebarControl : UserControl
 
         EmptyState.Visibility = _rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
+        // Archived footer
+        if (_model.ArchivedConversations.Count > 0)
+        {
+            ArchivedSection.Visibility = Visibility.Visible;
+            var count = _model.ArchivedConversations.Count;
+            ArchivedSubtitle.Text = $"{count} conversation{(count == 1 ? "" : "s")}";
+        }
+        else
+        {
+            ArchivedSection.Visibility = Visibility.Collapsed;
+        }
+
         // Restore selection without re-firing SelectionChanged.
         if (_model.SelectedPeerIP is not null)
         {
@@ -160,9 +191,19 @@ public sealed partial class SidebarControl : UserControl
         }
     }
 
+    // Inject Model into each row template so the 3-dot menu can call archive/delete.
+    private void OnContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+    {
+        if (args.ItemContainer?.ContentTemplateRoot is ConversationRowControl row)
+            row.Model = _model;
+    }
+
     private void ConversationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (ConversationList.SelectedItem is ConversationRowViewModel row)
             ConversationSelected?.Invoke(row.PeerIP);
     }
+
+    private void ArchivedSection_Click(object sender, RoutedEventArgs e) =>
+        ArchivedRequested?.Invoke();
 }

@@ -87,6 +87,11 @@ public sealed class FileTransferService
         StartNextIfIdle(peerIP, peerPublicKeyB64);
     }
 
+    // Re-trigger the queue for a peer that has just come back online — covers
+    // the case where a previous attempt failed and the file is still queued.
+    public void RetryQueue(string peerIP, string peerPublicKeyB64) =>
+        StartNextIfIdle(peerIP, peerPublicKeyB64);
+
     private void StartNextIfIdle(string peerIP, string peerPublicKeyB64)
     {
         if (FileTransferStore.Shared.ActiveOutgoing.Contains(peerIP)) return;

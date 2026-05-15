@@ -141,4 +141,19 @@ final class HistoryStore {
     func entries(forPeerIP ip: String) -> [MessageEntry] {
         history[ip] ?? []
     }
+
+    // Drops all messages for a peer IP. Caller is responsible for persisting via save().
+    func delete(peerIP: String) {
+        history.removeValue(forKey: peerIP)
+    }
+
+    // Moves all history entries from one peer IP to another. Used when a saved
+    // contact reappears on a different LAN IP — we keep their thread intact.
+    // If both keys hold entries, they are merged in timestamp order.
+    func migrate(fromIP: String, toIP: String) {
+        guard fromIP != toIP, let oldEntries = history.removeValue(forKey: fromIP) else { return }
+        let existing = history[toIP] ?? []
+        let merged = (existing + oldEntries).sorted { $0.timestamp < $1.timestamp }
+        history[toIP] = Array(merged.suffix(Self.maxEntriesPerPeer))
+    }
 }

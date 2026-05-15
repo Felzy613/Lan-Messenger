@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ContactsView: View {
     @EnvironmentObject var model: AppModel
@@ -6,6 +7,7 @@ struct ContactsView: View {
     @State private var contacts = ConfigStore.shared.config.contacts
     @State private var showPeerScanner = false
     @State private var searchQuery = ""
+    @State private var editingContact: ContactConfig? = nil
 
     private var filtered: [ContactConfig] {
         guard !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty else { return contacts }
@@ -14,7 +16,7 @@ struct ContactsView: View {
     }
 
     private func isOnline(_ contact: ContactConfig) -> Bool {
-        model.peers.values.contains { $0.ip == contact.lastIP && $0.isOnline }
+        model.peers.values.contains { $0.publicKeyB64 == contact.publicKeyB64 && $0.isOnline }
     }
 
     var body: some View {
@@ -59,8 +61,8 @@ struct ContactsView: View {
                             }
                             .onDelete { indices in
                                 let toRemove = indices.map { filtered[$0].publicKeyB64 }
-                                contacts.removeAll { toRemove.contains($0.publicKeyB64) }
-                                persist()
+                                for key in toRemove { model.deleteContact(publicKeyB64: key) }
+                                contacts = ConfigStore.shared.config.contacts
                             }
                         } header: {
                             Text("Contacts")
@@ -86,6 +88,17 @@ struct ContactsView: View {
             .sheet(isPresented: $showPeerScanner) {
                 PeerScannerView(savedContacts: $contacts, onSave: persist)
                     .environmentObject(model)
+            }
+            .sheet(item: $editingContact) { contact in
+                ContactEditorView(
+                    contact: contact,
+                    onSave: { name, photo in
+                        model.updateContact(publicKeyB64: contact.publicKeyB64, username: name, photoB64: photo)
+                        contacts = ConfigStore.shared.config.contacts
+                        editingContact = nil
+                    },
+                    onCancel: { editingContact = nil }
+                )
             }
         }
         .frame(minWidth: 380, minHeight: 460)
@@ -115,18 +128,18 @@ struct ContactsView: View {
 
     private func contactRow(_ contact: ContactConfig) -> some View {
         let online = isOnline(contact)
-        return Button {
-            model.selectedPeerIP = contact.lastIP
-            dismiss()
-        } label: {
-            HStack(spacing: 12) {
-                AvatarView(name: contact.username, size: 44)
-                    .overlay(alignment: .bottomTrailing) {
-                        Circle()
-                            .fill(online ? Color.green : Color.gray.opacity(0.4))
-                            .frame(width: 11, height: 11)
-                            .offset(x: 2, y: 2)
-                    }
+        return HStack(spacing: 12) {
+            AvatarView(name: contact.username, size: 44, photoB64: contact.photoB64)
+                .overlay(alignment: .bottomTrailing) {
+                    Circle()
+                        .fill(online ? Color.green : Color.gray.opacity(0.4))
+                        .frame(width: 11, height: 11)
+                        .offset(x: 2, y: 2)
+                }
+            Button {
+                model.selectedPeerIP = contact.lastIP
+                dismiss()
+            } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(contact.username)
                         .font(.system(size: 14, weight: .semibold))
@@ -135,15 +148,32 @@ struct ContactsView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(online ? Theme.accent : .secondary)
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            Spacer()
+            Menu {
+                Button {
+                    editingContact = contact
+                } label: { Label("Edit", systemImage: "pencil") }
+                Divider()
+                Button(role: .destructive) {
+                    model.deleteContact(publicKeyB64: contact.publicKeyB64)
+                    contacts = ConfigStore.shared.config.contacts
+                } label: { Label("Remove", systemImage: "trash") }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 6)
     }
 
     private var emptyState: some View {
@@ -168,6 +198,109 @@ struct ContactsView: View {
     private func persist() {
         ConfigStore.shared.config.contacts = contacts
         ConfigStore.shared.save()
+    }
+}
+
+// MARK: - Contact editor (name + photo)
+
+struct ContactEditorView: View {
+    let contact: ContactConfig
+    let onSave: (String, String?) -> Void
+    let onCancel: () -> Void
+
+    @State private var name: String
+    @State private var photoB64: String?
+
+    init(contact: ContactConfig, onSave: @escaping (String, String?) -> Void, onCancel: @escaping () -> Void) {
+        self.contact = contact
+        self.onSave = onSave
+        self.onCancel = onCancel
+        self._name = State(initialValue: contact.username)
+        self._photoB64 = State(initialValue: contact.photoB64)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Photo") {
+                    HStack(spacing: 16) {
+                        AvatarView(name: name, size: 88, photoB64: photoB64)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Button("Choose Image…") { pickPhoto() }
+                            if photoB64 != nil {
+                                Button("Remove Photo", role: .destructive) { photoB64 = nil }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                Section("Name") {
+                    TextField("Contact name", text: $name)
+                }
+                Section("Details") {
+                    LabeledContent("Last IP", value: contact.lastIP.isEmpty ? "—" : contact.lastIP)
+                    LabeledContent("Device ID") {
+                        Text(contact.publicKeyB64.prefix(16) + "…")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Edit Contact")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { onSave(name.trimmingCharacters(in: .whitespaces), photoB64) }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .frame(minWidth: 420, minHeight: 380)
+    }
+
+    private func pickPhoto() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.png, .jpeg, .image]
+        if panel.runModal() == .OK, let url = panel.url, let img = NSImage(contentsOf: url) {
+            if let data = Self.compressedJPEG(from: img, maxDim: 256) {
+                photoB64 = data.base64EncodedString()
+            }
+        }
+    }
+
+    // Re-encodes the chosen image as a small square JPEG so we don't bloat config.json
+    // with multi-megabyte photos. ~256x256 keeps file size under ~30KB.
+    static func compressedJPEG(from image: NSImage, maxDim: CGFloat) -> Data? {
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        let scale = min(1.0, maxDim / max(size.width, size.height))
+        let newSize = NSSize(width: size.width * scale, height: size.height * scale)
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(newSize.width),
+            pixelsHigh: Int(newSize.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        guard let rep = bitmap else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(origin: .zero, size: newSize))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
     }
 }
 
