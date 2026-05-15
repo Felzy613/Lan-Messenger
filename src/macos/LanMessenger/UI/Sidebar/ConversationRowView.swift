@@ -3,10 +3,11 @@ import SwiftUI
 struct ConversationRowView: View {
     let conv: ConversationViewModel
     @EnvironmentObject var model: AppModel
+    @State private var confirmDelete = false
 
     var body: some View {
         HStack(spacing: 10) {
-            AvatarView(name: conv.peerName, size: 44)
+            AvatarView(name: conv.peerName, size: 44, photoB64: conv.photoB64)
                 .overlay(alignment: .bottomTrailing) {
                     Circle()
                         .fill(conv.isOnline ? Color.green : Color.gray.opacity(0.45))
@@ -45,9 +46,46 @@ struct ConversationRowView: View {
                             .padding(.vertical, 2)
                             .background(Theme.accent, in: Capsule())
                     }
+                    Menu {
+                        if conv.isArchived {
+                            Button {
+                                model.unarchiveConversation(peerIP: conv.peerIP)
+                            } label: { Label("Unarchive", systemImage: "tray.and.arrow.up") }
+                        } else {
+                            Button {
+                                model.archiveConversation(peerIP: conv.peerIP)
+                            } label: { Label("Archive", systemImage: "archivebox") }
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            confirmDelete = true
+                        } label: { Label("Delete conversation", systemImage: "trash") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Conversation options")
                 }
             }
         }
         .padding(.vertical, 4)
+        .confirmationDialog(
+            "Delete this conversation?",
+            isPresented: $confirmDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                model.deleteConversation(peerIP: conv.peerIP)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All messages with \(conv.peerName) will be removed from this device. This cannot be undone.")
+        }
     }
 }

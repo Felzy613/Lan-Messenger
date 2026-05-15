@@ -9,6 +9,7 @@
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
         <!-- Avatar with online dot -->
@@ -55,5 +56,40 @@
                            VerticalAlignment="Center" />
             </Border>
         </StackPanel>
+
+        <!-- Three-dot conversation options menu -->
+        <Button x:Name="OptionsBtn"
+                Grid.Column="3"
+                Background="Transparent"
+                BorderBrush="Transparent"
+                Padding="6"
+                MinWidth="32"
+                Click="OptionsBtn_Click"
+                VerticalAlignment="Center"
+                ToolTipService.ToolTip="Conversation options">
+            <FontIcon FontFamily="Segoe MDL2 Assets"
+                      Glyph="&#xE712;"
+                      FontSize="14" />
+            <Button.Flyout>
+                <MenuFlyout x:Name="OptionsFlyout">
+                    <MenuFlyoutItem x:Name="ArchiveItem" Text="Archive" Click="Archive_Click">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE7B8;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutItem x:Name="UnarchiveItem" Text="Unarchive" Click="Unarchive_Click" Visibility="Collapsed">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE74A;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="Delete conversation" Click="Delete_Click">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE74D;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                </MenuFlyout>
+            </Button.Flyout>
+        </Button>
     </Grid>
 </UserControl>

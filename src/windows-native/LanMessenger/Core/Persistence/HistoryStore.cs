@@ -104,4 +104,21 @@ public sealed class HistoryStore
 
     public List<MessageEntry> Entries(string peerIP) =>
         _history.TryGetValue(peerIP, out var list) ? list : [];
+
+    // Drops all messages for a peer IP. Caller is responsible for persisting via Save().
+    public void Delete(string peerIP) => _history.Remove(peerIP);
+
+    // Moves history from one peer IP to another (used when a saved contact reappears
+    // on a different LAN IP). Entries are merged and re-sorted by timestamp.
+    public void Migrate(string fromIP, string toIP)
+    {
+        if (fromIP == toIP) return;
+        if (!_history.TryGetValue(fromIP, out var old)) return;
+        _history.Remove(fromIP);
+        var existing = _history.TryGetValue(toIP, out var cur) ? cur : [];
+        var merged = existing.Concat(old).OrderBy(e => e.Timestamp).ToList();
+        if (merged.Count > MaxEntriesPerPeer)
+            merged = merged.TakeLast(MaxEntriesPerPeer).ToList();
+        _history[toIP] = merged;
+    }
 }

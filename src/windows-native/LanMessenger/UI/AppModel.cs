@@ -29,12 +29,14 @@ public sealed class ConversationViewModel
     public string    PeerIP           { get; init; } = "";
     public string    PeerName         { get; init; } = "";
     public string    PeerPublicKeyB64 { get; init; } = "";
+    public string?   PhotoB64         { get; init; }
     public string    LastMessage      { get; init; } = "";
     public DateTime? LastTimestamp    { get; init; }
     public int       UnreadCount      { get; init; }
     public bool      IsTyping         { get; init; }
     public string    TypingSender     { get; init; } = "";
     public bool      IsOnline         { get; init; }
+    public bool      IsArchived       { get; init; }
 }
 
 // Root state object. Wires all services; single source of truth for the UI.
@@ -43,16 +45,20 @@ public sealed partial class AppModel : ObservableObject
     // MARK: - Published UI state
     [ObservableProperty] private Dictionary<string, PeerInfo>   _peers         = [];
     [ObservableProperty] private List<ConversationViewModel>     _conversations = [];
+    [ObservableProperty] private List<ConversationViewModel>     _archivedConversations = [];
     [ObservableProperty] private string?                         _selectedPeerIP;
     [ObservableProperty] private Dictionary<string, List<MessageEntry>> _messages = [];
     [ObservableProperty] private Dictionary<string, (string Sender, bool Active)> _typingStates = [];
     [ObservableProperty] private Dictionary<string, (string Label, long Bytes, long Total)> _activeTransfers = [];
     [ObservableProperty] private bool                            _showMigrationPrompt;
     [ObservableProperty] private string?                         _pendingImportKeyB64;
+    [ObservableProperty] private UpdateInfo?                     _availableUpdate;
+    [ObservableProperty] private UpdateProgress                  _updateProgress = new(UpdateProgressState.Idle);
 
     public readonly NetworkCoordinator Coordinator = new();
     private DispatcherQueue _dq;
     private DispatcherTimer? _peerTimeoutTimer;
+    private DispatcherTimer? _updateCheckTimer;
 
     public AppModel(DispatcherQueue dq)
     {
@@ -83,6 +89,7 @@ public sealed partial class AppModel : ObservableObject
         LoadHistory();
         StartPeerTimeoutTimer();
         CheckMigration();
+        ScheduleAutoUpdateCheck();
     }
 
     // MARK: - Migration
@@ -114,6 +121,32 @@ public sealed partial class AppModel : ObservableObject
 
     private void UpsertPeer(string ip, string username, int port, string publicKeyB64)
     {
+        // If we have a saved contact for this device ID whose IP has changed,
+        // migrate the conversation history so the user doesn't lose context.
+        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
+        if (contact is not null && contact.LastIP != ip)
+        {
+            var oldIP = contact.LastIP;
+            var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
+            if (msgs.Remove(oldIP, out var oldList))
+            {
+                if (!msgs.TryGetValue(ip, out var curList)) curList = msgs[ip] = [];
+                curList.AddRange(oldList);
+                curList.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
+            }
+            Messages = msgs;
+
+            HistoryStore.Shared.Migrate(oldIP, ip);
+            HistoryStore.Shared.Save();
+            contact.LastIP = ip;
+            var arch = ConfigStore.Shared.Config.ArchivedConversations;
+            for (var i = 0; i < arch.Count; i++) if (arch[i] == oldIP) arch[i] = ip;
+            var hid = ConfigStore.Shared.Config.HiddenConversations;
+            for (var i = 0; i < hid.Count; i++) if (hid[i] == oldIP) hid[i] = ip;
+            ConfigStore.Shared.Save();
+            if (SelectedPeerIP == oldIP) SelectedPeerIP = ip;
+        }
+
         var current = Peers;
         var updated = new Dictionary<string, PeerInfo>(current);
         if (updated.TryGetValue(publicKeyB64, out var existing))
@@ -131,6 +164,7 @@ public sealed partial class AppModel : ObservableObject
         Peers = updated;
         RefreshConversations();
         MessagingService.Shared.DeliverPending(ip, publicKeyB64);
+        DeliverPendingFiles(ip, publicKeyB64);
     }
 
     private void StartPeerTimeoutTimer()
@@ -150,9 +184,14 @@ public sealed partial class AppModel : ObservableObject
 
     private void RefreshConversations()
     {
-        var hidden = ConfigStore.Shared.Config.HiddenConversations.ToHashSet();
-        var result = new List<ConversationViewModel>();
-        var seenIPs = new HashSet<string>();
+        var hidden   = ConfigStore.Shared.Config.HiddenConversations.ToHashSet();
+        var archived = ConfigStore.Shared.Config.ArchivedConversations.ToHashSet();
+        var active   = new List<ConversationViewModel>();
+        var arch     = new List<ConversationViewModel>();
+        var seenIPs  = new HashSet<string>();
+
+        string? ContactPhoto(string key) =>
+            ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == key)?.PhotoB64;
 
         // Online peers first.
         foreach (var (keyB64, peer) in Peers)
@@ -162,11 +201,12 @@ public sealed partial class AppModel : ObservableObject
             var entries = Messages.TryGetValue(peer.IP, out var list) ? list : [];
             var last    = entries.Count > 0 ? entries[^1] : null;
             var typing  = TypingStates.TryGetValue(peer.IP, out var t) ? t : default;
-            result.Add(new ConversationViewModel
+            var vm = new ConversationViewModel
             {
                 PeerIP           = peer.IP,
                 PeerName         = peer.Username,
                 PeerPublicKeyB64 = keyB64,
+                PhotoB64         = ContactPhoto(keyB64),
                 LastMessage      = LastMessagePreview(entries),
                 LastTimestamp    = last is not null
                     ? DateTimeOffset.FromUnixTimeMilliseconds((long)(last.Timestamp * 1000)).UtcDateTime
@@ -175,7 +215,9 @@ public sealed partial class AppModel : ObservableObject
                 IsTyping     = typing.Active,
                 TypingSender = typing.Sender ?? "",
                 IsOnline     = true,
-            });
+                IsArchived   = archived.Contains(peer.IP),
+            };
+            (vm.IsArchived ? arch : active).Add(vm);
         }
 
         // Saved contacts that are currently offline.
@@ -186,11 +228,12 @@ public sealed partial class AppModel : ObservableObject
             seenIPs.Add(contact.LastIP);
             var entries = Messages.TryGetValue(contact.LastIP, out var list) ? list : [];
             var last    = entries.Count > 0 ? entries[^1] : null;
-            result.Add(new ConversationViewModel
+            var vm = new ConversationViewModel
             {
                 PeerIP           = contact.LastIP,
                 PeerName         = contact.Username,
                 PeerPublicKeyB64 = contact.PublicKeyB64,
+                PhotoB64         = contact.PhotoB64,
                 LastMessage      = LastMessagePreview(entries),
                 LastTimestamp    = last is not null
                     ? DateTimeOffset.FromUnixTimeMilliseconds((long)(last.Timestamp * 1000)).UtcDateTime
@@ -198,7 +241,9 @@ public sealed partial class AppModel : ObservableObject
                 UnreadCount = CountUnread(entries),
                 IsTyping    = false,
                 IsOnline    = false,
-            });
+                IsArchived  = archived.Contains(contact.LastIP),
+            };
+            (vm.IsArchived ? arch : active).Add(vm);
         }
 
         // Any IPs we have message history with but no peer / no contact —
@@ -208,7 +253,7 @@ public sealed partial class AppModel : ObservableObject
             if (hidden.Contains(ip) || seenIPs.Contains(ip) || entries.Count == 0) continue;
             var last = entries[^1];
             var name = entries.LastOrDefault(e => e.Incoming)?.Sender ?? ip;
-            result.Add(new ConversationViewModel
+            var vm = new ConversationViewModel
             {
                 PeerIP           = ip,
                 PeerName         = name,
@@ -218,12 +263,17 @@ public sealed partial class AppModel : ObservableObject
                 UnreadCount      = CountUnread(entries),
                 IsTyping         = false,
                 IsOnline         = false,
-            });
+                IsArchived       = archived.Contains(ip),
+            };
+            (vm.IsArchived ? arch : active).Add(vm);
         }
 
-        result.Sort((a, b) =>
+        active.Sort((a, b) =>
             (b.LastTimestamp ?? DateTime.MinValue).CompareTo(a.LastTimestamp ?? DateTime.MinValue));
-        Conversations = result;
+        arch.Sort((a, b) =>
+            (b.LastTimestamp ?? DateTime.MinValue).CompareTo(a.LastTimestamp ?? DateTime.MinValue));
+        Conversations = active;
+        ArchivedConversations = arch;
     }
 
     private static int CountUnread(IReadOnlyList<MessageEntry> entries)
@@ -286,17 +336,181 @@ public sealed partial class AppModel : ObservableObject
         if (anyChanged)
         {
             HistoryStore.Shared.Save();
-            // Trigger UI updates — Messages dict is the same reference but we want listeners to refresh.
             OnPropertyChanged(nameof(Messages));
             RefreshConversations();
         }
     }
 
+    // Queue or send a file. If the peer is offline, the path is persisted in
+    // config and retried whenever the peer comes back online.
     public void SendFile(string filePath, string peerIP)
     {
-        var peer = PeerByIP(peerIP);
-        if (peer is null) return;
-        FileTransferService.Shared.Enqueue(filePath, peerIP, peer.PublicKeyB64);
+        var onlinePeer = PeerByIP(peerIP);
+        var publicKey = onlinePeer?.PublicKeyB64
+            ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64;
+        if (publicKey is null) return;
+
+        if (onlinePeer is not null)
+        {
+            FileTransferService.Shared.Enqueue(filePath, peerIP, publicKey);
+            return;
+        }
+
+        // Offline: persist for later, add a "Queued" outgoing bubble so the user sees the file.
+        var username = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKey)?.Username ?? "Unknown";
+        ConfigStore.Shared.Config.PendingFiles.Add(new PendingFileConfig
+        {
+            FilePath         = filePath,
+            PeerPublicKeyB64 = publicKey,
+            PeerUsername     = username,
+            Timestamp        = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+        });
+        ConfigStore.Shared.Save();
+
+        var entry = new MessageEntry
+        {
+            Sender = ConfigStore.Shared.Config.Username,
+            Text = $"__FILE__:{filePath}",
+            Incoming = false,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            MessageId = null,
+            Status = "Queued",
+            ReadReceiptSent = false,
+        };
+        HistoryStore.Shared.Append(entry, peerIP);
+        HistoryStore.Shared.Save();
+        var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
+        if (!msgs.TryGetValue(peerIP, out var l)) l = msgs[peerIP] = [];
+        l.Add(entry);
+        Messages = msgs;
+        RefreshConversations();
+    }
+
+    private void DeliverPendingFiles(string peerIP, string peerPublicKeyB64)
+    {
+        // 1) Re-trigger any in-memory queue that stalled on an earlier failed attempt.
+        FileTransferService.Shared.RetryQueue(peerIP, peerPublicKeyB64);
+
+        // 2) Drain the persistent pending-file queue for this peer.
+        var matching = ConfigStore.Shared.Config.PendingFiles
+            .Where(f => f.PeerPublicKeyB64 == peerPublicKeyB64).ToList();
+        if (matching.Count == 0) return;
+
+        foreach (var item in matching)
+        {
+            if (!File.Exists(item.FilePath)) continue;
+            FileTransferService.Shared.Enqueue(item.FilePath, peerIP, peerPublicKeyB64);
+        }
+
+        ConfigStore.Shared.Config.PendingFiles.RemoveAll(f => f.PeerPublicKeyB64 == peerPublicKeyB64);
+        ConfigStore.Shared.Save();
+    }
+
+    // MARK: - Conversation / contact actions
+
+    public void ArchiveConversation(string peerIP)
+    {
+        if (!ConfigStore.Shared.Config.ArchivedConversations.Contains(peerIP))
+        {
+            ConfigStore.Shared.Config.ArchivedConversations.Add(peerIP);
+            ConfigStore.Shared.Save();
+        }
+        if (SelectedPeerIP == peerIP) SelectedPeerIP = null;
+        RefreshConversations();
+    }
+
+    public void UnarchiveConversation(string peerIP)
+    {
+        ConfigStore.Shared.Config.ArchivedConversations.RemoveAll(x => x == peerIP);
+        ConfigStore.Shared.Save();
+        RefreshConversations();
+    }
+
+    public void DeleteConversation(string peerIP)
+    {
+        var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
+        msgs.Remove(peerIP);
+        Messages = msgs;
+        HistoryStore.Shared.Delete(peerIP);
+        HistoryStore.Shared.Save();
+        ConfigStore.Shared.Config.ArchivedConversations.RemoveAll(x => x == peerIP);
+        ConfigStore.Shared.Save();
+        if (SelectedPeerIP == peerIP) SelectedPeerIP = null;
+        RefreshConversations();
+    }
+
+    public void DeleteContact(string publicKeyB64)
+    {
+        var removed = ConfigStore.Shared.Config.Contacts.Where(c => c.PublicKeyB64 == publicKeyB64).ToList();
+        ConfigStore.Shared.Config.Contacts.RemoveAll(c => c.PublicKeyB64 == publicKeyB64);
+        ConfigStore.Shared.Save();
+        foreach (var c in removed) DeleteConversation(c.LastIP);
+    }
+
+    public void UpdateContact(string publicKeyB64, string username, string? photoB64)
+    {
+        var c = ConfigStore.Shared.Config.Contacts.FirstOrDefault(x => x.PublicKeyB64 == publicKeyB64);
+        if (c is null) return;
+        c.Username = username;
+        c.PhotoB64 = photoB64;
+        ConfigStore.Shared.Save();
+        RefreshConversations();
+    }
+
+    public void AddContact(string publicKeyB64, string username, string lastIP, string? photoB64 = null)
+    {
+        if (ConfigStore.Shared.Config.Contacts.Any(c => c.PublicKeyB64 == publicKeyB64)) return;
+        ConfigStore.Shared.Config.Contacts.Add(new ContactConfig
+        {
+            PublicKeyB64 = publicKeyB64,
+            Username     = username,
+            LastIP       = lastIP,
+            PhotoB64     = photoB64,
+        });
+        ConfigStore.Shared.Save();
+        RefreshConversations();
+    }
+
+    // MARK: - Updates
+
+    private void ScheduleAutoUpdateCheck()
+    {
+        // Initial check shortly after launch, then every 6 hours.
+        Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5));
+            await CheckForUpdatesAsync(silent: true);
+        });
+        _updateCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(6) };
+        _updateCheckTimer.Tick += (_, _) => _ = CheckForUpdatesAsync(silent: true);
+        _updateCheckTimer.Start();
+    }
+
+    public async Task<UpdateInfo?> CheckForUpdatesAsync(bool silent)
+    {
+        var info = await UpdateService.Shared.CheckAsync(ConfigStore.Shared.Config.UpdateRepo);
+        ConfigStore.Shared.Config.LastUpdateCheck = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        ConfigStore.Shared.Save();
+        _dq.TryEnqueue(() =>
+        {
+            if (info is not null) AvailableUpdate = info;
+            else if (silent) AvailableUpdate = null;
+        });
+        return info;
+    }
+
+    public void InstallUpdate()
+    {
+        var info = AvailableUpdate;
+        if (info is null) return;
+        UpdateProgress = new(UpdateProgressState.Downloading, 0);
+        Task.Run(async () =>
+        {
+            await UpdateService.Shared.DownloadAndInstallAsync(info, p =>
+            {
+                _dq.TryEnqueue(() => UpdateProgress = p);
+            });
+        });
     }
 
     // MARK: - Delegate wiring
@@ -410,6 +624,9 @@ public sealed partial class AppModel : ObservableObject
     {
         Messages = HistoryStore.Shared.History
             .ToDictionary(kv => kv.Key, kv => kv.Value);
+        // Critical: refresh conversation list now so threads are visible immediately,
+        // not only after the first discovery beacon arrives.
+        RefreshConversations();
     }
 
     private PeerInfo? PeerByIP(string ip) => Peers.Values.FirstOrDefault(p => p.IP == ip);

@@ -1,3 +1,4 @@
+using LanMessenger.Core.Persistence;
 using LanMessenger.UI;
 using LanMessenger.UI.Chat;
 using LanMessenger.UI.Settings;
@@ -6,6 +7,9 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using System.Runtime.InteropServices;
+using System.Windows.Input;
+using WinRT.Interop;
 
 namespace LanMessenger;
 
@@ -18,10 +22,18 @@ public sealed partial class MainWindow : Window
     private ChatPage?     _chatPage;
     private ContactsPage? _contactsPage;
     private SettingsPage? _settingsPage;
+    private ArchivedPage? _archivedPage;
+
+    // True after the user has explicitly requested Quit (tray menu or AppDelegate); causes
+    // closing the window to actually exit the process rather than hide.
+    private bool _allowExit;
+
+    public ICommand ShowFromTrayCommand { get; }
 
     public MainWindow()
     {
         InitializeComponent();
+        ShowFromTrayCommand = new DelegateCommand(() => ShowWindowFromTray());
         Title = "LAN Messenger";
         Model = new AppModel(DispatcherQueue.GetForCurrentThread());
 
@@ -35,6 +47,7 @@ public sealed partial class MainWindow : Window
             ShowChatPage();
         };
         Sidebar.SettingsRequested += ShowSettingsPage;
+        Sidebar.ArchivedRequested += ShowArchivedPage;
 
         Model.PropertyChanged += (_, e) =>
         {
@@ -42,6 +55,12 @@ public sealed partial class MainWindow : Window
                 Model.ShowMigrationPrompt)
                 ShowMigrationDialog();
         };
+
+        // Intercept window close so we hide-to-tray instead of exiting (unless the
+        // user has explicitly asked to quit). Hooking AppWindow.Closing is the
+        // unpackaged-WinUI3 way to do this — the regular Window.Closed event fires
+        // too late to cancel.
+        appWindow.Closing += OnAppWindowClosing;
     }
 
     // Reuse a single ChatPage instance — re-binding `Model` would also re-fire OnPropertyChanged,
@@ -70,6 +89,13 @@ public sealed partial class MainWindow : Window
             ContentFrame.Content = _settingsPage;
     }
 
+    private void ShowArchivedPage()
+    {
+        if (_archivedPage is null) _archivedPage = new ArchivedPage { Model = Model };
+        if (!ReferenceEquals(ContentFrame.Content, _archivedPage))
+            ContentFrame.Content = _archivedPage;
+    }
+
     private async void ShowMigrationDialog()
     {
         var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
@@ -94,4 +120,53 @@ public sealed partial class MainWindow : Window
 
     private void ContactsBtn_Click(object sender, RoutedEventArgs e) => ShowContactsPage();
     private void SettingsBtn_Click(object sender, RoutedEventArgs e) => ShowSettingsPage();
+
+    // MARK: - Tray / background lifecycle
+
+    private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (_allowExit) return;
+        if (!ConfigStore.Shared.Config.CloseToTray) return;
+        // Cancel the close, hide the window. The TaskbarIcon keeps the app alive.
+        args.Cancel = true;
+        HideWindow();
+    }
+
+    private void HideWindow()
+    {
+        AppWindow.Hide();
+    }
+
+    public void ShowWindowFromTray()
+    {
+        var aw = AppWindow;
+        aw.Show();
+        // Bring to foreground.
+        var hwnd = WindowNative.GetWindowHandle(this);
+        ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd);
+    }
+
+    private void TrayOpen_Click(object sender, RoutedEventArgs e) => ShowWindowFromTray();
+
+    private void TrayQuit_Click(object sender, RoutedEventArgs e)
+    {
+        _allowExit = true;
+        Application.Current.Exit();
+    }
+
+    // P/Invoke wrappers for restoring a minimized/hidden window.
+    private const int SW_RESTORE = 9;
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    // Minimal ICommand for the tray icon left-click binding.
+    private sealed class DelegateCommand : ICommand
+    {
+        private readonly Action _action;
+        public DelegateCommand(Action action) => _action = action;
+        public event System.EventHandler? CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object? parameter) => true;
+        public void Execute(object? parameter) => _action();
+    }
 }

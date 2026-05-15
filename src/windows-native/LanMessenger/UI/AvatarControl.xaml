@@ -5,6 +5,11 @@
 
     <Grid x:Name="RootGrid" Width="40" Height="40" CornerRadius="20">
         <Ellipse x:Name="BackgroundEllipse" Width="40" Height="40" />
+        <Ellipse x:Name="PhotoEllipse" Width="40" Height="40" Visibility="Collapsed">
+            <Ellipse.Fill>
+                <ImageBrush x:Name="PhotoBrush" Stretch="UniformToFill" />
+            </Ellipse.Fill>
+        </Ellipse>
         <TextBlock x:Name="InitialsText"
                    HorizontalAlignment="Center"
                    VerticalAlignment="Center"

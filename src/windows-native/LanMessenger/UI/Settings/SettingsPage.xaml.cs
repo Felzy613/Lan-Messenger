@@ -1,13 +1,26 @@
 using LanMessenger.Core.Persistence;
 using LanMessenger.Core.Services;
+using LanMessenger.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using System.ComponentModel;
 
 namespace LanMessenger.UI.Settings;
 
 public sealed partial class SettingsPage : Page
 {
-    public AppModel? Model { get; set; }
+    private AppModel? _model;
+    public AppModel? Model
+    {
+        get => _model;
+        set
+        {
+            if (_model is not null) _model.PropertyChanged -= OnModelChanged;
+            _model = value;
+            if (_model is not null) _model.PropertyChanged += OnModelChanged;
+            RefreshUpdateUI();
+        }
+    }
 
     public SettingsPage()
     {
@@ -18,10 +31,63 @@ public sealed partial class SettingsPage : Page
     private void Refresh()
     {
         var cfg = ConfigStore.Shared.Config;
-        UsernameBox.Text  = cfg.Username;
-        InboxBox.Text     = ConfigStore.Shared.InboxDirectory;
-        UpdateUrlBox.Text = cfg.UpdateServerURL;
-        VersionText.Text  = $"LAN Messenger v{UpdateService.Shared.CurrentVersion}";
+        UsernameBox.Text   = cfg.Username;
+        InboxBox.Text      = ConfigStore.Shared.InboxDirectory;
+        UpdateRepoBox.Text = cfg.UpdateRepo;
+        CloseToTrayToggle.IsOn = cfg.CloseToTray;
+        VersionText.Text   = $"LAN Messenger v{UpdateService.Shared.CurrentVersion}";
+        RefreshUpdateUI();
+    }
+
+    private void OnModelChanged(object? s, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(AppModel.AvailableUpdate) or nameof(AppModel.UpdateProgress))
+            DispatcherQueue.TryEnqueue(RefreshUpdateUI);
+    }
+
+    private void RefreshUpdateUI()
+    {
+        if (_model is null) return;
+        var info = _model.AvailableUpdate;
+        if (info is null)
+        {
+            UpdatePanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        UpdatePanel.Visibility    = Visibility.Visible;
+        UpdateAvailableText.Text  = $"Version {info.Version} available";
+        UpdateNotesText.Text      = string.IsNullOrWhiteSpace(info.Notes) ? "" : info.Notes;
+
+        var progress = _model.UpdateProgress;
+        switch (progress.State)
+        {
+            case UpdateProgressState.Idle:
+                InstallNowBtn.IsEnabled = true;
+                UpdateProgressBar.Visibility = Visibility.Collapsed;
+                UpdateProgressText.Visibility = Visibility.Collapsed;
+                break;
+            case UpdateProgressState.Downloading:
+                InstallNowBtn.IsEnabled = false;
+                UpdateProgressBar.Visibility = Visibility.Visible;
+                UpdateProgressBar.Value = progress.Fraction;
+                UpdateProgressText.Visibility = Visibility.Visible;
+                UpdateProgressText.Text = $"Downloading… {(int)(progress.Fraction * 100)}%";
+                break;
+            case UpdateProgressState.Installing:
+                InstallNowBtn.IsEnabled = false;
+                UpdateProgressBar.Visibility = Visibility.Visible;
+                UpdateProgressBar.Value = 1;
+                UpdateProgressText.Visibility = Visibility.Visible;
+                UpdateProgressText.Text = "Installing — the app will restart when complete.";
+                break;
+            case UpdateProgressState.Failed:
+                InstallNowBtn.IsEnabled = true;
+                UpdateProgressBar.Visibility = Visibility.Collapsed;
+                UpdateProgressText.Visibility = Visibility.Visible;
+                UpdateProgressText.Text = $"Failed: {progress.Message}";
+                break;
+        }
     }
 
     private void UsernameBox_LostFocus(object sender, RoutedEventArgs e)
@@ -32,9 +98,17 @@ public sealed partial class SettingsPage : Page
         ConfigStore.Shared.Save();
     }
 
-    private void UpdateUrlBox_LostFocus(object sender, RoutedEventArgs e)
+    private void UpdateRepoBox_LostFocus(object sender, RoutedEventArgs e)
     {
-        ConfigStore.Shared.Config.UpdateServerURL = UpdateUrlBox.Text.Trim();
+        var v = UpdateRepoBox.Text.Trim();
+        if (string.IsNullOrEmpty(v)) v = "felzy613/lan-messenger";
+        ConfigStore.Shared.Config.UpdateRepo = v;
+        ConfigStore.Shared.Save();
+    }
+
+    private void CloseToTrayToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        ConfigStore.Shared.Config.CloseToTray = CloseToTrayToggle.IsOn;
         ConfigStore.Shared.Save();
     }
 
@@ -56,10 +130,23 @@ public sealed partial class SettingsPage : Page
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
     {
         UpdateStatusText.Text = "Checking…";
-        var url = ConfigStore.Shared.Config.UpdateServerURL;
-        var latest = await UpdateService.Shared.CheckForUpdateAsync(url);
-        UpdateStatusText.Text = latest is null
-            ? "You're up to date."
-            : $"Update available: v{latest}";
+        CheckUpdatesBtn.IsEnabled = false;
+        try
+        {
+            var info = _model is not null
+                ? await _model.CheckForUpdatesAsync(silent: false)
+                : await UpdateService.Shared.CheckAsync(ConfigStore.Shared.Config.UpdateRepo);
+            UpdateStatusText.Text = info is null
+                ? "You're up to date."
+                : $"Update available: v{info.Version}";
+            RefreshUpdateUI();
+        }
+        finally { CheckUpdatesBtn.IsEnabled = true; }
+    }
+
+    private void InstallNow_Click(object sender, RoutedEventArgs e)
+    {
+        _model?.InstallUpdate();
+        RefreshUpdateUI();
     }
 }

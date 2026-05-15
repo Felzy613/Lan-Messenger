@@ -43,5 +43,40 @@
                        HorizontalAlignment="Center"
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
         </StackPanel>
+
+        <!-- Archived footer -->
+        <Button x:Name="ArchivedSection"
+                Grid.Row="1"
+                Background="Transparent"
+                BorderBrush="Transparent"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Stretch"
+                Click="ArchivedSection_Click"
+                Visibility="Collapsed"
+                Padding="12,10">
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <FontIcon Grid.Column="0"
+                          FontFamily="Segoe MDL2 Assets"
+                          Glyph="&#xE7B8;"
+                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                <StackPanel Grid.Column="1" Spacing="2">
+                    <TextBlock Text="Archived"
+                               Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                    <TextBlock x:Name="ArchivedSubtitle"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+                <FontIcon Grid.Column="2"
+                          FontFamily="Segoe MDL2 Assets"
+                          Glyph="&#xE76C;"
+                          FontSize="12"
+                          Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+            </Grid>
+        </Button>
     </Grid>
 </UserControl>

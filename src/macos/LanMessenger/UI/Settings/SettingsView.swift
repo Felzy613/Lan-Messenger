@@ -5,7 +5,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) var dismiss
 
     @State private var username = ConfigStore.shared.config.username
-    @State private var updateServerURL = ConfigStore.shared.config.updateServerURL
+    @State private var updateRepo = ConfigStore.shared.config.updateRepo
     @State private var inboxDir = ConfigStore.shared.config.inboxDir
     @State private var hideFromDock = ConfigStore.shared.config.hideFromDock
     @State private var updateStatus = ""
@@ -41,7 +41,10 @@ struct SettingsView: View {
                 }
 
                 Section("Updates") {
-                    TextField("Update server URL", text: $updateServerURL)
+                    LabeledContent("Source") {
+                        TextField("GitHub repo (owner/repo)", text: $updateRepo)
+                            .textFieldStyle(.roundedBorder)
+                    }
                     HStack {
                         Button {
                             checkForUpdates()
@@ -51,7 +54,7 @@ struct SettingsView: View {
                                     .controlSize(.small)
                                     .padding(.trailing, 4)
                             }
-                            Text("Check for Updates")
+                            Text("Check Now")
                         }
                         .buttonStyle(.bordered)
                         .disabled(isCheckingUpdates)
@@ -61,6 +64,28 @@ struct SettingsView: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
                         }
+                    }
+
+                    if let info = model.availableUpdate {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .foregroundStyle(Theme.accent)
+                                Text("Version \(info.version) available")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Spacer()
+                                installButton(info: info)
+                            }
+                            if !info.notes.isEmpty {
+                                Text(info.notes)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(8)
+                            }
+                            progressView()
+                        }
+                        .padding(8)
+                        .background(Theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
 
@@ -89,14 +114,55 @@ struct SettingsView: View {
                 }
             }
         }
-        .frame(minWidth: 420, minHeight: 340)
+        .frame(minWidth: 460, minHeight: 380)
+    }
+
+    // MARK: - Update UI helpers
+
+    private func installButton(info: UpdateInfo) -> some View {
+        Group {
+            switch model.updateProgress {
+            case .downloading, .installing:
+                EmptyView()
+            default:
+                Button("Install") { model.installUpdate() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func progressView() -> some View {
+        switch model.updateProgress {
+        case .downloading(let p):
+            ProgressView(value: p) {
+                Text("Downloading… \(Int(p * 100))%")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        case .installing:
+            HStack {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Installing… the app will relaunch shortly.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        case .failed(let m):
+            Text("Failed: \(m)")
+                .font(.system(size: 11))
+                .foregroundStyle(.red)
+        case .idle:
+            EmptyView()
+        }
     }
 
     // MARK: - Actions
 
     private func save() {
         ConfigStore.shared.config.username = username
-        ConfigStore.shared.config.updateServerURL = updateServerURL
+        ConfigStore.shared.config.updateRepo = updateRepo.trimmingCharacters(in: .whitespaces)
         ConfigStore.shared.config.inboxDir = inboxDir
         ConfigStore.shared.config.hideFromDock = hideFromDock
         ConfigStore.shared.save()
@@ -117,13 +183,16 @@ struct SettingsView: View {
     private func checkForUpdates() {
         isCheckingUpdates = true
         updateStatus = ""
-        UpdateService.shared.check(manifestURL: updateServerURL) { result in
+        Task { @MainActor in
+            let result = await UpdateService.shared.check(repo: updateRepo.trimmingCharacters(in: .whitespaces))
             isCheckingUpdates = false
             switch result {
             case .upToDate:
                 updateStatus = "You're up to date ✓"
+                model.availableUpdate = nil
             case .available(let info):
                 updateStatus = "v\(info.version) available"
+                model.availableUpdate = info
             case .error(let msg):
                 updateStatus = "Error: \(msg)"
             }

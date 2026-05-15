@@ -35,21 +35,66 @@
                 </Grid>
             </StackPanel>
 
-            <!-- Update server -->
+            <!-- Background behavior -->
             <StackPanel Spacing="6">
-                <TextBlock Text="Update server URL"
+                <TextBlock Text="Background"
                            Style="{ThemeResource BodyStrongTextBlockStyle}" />
-                <TextBox x:Name="UpdateUrlBox"
-                         PlaceholderText="https://example.com"
-                         LostFocus="UpdateUrlBox_LostFocus" />
+                <ToggleSwitch x:Name="CloseToTrayToggle"
+                              Header="Keep running in the background when window is closed"
+                              OnContent="On"
+                              OffContent="Off"
+                              Toggled="CloseToTrayToggle_Toggled" />
+            </StackPanel>
+
+            <!-- Updates -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Updates"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <TextBox x:Name="UpdateRepoBox"
+                         Header="GitHub repository (owner/repo)"
+                         PlaceholderText="felzy613/lan-messenger"
+                         LostFocus="UpdateRepoBox_LostFocus" />
                 <StackPanel Orientation="Horizontal" Spacing="8">
                     <Button x:Name="CheckUpdatesBtn"
-                            Content="Check for Updates"
+                            Content="Check Now"
                             Click="CheckUpdates_Click" />
                     <TextBlock x:Name="UpdateStatusText"
                                VerticalAlignment="Center"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 </StackPanel>
+
+                <Border x:Name="UpdatePanel"
+                        BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="12"
+                        Visibility="Collapsed">
+                    <StackPanel Spacing="8">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xEBD3;"
+                                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                            <TextBlock x:Name="UpdateAvailableText"
+                                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                            <Button x:Name="InstallNowBtn"
+                                    Content="Install &amp; Restart"
+                                    Style="{ThemeResource AccentButtonStyle}"
+                                    Click="InstallNow_Click" />
+                        </StackPanel>
+                        <TextBlock x:Name="UpdateNotesText"
+                                   TextWrapping="Wrap"
+                                   MaxHeight="180"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <ProgressBar x:Name="UpdateProgressBar"
+                                     Value="0"
+                                     Minimum="0"
+                                     Maximum="1"
+                                     Visibility="Collapsed" />
+                        <TextBlock x:Name="UpdateProgressText"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Visibility="Collapsed" />
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
             <!-- Version -->

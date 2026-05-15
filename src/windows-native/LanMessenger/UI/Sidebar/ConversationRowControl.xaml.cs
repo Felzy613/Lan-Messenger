@@ -17,6 +17,9 @@ public sealed partial class ConversationRowControl : UserControl
         set => SetValue(RowProperty, value);
     }
 
+    // The owning sidebar control sets this so the menu actions can reach AppModel.
+    public AppModel? Model { get; set; }
+
     public ConversationRowControl() => InitializeComponent();
 
     private static void OnRowChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -34,6 +37,7 @@ public sealed partial class ConversationRowControl : UserControl
         if (Row is null) return;
 
         Avatar.NameText      = Row.PeerName;
+        Avatar.PhotoB64      = Row.PhotoB64;
         NameText.Text        = Row.PeerName;
         PreviewText.Text     = Row.LastMessage;
         TimestampText.Text   = Row.Timestamp;
@@ -48,5 +52,44 @@ public sealed partial class ConversationRowControl : UserControl
         {
             UnreadBadge.Visibility = Visibility.Collapsed;
         }
+
+        ArchiveItem.Visibility   = Row.IsArchived ? Visibility.Collapsed : Visibility.Visible;
+        UnarchiveItem.Visibility = Row.IsArchived ? Visibility.Visible   : Visibility.Collapsed;
+    }
+
+    private void OptionsBtn_Click(object sender, RoutedEventArgs e)
+    {
+        // The Button has Flyout attached — clicking auto-opens it. We just need to
+        // make sure the click doesn't bubble up and select the conversation.
+        if (sender is Button btn) btn.Flyout?.ShowAt(btn);
+    }
+
+    private void Archive_Click(object sender, RoutedEventArgs e)
+    {
+        if (Row is null || Model is null) return;
+        Model.ArchiveConversation(Row.PeerIP);
+    }
+
+    private void Unarchive_Click(object sender, RoutedEventArgs e)
+    {
+        if (Row is null || Model is null) return;
+        Model.UnarchiveConversation(Row.PeerIP);
+    }
+
+    private async void Delete_Click(object sender, RoutedEventArgs e)
+    {
+        if (Row is null || Model is null) return;
+        var dialog = new ContentDialog
+        {
+            Title = "Delete conversation?",
+            Content = $"All messages with {Row.PeerName} will be removed from this device. This cannot be undone.",
+            PrimaryButtonText = "Delete",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+            XamlRoot = this.XamlRoot,
+        };
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.Primary)
+            Model.DeleteConversation(Row.PeerIP);
     }
 }

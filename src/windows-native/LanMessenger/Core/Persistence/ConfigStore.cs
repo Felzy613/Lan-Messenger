@@ -8,6 +8,8 @@ public sealed class ContactConfig
     [JsonPropertyName("public_key_b64")] public string PublicKeyB64 { get; set; } = "";
     [JsonPropertyName("username")]       public string Username     { get; set; } = "";
     [JsonPropertyName("last_ip")]        public string LastIP       { get; set; } = "";
+    // Optional base64-encoded JPEG/PNG used as the contact's avatar.
+    [JsonPropertyName("photo_b64")]      public string? PhotoB64    { get; set; }
 }
 
 public sealed class PendingMessageConfig
@@ -19,14 +21,29 @@ public sealed class PendingMessageConfig
     [JsonPropertyName("timestamp")]          public double Timestamp        { get; set; }
 }
 
+// File queued for an offline peer; delivered when the peer reappears.
+public sealed class PendingFileConfig
+{
+    [JsonPropertyName("file_path")]           public string FilePath        { get; set; } = "";
+    [JsonPropertyName("peer_public_key_b64")] public string PeerPublicKeyB64 { get; set; } = "";
+    [JsonPropertyName("peer_username")]       public string PeerUsername    { get; set; } = "";
+    [JsonPropertyName("timestamp")]           public double Timestamp        { get; set; }
+}
+
 public sealed class AppConfig
 {
-    [JsonPropertyName("username")]             public string Username            { get; set; } = "User";
-    [JsonPropertyName("contacts")]             public List<ContactConfig> Contacts { get; set; } = [];
-    [JsonPropertyName("hidden_conversations")] public List<string> HiddenConversations { get; set; } = [];
-    [JsonPropertyName("pending_messages")]     public List<PendingMessageConfig> PendingMessages { get; set; } = [];
-    [JsonPropertyName("update_server_url")]    public string UpdateServerURL    { get; set; } = "";
-    [JsonPropertyName("inbox_dir")]            public string InboxDir           { get; set; } = "";
+    [JsonPropertyName("username")]              public string Username            { get; set; } = "User";
+    [JsonPropertyName("contacts")]              public List<ContactConfig> Contacts { get; set; } = [];
+    [JsonPropertyName("hidden_conversations")]  public List<string> HiddenConversations { get; set; } = [];
+    [JsonPropertyName("archived_conversations")] public List<string> ArchivedConversations { get; set; } = [];
+    [JsonPropertyName("pending_messages")]      public List<PendingMessageConfig> PendingMessages { get; set; } = [];
+    [JsonPropertyName("pending_files")]         public List<PendingFileConfig> PendingFiles { get; set; } = [];
+    [JsonPropertyName("update_server_url")]     public string UpdateServerURL    { get; set; } = "";
+    [JsonPropertyName("inbox_dir")]             public string InboxDir           { get; set; } = "";
+    [JsonPropertyName("update_repo")]           public string UpdateRepo         { get; set; } = "felzy613/lan-messenger";
+    [JsonPropertyName("last_update_check")]     public double LastUpdateCheck    { get; set; }
+    [JsonPropertyName("start_in_tray")]         public bool   StartInTray        { get; set; } = false;
+    [JsonPropertyName("close_to_tray")]         public bool   CloseToTray        { get; set; } = true;
 }
 
 // Manages reading/writing config.json in %APPDATA%\LanMessenger\.
@@ -72,6 +89,12 @@ public sealed class ConfigStore
             : Config.InboxDir;
 
     public string HistoryFilePath => Path.Combine(_appDataDir, "history.enc");
+
+    public string LogsDirectory => Path.Combine(_appDataDir, "Logs");
+
+    public string UpdateStagingDirectory => Path.Combine(_appDataDir, "Updates");
+
+    public string AppDataDirectory => _appDataDir;
 
     // MARK: - Persistence
 

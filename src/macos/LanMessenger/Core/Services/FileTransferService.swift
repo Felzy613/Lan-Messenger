@@ -83,6 +83,12 @@ final class FileTransferService {
         startNextIfIdle(peerIP: ip, peerPublicKeyB64: peerPublicKeyB64)
     }
 
+    // Re-trigger the queue for a peer that has just come back online — covers
+    // the case where a previous attempt failed and the file is still queued.
+    func retryQueue(toPeerIP ip: String, peerPublicKeyB64: String) {
+        startNextIfIdle(peerIP: ip, peerPublicKeyB64: peerPublicKeyB64)
+    }
+
     private func startNextIfIdle(peerIP: String, peerPublicKeyB64: String) {
         guard !FileTransferStore.shared.activeOutgoing.contains(peerIP),
               let item = FileTransferStore.shared.outgoingQueues[peerIP]?.first else { return }
