@@ -93,13 +93,14 @@ jobs:
           restore-keys: nuget-${{ runner.os }}-
 
       - name: Restore dependencies
-        run: dotnet restore LanMessenger.sln
+        run: dotnet restore LanMessenger.sln -p:Platform=x64
 
       - name: Run unit tests
         shell: pwsh
         run: |
           dotnet test LanMessenger.Tests `
             --configuration Release `
+            -p:Platform=x64 `
             --no-restore `
             --logger "console;verbosity=normal" `
             2>&1 | Tee-Object -FilePath ..\..\test-output-windows.txt
