@@ -1,0 +1,233 @@
+name: Release Orchestration
+
+# Triggers whenever either platform build completes successfully on main.
+# Finds the latest per-platform releases, validates both exist, then creates
+# an atomic combined release containing both artifacts.
+on:
+  workflow_run:
+    workflows: ['Build macOS', 'Build Windows']
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  orchestrate:
+    name: Create Combined Release
+    runs-on: ubuntu-latest
+    # Only proceed if the triggering build actually succeeded
+    if: github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Identify triggering platform
+        id: platform
+        run: |
+          WORKFLOW="${{ github.event.workflow_run.name }}"
+          echo "Triggered by: $WORKFLOW"
+          if [[ "$WORKFLOW" == *"macOS"* ]]; then
+            echo "rebuilt=macos" >> $GITHUB_OUTPUT
+          else
+            echo "rebuilt=windows" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Find latest per-platform releases
+        id: tags
+        run: |
+          # Fetch all releases sorted newest-first
+          RELEASES=$(gh release list \
+            --limit 100 \
+            --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse')
+
+          MAC_TAG=$(echo "$RELEASES" | \
+            jq -r '[.[] | select(.tagName | startswith("macos-v"))] | first | .tagName // empty')
+
+          WIN_TAG=$(echo "$RELEASES" | \
+            jq -r '[.[] | select(.tagName | startswith("windows-v"))] | first | .tagName // empty')
+
+          echo "Latest macOS release:   ${MAC_TAG:-(none)}"
+          echo "Latest Windows release: ${WIN_TAG:-(none)}"
+
+          echo "mac_tag=$MAC_TAG" >> $GITHUB_OUTPUT
+          echo "win_tag=$WIN_TAG" >> $GITHUB_OUTPUT
+
+          # Skip gracefully if either platform has never been built yet
+          if [ -z "$MAC_TAG" ]; then
+            echo "::warning::No macOS platform release found — skipping combined release until macOS has been built"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if [ -z "$WIN_TAG" ]; then
+            echo "::warning::No Windows platform release found — skipping combined release until Windows has been built"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: Compute combined release tag
+        id: release
+        if: steps.tags.outputs.skip != 'true'
+        run: |
+          MAC_VER="${{ steps.tags.outputs.mac_tag }}"
+          WIN_VER="${{ steps.tags.outputs.win_tag }}"
+          MAC_VER="${MAC_VER#macos-v}"
+          WIN_VER="${WIN_VER#windows-v}"
+
+          COMBINED_TAG="release-win${WIN_VER}-mac${MAC_VER}"
+          RELEASE_TITLE="LAN Messenger — Windows ${WIN_VER} | macOS ${MAC_VER}"
+
+          echo "combined_tag=$COMBINED_TAG" >> $GITHUB_OUTPUT
+          echo "release_title=$RELEASE_TITLE" >> $GITHUB_OUTPUT
+          echo "mac_ver=$MAC_VER" >> $GITHUB_OUTPUT
+          echo "win_ver=$WIN_VER" >> $GITHUB_OUTPUT
+          echo "Combined tag: $COMBINED_TAG"
+
+          # Idempotent: skip if this exact version combo already released
+          if gh release view "$COMBINED_TAG" --json tagName &>/dev/null; then
+            echo "::notice::Combined release $COMBINED_TAG already exists — skipping"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download both platform artifacts
+        if: |
+          steps.tags.outputs.skip != 'true' &&
+          steps.release.outputs.skip != 'true'
+        run: |
+          mkdir -p dist/macos dist/windows
+
+          gh release download "${{ steps.tags.outputs.mac_tag }}" \
+            --pattern "*.zip" \
+            --dir dist/macos/
+
+          gh release download "${{ steps.tags.outputs.win_tag }}" \
+            --pattern "*.exe" \
+            --dir dist/windows/
+
+          echo "Downloaded artifacts:"
+          ls -lh dist/macos/ dist/windows/
+
+      - name: Validate artifact integrity
+        if: |
+          steps.tags.outputs.skip != 'true' &&
+          steps.release.outputs.skip != 'true'
+        run: |
+          MAC_FILE=$(ls dist/macos/*.zip 2>/dev/null | head -1)
+          WIN_FILE=$(ls dist/windows/*.exe 2>/dev/null | head -1)
+
+          if [ -z "$MAC_FILE" ]; then
+            echo "::error::macOS artifact missing after download"
+            exit 1
+          fi
+          if [ -z "$WIN_FILE" ]; then
+            echo "::error::Windows artifact missing after download"
+            exit 1
+          fi
+
+          # Sanity-check file sizes (both must be > 1 MiB)
+          MAC_SIZE=$(stat -c%s "$MAC_FILE" 2>/dev/null || stat -f%z "$MAC_FILE")
+          WIN_SIZE=$(stat -c%s "$WIN_FILE" 2>/dev/null || stat -f%z "$WIN_FILE")
+
+          if [ "$MAC_SIZE" -lt 1048576 ]; then
+            echo "::error::macOS artifact is suspiciously small (${MAC_SIZE} bytes)"
+            exit 1
+          fi
+          if [ "$WIN_SIZE" -lt 1048576 ]; then
+            echo "::error::Windows artifact is suspiciously small (${WIN_SIZE} bytes)"
+            exit 1
+          fi
+
+          echo "✓ macOS: $(basename $MAC_FILE) ($(numfmt --to=iec $MAC_SIZE))"
+          echo "✓ Windows: $(basename $WIN_FILE) ($(numfmt --to=iec $WIN_SIZE))"
+
+      - name: Fetch per-platform commit SHAs for release notes
+        id: commits
+        if: |
+          steps.tags.outputs.skip != 'true' &&
+          steps.release.outputs.skip != 'true'
+        run: |
+          MAC_SHA=$(gh release view "${{ steps.tags.outputs.mac_tag }}" \
+            --json targetCommitish -q .targetCommitish | head -c 8 || echo "unknown")
+          WIN_SHA=$(gh release view "${{ steps.tags.outputs.win_tag }}" \
+            --json targetCommitish -q .targetCommitish | head -c 8 || echo "unknown")
+          echo "mac_sha=$MAC_SHA" >> $GITHUB_OUTPUT
+          echo "win_sha=$WIN_SHA" >> $GITHUB_OUTPUT
+
+      - name: Create DRAFT combined release
+        id: draft
+        if: |
+          steps.tags.outputs.skip != 'true' &&
+          steps.release.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.release.outputs.combined_tag }}"
+          MAC_VER="${{ steps.release.outputs.mac_ver }}"
+          WIN_VER="${{ steps.release.outputs.win_ver }}"
+          MAC_SHA="${{ steps.commits.outputs.mac_sha }}"
+          WIN_SHA="${{ steps.commits.outputs.win_sha }}"
+
+          gh release create "$TAG" \
+            --title "${{ steps.release.outputs.release_title }}" \
+            --draft \
+            --notes "## LAN Messenger — Combined Release
+
+| Platform | Version | Commit |
+|----------|---------|--------|
+| 🪟 Windows | \`${WIN_VER}\` | \`${WIN_SHA}\` |
+| 🍎 macOS   | \`${MAC_VER}\` | \`${MAC_SHA}\` |
+
+**Released:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
+**Triggered by:** ${{ github.event.workflow_run.name }}
+
+---
+
+### 🪟 Windows Installer — \`LanMessenger-Setup-${WIN_VER}.exe\`
+- Self-contained (includes .NET 8 runtime — no separate install needed)
+- Requires Windows 10 build 19041+ · x64
+
+### 🍎 macOS App — \`LanMessenger-macOS-${MAC_VER}.zip\`
+- Requires macOS 13.0 (Ventura)+
+- Unzip and drag **LanMessenger.app** to your Applications folder"
+
+          echo "draft_tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Created draft release: $TAG"
+
+      - name: Upload macOS artifact
+        if: |
+          steps.tags.outputs.skip != 'true' &&
+          steps.release.outputs.skip != 'true'
+        run: |
+          gh release upload "${{ steps.draft.outputs.draft_tag }}" \
+            dist/macos/*.zip \
+            --clobber
+
+      - name: Upload Windows artifact
+        if: |
+          steps.tags.outputs.skip != 'true' &&
+          steps.release.outputs.skip != 'true'
+        run: |
+          gh release upload "${{ steps.draft.outputs.draft_tag }}" \
+            dist/windows/*.exe \
+            --clobber
+
+      - name: Publish release (remove draft status)
+        if: |
+          steps.tags.outputs.skip != 'true' &&
+          steps.release.outputs.skip != 'true'
+        run: |
+          gh release edit "${{ steps.draft.outputs.draft_tag }}" --draft=false
+          echo "::notice::Published: ${{ steps.release.outputs.release_title }} (${{ steps.draft.outputs.draft_tag }})"
+
+      # Safety net: if any step above failed after the draft was created, delete it
+      # so the previous stable release remains the latest visible release.
+      - name: Delete draft release on failure
+        if: failure() && steps.draft.outputs.draft_tag != ''
+        run: |
+          echo "::warning::Cleaning up failed draft release ${{ steps.draft.outputs.draft_tag }}"
+          gh release delete "${{ steps.draft.outputs.draft_tag }}" --yes 2>/dev/null || true

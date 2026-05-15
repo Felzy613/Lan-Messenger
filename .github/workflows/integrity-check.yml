@@ -1,0 +1,160 @@
+name: Integrity Check
+
+# Weekly audit: verifies that both per-platform releases exist and have assets.
+# Also runnable manually for on-demand verification.
+on:
+  schedule:
+    - cron: '0 8 * * 1'   # Every Monday at 08:00 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: integrity-check
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  integrity:
+    name: Artifact Integrity Audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Audit platform releases and version files
+        id: audit
+        run: |
+          FAILURES=""
+
+          # ── Check version files ──────────────────────────────────────────
+          for PLATFORM in macos windows; do
+            FILE="version/${PLATFORM}.json"
+            if [ ! -f "$FILE" ]; then
+              FAILURES="$FAILURES\n- Missing version file: \`$FILE\`"
+            else
+              VERSION=$(jq -r '.version' "$FILE" 2>/dev/null || echo "invalid")
+              if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+                FAILURES="$FAILURES\n- Invalid semver in \`$FILE\`: \`$VERSION\`"
+              else
+                echo "✓ $FILE: $VERSION"
+              fi
+            fi
+          done
+
+          # ── Check platform releases exist and have assets ─────────────────
+          RELEASES=$(gh release list --limit 100 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse')
+
+          MAC_TAG=$(echo "$RELEASES" | \
+            jq -r '[.[] | select(.tagName | startswith("macos-v"))] | first | .tagName // empty')
+          WIN_TAG=$(echo "$RELEASES" | \
+            jq -r '[.[] | select(.tagName | startswith("windows-v"))] | first | .tagName // empty')
+
+          echo "Latest macOS release:   ${MAC_TAG:-(none)}"
+          echo "Latest Windows release: ${WIN_TAG:-(none)}"
+
+          if [ -z "$MAC_TAG" ]; then
+            FAILURES="$FAILURES\n- No \`macos-v*\` platform release found"
+          else
+            MAC_ASSETS=$(gh release view "$MAC_TAG" --json assets -q '.assets | length')
+            if [ "$MAC_ASSETS" -eq 0 ]; then
+              FAILURES="$FAILURES\n- macOS release \`$MAC_TAG\` exists but has no assets"
+            else
+              echo "✓ $MAC_TAG: $MAC_ASSETS asset(s)"
+            fi
+          fi
+
+          if [ -z "$WIN_TAG" ]; then
+            FAILURES="$FAILURES\n- No \`windows-v*\` platform release found"
+          else
+            WIN_ASSETS=$(gh release view "$WIN_TAG" --json assets -q '.assets | length')
+            if [ "$WIN_ASSETS" -eq 0 ]; then
+              FAILURES="$FAILURES\n- Windows release \`$WIN_TAG\` exists but has no assets"
+            else
+              echo "✓ $WIN_TAG: $WIN_ASSETS asset(s)"
+            fi
+          fi
+
+          # ── Check that a combined release exists ──────────────────────────
+          COMBINED=$(echo "$RELEASES" | \
+            jq -r '[.[] | select(.tagName | startswith("release-"))] | first | .tagName // empty')
+          if [ -z "$COMBINED" ]; then
+            FAILURES="$FAILURES\n- No combined \`release-*\` release found"
+          else
+            echo "✓ Latest combined release: $COMBINED"
+          fi
+
+          # ── Emit results ─────────────────────────────────────────────────
+          if [ -n "$FAILURES" ]; then
+            echo "has_failures=true" >> $GITHUB_OUTPUT
+            # Store multi-line value safely
+            {
+              echo "failures<<EOF"
+              printf "$FAILURES"
+              echo ""
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
+            echo "::error::Integrity check detected failures — see job summary"
+          else
+            echo "has_failures=false" >> $GITHUB_OUTPUT
+            echo "::notice::All integrity checks passed"
+          fi
+
+      - name: Write job summary
+        if: always()
+        run: |
+          if [ "${{ steps.audit.outputs.has_failures }}" = "true" ]; then
+            echo "## ❌ Integrity Check Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            printf "${{ steps.audit.outputs.failures }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ✅ Integrity Check Passed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All platform releases and version files are healthy." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Create or update integrity failure issue
+        if: steps.audit.outputs.has_failures == 'true'
+        run: |
+          EXISTING=$(gh issue list \
+            --label "ci-failure" \
+            --label "type:integrity" \
+            --state open \
+            --limit 10 \
+            --json number \
+            --jq '.[0].number' 2>/dev/null || true)
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BODY="## CI Artifact Integrity Failure
+
+The weekly integrity check detected problems with platform releases or version files.
+
+| Field | Value |
+|-------|-------|
+| Detected | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
+| Workflow | [View run]($RUN_URL) |
+
+### Issues Found
+
+${{ steps.audit.outputs.failures }}"
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+            echo "::notice::Updated existing integrity issue #$EXISTING"
+          else
+            # Ensure labels exist
+            gh label create "ci-failure"    --color "d73a4a" --description "CI pipeline failure" 2>/dev/null || true
+            gh label create "type:integrity" --color "e4e669" --description "Integrity check failure" 2>/dev/null || true
+
+            gh issue create \
+              --title "[CI] Weekly artifact integrity check failed — $(date -u +%Y-%m-%d)" \
+              --label "ci-failure" \
+              --label "type:integrity" \
+              --body "$BODY"
+          fi

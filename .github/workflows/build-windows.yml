@@ -5,30 +5,146 @@ on:
     branches: [main]
     paths:
       - 'src/windows-native/**'
+      - 'version/windows.json'
+      - 'shared/**'
       - '.github/workflows/build-windows.yml'
+      - '.github/actions/**'
+      - 'scripts/windows/**'
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if version already released'
+        type: boolean
+        default: false
+      skip_smoke:
+        description: 'Skip startup smoke test'
+        type: boolean
+        default: false
+
+# One Windows build at a time — prevents parallel runs from corrupting releases
+concurrency:
+  group: build-windows
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-    name: Build Windows Installer
-    runs-on: windows-2022
+  # ── Preflight ─────────────────────────────────────────────────────────────────
+  preflight:
+    name: Preflight — Version & Duplicate Check
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
-
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
-
+      release_exists: ${{ steps.check.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read version
+      - name: Read and validate version
         id: version
-        shell: bash
         run: |
-          BASE=$(cat src/windows-native/VERSION | tr -d '[:space:]')
-          VERSION="${BASE}.${{ github.run_number }}"
+          VERSION=$(jq -r '.version' version/windows.json)
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::Invalid semver '$VERSION' in version/windows.json — must match X.Y or X.Y.Z"
+            exit 1
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building Windows v$VERSION"
+          echo "Windows version: $VERSION"
+
+      - name: Check for existing platform release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="windows-v${{ steps.version.outputs.version }}"
+          if gh release view "$TAG" --json tagName &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "::notice::Release $TAG already exists — skipping (use force_rebuild to override)"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+  # ── Unit Tests ────────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    needs: preflight
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      issues: write
+    defaults:
+      run:
+        working-directory: src/windows-native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('src/windows-native/**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore dependencies
+        run: dotnet restore LanMessenger.sln
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          dotnet test LanMessenger.Tests `
+            --configuration Release `
+            --no-restore `
+            --logger "console;verbosity=normal" `
+            2>&1 | Tee-Object -FilePath ..\..\test-output-windows.txt
+          exit $LASTEXITCODE
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-windows-${{ github.run_id }}
+          path: |
+            src/windows-native/LanMessenger.Tests/TestResults/
+            test-output-windows.txt
+          retention-days: 30
+
+      - name: Report test failure
+        if: failure()
+        uses: ./.github/actions/report-failure
+        with:
+          platform: windows
+          version: ${{ needs.preflight.outputs.version }}
+          failure_type: TEST_FAILURE
+          log_path: test-output-windows.txt
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Build & Package ───────────────────────────────────────────────────────────
+  build:
+    name: Build & Package
+    needs: [preflight, test]
+    if: |
+      needs.preflight.outputs.release_exists == 'false' ||
+      inputs.force_rebuild == true
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    defaults:
+      run:
+        working-directory: src/windows-native
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
@@ -38,47 +154,207 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Restore
-        working-directory: src/windows-native
-        run: msbuild LanMessenger.sln /t:Restore /p:Configuration=Release /p:Platform=x64
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('src/windows-native/**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
 
-      - name: Publish
-        working-directory: src/windows-native
-        run: >
-          msbuild LanMessenger/LanMessenger.csproj
-          /t:Publish
-          /p:Configuration=Release
-          /p:Platform=x64
-          /p:RuntimeIdentifier=win-x64
-          /p:SelfContained=true
+      - name: Restore NuGet packages
+        run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
 
-      - name: Build installer
-        shell: cmd
+      - name: Publish self-contained app
+        shell: pwsh
         run: |
-          "C:\Program Files (x86)\Inno Setup 6\iscc.exe" /DMyAppVersion=${{ steps.version.outputs.version }} "src\windows-native\LanMessenger.iss"
+          msbuild LanMessenger\LanMessenger.csproj `
+            /t:Publish `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:RuntimeIdentifier=win-x64 `
+            /p:SelfContained=true `
+            /p:Version=$env:VERSION `
+            2>&1 | Tee-Object -FilePath ..\..\build-output-windows.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Upload build artifact
+      # Optional Authenticode signing — uncomment when CODE_SIGN_CERT / CODE_SIGN_PWD secrets are set:
+      # - name: Sign executable
+      #   shell: pwsh
+      #   run: |
+      #     $cert = [System.Convert]::FromBase64String("${{ secrets.CODE_SIGN_CERT }}")
+      #     [System.IO.File]::WriteAllBytes("cert.pfx", $cert)
+      #     & "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe" sign `
+      #       /f cert.pfx /p "${{ secrets.CODE_SIGN_PWD }}" `
+      #       /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
+      #       "publish-output\LanMessenger.exe"
+      #     Remove-Item cert.pfx
+
+      - name: Build Inno Setup installer
+        id: package
+        shell: pwsh
+        run: |
+          $InnoPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $InnoPath /DMyAppVersion=$env:VERSION LanMessenger.iss 2>&1 |
+            Tee-Object -Append -FilePath ..\..\build-output-windows.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $ArtifactName = "LanMessenger-Setup-$env:VERSION.exe"
+          $ArtifactPath = "Output\$ArtifactName"
+          if (-not (Test-Path $ArtifactPath)) {
+            Write-Error "Installer not found: $ArtifactPath"
+            Get-ChildItem Output\ -ErrorAction SilentlyContinue
+            exit 1
+          }
+
+          $Hash = (Get-FileHash $ArtifactPath -Algorithm SHA256).Hash.ToLower()
+          echo "artifact_name=$ArtifactName" >> $env:GITHUB_OUTPUT
+          echo "sha256=$Hash" >> $env:GITHUB_OUTPUT
+          Write-Host "Packaged: $ArtifactName (SHA256: $Hash)"
+
+      - name: Upload artifact for downstream jobs
         uses: actions/upload-artifact@v4
         with:
-          name: windows-build
-          path: src/windows-native/Output/LanMessenger-Setup-${{ steps.version.outputs.version }}.exe
-          retention-days: 90
+          name: windows-build-${{ github.run_id }}
+          path: src/windows-native/Output/${{ steps.package.outputs.artifact_name }}
+          retention-days: 1
 
-      - name: Update rolling Windows release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        shell: bash
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics-windows-${{ github.run_id }}
+          path: build-output-windows.txt
+          retention-days: 30
+
+      - name: Report build failure
+        if: failure()
+        uses: ./.github/actions/report-failure
+        with:
+          platform: windows
+          version: ${{ needs.preflight.outputs.version }}
+          failure_type: BUILD_FAILURE
+          log_path: build-output-windows.txt
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Startup Smoke Test ────────────────────────────────────────────────────────
+  smoke:
+    name: Startup Smoke Test
+    needs: [preflight, build]
+    if: |
+      needs.build.result == 'success' &&
+      inputs.skip_smoke != true
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build-${{ github.run_id }}
+          path: smoke-artifacts/
+
+      - name: Run startup smoke test
+        shell: pwsh
         run: |
-          TAG="rolling-windows"
-          ARTIFACT="src/windows-native/Output/LanMessenger-Setup-$VERSION.exe"
+          $artifact = Get-ChildItem smoke-artifacts\*.exe | Select-Object -First 1
+          scripts\windows\smoke-test.ps1 -ArtifactPath $artifact.FullName
 
-          # Remove the old rolling release and tag so we can recreate it cleanly
-          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
-          git push origin --delete "$TAG" 2>/dev/null || true
+      - name: Collect Windows diagnostics on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path crash-reports -Force | Out-Null
+
+          $since = (Get-Date).AddMinutes(-10)
+          Get-WinEvent -FilterHashtable @{
+            LogName   = 'Application'
+            StartTime = $since
+            Level     = 1, 2
+          } -ErrorAction SilentlyContinue |
+            Format-List | Out-File crash-reports\event-log.txt
+
+          $DumpDir = "$env:LOCALAPPDATA\CrashDumps"
+          if (Test-Path $DumpDir) {
+            Copy-Item "$DumpDir\LanMessenger*" crash-reports\ -ErrorAction SilentlyContinue
+          }
+
+          Copy-Item smoke.log crash-reports\ -ErrorAction SilentlyContinue
+
+      - name: Upload crash diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-diagnostics-windows-${{ github.run_id }}
+          path: crash-reports/
+          retention-days: 30
+
+      - name: Report smoke failure
+        if: failure()
+        uses: ./.github/actions/report-failure
+        with:
+          platform: windows
+          version: ${{ needs.preflight.outputs.version }}
+          failure_type: SMOKE_FAILURE
+          log_path: crash-reports/event-log.txt
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Publish Platform Release ──────────────────────────────────────────────────
+  publish:
+    name: Publish Platform Release
+    needs: [preflight, build, smoke]
+    if: |
+      needs.build.result == 'success' &&
+      (needs.smoke.result == 'success' || needs.smoke.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build-${{ github.run_id }}
+          path: dist/
+
+      - name: Remove existing platform release (force rebuild only)
+        if: inputs.force_rebuild == true
+        run: |
+          TAG="windows-v${VERSION}"
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+      - name: Create platform release
+        run: |
+          TAG="windows-v${VERSION}"
+          ARTIFACT=$(ls dist/*.exe | head -1)
 
           gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
-            --title "Windows Latest Build (v$VERSION)" \
-            --notes "Automated rolling build — Windows v$VERSION from commit \`${{ github.sha }}\`." \
+            --title "Windows v${VERSION}" \
+            --prerelease \
+            --notes "Windows platform build v${VERSION}
+
+| Field | Value |
+|-------|-------|
+| Commit | \`${{ github.sha }}\` |
+| Branch | \`${{ github.ref_name }}\` |
+| Runner | windows-2022 |
+| Built  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
+
+> This is a platform pre-release. The combined release is created automatically by the Release Orchestration workflow." \
             "$ARTIFACT"
+
+          echo "::notice::Published platform release: $TAG"
+
+      - name: Close resolved CI failure issues
+        run: |
+          chmod +x scripts/shared/close-ci-issues.sh
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+            scripts/shared/close-ci-issues.sh windows "$VERSION" "${{ github.sha }}"

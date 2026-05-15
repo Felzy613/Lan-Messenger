@@ -5,121 +5,364 @@ on:
     branches: [main]
     paths:
       - 'src/macos/**'
+      - 'version/macos.json'
+      - 'shared/**'
       - '.github/workflows/build-macos.yml'
+      - '.github/actions/**'
+      - 'scripts/macos/**'
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if version already released'
+        type: boolean
+        default: false
+      skip_smoke:
+        description: 'Skip startup smoke test'
+        type: boolean
+        default: false
+
+# One macOS build at a time — prevents parallel runs from corrupting releases
+concurrency:
+  group: build-macos
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-    name: Build & Sign macOS
-    runs-on: macos-15
+  # ── Preflight ─────────────────────────────────────────────────────────────────
+  preflight:
+    name: Preflight — Version & Duplicate Check
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
-
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
-
+      release_exists: ${{ steps.check.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read version
+      - name: Read and validate version
         id: version
         run: |
-          BASE=$(cat src/macos/VERSION | tr -d '[:space:]')
-          VERSION="${BASE}.${{ github.run_number }}"
+          VERSION=$(jq -r '.version' version/macos.json)
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::Invalid semver '$VERSION' in version/macos.json — must match X.Y or X.Y.Z"
+            exit 1
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building macOS v$VERSION"
+          echo "macOS version: $VERSION"
+
+      - name: Check for existing platform release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="macos-v${{ steps.version.outputs.version }}"
+          if gh release view "$TAG" --json tagName &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "::notice::Release $TAG already exists — skipping (use force_rebuild to override)"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+  # ── Unit Tests ────────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    needs: preflight
+    runs-on: macos-15
+    permissions:
+      contents: read
+      issues: write
+    defaults:
+      run:
+        working-directory: src/macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Swift build artifacts
+        uses: actions/cache@v4
+        with:
+          path: src/macos/.build
+          key: swift-${{ runner.os }}-${{ hashFiles('src/macos/Package.swift') }}
+          restore-keys: swift-${{ runner.os }}-
+
+      - name: Run unit tests
+        run: |
+          swift test --parallel 2>&1 | tee ../../test-output-macos.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-diagnostics-macos-${{ github.run_id }}
+          path: test-output-macos.txt
+          retention-days: 30
+
+      - name: Report test failure
+        if: failure()
+        uses: ./.github/actions/report-failure
+        with:
+          platform: macos
+          version: ${{ needs.preflight.outputs.version }}
+          failure_type: TEST_FAILURE
+          log_path: test-output-macos.txt
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Build & Sign ──────────────────────────────────────────────────────────────
+  build:
+    name: Build & Sign
+    needs: [preflight, test]
+    if: |
+      needs.preflight.outputs.release_exists == 'false' ||
+      inputs.force_rebuild == true
+    runs-on: macos-15
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    defaults:
+      run:
+        working-directory: src/macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: homebrew-${{ runner.os }}-xcodegen-v1
 
       - name: Install xcodegen
-        run: brew install xcodegen
+        run: brew install xcodegen 2>/dev/null || brew upgrade xcodegen 2>/dev/null || true
+
+      - name: Stamp version into project.yml
+        run: |
+          sed -i '' "s/MARKETING_VERSION:.*/MARKETING_VERSION: ${VERSION}/" project.yml
+          grep MARKETING_VERSION project.yml
 
       - name: Generate Xcode project
-        working-directory: src/macos
-        run: xcodegen generate --spec project.yml --project .
+        run: xcodegen generate
 
-      - name: Build
-        working-directory: src/macos
+      - name: Build Release configuration
         run: |
+          set -o pipefail
           xcodebuild \
             -project LanMessenger.xcodeproj \
-            -scheme  LanMessenger \
+            -scheme LanMessenger \
             -configuration Release \
-            -derivedDataPath build/derived \
+            -derivedDataPath .build/derived \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            SWIFT_OPTIMIZATION_LEVEL='-O' \
+            2>&1 | tee ../../build-output-macos.txt
+          exit ${PIPESTATUS[0]}
 
       - name: Import signing certificate
         env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE }}
-          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
         run: |
-          CERT_PATH="$RUNNER_TEMP/certificate.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          KEYCHAIN_PWD="$(openssl rand -hex 20)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/certificate.p12
 
-          echo "$CERTIFICATE_BASE64" | base64 -D -o "$CERT_PATH"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PWD=$(openssl rand -hex 16)
 
           security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
-
-          security import "$CERT_PATH" \
+          security import /tmp/certificate.p12 \
             -k "$KEYCHAIN_PATH" \
-            -P "$P12_PASSWORD" \
-            -A -t cert -f pkcs12
-
+            -P "$MACOS_CERTIFICATE_PWD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
 
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          echo "KEYCHAIN_PWD=$KEYCHAIN_PWD" >> $GITHUB_ENV
+          rm /tmp/certificate.p12
 
-          echo "=== Available signing identities ==="
-          security find-identity -v -p codesigning
-
-      - name: Sign .app
+      - name: Locate, sign, and verify app bundle
         run: |
-          APP=$(find "$GITHUB_WORKSPACE/src/macos/build/derived" \
-            \( -name "LanMessenger.app" -o -name "LAN Messenger.app" \) | head -1)
-          echo "Signing: $APP"
-          codesign --deep --force --options runtime \
-            --sign "Apple Development: davefelzy20@gmail.com (7FAZT3258V)" \
-            --entitlements "$GITHUB_WORKSPACE/src/macos/LanMessenger/LanMessenger.entitlements" \
-            "$APP"
-          codesign --verify --deep --strict "$APP" && echo "✅ Signature valid"
+          APP=$(find .build/derived -name "LanMessenger.app" -type d | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::LanMessenger.app not found in derived data"
+            find .build/derived -type d -maxdepth 6 | head -30
+            exit 1
+          fi
           echo "APP_PATH=$APP" >> $GITHUB_ENV
-          echo "APP_NAME=$(basename "$APP")" >> $GITHUB_ENV
+          echo "Found app: $APP"
 
-      - name: Package .app
+          codesign --deep --force --options runtime \
+            --entitlements LanMessenger/LanMessenger.entitlements \
+            --sign "Apple Development: davefelzy20@gmail.com (7FAZT3258V)" \
+            "$APP"
+
+          codesign --verify --deep --strict "$APP"
+          echo "✓ Code signing verified"
+
+          # Optional notarization — uncomment once APPLE_APP_PASSWORD secret is set:
+          # NOTARIZE_ZIP="/tmp/notarize-${VERSION}.zip"
+          # ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
+          # xcrun notarytool submit "$NOTARIZE_ZIP" \
+          #   --apple-id davefelzy20@gmail.com \
+          #   --team-id 7FAZT3258V \
+          #   --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+          #   --wait
+          # xcrun stapler staple "$APP"
+          # rm "$NOTARIZE_ZIP"
+
+      - name: Package as zip
+        id: package
         run: |
-          ARTIFACT="LanMessenger-macOS-${{ steps.version.outputs.version }}.zip"
-          cd "$(dirname "$APP_PATH")"
-          zip -r --symlinks "$GITHUB_WORKSPACE/$ARTIFACT" "$APP_NAME"
-          echo "ARTIFACT=$ARTIFACT" >> $GITHUB_ENV
+          ARTIFACT_NAME="LanMessenger-macOS-${VERSION}.zip"
+          ditto -c -k --keepParent "$APP_PATH" "$ARTIFACT_NAME"
+          SHA256=$(shasum -a 256 "$ARTIFACT_NAME" | cut -d' ' -f1)
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "Packaged: $ARTIFACT_NAME (SHA256: $SHA256)"
 
-      - name: Upload build artifact
+      - name: Upload artifact for downstream jobs
         uses: actions/upload-artifact@v4
         with:
-          name: macos-build
-          path: ${{ env.ARTIFACT }}
-          retention-days: 90
-
-      - name: Update rolling macOS release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          TAG="rolling-macos"
-
-          # Remove the old rolling release and tag so we can recreate it cleanly
-          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
-          git push origin --delete "$TAG" 2>/dev/null || true
-
-          gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
-            --title "macOS Latest Build (v$VERSION)" \
-            --notes "Automated rolling build — macOS v$VERSION from commit \`${{ github.sha }}\`." \
-            "${{ env.ARTIFACT }}"
+          name: macos-build-${{ github.run_id }}
+          path: src/macos/${{ steps.package.outputs.artifact_name }}
+          retention-days: 1
 
       - name: Clean up keychain
         if: always()
-        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+        run: security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics-macos-${{ github.run_id }}
+          path: build-output-macos.txt
+          retention-days: 30
+
+      - name: Report build failure
+        if: failure()
+        uses: ./.github/actions/report-failure
+        with:
+          platform: macos
+          version: ${{ needs.preflight.outputs.version }}
+          failure_type: BUILD_FAILURE
+          log_path: build-output-macos.txt
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Startup Smoke Test ────────────────────────────────────────────────────────
+  smoke:
+    name: Startup Smoke Test
+    needs: [preflight, build]
+    if: |
+      needs.build.result == 'success' &&
+      inputs.skip_smoke != true
+    runs-on: macos-15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-build-${{ github.run_id }}
+          path: smoke-artifacts/
+
+      - name: Run startup smoke test
+        run: |
+          chmod +x scripts/macos/smoke-test.sh
+          scripts/macos/smoke-test.sh smoke-artifacts/*.zip
+
+      - name: Collect crash diagnostics
+        if: failure()
+        run: |
+          mkdir -p crash-reports/
+          cp ~/Library/Logs/DiagnosticReports/LanMessenger* crash-reports/ 2>/dev/null || true
+          log show --process LanMessenger --last 5m --info 2>/dev/null \
+            > crash-reports/console.log || true
+          cp smoke.log crash-reports/ 2>/dev/null || true
+
+      - name: Upload crash diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-diagnostics-macos-${{ github.run_id }}
+          path: crash-reports/
+          retention-days: 30
+
+      - name: Report smoke failure
+        if: failure()
+        uses: ./.github/actions/report-failure
+        with:
+          platform: macos
+          version: ${{ needs.preflight.outputs.version }}
+          failure_type: SMOKE_FAILURE
+          log_path: crash-reports/console.log
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Publish Platform Release ──────────────────────────────────────────────────
+  publish:
+    name: Publish Platform Release
+    needs: [preflight, build, smoke]
+    if: |
+      needs.build.result == 'success' &&
+      (needs.smoke.result == 'success' || needs.smoke.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-build-${{ github.run_id }}
+          path: dist/
+
+      - name: Remove existing platform release (force rebuild only)
+        if: inputs.force_rebuild == true
+        run: |
+          TAG="macos-v${VERSION}"
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+      - name: Create platform release
+        run: |
+          TAG="macos-v${VERSION}"
+          ARTIFACT=$(ls dist/*.zip | head -1)
+
+          gh release create "$TAG" \
+            --title "macOS v${VERSION}" \
+            --prerelease \
+            --notes "macOS platform build v${VERSION}
+
+| Field | Value |
+|-------|-------|
+| Commit | \`${{ github.sha }}\` |
+| Branch | \`${{ github.ref_name }}\` |
+| Runner | macos-15 |
+| Built  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
+
+> This is a platform pre-release. The combined release is created automatically by the Release Orchestration workflow." \
+            "$ARTIFACT"
+
+          echo "::notice::Published platform release: $TAG"
+
+      - name: Close resolved CI failure issues
+        run: |
+          chmod +x scripts/shared/close-ci-issues.sh
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+            scripts/shared/close-ci-issues.sh macos "$VERSION" "${{ github.sha }}"

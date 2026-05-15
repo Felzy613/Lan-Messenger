@@ -1,0 +1,54 @@
+name: Validate Version
+description: >
+  Read and validate a platform's semver string from version/{platform}.json,
+  then check whether the corresponding platform release already exists.
+
+inputs:
+  platform:
+    description: 'macos or windows'
+    required: true
+  github_token:
+    description: 'GitHub token for release lookup'
+    required: true
+
+outputs:
+  version:
+    description: The validated version string (e.g. "1.0.8")
+    value: ${{ steps.read.outputs.version }}
+  release_exists:
+    description: '"true" if the platform release tag already exists'
+    value: ${{ steps.check.outputs.exists }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read and validate version
+      id: read
+      shell: bash
+      run: |
+        FILE="version/${{ inputs.platform }}.json"
+        if [ ! -f "$FILE" ]; then
+          echo "::error::Missing version file: $FILE"
+          exit 1
+        fi
+        VERSION=$(jq -r '.version' "$FILE")
+        if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+          echo "::error::Invalid semver '$VERSION' in $FILE. Must match X.Y or X.Y.Z"
+          exit 1
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "${{ inputs.platform }} version: $VERSION"
+
+    - name: Check for existing platform release
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        TAG="${{ inputs.platform }}-v${{ steps.read.outputs.version }}"
+        if gh release view "$TAG" --json tagName &>/dev/null; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "::notice::Release $TAG already exists — use force_rebuild to override"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
