@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Media;
 using System.ComponentModel;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
+using Windows.UI;
 
 namespace LanMessenger.UI.Chat;
 
