@@ -7,6 +7,8 @@ struct MessageBubbleView: View {
     var onReply: (() -> Void)? = nil
     var onTapReplyTarget: (() -> Void)? = nil
     @Environment(\.colorScheme) var colorScheme
+    // Tracks whether the received file still exists on disk (checked asynchronously).
+    @State private var fileExists = false
 
     // File messages use a "__FILE__:/path/to/file" prefix stored by AppModel.
     private var filePath: String? {
@@ -77,7 +79,6 @@ struct MessageBubbleView: View {
     private func fileBubble(path: String) -> some View {
         let url  = URL(fileURLWithPath: path)
         let name = url.lastPathComponent
-        let exists = FileManager.default.fileExists(atPath: path)
         let bg = entry.incoming ? Theme.incomingBubble(colorScheme) : Theme.outgoingBubble(colorScheme)
 
         return VStack(alignment: .leading, spacing: 6) {
@@ -98,9 +99,13 @@ struct MessageBubbleView: View {
                     }
                 }
                 Spacer(minLength: 0)
-                if exists {
+                if fileExists {
                     Button {
-                        NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+                        // activateFileViewerSelecting is dispatched off the main thread to
+                        // avoid blocking the UI while Finder launches or comes to the front.
+                        Task.detached(priority: .userInitiated) {
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        }
                     } label: {
                         Text("Show")
                             .font(.system(size: 11, weight: .semibold))
@@ -127,6 +132,13 @@ struct MessageBubbleView: View {
                         topTrailingRadius: 16
                     ))
         .frame(maxWidth: 320)
+        .task(id: path) {
+            // Check file existence off the main thread so the view body stays non-blocking.
+            let result = await Task.detached(priority: .utility) {
+                FileManager.default.fileExists(atPath: path)
+            }.value
+            fileExists = result
+        }
         .contextMenu {
             if onReply != nil {
                 Button { onReply?() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
@@ -136,9 +148,11 @@ struct MessageBubbleView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
             } label: { Label("Copy Path", systemImage: "doc.on.doc") }
-            if exists {
+            if fileExists {
                 Button {
-                    NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+                    Task.detached(priority: .userInitiated) {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
                 } label: { Label("Show in Finder", systemImage: "folder") }
             }
         }
