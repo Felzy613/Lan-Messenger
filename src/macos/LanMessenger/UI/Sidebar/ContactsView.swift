@@ -305,6 +305,8 @@ struct ContactEditorView: View {
 }
 
 // MARK: - Peer Scanner sheet
+//
+// Flow: search for peers -> multi-select -> Save -> per-peer name prompt -> contact saved.
 
 struct PeerScannerView: View {
     @EnvironmentObject var model: AppModel
@@ -313,13 +315,16 @@ struct PeerScannerView: View {
     var onSave: () -> Void
 
     @State private var isScanning = false
-    @State private var addedKeys: Set<String> = []
+    @State private var selectedKeys: Set<String> = []
+    @State private var namingQueue: [PeerInfo] = []
+    @State private var currentlyNaming: PeerInfo? = nil
+    @State private var nameInput: String = ""
 
     private var discoverablePeers: [PeerInfo] {
-        // Only filter contacts that existed before this sheet opened (not ones added this session).
-        let preExistingIPs = Set(savedContacts.filter { !addedKeys.contains($0.publicKeyB64) }.map(\.lastIP))
+        // Filter out peers already saved as contacts.
+        let savedKeys = Set(savedContacts.map(\.publicKeyB64))
         return model.peers.values
-            .filter { !preExistingIPs.contains($0.ip) }
+            .filter { !savedKeys.contains($0.publicKeyB64) }
             .sorted { $0.username < $1.username }
     }
 
@@ -329,17 +334,13 @@ struct PeerScannerView: View {
                 if discoverablePeers.isEmpty {
                     VStack(spacing: 16) {
                         if isScanning {
-                            ProgressView()
-                                .scaleEffect(1.2)
-                            Text("Scanning for peers…")
-                                .foregroundStyle(.secondary)
+                            ProgressView().scaleEffect(1.2)
+                            Text("Scanning for peers…").foregroundStyle(.secondary)
                         } else {
                             Image(systemName: "antenna.radiowaves.left.and.right")
                                 .font(.system(size: 40))
                                 .foregroundStyle(.secondary)
-                            Text("No peers found")
-                                .font(.headline)
-                                .foregroundStyle(.secondary)
+                            Text("No peers found").font(.headline).foregroundStyle(.secondary)
                             Text("Make sure other devices are on the same network and running LAN Messenger.")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
@@ -352,11 +353,14 @@ struct PeerScannerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(discoverablePeers) { peer in
-                        let alreadyAdded = addedKeys.contains(peer.publicKeyB64)
+                        let selected = selectedKeys.contains(peer.publicKeyB64)
                         Button {
-                            if !alreadyAdded { addContact(peer) }
+                            toggle(peer.publicKeyB64)
                         } label: {
                             HStack(spacing: 10) {
+                                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(selected ? Theme.accent : .secondary)
                                 AvatarView(name: peer.username, size: 36)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(peer.username)
@@ -367,34 +371,16 @@ struct PeerScannerView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if alreadyAdded {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(.green)
-                                            .font(.system(size: 20))
-                                        Text("Added")
-                                            .font(.caption)
-                                            .foregroundStyle(.green)
-                                    }
-                                } else {
-                                    Text("Add")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 5)
-                                        .background(Theme.accent, in: Capsule())
-                                }
                             }
                             .padding(.vertical, 4)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(alreadyAdded)
                     }
                     .listStyle(.inset)
                 }
             }
-            .navigationTitle("Nearby Peers")
+            .navigationTitle("Find Contacts")
             .toolbar {
                 ToolbarItem(placement: .navigation) {
                     Button {
@@ -405,13 +391,63 @@ struct PeerScannerView: View {
                     .help("Scan for peers")
                     .disabled(isScanning)
                 }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button(selectedKeys.isEmpty ? "Save" : "Save (\(selectedKeys.count))") {
+                        beginNamingFlow()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(selectedKeys.isEmpty)
                 }
             }
         }
-        .frame(minWidth: 320, minHeight: 380)
+        .frame(minWidth: 360, minHeight: 420)
         .onAppear { triggerScan() }
+        .sheet(item: $currentlyNaming) { peer in
+            NameContactView(
+                peer: peer,
+                nameText: $nameInput,
+                onSave: {
+                    let trimmed = nameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let final = trimmed.isEmpty ? peer.username : trimmed
+                    model.addContact(peer, customName: final)
+                    savedContacts = ConfigStore.shared.config.contacts
+                    advanceNamingQueue()
+                },
+                onSkip: {
+                    model.addContact(peer, customName: nil)
+                    savedContacts = ConfigStore.shared.config.contacts
+                    advanceNamingQueue()
+                }
+            )
+        }
+    }
+
+    private func toggle(_ key: String) {
+        if selectedKeys.contains(key) { selectedKeys.remove(key) } else { selectedKeys.insert(key) }
+    }
+
+    private func beginNamingFlow() {
+        namingQueue = discoverablePeers.filter { selectedKeys.contains($0.publicKeyB64) }
+        advanceNamingQueue()
+    }
+
+    private func advanceNamingQueue() {
+        currentlyNaming = nil
+        if namingQueue.isEmpty {
+            onSave()
+            dismiss()
+            return
+        }
+        let next = namingQueue.removeFirst()
+        nameInput = next.username
+        // Defer to next runloop tick so the previous sheet fully dismisses
+        // before the new one is presented — chained sheets can otherwise be lost.
+        DispatchQueue.main.async {
+            currentlyNaming = next
+        }
     }
 
     private func triggerScan() {
@@ -421,15 +457,46 @@ struct PeerScannerView: View {
             isScanning = false
         }
     }
+}
 
-    private func addContact(_ peer: PeerInfo) {
-        let contact = ContactConfig(
-            publicKeyB64: peer.publicKeyB64,
-            username: peer.username,
-            lastIP: peer.ip
-        )
-        savedContacts.append(contact)
-        addedKeys.insert(peer.publicKeyB64)
-        onSave()
+// PeerInfo needs Identifiable conformance for `.sheet(item:)` — id is already publicKeyB64.
+
+struct NameContactView: View {
+    let peer: PeerInfo
+    @Binding var nameText: String
+    let onSave: () -> Void
+    let onSkip: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    HStack(spacing: 14) {
+                        AvatarView(name: nameText.isEmpty ? peer.username : nameText, size: 64)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(peer.username).font(.headline)
+                            Text(peer.ip).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                Section("Save as") {
+                    TextField("Contact name", text: $nameText)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Name Contact")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Use \"\(peer.username)\"") { onSkip() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { onSave() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                }
+            }
+        }
+        .frame(minWidth: 360, minHeight: 280)
     }
 }

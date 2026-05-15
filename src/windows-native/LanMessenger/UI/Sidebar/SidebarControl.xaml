@@ -35,12 +35,15 @@
                     VerticalAlignment="Center"
                     Spacing="8"
                     Visibility="Collapsed">
-            <TextBlock Text="No peers online"
+            <TextBlock Text="No conversations"
                        HorizontalAlignment="Center"
                        Style="{ThemeResource SubtitleTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            <TextBlock Text="Looking for devices on your network…"
+            <TextBlock Text="Click the pencil icon above to start a chat with a saved contact."
                        HorizontalAlignment="Center"
+                       TextAlignment="Center"
+                       MaxWidth="220"
+                       TextWrapping="Wrap"
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
         </StackPanel>
 

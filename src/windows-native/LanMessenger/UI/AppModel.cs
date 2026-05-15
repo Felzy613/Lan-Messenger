@@ -121,6 +121,12 @@ public sealed partial class AppModel : ObservableObject
 
     private void UpsertPeer(string ip, string username, int port, string publicKeyB64)
     {
+        // Last-resort self-suppression — defends against stale `OwnIPs` snapshots in
+        // DiscoveryService when the machine's network interfaces change after start.
+        if (string.IsNullOrEmpty(publicKeyB64) ||
+            publicKeyB64 == KeyManager.Shared.PublicKeyB64) return;
+        if (GetLocalIPAddresses().Contains(ip)) return;
+
         // If we have a saved contact for this device ID whose IP has changed,
         // migrate the conversation history so the user doesn't lose context.
         var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
@@ -182,6 +188,8 @@ public sealed partial class AppModel : ObservableObject
                 _lastOnlineSet = nowOnline;
                 RefreshConversations();
             }
+            // Refresh OwnIPs so the self-detection filter survives DHCP/interface changes.
+            Coordinator.Discovery.OwnIPs = [..GetLocalIPAddresses()];
         };
         _peerTimeoutTimer.Start();
     }
@@ -190,53 +198,31 @@ public sealed partial class AppModel : ObservableObject
 
     private void RefreshConversations()
     {
+        // Threads only exist for saved contacts (or IPs we have history with) —
+        // random discovered peers must not auto-appear as conversations.
+        // `HiddenConversations` covers threads the user deleted; the contact
+        // stays saved so the user can re-open the thread from "New message".
         var hidden   = ConfigStore.Shared.Config.HiddenConversations.ToHashSet();
         var archived = ConfigStore.Shared.Config.ArchivedConversations.ToHashSet();
         var active   = new List<ConversationViewModel>();
         var arch     = new List<ConversationViewModel>();
         var seenIPs  = new HashSet<string>();
 
-        string? ContactPhoto(string key) =>
-            ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == key)?.PhotoB64;
-
-        // Online peers first.
-        foreach (var (keyB64, peer) in Peers)
-        {
-            if (hidden.Contains(peer.IP)) continue;
-            seenIPs.Add(peer.IP);
-            var entries = Messages.TryGetValue(peer.IP, out var list) ? list : [];
-            var last    = entries.Count > 0 ? entries[^1] : null;
-            var typing  = TypingStates.TryGetValue(peer.IP, out var t) ? t : default;
-            var vm = new ConversationViewModel
-            {
-                PeerIP           = peer.IP,
-                PeerName         = peer.Username,
-                PeerPublicKeyB64 = keyB64,
-                PhotoB64         = ContactPhoto(keyB64),
-                LastMessage      = LastMessagePreview(entries),
-                LastTimestamp    = last is not null
-                    ? DateTimeOffset.FromUnixTimeMilliseconds((long)(last.Timestamp * 1000)).UtcDateTime
-                    : null,
-                UnreadCount  = CountUnread(entries),
-                IsTyping     = typing.Active,
-                TypingSender = typing.Sender ?? "",
-                IsOnline     = true,
-                IsArchived   = archived.Contains(peer.IP),
-            };
-            (vm.IsArchived ? arch : active).Add(vm);
-        }
-
-        // Saved contacts that are currently offline.
+        // Saved contacts — include whether currently online or offline.
         foreach (var contact in ConfigStore.Shared.Config.Contacts)
         {
-            if (hidden.Contains(contact.LastIP)) continue;
-            if (seenIPs.Contains(contact.LastIP)) continue;
-            seenIPs.Add(contact.LastIP);
-            var entries = Messages.TryGetValue(contact.LastIP, out var list) ? list : [];
+            var onlinePeer = Peers.Values.FirstOrDefault(p =>
+                p.PublicKeyB64 == contact.PublicKeyB64 && p.IsOnline);
+            var ip = onlinePeer?.IP ?? contact.LastIP;
+            if (hidden.Contains(ip) || hidden.Contains(contact.LastIP)) continue;
+            if (seenIPs.Contains(ip)) continue;
+            seenIPs.Add(ip);
+            var entries = Messages.TryGetValue(ip, out var list) ? list : [];
             var last    = entries.Count > 0 ? entries[^1] : null;
+            var typing  = TypingStates.TryGetValue(ip, out var t) ? t : default;
             var vm = new ConversationViewModel
             {
-                PeerIP           = contact.LastIP,
+                PeerIP           = ip,
                 PeerName         = contact.Username,
                 PeerPublicKeyB64 = contact.PublicKeyB64,
                 PhotoB64         = contact.PhotoB64,
@@ -244,31 +230,33 @@ public sealed partial class AppModel : ObservableObject
                 LastTimestamp    = last is not null
                     ? DateTimeOffset.FromUnixTimeMilliseconds((long)(last.Timestamp * 1000)).UtcDateTime
                     : null,
-                UnreadCount = CountUnread(entries),
-                IsTyping    = false,
-                IsOnline    = false,
-                IsArchived  = archived.Contains(contact.LastIP),
+                UnreadCount  = CountUnread(entries),
+                IsTyping     = typing.Active,
+                TypingSender = typing.Sender ?? "",
+                IsOnline     = onlinePeer is not null,
+                IsArchived   = archived.Contains(ip),
             };
             (vm.IsArchived ? arch : active).Add(vm);
         }
 
-        // Any IPs we have message history with but no peer / no contact —
-        // still show them so the conversation doesn't vanish when the peer goes offline.
+        // Any IPs we have message history with but no contact entry —
+        // e.g. someone messaged us once and isn't saved. Don't lose those.
         foreach (var (ip, entries) in Messages)
         {
             if (hidden.Contains(ip) || seenIPs.Contains(ip) || entries.Count == 0) continue;
             var last = entries[^1];
             var name = entries.LastOrDefault(e => e.Incoming)?.Sender ?? ip;
+            var onlinePeer = Peers.Values.FirstOrDefault(p => p.IP == ip && p.IsOnline);
             var vm = new ConversationViewModel
             {
                 PeerIP           = ip,
                 PeerName         = name,
-                PeerPublicKeyB64 = "",
+                PeerPublicKeyB64 = onlinePeer?.PublicKeyB64 ?? "",
                 LastMessage      = LastMessagePreview(entries),
                 LastTimestamp    = DateTimeOffset.FromUnixTimeMilliseconds((long)(last.Timestamp * 1000)).UtcDateTime,
                 UnreadCount      = CountUnread(entries),
                 IsTyping         = false,
-                IsOnline         = false,
+                IsOnline         = onlinePeer is not null,
                 IsArchived       = archived.Contains(ip),
             };
             (vm.IsArchived ? arch : active).Add(vm);
@@ -432,6 +420,9 @@ public sealed partial class AppModel : ObservableObject
         RefreshConversations();
     }
 
+    // Deletes a conversation: removes message history and hides the thread from the
+    // sidebar. The contact stays in the saved contacts list — re-open the thread
+    // through the "New message" picker.
     public void DeleteConversation(string peerIP)
     {
         var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
@@ -439,10 +430,25 @@ public sealed partial class AppModel : ObservableObject
         Messages = msgs;
         HistoryStore.Shared.Delete(peerIP);
         HistoryStore.Shared.Save();
+        if (!ConfigStore.Shared.Config.HiddenConversations.Contains(peerIP))
+            ConfigStore.Shared.Config.HiddenConversations.Add(peerIP);
         ConfigStore.Shared.Config.ArchivedConversations.RemoveAll(x => x == peerIP);
         ConfigStore.Shared.Save();
         if (SelectedPeerIP == peerIP) SelectedPeerIP = null;
         RefreshConversations();
+    }
+
+    // Unhide a contact's thread and select it so the user can chat with them.
+    public void StartConversation(string publicKeyB64)
+    {
+        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
+        if (contact is null) return;
+        var onlinePeer = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == publicKeyB64);
+        var ip = onlinePeer?.IP ?? contact.LastIP;
+        ConfigStore.Shared.Config.HiddenConversations.RemoveAll(h => h == ip || h == contact.LastIP);
+        ConfigStore.Shared.Save();
+        RefreshConversations();
+        SelectedPeerIP = ip;
     }
 
     public void DeleteContact(string publicKeyB64)
@@ -549,6 +555,12 @@ public sealed partial class AppModel : ObservableObject
             if (!updated.TryGetValue(ip, out var list)) list = updated[ip] = [];
             list.Add(entry);
             Messages = updated;
+            // Incoming message from a previously-deleted thread should resurface it.
+            if (ConfigStore.Shared.Config.HiddenConversations.Contains(ip))
+            {
+                ConfigStore.Shared.Config.HiddenConversations.RemoveAll(h => h == ip);
+                ConfigStore.Shared.Save();
+            }
             RefreshConversations();
             if (SelectedPeerIP != ip)
                 NotificationService.Shared.ShowMessage(entry.Sender, entry.Text);

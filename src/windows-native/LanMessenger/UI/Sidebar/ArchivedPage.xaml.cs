@@ -7,6 +7,12 @@ namespace LanMessenger.UI.Sidebar;
 
 public sealed partial class ArchivedPage : Page
 {
+    // Fired when the user clicks the Back button — the host swaps the content frame
+    // back to whatever was visible before the archived page was opened.
+    public event Action? BackRequested;
+    // Fired when the user opens an archived thread — host should swap to the chat page.
+    public event Action<string>? ConversationOpened;
+
     private AppModel? _model;
     public AppModel? Model
     {
@@ -61,6 +67,7 @@ public sealed partial class ArchivedPage : Page
         {
             _model.UnarchiveConversation(ip);
             _model.SelectedPeerIP = ip;
+            ConversationOpened?.Invoke(ip);
         }
     }
 
@@ -70,4 +77,6 @@ public sealed partial class ArchivedPage : Page
         if (sender is Button btn && btn.Tag is string ip)
             _model.UnarchiveConversation(ip);
     }
+
+    private void BackBtn_Click(object sender, RoutedEventArgs e) => BackRequested?.Invoke();
 }

@@ -102,6 +102,11 @@ final class AppModel: ObservableObject {
     // MARK: - Peers
 
     private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String) {
+        // Last-resort self-suppression — defends against stale `ownIPs` snapshots in
+        // DiscoveryService when the machine's network interfaces change after start.
+        if publicKeyB64.isEmpty || publicKeyB64 == KeyManager.shared.publicKeyB64 { return }
+        if Set(localIPAddresses()).contains(ip) { return }
+
         // If we have a saved contact for this device ID whose IP has changed,
         // migrate the conversation history so the user doesn't lose context.
         if let idx = ConfigStore.shared.config.contacts.firstIndex(where: { $0.publicKeyB64 == publicKeyB64 }) {
@@ -140,6 +145,8 @@ final class AppModel: ObservableObject {
                 let before = self.peers.count
                 self.peers = self.peers.filter { $0.value.isOnline }
                 if self.peers.count != before { self.refreshConversations() }
+                // Refresh ownIPs so the self-detection filter survives DHCP/interface changes.
+                self.coordinator.discovery.ownIPs = Set(self.localIPAddresses())
             }
         }
     }
@@ -147,74 +154,57 @@ final class AppModel: ObservableObject {
     // MARK: - Conversations
 
     private func refreshConversations() {
+        // Threads only exist for saved contacts (or peers we have history with) —
+        // random discovered peers must not auto-appear as conversations.
+        // `hiddenConversations` covers threads the user deleted; the underlying
+        // contact stays saved so they can be re-opened via the "New message" picker.
         let archived = Set(ConfigStore.shared.config.archivedConversations)
+        let hidden   = Set(ConfigStore.shared.config.hiddenConversations)
         var active: [ConversationViewModel] = []
         var archivedList: [ConversationViewModel] = []
         var seenIPs = Set<String>()
 
-        func contactPhoto(forKey key: String) -> String? {
-            ConfigStore.shared.config.contacts.first { $0.publicKeyB64 == key }?.photoB64
-        }
-
-        // Online peers first
-        for (keyB64, peer) in peers {
-            seenIPs.insert(peer.ip)
-            let entries = messages[peer.ip] ?? []
-            let last = entries.last
-            let typing = typingStates[peer.ip]
-            let vm = ConversationViewModel(
-                peerIP: peer.ip,
-                peerName: peer.username,
-                peerPublicKeyB64: keyB64,
-                photoB64: contactPhoto(forKey: keyB64),
-                lastMessage: lastMessagePreview(entries),
-                lastTimestamp: last.map { Date(timeIntervalSince1970: $0.timestamp) },
-                unreadCount: entries.filter { $0.incoming && !$0.readReceiptSent }.count,
-                isTyping: typing?.active ?? false,
-                typingSender: typing?.sender ?? "",
-                isOnline: true,
-                isArchived: archived.contains(peer.ip)
-            )
-            if vm.isArchived { archivedList.append(vm) } else { active.append(vm) }
-        }
-
-        // Saved contacts that are currently offline
+        // Saved contacts — include whether currently online or offline.
         for contact in ConfigStore.shared.config.contacts {
-            guard !seenIPs.contains(contact.lastIP) else { continue }
-            seenIPs.insert(contact.lastIP)
-            let entries = messages[contact.lastIP] ?? []
+            let onlinePeer = peers.values.first { $0.publicKeyB64 == contact.publicKeyB64 && $0.isOnline }
+            let ip = onlinePeer?.ip ?? contact.lastIP
+            if hidden.contains(ip) || hidden.contains(contact.lastIP) { continue }
+            seenIPs.insert(ip)
+            let entries = messages[ip] ?? []
+            let typing = typingStates[ip]
             let vm = ConversationViewModel(
-                peerIP: contact.lastIP,
+                peerIP: ip,
                 peerName: contact.username,
                 peerPublicKeyB64: contact.publicKeyB64,
                 photoB64: contact.photoB64,
                 lastMessage: lastMessagePreview(entries),
                 lastTimestamp: entries.last.map { Date(timeIntervalSince1970: $0.timestamp) },
                 unreadCount: entries.filter { $0.incoming && !$0.readReceiptSent }.count,
-                isTyping: false,
-                typingSender: "",
-                isOnline: false,
-                isArchived: archived.contains(contact.lastIP)
+                isTyping: typing?.active ?? false,
+                typingSender: typing?.sender ?? "",
+                isOnline: onlinePeer != nil,
+                isArchived: archived.contains(ip)
             )
             if vm.isArchived { archivedList.append(vm) } else { active.append(vm) }
         }
 
-        // Any IP we have history with but no peer + no contact entry —
+        // Any IP we have history with but no contact entry —
         // e.g. someone messaged us once and isn't saved. Don't lose those.
         for (ip, entries) in messages {
-            guard !seenIPs.contains(ip), !entries.isEmpty else { continue }
+            guard !seenIPs.contains(ip), !hidden.contains(ip), !entries.isEmpty else { continue }
             let name = entries.last { $0.incoming }?.sender ?? ip
+            let onlinePeer = peers.values.first { $0.ip == ip && $0.isOnline }
             let vm = ConversationViewModel(
                 peerIP: ip,
                 peerName: name,
-                peerPublicKeyB64: "",
+                peerPublicKeyB64: onlinePeer?.publicKeyB64 ?? "",
                 photoB64: nil,
                 lastMessage: lastMessagePreview(entries),
                 lastTimestamp: entries.last.map { Date(timeIntervalSince1970: $0.timestamp) },
                 unreadCount: entries.filter { $0.incoming && !$0.readReceiptSent }.count,
                 isTyping: false,
                 typingSender: "",
-                isOnline: false,
+                isOnline: onlinePeer != nil,
                 isArchived: archived.contains(ip)
             )
             if vm.isArchived { archivedList.append(vm) } else { active.append(vm) }
@@ -361,10 +351,16 @@ final class AppModel: ObservableObject {
         refreshConversations()
     }
 
+    // Deletes a conversation: removes message history and hides the thread from the
+    // sidebar. The contact stays in the saved contacts list — re-open the thread
+    // through the "New message" picker.
     func deleteConversation(peerIP: String) {
         messages.removeValue(forKey: peerIP)
         HistoryStore.shared.delete(peerIP: peerIP)
         HistoryStore.shared.save()
+        if !ConfigStore.shared.config.hiddenConversations.contains(peerIP) {
+            ConfigStore.shared.config.hiddenConversations.append(peerIP)
+        }
         ConfigStore.shared.config.archivedConversations.removeAll { $0 == peerIP }
         ConfigStore.shared.save()
         if selectedPeerIP == peerIP { selectedPeerIP = nil }
@@ -376,6 +372,38 @@ final class AppModel: ObservableObject {
         ConfigStore.shared.config.contacts.removeAll { $0.publicKeyB64 == publicKeyB64 }
         ConfigStore.shared.save()
         for c in removed { deleteConversation(peerIP: c.lastIP) }
+    }
+
+    // Used by the "New message" picker: unhides the contact's thread and selects it
+    // so the user can start chatting.
+    func startConversation(withContact publicKeyB64: String) {
+        guard let contact = ConfigStore.shared.config.contacts.first(where: { $0.publicKeyB64 == publicKeyB64 }) else { return }
+        let onlinePeer = peers.values.first { $0.publicKeyB64 == publicKeyB64 }
+        let ip = onlinePeer?.ip ?? contact.lastIP
+        ConfigStore.shared.config.hiddenConversations.removeAll { $0 == ip || $0 == contact.lastIP }
+        ConfigStore.shared.save()
+        refreshConversations()
+        selectedPeerIP = ip
+    }
+
+    // Adds a discovered peer to the saved contacts list. Pass an optional custom name
+    // (the WhatsApp-style "name your contact" prompt) — falls back to the peer's
+    // self-advertised username if nil/empty.
+    @discardableResult
+    func addContact(_ peer: PeerInfo, customName: String? = nil) -> Bool {
+        if ConfigStore.shared.config.contacts.contains(where: { $0.publicKeyB64 == peer.publicKeyB64 }) {
+            return false
+        }
+        let name = customName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = (name?.isEmpty == false ? name! : peer.username)
+        ConfigStore.shared.config.contacts.append(ContactConfig(
+            publicKeyB64: peer.publicKeyB64,
+            username: displayName,
+            lastIP: peer.ip
+        ))
+        ConfigStore.shared.save()
+        refreshConversations()
+        return true
     }
 
     func updateContact(publicKeyB64: String, username: String, photoB64: String?) {
@@ -454,6 +482,11 @@ final class AppModel: ObservableObject {
             var list = self.messages[ip] ?? []
             list.append(entry)
             self.messages[ip] = list
+            // Incoming message from a previously-deleted thread should resurface it.
+            if ConfigStore.shared.config.hiddenConversations.contains(ip) {
+                ConfigStore.shared.config.hiddenConversations.removeAll { $0 == ip }
+                ConfigStore.shared.save()
+            }
             self.refreshConversations()
             if self.selectedPeerIP != ip {
                 NotificationService.shared.showMessage(from: entry.sender, text: entry.text)

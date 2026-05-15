@@ -143,27 +143,40 @@ public sealed class ContactEditorDialog : ContentDialog
     }
 }
 
-// Lets the user pick currently-discovered peers and add them as contacts.
+// Two-step "Search LAN" flow: pick one-or-more discovered peers, click Save, then
+// the dialog walks the user through a per-peer name prompt before persisting.
 public sealed class PeerPickerDialog : ContentDialog
 {
     private readonly AppModel _model;
     private readonly ListView _list;
+    private readonly HashSet<string> _selectedKeys = [];
 
     public PeerPickerDialog(AppModel model)
     {
         _model = model;
-        Title = "Add Contact from Nearby Peers";
-        CloseButtonText = "Done";
-        DefaultButton = ContentDialogButton.Close;
+        Title = "Find Contacts";
+        PrimaryButtonText = "Save";
+        CloseButtonText   = "Cancel";
+        DefaultButton     = ContentDialogButton.Primary;
+        IsPrimaryButtonEnabled = false;
 
         _list = new ListView { SelectionMode = ListViewSelectionMode.None, MinWidth = 360, MinHeight = 280 };
         Refresh();
-        _model.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(AppModel.Peers)) Refresh();
-        };
+        _model.PropertyChanged += OnModelChanged;
+        Closed += (_, _) => _model.PropertyChanged -= OnModelChanged;
 
         Content = _list;
+        PrimaryButtonClick += async (_, args) =>
+        {
+            args.Cancel = true;       // we want to keep the dialog open while naming
+            Hide();
+            await RunNamingFlowAsync();
+        };
+    }
+
+    private void OnModelChanged(object? s, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(AppModel.Peers)) Refresh();
     }
 
     private void Refresh()
@@ -177,6 +190,7 @@ public sealed class PeerPickerDialog : ContentDialog
         _list.Items.Clear();
         if (rows.Count == 0)
         {
+            IsPrimaryButtonEnabled = false;
             _list.Items.Add(new TextBlock
             {
                 Text = "No peers found. Make sure other devices are running LAN Messenger on the same network.",
@@ -186,32 +200,213 @@ public sealed class PeerPickerDialog : ContentDialog
             });
             return;
         }
+
         foreach (var peer in rows)
         {
+            var capturedPeer = peer;
+            var check = new CheckBox
+            {
+                IsChecked = _selectedKeys.Contains(peer.PublicKeyB64),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            check.Checked   += (_, _) => { _selectedKeys.Add(capturedPeer.PublicKeyB64); UpdateSaveEnabled(); };
+            check.Unchecked += (_, _) => { _selectedKeys.Remove(capturedPeer.PublicKeyB64); UpdateSaveEnabled(); };
+
             var avatar = new AvatarControl { Width = 36, Height = 36, NameText = peer.Username };
             var name   = new TextBlock { Text = peer.Username, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
             var ip     = new TextBlock { Text = peer.IP, Opacity = 0.6, FontSize = 11 };
-            var info   = new StackPanel { Spacing = 2 };
+            var info   = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
             info.Children.Add(name);
             info.Children.Add(ip);
-            var addBtn = new Button { Content = "Add" };
-            var capturedPeer = peer;
-            addBtn.Click += (_, _) =>
+
+            var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(4) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetColumn(check, 0);
+            Grid.SetColumn(avatar, 1);
+            Grid.SetColumn(info, 2);
+            row.Children.Add(check);
+            row.Children.Add(avatar);
+            row.Children.Add(info);
+
+            // Clicking anywhere on the row toggles the checkbox.
+            row.Tapped += (_, _) =>
             {
-                _model.AddContact(capturedPeer.PublicKeyB64, capturedPeer.Username, capturedPeer.IP);
-                Refresh();
+                check.IsChecked = !(check.IsChecked ?? false);
             };
+
+            _list.Items.Add(row);
+        }
+        UpdateSaveEnabled();
+    }
+
+    private void UpdateSaveEnabled() =>
+        IsPrimaryButtonEnabled = _selectedKeys.Count > 0;
+
+    // Walks through each selected peer asking the user for a custom display name
+    // before persisting the contact. "Skip" keeps the peer-advertised name.
+    private async System.Threading.Tasks.Task RunNamingFlowAsync()
+    {
+        var toAdd = _model.Peers.Values
+            .Where(p => _selectedKeys.Contains(p.PublicKeyB64))
+            .ToList();
+        foreach (var peer in toAdd)
+        {
+            var dialog = new NameContactDialog(peer) { XamlRoot = XamlRoot };
+            var result = await dialog.ShowAsync();
+            string finalName = peer.Username;
+            if (result == ContentDialogResult.Primary)
+            {
+                var entered = dialog.NameValue;
+                if (!string.IsNullOrWhiteSpace(entered)) finalName = entered.Trim();
+            }
+            _model.AddContact(peer.PublicKeyB64, finalName, peer.IP);
+        }
+    }
+}
+
+// Two-button dialog prompting for a custom display name for a freshly-discovered peer.
+public sealed class NameContactDialog : ContentDialog
+{
+    private readonly TextBox _nameBox;
+    public string NameValue => _nameBox.Text;
+
+    public NameContactDialog(PeerInfo peer)
+    {
+        Title             = "Name contact";
+        PrimaryButtonText = "Save";
+        CloseButtonText   = $"Use \"{peer.Username}\"";
+        DefaultButton     = ContentDialogButton.Primary;
+
+        _nameBox = new TextBox
+        {
+            Text = peer.Username,
+            Header = "Display name",
+            PlaceholderText = "Contact name",
+            MinWidth = 280,
+        };
+
+        var avatar = new AvatarControl { Width = 64, Height = 64, NameText = peer.Username };
+        _nameBox.TextChanged += (_, _) => avatar.NameText = string.IsNullOrWhiteSpace(_nameBox.Text) ? peer.Username : _nameBox.Text;
+
+        var info = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        info.Children.Add(new TextBlock { Text = peer.Username, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] });
+        info.Children.Add(new TextBlock { Text = peer.IP, Opacity = 0.6, FontSize = 11 });
+
+        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14 };
+        header.Children.Add(avatar);
+        header.Children.Add(info);
+
+        var root = new StackPanel { Spacing = 16, Width = 360 };
+        root.Children.Add(header);
+        root.Children.Add(_nameBox);
+        Content = root;
+    }
+}
+
+// "New message" picker — shows the user's saved contacts and lets them pick one to
+// open a thread with. Returns ContentDialogResult.Primary if the user hits "Add Contact"
+// so the host can swap to the contacts dialog.
+public sealed class NewMessageDialog : ContentDialog
+{
+    private readonly AppModel _model;
+    private readonly TextBox _searchBox;
+    private readonly ListView _list;
+
+    public NewMessageDialog(AppModel model)
+    {
+        _model = model;
+        Title             = "New Message";
+        PrimaryButtonText = "Add Contact";
+        CloseButtonText   = "Cancel";
+        DefaultButton     = ContentDialogButton.Close;
+
+        _searchBox = new TextBox
+        {
+            PlaceholderText = "Search contacts",
+            MinWidth = 360,
+        };
+        _searchBox.TextChanged += (_, _) => Refresh();
+
+        _list = new ListView
+        {
+            SelectionMode = ListViewSelectionMode.None,
+            MinWidth = 360,
+            MinHeight = 320,
+        };
+
+        var root = new StackPanel { Spacing = 8 };
+        root.Children.Add(_searchBox);
+        root.Children.Add(_list);
+        Content = root;
+
+        Refresh();
+        _model.PropertyChanged += OnModelChanged;
+        Closed += (_, _) => _model.PropertyChanged -= OnModelChanged;
+    }
+
+    private void OnModelChanged(object? s, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(AppModel.Peers) ||
+            e.PropertyName == nameof(AppModel.Conversations))
+            Refresh();
+    }
+
+    private void Refresh()
+    {
+        var query = _searchBox.Text.Trim();
+        var onlineKeys = _model.Peers.Values.Where(p => p.IsOnline).Select(p => p.PublicKeyB64).ToHashSet();
+        var rows = ConfigStore.Shared.Config.Contacts
+            .Where(c => string.IsNullOrEmpty(query) ||
+                c.Username.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                c.LastIP.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(c => c.Username, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        _list.Items.Clear();
+        if (rows.Count == 0)
+        {
+            _list.Items.Add(new TextBlock
+            {
+                Text = string.IsNullOrEmpty(query)
+                    ? "No saved contacts yet. Click \"Add Contact\" below to find peers on your LAN."
+                    : "No matches.",
+                Margin = new Thickness(8),
+                Opacity = 0.7,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            return;
+        }
+        foreach (var contact in rows)
+        {
+            var captured = contact;
+            var isOnline = onlineKeys.Contains(contact.PublicKeyB64);
+
+            var avatar = new AvatarControl { Width = 40, Height = 40, NameText = contact.Username, PhotoB64 = contact.PhotoB64 };
+            var name   = new TextBlock { Text = contact.Username, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
+            var status = new TextBlock
+            {
+                Text = isOnline ? "Online" : (string.IsNullOrEmpty(contact.LastIP) ? "—" : contact.LastIP),
+                Opacity = 0.7,
+                FontSize = 11,
+            };
+            var info = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+            info.Children.Add(name);
+            info.Children.Add(status);
 
             var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(4) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             Grid.SetColumn(avatar, 0);
             Grid.SetColumn(info, 1);
-            Grid.SetColumn(addBtn, 2);
             row.Children.Add(avatar);
             row.Children.Add(info);
-            row.Children.Add(addBtn);
+            row.Tapped += (_, _) =>
+            {
+                _model.StartConversation(captured.PublicKeyB64);
+                Hide();
+            };
             _list.Items.Add(row);
         }
     }

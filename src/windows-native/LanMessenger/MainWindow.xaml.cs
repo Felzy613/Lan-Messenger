@@ -106,7 +106,17 @@ public sealed partial class MainWindow : Window
 
     private void ShowArchivedPage()
     {
-        if (_archivedPage is null) _archivedPage = new ArchivedPage { Model = Model };
+        if (_archivedPage is null)
+        {
+            _archivedPage = new ArchivedPage { Model = Model };
+            _archivedPage.BackRequested += () =>
+            {
+                // Restore the previous view — the chat page if a peer is selected, otherwise blank.
+                if (Model.SelectedPeerIP is not null) ShowChatPage();
+                else ContentFrame.Content = null;
+            };
+            _archivedPage.ConversationOpened += _ => ShowChatPage();
+        }
         if (!ReferenceEquals(ContentFrame.Content, _archivedPage))
             ContentFrame.Content = _archivedPage;
     }
@@ -135,6 +145,29 @@ public sealed partial class MainWindow : Window
 
     private void ContactsBtn_Click(object sender, RoutedEventArgs e) => ShowContactsPage();
     private void SettingsBtn_Click(object sender, RoutedEventArgs e) => ShowSettingsPage();
+    private async void NewMessageBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeDialog is not null) return;
+        var dialog = new NewMessageDialog(Model) { XamlRoot = Content.XamlRoot };
+        _activeDialog = dialog;
+        try
+        {
+            var result = await dialog.ShowAsync();
+            // Primary = "Add Contact" branch — open the contacts dialog for adding a peer.
+            if (result == ContentDialogResult.Primary)
+            {
+                _activeDialog = null;
+                ShowContactsPage();
+                return;
+            }
+            // Selecting a contact within the dialog sets SelectedPeerIP; show the chat view.
+            if (Model.SelectedPeerIP is not null) ShowChatPage();
+        }
+        finally
+        {
+            if (ReferenceEquals(_activeDialog, dialog)) _activeDialog = null;
+        }
+    }
 
     // MARK: - Tray / background lifecycle
 

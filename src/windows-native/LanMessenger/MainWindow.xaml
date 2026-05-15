@@ -36,6 +36,24 @@
                 <StackPanel Grid.Column="1"
                             Orientation="Horizontal"
                             Spacing="2">
+                    <Button x:Name="NewMessageBtn"
+                            Width="36" Height="36"
+                            Padding="0"
+                            CornerRadius="18"
+                            BorderThickness="0"
+                            ToolTipService.ToolTip="New message"
+                            Click="NewMessageBtn_Click">
+                        <Button.Resources>
+                            <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
+                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
+                            <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                            <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
+                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                        </Button.Resources>
+                        <FontIcon FontFamily="Segoe MDL2 Assets"
+                                  Glyph="&#xE932;"
+                                  FontSize="16" />
+                    </Button>
                     <Button x:Name="ContactsBtn"
                             Width="36" Height="36"
                             Padding="0"
