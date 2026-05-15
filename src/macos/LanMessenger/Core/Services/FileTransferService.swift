@@ -141,7 +141,14 @@ final class FileTransferService {
 
         await MainActor.run { self.onProgress?(peerIP, "Sending \(filename)", 0, totalSize) }
 
+        // Throttle progress callbacks so the UI doesn't thrash on large files —
+        // updating ~10× per second is plenty for a smooth progress bar.
         var sent: Int64 = 0
+        var lastReported: Int64 = 0
+        var lastReportAt = Date()
+        let minInterval: TimeInterval = 0.1
+        let minBytes: Int64 = max(totalSize / 50, Int64(chunkSize) * 4)
+
         while true {
             let chunk = handle.readData(ofLength: chunkSize)
             if chunk.isEmpty { break }
@@ -162,7 +169,13 @@ final class FileTransferService {
                   rawSend(fd: fd, data: chunkFrame) else { return false }
 
             sent += Int64(chunk.count)
-            await MainActor.run { self.onProgress?(peerIP, "Sending \(filename)", sent, totalSize) }
+            let now = Date()
+            if sent - lastReported >= minBytes || now.timeIntervalSince(lastReportAt) >= minInterval {
+                let bytesSoFar = sent
+                lastReported = sent
+                lastReportAt = now
+                await MainActor.run { self.onProgress?(peerIP, "Sending \(filename)", bytesSoFar, totalSize) }
+            }
         }
 
         // file_end

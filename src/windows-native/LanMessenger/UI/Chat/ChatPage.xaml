@@ -5,11 +5,12 @@
     xmlns:local="using:LanMessenger.UI.Chat"
     xmlns:ui="using:LanMessenger.UI">
 
-    <Grid>
+    <Grid Background="#E5DDD5">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -17,6 +18,7 @@
         <Grid Grid.Row="0"
               Padding="16,12"
               ColumnSpacing="12"
+              Background="{ThemeResource LayerFillColorDefaultBrush}"
               BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
               BorderThickness="0,0,0,1">
             <Grid.ColumnDefinitions>
@@ -25,18 +27,18 @@
             </Grid.ColumnDefinitions>
 
             <Grid Grid.Column="0">
-                <ui:AvatarControl x:Name="HeaderAvatar" Width="36" Height="36" />
+                <ui:AvatarControl x:Name="HeaderAvatar" Width="40" Height="40" />
                 <Ellipse x:Name="HeaderOnlineDot"
-                         Width="10" Height="10"
-                         Fill="{ThemeResource AccentFillColorDefaultBrush}"
+                         Width="11" Height="11"
+                         Fill="#25D366"
                          Stroke="White" StrokeThickness="2"
                          HorizontalAlignment="Right" VerticalAlignment="Bottom"
                          Visibility="Collapsed" />
             </Grid>
 
-            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
                 <TextBlock x:Name="HeaderName"
-                           Style="{ThemeResource SubtitleTextBlockStyle}" />
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
                 <TextBlock x:Name="HeaderSubtext"
                            Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -53,7 +55,8 @@
                       Grid.Row="2"
                       VerticalScrollMode="Enabled"
                       VerticalScrollBarVisibility="Auto"
-                      Padding="16,8">
+                      Padding="12,8"
+                      Background="#E5DDD5">
             <ItemsControl x:Name="MessagesList">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="local:MessageRowViewModel">
@@ -63,9 +66,44 @@
             </ItemsControl>
         </ScrollViewer>
 
+        <!-- Reply banner (shown when replying) -->
+        <Border x:Name="ReplyBanner"
+                Grid.Row="3"
+                Background="{ThemeResource LayerFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="14,8"
+                Visibility="Collapsed">
+            <Grid ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="3" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Rectangle Grid.Column="0" Fill="#25D366" />
+                <StackPanel Grid.Column="1" Spacing="1">
+                    <TextBlock x:Name="ReplyBannerWho"
+                               FontSize="11" FontWeight="SemiBold"
+                               Foreground="#128C4E" />
+                    <TextBlock x:Name="ReplyBannerPreview"
+                               FontSize="12"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextTrimming="CharacterEllipsis"
+                               MaxLines="1" />
+                </StackPanel>
+                <Button Grid.Column="2"
+                        x:Name="CancelReplyBtn"
+                        Content="✕"
+                        Padding="6,2"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Click="CancelReplyBtn_Click" />
+            </Grid>
+        </Border>
+
         <!-- Composer -->
         <local:ComposerControl x:Name="Composer"
-                               Grid.Row="3"
+                               Grid.Row="4"
                                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                                BorderThickness="0,1,0,0" />
     </Grid>

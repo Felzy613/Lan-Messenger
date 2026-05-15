@@ -117,9 +117,9 @@ final class AppModel: ObservableObject {
 
     private func refreshConversations() {
         var result: [ConversationViewModel] = []
+        var seenIPs = Set<String>()
 
         // Online peers first
-        var seenIPs = Set<String>()
         for (keyB64, peer) in peers {
             seenIPs.insert(peer.ip)
             let entries = messages[peer.ip] ?? []
@@ -129,9 +129,9 @@ final class AppModel: ObservableObject {
                 peerIP: peer.ip,
                 peerName: peer.username,
                 peerPublicKeyB64: keyB64,
-                lastMessage: last?.text ?? "",
+                lastMessage: lastMessagePreview(entries),
                 lastTimestamp: last.map { Date(timeIntervalSince1970: $0.timestamp) },
-                unreadCount: entries.filter { $0.incoming && $0.status.isEmpty }.count,
+                unreadCount: entries.filter { $0.incoming && !$0.readReceiptSent }.count,
                 isTyping: typing?.active ?? false,
                 typingSender: typing?.sender ?? "",
                 isOnline: true
@@ -141,14 +141,33 @@ final class AppModel: ObservableObject {
         // Saved contacts that are currently offline
         for contact in ConfigStore.shared.config.contacts {
             guard !seenIPs.contains(contact.lastIP) else { continue }
+            seenIPs.insert(contact.lastIP)
             let entries = messages[contact.lastIP] ?? []
             result.append(ConversationViewModel(
                 peerIP: contact.lastIP,
                 peerName: contact.username,
                 peerPublicKeyB64: contact.publicKeyB64,
-                lastMessage: entries.last?.text ?? "",
+                lastMessage: lastMessagePreview(entries),
                 lastTimestamp: entries.last.map { Date(timeIntervalSince1970: $0.timestamp) },
-                unreadCount: 0,
+                unreadCount: entries.filter { $0.incoming && !$0.readReceiptSent }.count,
+                isTyping: false,
+                typingSender: "",
+                isOnline: false
+            ))
+        }
+
+        // Any IP we have history with but no peer + no contact entry —
+        // e.g. someone messaged us once and isn't saved. Don't lose those.
+        for (ip, entries) in messages {
+            guard !seenIPs.contains(ip), !entries.isEmpty else { continue }
+            let name = entries.last { $0.incoming }?.sender ?? ip
+            result.append(ConversationViewModel(
+                peerIP: ip,
+                peerName: name,
+                peerPublicKeyB64: "",
+                lastMessage: lastMessagePreview(entries),
+                lastTimestamp: entries.last.map { Date(timeIntervalSince1970: $0.timestamp) },
+                unreadCount: entries.filter { $0.incoming && !$0.readReceiptSent }.count,
                 isTyping: false,
                 typingSender: "",
                 isOnline: false
@@ -157,6 +176,15 @@ final class AppModel: ObservableObject {
 
         result.sort { ($0.lastTimestamp ?? .distantPast) > ($1.lastTimestamp ?? .distantPast) }
         conversations = result
+    }
+
+    private func lastMessagePreview(_ entries: [MessageEntry]) -> String {
+        guard let last = entries.last else { return "" }
+        if last.text.hasPrefix("__FILE__:") {
+            let path = String(last.text.dropFirst("__FILE__:".count))
+            return "📎 \(URL(fileURLWithPath: path).lastPathComponent)"
+        }
+        return last.text
     }
 
     private func touchPeer(publicKeyB64: String) {
@@ -172,9 +200,12 @@ final class AppModel: ObservableObject {
 
     // MARK: - Messaging
 
-    func sendMessage(_ text: String, toPeerIP ip: String) {
-        guard let peer = peerByIP(ip) else { return }
-        MessagingService.shared.sendText(text, toPeerIP: ip, peerPublicKeyB64: peer.publicKeyB64)
+    func sendMessage(_ text: String, toPeerIP ip: String, replyTo: MessageEntry? = nil) {
+        // For offline peers, look up the public key from contacts so the message can still be queued.
+        let publicKey: String? = peerByIP(ip)?.publicKeyB64
+            ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == ip })?.publicKeyB64
+        guard let key = publicKey else { return }
+        MessagingService.shared.sendText(text, toPeerIP: ip, peerPublicKeyB64: key, replyTo: replyTo)
     }
 
     func sendTyping(_ active: Bool, toPeerIP ip: String) {
@@ -182,15 +213,43 @@ final class AppModel: ObservableObject {
         MessagingService.shared.sendTyping(active: active, toPeerIP: ip, peerPublicKeyB64: peer.publicKeyB64)
     }
 
+    func markConversationRead(peerIP: String) {
+        guard var entries = messages[peerIP] else { return }
+        var changed = false
+        for i in entries.indices where entries[i].incoming && !entries[i].readReceiptSent {
+            if let id = entries[i].messageId {
+                MessagingService.shared.sendReceipt(type: "read_receipt", messageId: id, toPeerIP: peerIP)
+                HistoryStore.shared.markReadReceiptSent(messageId: id, peerIP: peerIP)
+            }
+            entries[i].readReceiptSent = true
+            changed = true
+        }
+        if changed {
+            messages[peerIP] = entries
+            HistoryStore.shared.save()
+            refreshConversations()
+        }
+    }
+
     func sendReadReceipt(for entry: MessageEntry, peerIP: String) {
-        guard entry.incoming, let messageId = entry.messageId, !entry.readReceiptSent else { return }
-        HistoryStore.shared.markReadReceiptSent(messageId: messageId, peerIP: peerIP)
-        MessagingService.shared.sendReceipt(type: "read_receipt", messageId: messageId, toPeerIP: peerIP)
+        // Kept for compatibility — delegates to markConversationRead.
+        guard entry.incoming, !entry.readReceiptSent else { return }
+        markConversationRead(peerIP: peerIP)
     }
 
     func sendFile(path: String, toPeerIP ip: String) {
         guard let peer = peerByIP(ip) else { return }
         FileTransferService.shared.enqueue(filePath: path, toPeerIP: ip, peerPublicKeyB64: peer.publicKeyB64)
+    }
+
+    // Show the main window (used by the menu-bar tray).
+    func showMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
+            w.makeKeyAndOrderFront(nil)
+            return
+        }
     }
 
     // MARK: - Private helpers
@@ -242,6 +301,8 @@ final class AppModel: ObservableObject {
                 status: "Sent",
                 readReceiptSent: false
             )
+            HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+            HistoryStore.shared.save()
             var list = self.messages[ip] ?? []
             list.append(entry)
             self.messages[ip] = list
@@ -252,7 +313,7 @@ final class AppModel: ObservableObject {
             NotificationService.shared.showFileReceived(from: sender, filename: url.lastPathComponent)
             // Prefix "__FILE__:" so MessageBubbleView can render a file bubble with an Open button.
             let entry = MessageEntry(
-                sender: "System",
+                sender: sender,
                 text: "__FILE__:\(url.path)",
                 incoming: true,
                 timestamp: Date().timeIntervalSince1970,
@@ -260,6 +321,8 @@ final class AppModel: ObservableObject {
                 status: "",
                 readReceiptSent: false
             )
+            HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+            HistoryStore.shared.save()
             var list = self.messages[ip] ?? []
             list.append(entry)
             self.messages[ip] = list

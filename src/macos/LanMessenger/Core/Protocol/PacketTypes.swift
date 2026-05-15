@@ -41,11 +41,52 @@ struct TextPacket: Codable {
     let port: Int
     let nonce: String
     let ciphertext: String
+    // Optional reply metadata — present when this message is a reply to another.
+    // Plain (unencrypted) for backward compatibility with Python/older clients.
+    let replyToMessageId: String?
+    let replyToPreview: String?
+    let replyToSender: String?
 
     enum CodingKeys: String, CodingKey {
         case type, timestamp, sender, port, nonce, ciphertext
         case messageId = "message_id"
         case senderPublicKeyB64 = "sender_public_key_b64"
+        case replyToMessageId = "reply_to_message_id"
+        case replyToPreview = "reply_to_preview"
+        case replyToSender = "reply_to_sender"
+    }
+
+    // Custom decoding so replyTo* are truly optional (older messages won't have them).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decode(String.self, forKey: .type)
+        messageId = try c.decode(String.self, forKey: .messageId)
+        timestamp = try c.decode(Double.self, forKey: .timestamp)
+        sender = try c.decode(String.self, forKey: .sender)
+        senderPublicKeyB64 = try c.decode(String.self, forKey: .senderPublicKeyB64)
+        port = try c.decode(Int.self, forKey: .port)
+        nonce = try c.decode(String.self, forKey: .nonce)
+        ciphertext = try c.decode(String.self, forKey: .ciphertext)
+        replyToMessageId = try c.decodeIfPresent(String.self, forKey: .replyToMessageId)
+        replyToPreview = try c.decodeIfPresent(String.self, forKey: .replyToPreview)
+        replyToSender = try c.decodeIfPresent(String.self, forKey: .replyToSender)
+    }
+
+    init(type: String, messageId: String, timestamp: Double, sender: String,
+         senderPublicKeyB64: String, port: Int, nonce: String, ciphertext: String,
+         replyToMessageId: String? = nil, replyToPreview: String? = nil,
+         replyToSender: String? = nil) {
+        self.type = type
+        self.messageId = messageId
+        self.timestamp = timestamp
+        self.sender = sender
+        self.senderPublicKeyB64 = senderPublicKeyB64
+        self.port = port
+        self.nonce = nonce
+        self.ciphertext = ciphertext
+        self.replyToMessageId = replyToMessageId
+        self.replyToPreview = replyToPreview
+        self.replyToSender = replyToSender
     }
 }
 

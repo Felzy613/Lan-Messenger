@@ -23,6 +23,10 @@ public sealed class TextPacket
     [JsonPropertyName("port")]                public int    Port              { get; set; }
     [JsonPropertyName("nonce")]               public string Nonce             { get; set; } = "";
     [JsonPropertyName("ciphertext")]          public string Ciphertext        { get; set; } = "";
+    // Optional reply metadata — unencrypted top-level fields, ignored by older clients.
+    [JsonPropertyName("reply_to_message_id")] public string? ReplyToMessageId { get; set; }
+    [JsonPropertyName("reply_to_preview")]    public string? ReplyToPreview   { get; set; }
+    [JsonPropertyName("reply_to_sender")]     public string? ReplyToSender    { get; set; }
 }
 
 public sealed class TypingPacket

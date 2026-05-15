@@ -2,6 +2,7 @@ import Foundation
 import CryptoKit
 
 // One history entry — mirrors the Python MessageEntry dataclass.
+// Reply metadata is local-only and decoded with defaults so older files load fine.
 struct MessageEntry: Codable, Identifiable {
     var id: String { messageId ?? UUID().uuidString }
     var sender: String
@@ -11,11 +12,47 @@ struct MessageEntry: Codable, Identifiable {
     var messageId: String?
     var status: String
     var readReceiptSent: Bool
+    var replyToMessageId: String?
+    var replyToPreview: String?
+    var replyToSender: String?
 
     enum CodingKeys: String, CodingKey {
         case sender, text, incoming, timestamp, status
         case messageId = "message_id"
         case readReceiptSent = "read_receipt_sent"
+        case replyToMessageId = "reply_to_message_id"
+        case replyToPreview = "reply_to_preview"
+        case replyToSender = "reply_to_sender"
+    }
+
+    init(sender: String, text: String, incoming: Bool, timestamp: Double,
+         messageId: String?, status: String, readReceiptSent: Bool,
+         replyToMessageId: String? = nil, replyToPreview: String? = nil,
+         replyToSender: String? = nil) {
+        self.sender = sender
+        self.text = text
+        self.incoming = incoming
+        self.timestamp = timestamp
+        self.messageId = messageId
+        self.status = status
+        self.readReceiptSent = readReceiptSent
+        self.replyToMessageId = replyToMessageId
+        self.replyToPreview = replyToPreview
+        self.replyToSender = replyToSender
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sender = try c.decode(String.self, forKey: .sender)
+        text = try c.decode(String.self, forKey: .text)
+        incoming = try c.decode(Bool.self, forKey: .incoming)
+        timestamp = try c.decode(Double.self, forKey: .timestamp)
+        messageId = try c.decodeIfPresent(String.self, forKey: .messageId)
+        status = try c.decode(String.self, forKey: .status)
+        readReceiptSent = try c.decode(Bool.self, forKey: .readReceiptSent)
+        replyToMessageId = try c.decodeIfPresent(String.self, forKey: .replyToMessageId)
+        replyToPreview = try c.decodeIfPresent(String.self, forKey: .replyToPreview)
+        replyToSender = try c.decodeIfPresent(String.self, forKey: .replyToSender)
     }
 }
 

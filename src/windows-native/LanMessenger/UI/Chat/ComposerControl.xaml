@@ -5,35 +5,62 @@
     AllowDrop="True"
     DragOver="OnDragOver"
     Drop="OnDrop">
-    <Grid Padding="12,8" ColumnSpacing="8">
+    <Grid Padding="10,8" ColumnSpacing="8"
+          Background="{ThemeResource LayerFillColorDefaultBrush}">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
+        <!-- Attach button -->
         <Button x:Name="AttachBtn"
                 Grid.Column="0"
                 Content="📎"
                 FontSize="18"
+                Width="40" Height="40"
+                Padding="0"
+                CornerRadius="20"
+                Background="Transparent"
+                BorderThickness="0"
                 ToolTipService.ToolTip="Attach file"
                 Click="AttachBtn_Click" />
 
-        <TextBox x:Name="InputBox"
-                 Grid.Column="1"
-                 PlaceholderText="Type a message…"
-                 AcceptsReturn="True"
-                 TextWrapping="Wrap"
-                 MinHeight="36"
-                 MaxHeight="120"
-                 VerticalContentAlignment="Center"
-                 KeyDown="InputBox_KeyDown"
-                 TextChanged="InputBox_TextChanged" />
+        <!-- Input box (rounded) -->
+        <Border Grid.Column="1"
+                Background="{ThemeResource ControlFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="20"
+                Padding="12,4">
+            <TextBox x:Name="InputBox"
+                     PlaceholderText="Type a message"
+                     AcceptsReturn="True"
+                     TextWrapping="Wrap"
+                     MinHeight="32"
+                     MaxHeight="120"
+                     BorderThickness="0"
+                     Background="Transparent"
+                     VerticalContentAlignment="Center"
+                     KeyDown="InputBox_KeyDown"
+                     TextChanged="InputBox_TextChanged" />
+        </Border>
 
+        <!-- Round send button (WhatsApp green) -->
         <Button x:Name="SendBtn"
                 Grid.Column="2"
-                Content="Send"
-                Style="{ThemeResource AccentButtonStyle}"
-                Click="SendBtn_Click" />
+                Width="40" Height="40"
+                Padding="0"
+                CornerRadius="20"
+                BorderThickness="0"
+                Background="#25D366"
+                Click="SendBtn_Click"
+                ToolTipService.ToolTip="Send">
+            <TextBlock Text="➤"
+                       FontSize="16"
+                       Foreground="White"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center" />
+        </Button>
     </Grid>
 </UserControl>

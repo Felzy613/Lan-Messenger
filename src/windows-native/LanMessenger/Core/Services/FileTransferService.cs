@@ -14,9 +14,9 @@ public sealed class FileTransferService
 {
     public static FileTransferService Shared { get; } = new();
 
-    public Action<string, string, long, long>? OnProgress      { get; set; }  // peerIP, label, bytes, total
-    public Action<string, string>?             OnComplete       { get; set; }  // peerIP, label
-    public Action<string, string, string>?     OnIncomingFile   { get; set; }  // peerIP, sender, finalPath
+    public Action<string, string, long, long>?   OnProgress     { get; set; }  // peerIP, label, bytes, total
+    public Action<string, string, string?>?      OnComplete     { get; set; }  // peerIP, label, localPath (sender side only)
+    public Action<string, string, string>?       OnIncomingFile { get; set; }  // peerIP, sender, finalPath
 
     private DispatcherQueue? _dq;
     private const int ChunkSize = 64 * 1024; // 64 KiB
@@ -74,7 +74,7 @@ public sealed class FileTransferService
 
         Dispatch(() =>
         {
-            OnComplete?.Invoke(ip, $"Receiving {filename}");
+            OnComplete?.Invoke(ip, $"Receiving {filename}", null);  // receiver — no outgoing bubble
             OnIncomingFile?.Invoke(ip, sender, finalPath);
         });
     }
@@ -130,11 +130,15 @@ public sealed class FileTransferService
             await stream.WriteAsync(FrameCodec.EncodeDict(startPacket)).ConfigureAwait(false);
             Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", 0, totalSize));
 
-            // chunks
+            // chunks — throttle progress callbacks so the UI doesn't thrash on big files.
             using var handle = File.OpenRead(path);
             var buf = new byte[ChunkSize];
             long sent = 0;
-            int read;
+            long lastReported = 0;
+            var  lastReportAt = DateTime.UtcNow;
+            var  minInterval  = TimeSpan.FromMilliseconds(100);
+            var  minBytes     = Math.Max(totalSize / 50, (long)ChunkSize * 4);
+            int  read;
             while ((read = await handle.ReadAsync(buf.AsMemory(0, ChunkSize)).ConfigureAwait(false)) > 0)
             {
                 var chunk = buf[..read];
@@ -150,7 +154,14 @@ public sealed class FileTransferService
                 };
                 await stream.WriteAsync(FrameCodec.EncodeDict(chunkPacket)).ConfigureAwait(false);
                 sent += read;
-                Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", sent, totalSize));
+                var now = DateTime.UtcNow;
+                if (sent - lastReported >= minBytes || (now - lastReportAt) >= minInterval)
+                {
+                    var bytesSoFar = sent;
+                    lastReported = sent;
+                    lastReportAt = now;
+                    Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", bytesSoFar, totalSize));
+                }
             }
 
             // file_end
@@ -160,7 +171,7 @@ public sealed class FileTransferService
                 ["sender"] = myName, ["sender_public_key_b64"] = myKey, ["port"] = TcpPort,
             };
             await stream.WriteAsync(FrameCodec.EncodeDict(endPacket)).ConfigureAwait(false);
-            Dispatch(() => OnComplete?.Invoke(peerIP, $"Sending {filename}"));
+            Dispatch(() => OnComplete?.Invoke(peerIP, $"Sending {filename}", path));
             return true;
         }
         catch { return false; }

@@ -34,6 +34,7 @@ public sealed class ConversationViewModel
     public int       UnreadCount      { get; init; }
     public bool      IsTyping         { get; init; }
     public string    TypingSender     { get; init; } = "";
+    public bool      IsOnline         { get; init; }
 }
 
 // Root state object. Wires all services; single source of truth for the UI.
@@ -151,10 +152,13 @@ public sealed partial class AppModel : ObservableObject
     {
         var hidden = ConfigStore.Shared.Config.HiddenConversations.ToHashSet();
         var result = new List<ConversationViewModel>();
+        var seenIPs = new HashSet<string>();
 
+        // Online peers first.
         foreach (var (keyB64, peer) in Peers)
         {
             if (hidden.Contains(peer.IP)) continue;
+            seenIPs.Add(peer.IP);
             var entries = Messages.TryGetValue(peer.IP, out var list) ? list : [];
             var last    = entries.Count > 0 ? entries[^1] : null;
             var typing  = TypingStates.TryGetValue(peer.IP, out var t) ? t : default;
@@ -163,13 +167,57 @@ public sealed partial class AppModel : ObservableObject
                 PeerIP           = peer.IP,
                 PeerName         = peer.Username,
                 PeerPublicKeyB64 = keyB64,
-                LastMessage      = last?.Text ?? "",
+                LastMessage      = LastMessagePreview(entries),
                 LastTimestamp    = last is not null
                     ? DateTimeOffset.FromUnixTimeMilliseconds((long)(last.Timestamp * 1000)).UtcDateTime
                     : null,
-                UnreadCount = entries.Count(e => e.Incoming && e.Status == ""),
-                IsTyping    = typing.Active,
+                UnreadCount  = CountUnread(entries),
+                IsTyping     = typing.Active,
                 TypingSender = typing.Sender ?? "",
+                IsOnline     = true,
+            });
+        }
+
+        // Saved contacts that are currently offline.
+        foreach (var contact in ConfigStore.Shared.Config.Contacts)
+        {
+            if (hidden.Contains(contact.LastIP)) continue;
+            if (seenIPs.Contains(contact.LastIP)) continue;
+            seenIPs.Add(contact.LastIP);
+            var entries = Messages.TryGetValue(contact.LastIP, out var list) ? list : [];
+            var last    = entries.Count > 0 ? entries[^1] : null;
+            result.Add(new ConversationViewModel
+            {
+                PeerIP           = contact.LastIP,
+                PeerName         = contact.Username,
+                PeerPublicKeyB64 = contact.PublicKeyB64,
+                LastMessage      = LastMessagePreview(entries),
+                LastTimestamp    = last is not null
+                    ? DateTimeOffset.FromUnixTimeMilliseconds((long)(last.Timestamp * 1000)).UtcDateTime
+                    : null,
+                UnreadCount = CountUnread(entries),
+                IsTyping    = false,
+                IsOnline    = false,
+            });
+        }
+
+        // Any IPs we have message history with but no peer / no contact —
+        // still show them so the conversation doesn't vanish when the peer goes offline.
+        foreach (var (ip, entries) in Messages)
+        {
+            if (hidden.Contains(ip) || seenIPs.Contains(ip) || entries.Count == 0) continue;
+            var last = entries[^1];
+            var name = entries.LastOrDefault(e => e.Incoming)?.Sender ?? ip;
+            result.Add(new ConversationViewModel
+            {
+                PeerIP           = ip,
+                PeerName         = name,
+                PeerPublicKeyB64 = "",
+                LastMessage      = LastMessagePreview(entries),
+                LastTimestamp    = DateTimeOffset.FromUnixTimeMilliseconds((long)(last.Timestamp * 1000)).UtcDateTime,
+                UnreadCount      = CountUnread(entries),
+                IsTyping         = false,
+                IsOnline         = false,
             });
         }
 
@@ -178,13 +226,31 @@ public sealed partial class AppModel : ObservableObject
         Conversations = result;
     }
 
+    private static int CountUnread(IReadOnlyList<MessageEntry> entries)
+        => entries.Count(e => e.Incoming && !e.ReadReceiptSent);
+
+    private static string LastMessagePreview(IReadOnlyList<MessageEntry> entries)
+    {
+        if (entries.Count == 0) return "";
+        var last = entries[^1];
+        if (last.Text.StartsWith("__FILE__:"))
+        {
+            var path = last.Text["__FILE__:".Length..];
+            return "📎 " + Path.GetFileName(path);
+        }
+        return last.Text;
+    }
+
     // MARK: - Messaging
 
-    public void SendMessage(string text, string peerIP)
+    public void SendMessage(string text, string peerIP, MessageEntry? replyTo = null)
     {
-        var peer = PeerByIP(peerIP);
-        if (peer is null) return;
-        MessagingService.Shared.SendText(text, peerIP, peer.PublicKeyB64);
+        // Find the public key either from currently-online peers, or fall back to saved contacts
+        // (so we can still queue messages to offline contacts).
+        var publicKey = PeerByIP(peerIP)?.PublicKeyB64
+            ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64;
+        if (publicKey is null) return;
+        MessagingService.Shared.SendText(text, peerIP, publicKey, replyTo);
     }
 
     public void SendTyping(bool active, string peerIP)
@@ -197,8 +263,33 @@ public sealed partial class AppModel : ObservableObject
     public void SendReadReceipt(MessageEntry entry, string peerIP)
     {
         if (!entry.Incoming || entry.MessageId is null || entry.ReadReceiptSent) return;
-        HistoryStore.Shared.MarkReadReceiptSent(entry.MessageId, peerIP);
-        MessagingService.Shared.SendReceipt("read_receipt", entry.MessageId, peerIP);
+        MarkConversationRead(peerIP);
+    }
+
+    // Marks every incoming unread message for the given peer as read, sends read
+    // receipts, and updates the in-memory `Messages` so the unread badge clears.
+    public void MarkConversationRead(string peerIP)
+    {
+        if (!Messages.TryGetValue(peerIP, out var list) || list.Count == 0) return;
+        var anyChanged = false;
+        foreach (var e in list)
+        {
+            if (!e.Incoming || e.ReadReceiptSent) continue;
+            if (e.MessageId is { } id)
+            {
+                MessagingService.Shared.SendReceipt("read_receipt", id, peerIP);
+                HistoryStore.Shared.MarkReadReceiptSent(id, peerIP);
+            }
+            e.ReadReceiptSent = true;
+            anyChanged = true;
+        }
+        if (anyChanged)
+        {
+            HistoryStore.Shared.Save();
+            // Trigger UI updates — Messages dict is the same reference but we want listeners to refresh.
+            OnPropertyChanged(nameof(Messages));
+            RefreshConversations();
+        }
     }
 
     public void SendFile(string filePath, string peerIP)
@@ -269,11 +360,29 @@ public sealed partial class AppModel : ObservableObject
             ActiveTransfers = updated;
         };
 
-        FileTransferService.Shared.OnComplete = (ip, _) =>
+        FileTransferService.Shared.OnComplete = (ip, label, localPath) =>
         {
             var updated = new Dictionary<string, (string, long, long)>(ActiveTransfers);
             updated.Remove(ip);
             ActiveTransfers = updated;
+
+            // Sender side gets a non-null local path — add an outgoing file bubble.
+            if (localPath is null) return;
+            var entry = new MessageEntry
+            {
+                Sender = ConfigStore.Shared.Config.Username,
+                Text = $"__FILE__:{localPath}",
+                Incoming = false,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                MessageId = null, Status = "Sent", ReadReceiptSent = false,
+            };
+            HistoryStore.Shared.Append(entry, ip);
+            HistoryStore.Shared.Save();
+            var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
+            if (!msgs.TryGetValue(ip, out var l)) l = msgs[ip] = [];
+            l.Add(entry);
+            Messages = msgs;
+            RefreshConversations();
         };
 
         FileTransferService.Shared.OnIncomingFile = (ip, sender, path) =>
@@ -281,10 +390,12 @@ public sealed partial class AppModel : ObservableObject
             NotificationService.Shared.ShowFileReceived(sender, Path.GetFileName(path));
             var entry = new MessageEntry
             {
-                Sender = "System", Text = $"__FILE__:{path}", Incoming = true,
+                Sender = sender, Text = $"__FILE__:{path}", Incoming = true,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
                 MessageId = null, Status = "", ReadReceiptSent = false,
             };
+            HistoryStore.Shared.Append(entry, ip);
+            HistoryStore.Shared.Save();
             var updated = new Dictionary<string, List<MessageEntry>>(Messages);
             if (!updated.TryGetValue(ip, out var list)) list = updated[ip] = [];
             list.Add(entry);

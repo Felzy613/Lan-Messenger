@@ -1,20 +1,72 @@
 import SwiftUI
+import AppKit
+
+// MARK: - App delegate
+// We use a tiny AppDelegate so the app keeps running when the user closes the
+// main window with the red "X". The menu-bar item provides a way back in.
+
+final class LanMessengerAppDelegate: NSObject, NSApplicationDelegate {
+    // Don't quit when the last window closes — we live in the menu bar.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    // When the user clicks the dock icon (if visible) or relaunches, surface the window again.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows {
+            WindowController.showMainWindow()
+        }
+        return true
+    }
+}
+
+// MARK: - Window helper
+// Holds the action used to surface the main window. SwiftUI's `openWindow`
+// environment value is only available inside a View, so we capture it once
+// at root-view appear time and re-use it from menu-bar buttons / AppDelegate.
+
+enum WindowController {
+    static var openWindow: ((String) -> Void)?
+
+    static func showMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        // First try the captured SwiftUI action — that gives us a freshly-created window
+        // if the previous one was destroyed.
+        if let open = openWindow {
+            open("main")
+            return
+        }
+        // Fallback: bring any existing window forward.
+        for w in NSApp.windows where w.canBecomeMain {
+            w.makeKeyAndOrderFront(nil)
+            return
+        }
+    }
+}
 
 @main
 struct LanMessengerApp: App {
 
+    @NSApplicationDelegateAdaptor(LanMessengerAppDelegate.self) var appDelegate
     @StateObject private var appModel = AppModel()
 
     var body: some Scene {
-        WindowGroup {
+        Window("LAN Messenger", id: "main") {
             ContentView()
                 .environmentObject(appModel)
                 .frame(minWidth: 720, minHeight: 500)
+                .captureOpenWindow()
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) {}   // no "New Window"
+            CommandGroup(after: .windowArrangement) {
+                Button("Show Main Window") { WindowController.showMainWindow() }
+                    .keyboardShortcut("1", modifiers: [.command])
+            }
         }
 
         MenuBarExtra("LAN Messenger", systemImage: "message.fill") {
@@ -23,6 +75,20 @@ struct LanMessengerApp: App {
         }
         .menuBarExtraStyle(.menu)
     }
+}
+
+// Captures the SwiftUI openWindow action once the root view appears so the
+// menu-bar tray and AppDelegate can re-surface the main window.
+private struct CaptureOpenWindow: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+    func body(content: Content) -> some View {
+        content.onAppear {
+            WindowController.openWindow = { id in openWindow(id: id) }
+        }
+    }
+}
+private extension View {
+    func captureOpenWindow() -> some View { modifier(CaptureOpenWindow()) }
 }
 
 // MARK: - Root split view
@@ -71,30 +137,50 @@ struct ContentView: View {
 struct TrayMenuView: View {
     @EnvironmentObject var model: AppModel
 
+    private var totalUnread: Int {
+        model.conversations.reduce(0) { $0 + $1.unreadCount }
+    }
+
     var body: some View {
-        Text("LAN Messenger").font(.headline)
+        Text(totalUnread > 0
+             ? "LAN Messenger — \(totalUnread) unread"
+             : "LAN Messenger")
+            .font(.headline)
+
         Divider()
-        ForEach(model.conversations) { conv in
-            Button {
-                model.selectedPeerIP = conv.peerIP
-                NSApp.activate(ignoringOtherApps: true)
-            } label: {
-                HStack {
-                    Text(conv.peerName)
-                    if conv.unreadCount > 0 {
-                        Spacer()
-                        Text("●")
-                            .foregroundStyle(Theme.accent)
+
+        Button("Open LAN Messenger") {
+            WindowController.showMainWindow()
+        }
+        .keyboardShortcut("o", modifiers: [.command])
+
+        Divider()
+
+        if model.conversations.isEmpty {
+            Text("No conversations")
+                .foregroundStyle(.secondary)
+        } else {
+            Text("Conversations").font(.caption)
+            ForEach(model.conversations.prefix(8)) { conv in
+                Button {
+                    model.selectedPeerIP = conv.peerIP
+                    WindowController.showMainWindow()
+                } label: {
+                    HStack {
+                        Text(conv.peerName)
+                        if conv.unreadCount > 0 {
+                            Spacer()
+                            Text("\(conv.unreadCount)")
+                                .foregroundStyle(Theme.accent)
+                        }
                     }
                 }
             }
         }
-        if model.conversations.isEmpty {
-            Text("No contacts")
-                .foregroundStyle(.secondary)
-        }
+
         Divider()
         Button("Quit LAN Messenger") { NSApp.terminate(nil) }
+            .keyboardShortcut("q", modifiers: [.command])
     }
 }
 

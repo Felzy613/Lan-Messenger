@@ -4,10 +4,11 @@ import AppKit
 struct MessageBubbleView: View {
     let entry: MessageEntry
     let isFirstInRun: Bool
+    var onReply: (() -> Void)? = nil
+    var onTapReplyTarget: (() -> Void)? = nil
     @Environment(\.colorScheme) var colorScheme
 
     // File messages use a "__FILE__:/path/to/file" prefix stored by AppModel.
-    // Works for both incoming (sender="System") and outgoing (sender=username) entries.
     private var filePath: String? {
         entry.text.hasPrefix("__FILE__:")
             ? String(entry.text.dropFirst("__FILE__:".count))
@@ -39,6 +40,38 @@ struct MessageBubbleView: View {
         }
     }
 
+    // MARK: - Reply preview chip (shown at top of bubble when replying)
+
+    @ViewBuilder
+    private var replyChip: some View {
+        if let preview = entry.replyToPreview, !preview.isEmpty {
+            let label = entry.replyToSender?.isEmpty == false ? entry.replyToSender! : "Reply"
+            Button {
+                onTapReplyTarget?()
+            } label: {
+                HStack(spacing: 6) {
+                    Rectangle()
+                        .fill(Theme.accent)
+                        .frame(width: 3)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(label)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                        Text(preview)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     // MARK: - File bubble
 
     private func fileBubble(path: String) -> some View {
@@ -47,35 +80,41 @@ struct MessageBubbleView: View {
         let exists = FileManager.default.fileExists(atPath: path)
         let bg = entry.incoming ? Theme.incomingBubble(colorScheme) : Theme.outgoingBubble(colorScheme)
 
-        return HStack(spacing: 10) {
-            Image(systemName: "doc.fill")
-                .font(.system(size: 28))
-                .foregroundStyle(Theme.accent)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(name)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(2)
-                Text(formattedTime)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-            if exists {
-                Button {
-                    NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
-                } label: {
-                    Text("Show")
-                        .font(.system(size: 11, weight: .semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Theme.accent.opacity(0.2), in: Capsule())
-                        .foregroundStyle(Theme.accent)
+        return VStack(alignment: .leading, spacing: 6) {
+            replyChip
+            HStack(spacing: 10) {
+                Image(systemName: "doc.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(name)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(2)
+                    HStack(spacing: 4) {
+                        Text(formattedTime)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        if !entry.incoming { statusIcon }
+                    }
                 }
-                .buttonStyle(.plain)
-            } else {
-                Text("Deleted")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if exists {
+                    Button {
+                        NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+                    } label: {
+                        Text("Show")
+                            .font(.system(size: 11, weight: .semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Theme.accent.opacity(0.2), in: Capsule())
+                            .foregroundStyle(Theme.accent)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text("Deleted")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -87,8 +126,12 @@ struct MessageBubbleView: View {
                         bottomTrailingRadius: entry.incoming ? 16 : (isFirstInRun ? 4 : 16),
                         topTrailingRadius: 16
                     ))
-        .frame(maxWidth: 280)
+        .frame(maxWidth: 320)
         .contextMenu {
+            if onReply != nil {
+                Button { onReply?() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                Divider()
+            }
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
@@ -112,6 +155,7 @@ struct MessageBubbleView: View {
                     .padding(.leading, 4)
             }
             VStack(alignment: .leading, spacing: 4) {
+                replyChip
                 Text(entry.text)
                     .font(.system(size: 14))
                     .fixedSize(horizontal: false, vertical: true)
@@ -119,6 +163,7 @@ struct MessageBubbleView: View {
                 Text(formattedTime)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -130,7 +175,12 @@ struct MessageBubbleView: View {
                             topTrailingRadius: 16
                         ))
         }
+        .frame(maxWidth: 420, alignment: .leading)
         .contextMenu {
+            if onReply != nil {
+                Button { onReply?() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                Divider()
+            }
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(entry.text, forType: .string)
@@ -142,11 +192,14 @@ struct MessageBubbleView: View {
 
     private var outgoingBubble: some View {
         VStack(alignment: .trailing, spacing: 4) {
+            replyChip
             Text(entry.text)
                 .font(.system(size: 14))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-            HStack(spacing: 3) {
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 4) {
+                Spacer(minLength: 0)
                 Text(formattedTime)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -162,7 +215,12 @@ struct MessageBubbleView: View {
                         bottomTrailingRadius: isFirstInRun ? 4 : 16,
                         topTrailingRadius: 16
                     ))
+        .frame(maxWidth: 420, alignment: .trailing)
         .contextMenu {
+            if onReply != nil {
+                Button { onReply?() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                Divider()
+            }
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(entry.text, forType: .string)
@@ -176,16 +234,22 @@ struct MessageBubbleView: View {
         Date(timeIntervalSince1970: entry.timestamp).formatted(.dateTime.hour().minute())
     }
 
+    // WhatsApp-style checkmarks:
+    // - Sending/Queued → clock
+    // - Sent          → single grey check
+    // - Delivered     → double grey check
+    // - Read          → double blue check
+    // - Failed        → red exclamation
     @ViewBuilder
     private var statusIcon: some View {
         switch entry.status {
         case "Read":
-            Image(systemName: "checkmark.bubble.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(Theme.accent)
+            doubleCheck(color: Color(red: 0.31, green: 0.62, blue: 0.97))   // WhatsApp-ish blue
+        case "Delivered":
+            doubleCheck(color: .secondary)
         case "Sent":
             Image(systemName: "checkmark")
-                .font(.system(size: 10))
+                .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.secondary)
         case "Queued", "Sending":
             Image(systemName: "clock")
@@ -198,5 +262,19 @@ struct MessageBubbleView: View {
         default:
             EmptyView()
         }
+    }
+
+    private func doubleCheck(color: Color) -> some View {
+        // Two overlapping checkmarks for the "delivered" look.
+        ZStack(alignment: .leading) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .bold))
+                .offset(x: 0)
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .bold))
+                .offset(x: 4)
+        }
+        .frame(width: 14, height: 10, alignment: .leading)
+        .foregroundStyle(color)
     }
 }

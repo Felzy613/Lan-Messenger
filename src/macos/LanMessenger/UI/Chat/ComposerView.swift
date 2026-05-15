@@ -5,6 +5,7 @@ import AppKit
 struct ComposerView: View {
     @EnvironmentObject var model: AppModel
     let peerIP: String
+    @Binding var replyTarget: MessageEntry?
 
     @State private var draft = ""
     @State private var isDragTargeted = false
@@ -93,8 +94,9 @@ struct ComposerView: View {
     private func send() {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        model.sendMessage(trimmed, toPeerIP: peerIP)
+        model.sendMessage(trimmed, toPeerIP: peerIP, replyTo: replyTarget)
         draft = ""
+        replyTarget = nil
         model.sendTyping(false, toPeerIP: peerIP)
     }
 
@@ -103,7 +105,10 @@ struct ComposerView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
+        // Non-blocking — uses an async completion so the UI doesn't freeze if
+        // the system dialog takes time to render or appears off-screen.
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
             model.sendFile(path: url.path, toPeerIP: peerIP)
         }
     }

@@ -6,7 +6,42 @@ namespace LanMessenger.UI;
 
 public static class Theme
 {
-    // Avatar palette — same 8 colors as macOS version
+    // WhatsApp-inspired palette --------------------------------------------------
+
+    /// <summary>Primary brand colour — WhatsApp green.</summary>
+    public static readonly Color BrandAccent       = Color.FromArgb(255,  37, 211, 102);
+    public static readonly Color BrandAccentDark   = Color.FromArgb(255,  18, 140,  78);
+
+    /// <summary>Outgoing bubble — light WhatsApp green.</summary>
+    public static readonly Color OutgoingBubble     = Color.FromArgb(255, 220, 248, 198);
+    public static readonly Color OutgoingBubbleDark = Color.FromArgb(255,   0,  92,  75);
+
+    /// <summary>Incoming bubble — white / dark grey.</summary>
+    public static readonly Color IncomingBubble     = Color.FromArgb(255, 255, 255, 255);
+    public static readonly Color IncomingBubbleDark = Color.FromArgb(255,  32,  44,  51);
+
+    /// <summary>Chat background — soft beige / black.</summary>
+    public static readonly Color ChatBackground     = Color.FromArgb(255, 229, 221, 213);
+    public static readonly Color ChatBackgroundDark = Color.FromArgb(255,  13,  20,  24);
+
+    /// <summary>Sidebar background.</summary>
+    public static readonly Color SidebarBackground     = Color.FromArgb(255, 240, 242, 245);
+    public static readonly Color SidebarBackgroundDark = Color.FromArgb(255,  17,  27,  33);
+
+    /// <summary>Status check colours (WhatsApp-ish blue for read).</summary>
+    public static readonly Color CheckGrey = Color.FromArgb(255, 140, 145, 152);
+    public static readonly Color CheckBlue = Color.FromArgb(255,  79, 158, 247);
+
+    public static SolidColorBrush BrandAccentBrush      => new(BrandAccent);
+    public static SolidColorBrush OutgoingBubbleBrush   => new(OutgoingBubble);
+    public static SolidColorBrush IncomingBubbleBrush   => new(IncomingBubble);
+    public static SolidColorBrush ChatBackgroundBrush   => new(ChatBackground);
+    public static SolidColorBrush SidebarBackgroundBrush=> new(SidebarBackground);
+    public static SolidColorBrush CheckGreyBrush        => new(CheckGrey);
+    public static SolidColorBrush CheckBlueBrush        => new(CheckBlue);
+
+    // Avatar palette — same 8 colors as macOS version ----------------------------
+
     public static readonly Color[] AvatarColors =
     [
         Color.FromArgb(255,  74, 144, 226),  // blue

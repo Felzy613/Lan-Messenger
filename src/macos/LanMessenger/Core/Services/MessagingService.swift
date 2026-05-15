@@ -35,10 +35,18 @@ final class MessagingService {
 
     // MARK: - Send text
 
-    func sendText(_ text: String, toPeerIP ip: String, peerPublicKeyB64: String) {
+    func sendText(
+        _ text: String,
+        toPeerIP ip: String,
+        peerPublicKeyB64: String,
+        replyTo: MessageEntry? = nil
+    ) {
         let messageId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let timestamp = Date().timeIntervalSince1970
         let aad = Data(messageId.utf8)
+
+        let replyPreview = replyTo.map { Self.replyPreviewText(for: $0) }
+        let replySender = replyTo?.sender
 
         // Record in history immediately (outgoing)
         let entry = MessageEntry(
@@ -48,9 +56,13 @@ final class MessagingService {
             timestamp: timestamp,
             messageId: messageId,
             status: "Sending",
-            readReceiptSent: false
+            readReceiptSent: false,
+            replyToMessageId: replyTo?.messageId,
+            replyToPreview: replyPreview,
+            replyToSender: replySender
         )
         HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+        HistoryStore.shared.save()
         onMessageReceived?(ip, entry)
 
         guard let (nonceB64, ctB64) = try? SessionCrypto.encryptForPeer(
@@ -63,7 +75,7 @@ final class MessagingService {
             return
         }
 
-        let packet: [String: Any] = [
+        var packet: [String: Any] = [
             "type": "text",
             "message_id": messageId,
             "timestamp": timestamp,
@@ -73,6 +85,11 @@ final class MessagingService {
             "nonce": nonceB64,
             "ciphertext": ctB64,
         ]
+        if let replyId = replyTo?.messageId {
+            packet["reply_to_message_id"] = replyId
+            if let preview = replyPreview { packet["reply_to_preview"] = preview }
+            if let s = replySender { packet["reply_to_sender"] = s }
+        }
 
         sendJSON(packet, toIP: ip, port: tcpPort) { [weak self] success in
             guard let self else { return }
@@ -83,6 +100,15 @@ final class MessagingService {
             self.updateStatus(status, forMessageId: messageId, peerIP: ip)
             HistoryStore.shared.save()
         }
+    }
+
+    // Returns a short preview text suitable for showing in a reply chip.
+    static func replyPreviewText(for entry: MessageEntry) -> String {
+        if entry.text.hasPrefix("__FILE__:") {
+            let path = String(entry.text.dropFirst("__FILE__:".count))
+            return "📎 \(URL(fileURLWithPath: path).lastPathComponent)"
+        }
+        return String(entry.text.prefix(80))
     }
 
     // MARK: - Send typing indicator
@@ -170,6 +196,17 @@ final class MessagingService {
         ) else { return }
 
         let text = String(data: plaintext, encoding: .utf8) ?? ""
+
+        // If the packet didn't include a preview but we have the original in history, fill it in.
+        var preview = pkt.replyToPreview
+        var replyToSender = pkt.replyToSender
+        if let replyId = pkt.replyToMessageId, preview == nil {
+            if let orig = HistoryStore.shared.entries(forPeerIP: ip).first(where: { $0.messageId == replyId }) {
+                preview = Self.replyPreviewText(for: orig)
+                replyToSender = orig.sender
+            }
+        }
+
         let entry = MessageEntry(
             sender: pkt.sender,
             text: text,
@@ -177,13 +214,16 @@ final class MessagingService {
             timestamp: pkt.timestamp,
             messageId: pkt.messageId,
             status: "",
-            readReceiptSent: false
+            readReceiptSent: false,
+            replyToMessageId: pkt.replyToMessageId,
+            replyToPreview: preview,
+            replyToSender: replyToSender
         )
         HistoryStore.shared.append(entry: entry, forPeerIP: ip)
         HistoryStore.shared.save()
         onMessageReceived?(ip, entry)
 
-        // Emit typing=false and send_receipt
+        // Emit typing=false and sent_receipt (delivered)
         onTypingUpdate?(ip, pkt.sender, false)
         sendReceipt(type: "sent_receipt", messageId: pkt.messageId, toPeerIP: ip)
     }
@@ -193,9 +233,16 @@ final class MessagingService {
     }
 
     private func handleReceipt(_ pkt: ReceiptPacket, fromIP ip: String) {
-        let status = pkt.type == "read_receipt" ? "Read" : "Sent"
+        // sent_receipt = the peer has received the message (two grey ticks)
+        // read_receipt = the peer has read it (two blue ticks)
+        let status = pkt.type == "read_receipt" ? "Read" : "Delivered"
+
+        // Don't downgrade Read → Delivered if a read receipt arrived before the sent receipt.
+        let current = HistoryStore.shared.entries(forPeerIP: ip)
+            .first(where: { $0.messageId == pkt.messageId })?.status ?? ""
+        if status == "Delivered", current == "Read" { return }
+
         updateStatus(status, forMessageId: pkt.messageId, peerIP: ip)
-        HistoryStore.shared.updateStatus(status, forMessageId: pkt.messageId, peerIP: ip)
         HistoryStore.shared.save()
     }
 

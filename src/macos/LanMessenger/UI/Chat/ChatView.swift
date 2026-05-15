@@ -5,6 +5,9 @@ struct ChatView: View {
     let peerIP: String
     @Environment(\.colorScheme) var colorScheme
 
+    @State private var replyTarget: MessageEntry? = nil
+    @State private var scrollHighlightID: String? = nil
+
     private var conv: ConversationViewModel? {
         model.conversations.first { $0.peerIP == peerIP }
     }
@@ -30,8 +33,12 @@ struct ChatView: View {
                     total: transfer.total
                 )
             }
+            if let reply = replyTarget {
+                replyBanner(for: reply)
+                    .transition(.opacity)
+            }
             Divider()
-            ComposerView(peerIP: peerIP)
+            ComposerView(peerIP: peerIP, replyTarget: $replyTarget)
                 .environmentObject(model)
                 .background(.bar)
         }
@@ -82,15 +89,33 @@ struct ChatView: View {
                         let prevIncoming = idx > 0 ? entries[idx - 1].incoming : !entry.incoming
                         MessageBubbleView(
                             entry: entry,
-                            isFirstInRun: entry.incoming != prevIncoming
+                            isFirstInRun: entry.incoming != prevIncoming,
+                            onReply: { withAnimation { replyTarget = entry } },
+                            onTapReplyTarget: {
+                                guard let targetId = entry.replyToMessageId,
+                                      let match = entries.first(where: { $0.messageId == targetId }) else { return }
+                                withAnimation { proxy.scrollTo(match.id, anchor: .center) }
+                                scrollHighlightID = match.id
+                            }
                         )
                         .id(entry.id)
+                        .background(
+                            scrollHighlightID == entry.id
+                            ? Theme.accent.opacity(0.10)
+                            : Color.clear
+                        )
                     }
                 }
                 .padding(.vertical, 12)
             }
             .onAppear { scrollToBottom(proxy: proxy, animated: false) }
             .onChange(of: entries.count) { _ in scrollToBottom(proxy: proxy, animated: true) }
+            .onChange(of: scrollHighlightID) { newValue in
+                guard newValue != nil else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    withAnimation { scrollHighlightID = nil }
+                }
+            }
         }
     }
 
@@ -103,11 +128,38 @@ struct ChatView: View {
         }
     }
 
+    // MARK: - Reply banner above composer
+
+    private func replyBanner(for reply: MessageEntry) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Rectangle().fill(Theme.accent).frame(width: 3, height: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Replying to \(reply.incoming ? reply.sender : "yourself")")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                Text(MessagingService.replyPreviewText(for: reply))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Button {
+                withAnimation { replyTarget = nil }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
     // MARK: - Read receipts
 
     private func markRead() {
-        for entry in entries {
-            model.sendReadReceipt(for: entry, peerIP: peerIP)
-        }
+        model.markConversationRead(peerIP: peerIP)
     }
 }

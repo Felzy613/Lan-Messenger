@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using System.ComponentModel;
 
 namespace LanMessenger.UI.Sidebar;
 
@@ -20,8 +21,13 @@ public sealed partial class ConversationRowControl : UserControl
 
     private static void OnRowChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is ConversationRowControl ctrl) ctrl.Refresh();
+        if (d is not ConversationRowControl ctrl) return;
+        if (e.OldValue is ConversationRowViewModel old) old.PropertyChanged -= ctrl.OnPropChanged;
+        if (e.NewValue is ConversationRowViewModel nw)  nw.PropertyChanged  += ctrl.OnPropChanged;
+        ctrl.Refresh();
     }
+
+    private void OnPropChanged(object? s, PropertyChangedEventArgs e) => Refresh();
 
     private void Refresh()
     {
@@ -35,7 +41,7 @@ public sealed partial class ConversationRowControl : UserControl
 
         if (Row.UnreadCount > 0)
         {
-            UnreadCount.Text     = Row.UnreadCount > 99 ? "99+" : Row.UnreadCount.ToString();
+            UnreadCount.Text       = Row.UnreadCount > 99 ? "99+" : Row.UnreadCount.ToString();
             UnreadBadge.Visibility = Visibility.Visible;
         }
         else

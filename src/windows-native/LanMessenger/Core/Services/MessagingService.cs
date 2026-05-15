@@ -43,12 +43,14 @@ public sealed class MessagingService
 
     // MARK: - Send text
 
-    public void SendText(string text, string peerIP, string peerPublicKeyB64)
+    public void SendText(string text, string peerIP, string peerPublicKeyB64,
+                         MessageEntry? replyTo = null)
     {
         var messageId = Guid.NewGuid().ToString("N").ToLowerInvariant();
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
         var aad       = Encoding.UTF8.GetBytes(messageId);
 
+        var replyPreview = replyTo is null ? null : ReplyPreviewText(replyTo);
         var entry = new MessageEntry
         {
             Sender          = ConfigStore.Shared.Config.Username,
@@ -58,8 +60,12 @@ public sealed class MessagingService
             MessageId       = messageId,
             Status          = "Sending",
             ReadReceiptSent = false,
+            ReplyToMessageId = replyTo?.MessageId,
+            ReplyToPreview   = replyPreview,
+            ReplyToSender    = replyTo?.Sender,
         };
         HistoryStore.Shared.Append(entry, peerIP);
+        HistoryStore.Shared.Save();
         Dispatch(() => OnMessageReceived?.Invoke(peerIP, entry));
 
         (string nonceB64, string ctB64)? encrypted;
@@ -86,6 +92,12 @@ public sealed class MessagingService
             ["nonce"]                 = encrypted.Value.nonceB64,
             ["ciphertext"]            = encrypted.Value.ctB64,
         };
+        if (replyTo?.MessageId is { } rid)
+        {
+            packet["reply_to_message_id"] = rid;
+            if (replyPreview is not null) packet["reply_to_preview"] = replyPreview;
+            if (replyTo.Sender is not null) packet["reply_to_sender"] = replyTo.Sender;
+        }
 
         Task.Run(async () =>
         {
@@ -98,6 +110,16 @@ public sealed class MessagingService
                 HistoryStore.Shared.Save();
             });
         });
+    }
+
+    public static string ReplyPreviewText(MessageEntry entry)
+    {
+        if (entry.Text.StartsWith("__FILE__:"))
+        {
+            var path = entry.Text["__FILE__:".Length..];
+            return "📎 " + Path.GetFileName(path);
+        }
+        return entry.Text.Length <= 80 ? entry.Text : entry.Text[..80];
     }
 
     // MARK: - Send typing
@@ -184,12 +206,29 @@ public sealed class MessagingService
         try { plaintext = SessionCrypto.DecryptFromPeer(KeyManager.Shared.PrivateKey, pkt.SenderPublicKeyB64, pkt.Nonce, pkt.Ciphertext, aad); }
         catch { return; }
 
+        // If the packet didn't carry a preview but we know the original, fill it in.
+        var preview = pkt.ReplyToPreview;
+        var replyToSender = pkt.ReplyToSender;
+        if (!string.IsNullOrEmpty(pkt.ReplyToMessageId) && preview is null)
+        {
+            var orig = HistoryStore.Shared.Entries(ip)
+                .FirstOrDefault(e => e.MessageId == pkt.ReplyToMessageId);
+            if (orig is not null)
+            {
+                preview = ReplyPreviewText(orig);
+                replyToSender ??= orig.Sender;
+            }
+        }
+
         var text  = Encoding.UTF8.GetString(plaintext);
         var entry = new MessageEntry
         {
             Sender = pkt.Sender, Text = text, Incoming = true,
             Timestamp = pkt.Timestamp, MessageId = pkt.MessageId,
             Status = "", ReadReceiptSent = false,
+            ReplyToMessageId = pkt.ReplyToMessageId,
+            ReplyToPreview   = preview,
+            ReplyToSender    = replyToSender,
         };
         HistoryStore.Shared.Append(entry, ip);
         HistoryStore.Shared.Save();
@@ -207,7 +246,15 @@ public sealed class MessagingService
 
     private void HandleReceipt(ReceiptPacket pkt, string ip)
     {
-        var status = pkt.Type == "read_receipt" ? "Read" : "Sent";
+        // sent_receipt = delivered to the peer (two grey ticks)
+        // read_receipt = read by the peer (two blue ticks)
+        var status = pkt.Type == "read_receipt" ? "Read" : "Delivered";
+
+        // Don't downgrade Read → Delivered if a sent_receipt arrives after the read_receipt.
+        var current = HistoryStore.Shared.Entries(ip)
+            .FirstOrDefault(e => e.MessageId == pkt.MessageId)?.Status ?? "";
+        if (status == "Delivered" && current == "Read") return;
+
         HistoryStore.Shared.UpdateStatus(status, pkt.MessageId, ip);
         HistoryStore.Shared.Save();
         Dispatch(() => OnStatusUpdate?.Invoke(ip, pkt.MessageId, status));

@@ -13,6 +13,10 @@ public sealed class MessageEntry
     [JsonPropertyName("message_id")]        public string? MessageId       { get; set; }
     [JsonPropertyName("status")]            public string Status           { get; set; } = "";
     [JsonPropertyName("read_receipt_sent")] public bool   ReadReceiptSent  { get; set; }
+    // Local-only reply metadata. Optional — older history files load fine.
+    [JsonPropertyName("reply_to_message_id")] public string? ReplyToMessageId { get; set; }
+    [JsonPropertyName("reply_to_preview")]    public string? ReplyToPreview   { get; set; }
+    [JsonPropertyName("reply_to_sender")]     public string? ReplyToSender    { get; set; }
 }
 
 // Manages reading/writing the encrypted history file.
