@@ -172,28 +172,24 @@ jobs:
           MAC_SHA="${{ steps.commits.outputs.mac_sha }}"
           WIN_SHA="${{ steps.commits.outputs.win_sha }}"
 
+          printf '%s\n' \
+            "LAN Messenger Combined Release" \
+            "" \
+            "Windows ${WIN_VER} (${WIN_SHA}) + macOS ${MAC_VER} (${MAC_SHA})" \
+            "Released: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "Triggered by: ${{ github.event.workflow_run.name }}" \
+            "" \
+            "Windows Installer: LanMessenger-Setup-${WIN_VER}.exe" \
+            "  Self-contained (.NET 8 bundled). Requires Windows 10 build 19041+, x64." \
+            "" \
+            "macOS App: LanMessenger-macOS-${MAC_VER}.zip" \
+            "  Requires macOS 13.0 (Ventura)+. Unzip and move to Applications." \
+            > /tmp/combined-notes.md
+
           gh release create "$TAG" \
             --title "${{ steps.release.outputs.release_title }}" \
             --draft \
-            --notes "## LAN Messenger — Combined Release
-
-| Platform | Version | Commit |
-|----------|---------|--------|
-| 🪟 Windows | \`${WIN_VER}\` | \`${WIN_SHA}\` |
-| 🍎 macOS   | \`${MAC_VER}\` | \`${MAC_SHA}\` |
-
-**Released:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
-**Triggered by:** ${{ github.event.workflow_run.name }}
-
----
-
-### 🪟 Windows Installer — \`LanMessenger-Setup-${WIN_VER}.exe\`
-- Self-contained (includes .NET 8 runtime — no separate install needed)
-- Requires Windows 10 build 19041+ · x64
-
-### 🍎 macOS App — \`LanMessenger-macOS-${MAC_VER}.zip\`
-- Requires macOS 13.0 (Ventura)+
-- Unzip and drag **LanMessenger.app** to your Applications folder"
+            --notes-file /tmp/combined-notes.md
 
           echo "draft_tag=$TAG" >> $GITHUB_OUTPUT
           echo "Created draft release: $TAG"

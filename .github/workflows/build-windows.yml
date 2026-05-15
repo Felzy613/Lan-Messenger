@@ -336,19 +336,20 @@ jobs:
           TAG="windows-v${VERSION}"
           ARTIFACT=$(ls dist/*.exe | head -1)
 
+          printf '%s\n' \
+            "Windows platform build v${VERSION}" \
+            "" \
+            "Commit: ${{ github.sha }}" \
+            "Branch: ${{ github.ref_name }}" \
+            "Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "" \
+            "Platform pre-release. Combined release auto-created by Release Orchestration workflow." \
+            > /tmp/release-notes.md
+
           gh release create "$TAG" \
             --title "Windows v${VERSION}" \
             --prerelease \
-            --notes "Windows platform build v${VERSION}
-
-| Field | Value |
-|-------|-------|
-| Commit | \`${{ github.sha }}\` |
-| Branch | \`${{ github.ref_name }}\` |
-| Runner | windows-2022 |
-| Built  | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
-
-> This is a platform pre-release. The combined release is created automatically by the Release Orchestration workflow." \
+            --notes-file /tmp/release-notes.md \
             "$ARTIFACT"
 
           echo "::notice::Published platform release: $TAG"

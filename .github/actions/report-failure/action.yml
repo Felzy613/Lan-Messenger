@@ -80,43 +80,38 @@ runs:
 
         if [ -n "$EXISTING" ]; then
           echo "Appending to existing issue #$EXISTING"
-          gh issue comment "$EXISTING" \
-            --body "## Recurrence — $(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-| Field | Value |
-|-------|-------|
-| Commit | \`${COMMIT}\` |
-| Run | [View logs](${RUN_URL}) |
-
-**Log tail:**
-\`\`\`
-$(echo "$LOG_BODY" | tail -20)
-\`\`\`"
+          printf '%s\n' \
+            "Recurrence: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "" \
+            "Commit: ${COMMIT}" \
+            "Run:    ${RUN_URL}" \
+            "" \
+            "Log tail:" \
+            "$(echo "$LOG_BODY" | tail -20)" \
+            > /tmp/recurrence-body.md
+          gh issue comment "$EXISTING" --body "$(cat /tmp/recurrence-body.md)"
 
         else
           echo "Creating new issue: $TITLE"
+          printf '%s\n' \
+            "CI Failure: ${FAILURE_TYPE}" \
+            "" \
+            "Platform:     ${PLATFORM}" \
+            "Version:      ${VERSION}" \
+            "Failure type: ${FAILURE_TYPE}" \
+            "Commit:       ${COMMIT}" \
+            "Run:          ${RUN_URL}" \
+            "Date:         $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "" \
+            "Log Excerpt:" \
+            "${LOG_BODY}" \
+            "" \
+            "<!-- fingerprint: ${FINGERPRINT} -->" \
+            > /tmp/issue-body.md
           gh issue create \
             --title "$TITLE" \
             --label "ci-failure" \
             --label "platform:${PLATFORM}" \
             --label "${TYPE_LABEL}" \
-            --body "## CI Failure Report
-
-| Field | Value |
-|-------|-------|
-| Platform | \`${PLATFORM}\` |
-| Version | \`${VERSION}\` |
-| Failure type | \`${FAILURE_TYPE}\` |
-| Commit | \`${COMMIT}\` |
-| Workflow run | [View logs](${RUN_URL}) |
-| Date | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
-
-## Log Excerpt
-
-\`\`\`
-${LOG_BODY}
-\`\`\`
-
----
-<!-- fingerprint: ${FINGERPRINT} -->"
+            --body "$(cat /tmp/issue-body.md)"
         fi

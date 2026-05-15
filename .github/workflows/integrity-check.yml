@@ -131,30 +131,29 @@ jobs:
             --jq '.[0].number' 2>/dev/null || true)
 
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          BODY="## CI Artifact Integrity Failure
 
-The weekly integrity check detected problems with platform releases or version files.
-
-| Field | Value |
-|-------|-------|
-| Detected | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
-| Workflow | [View run]($RUN_URL) |
-
-### Issues Found
-
-${{ steps.audit.outputs.failures }}"
+          printf '%s\n' \
+            "CI Artifact Integrity Failure" \
+            "" \
+            "The weekly integrity check detected problems with releases or version files." \
+            "" \
+            "Detected: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "Workflow:  ${RUN_URL}" \
+            "" \
+            "Issues Found:" \
+            "${{ steps.audit.outputs.failures }}" \
+            > /tmp/integrity-body.md
 
           if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --body "$BODY"
+            gh issue comment "$EXISTING" --body "$(cat /tmp/integrity-body.md)"
             echo "::notice::Updated existing integrity issue #$EXISTING"
           else
-            # Ensure labels exist
-            gh label create "ci-failure"    --color "d73a4a" --description "CI pipeline failure" 2>/dev/null || true
+            gh label create "ci-failure"     --color "d73a4a" --description "CI pipeline failure"     2>/dev/null || true
             gh label create "type:integrity" --color "e4e669" --description "Integrity check failure" 2>/dev/null || true
 
             gh issue create \
               --title "[CI] Weekly artifact integrity check failed — $(date -u +%Y-%m-%d)" \
               --label "ci-failure" \
               --label "type:integrity" \
-              --body "$BODY"
+              --body "$(cat /tmp/integrity-body.md)"
           fi
