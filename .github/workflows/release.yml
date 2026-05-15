@@ -8,6 +8,7 @@ on:
     workflows: ['Build macOS', 'Build Windows']
     types: [completed]
     branches: [main]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -16,8 +17,8 @@ jobs:
   orchestrate:
     name: Create Combined Release
     runs-on: ubuntu-latest
-    # Only proceed if the triggering build actually succeeded
-    if: github.event.workflow_run.conclusion == 'success'
+    # Proceed when triggered by a successful build or manually dispatched
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: write
     env:
