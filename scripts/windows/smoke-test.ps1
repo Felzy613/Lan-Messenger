@@ -26,12 +26,30 @@ if (-not (Test-Path $ArtifactPath)) {
 }
 
 Write-Log "Installing $ArtifactPath silently..."
+$InstallLog = "$env:TEMP\LanMessenger-install.log"
 $install = Start-Process -FilePath $ArtifactPath `
-    -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' `
-    -Wait -PassThru
+    -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$InstallLog" `
+    -PassThru
+
+# Wait up to 3 minutes for the installer to finish; kill it if it stalls
+$InstallTimeoutMs = 180000
+Write-Log "Waiting up to 3 minutes for installer to complete..."
+if (-not $install.WaitForExit($InstallTimeoutMs)) {
+    $install.Kill()
+    Write-Log "::error::Installer did not complete within 3 minutes — killed"
+    if (Test-Path $InstallLog) {
+        Write-Log "--- Inno Setup install log (last 40 lines) ---"
+        Get-Content $InstallLog -Tail 40 | Tee-Object -Append -FilePath $LogFile
+    }
+    exit 1
+}
 
 if ($install.ExitCode -ne 0) {
     Write-Log "::error::Installer exited with code $($install.ExitCode)"
+    if (Test-Path $InstallLog) {
+        Write-Log "--- Inno Setup install log (last 40 lines) ---"
+        Get-Content $InstallLog -Tail 40 | Tee-Object -Append -FilePath $LogFile
+    }
     exit 1
 }
 Write-Log "Installer completed (exit code 0)"
