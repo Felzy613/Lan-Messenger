@@ -30,10 +30,13 @@ permissions:
   contents: read
 
 jobs:
-  # ── Preflight ─────────────────────────────────────────────────────────────────
+  # ── Preflight ──────────────────────────────────────────────────────────────────
+  # Runs on ubuntu (fast/cheap). Validates the version and checks whether we
+  # already published this version — if so, every downstream job is skipped.
   preflight:
-    name: Preflight — Version & Duplicate Check
+    name: Preflight
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
@@ -66,14 +69,23 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-  # ── Unit Tests ────────────────────────────────────────────────────────────────
-  test:
-    name: Unit Tests
+  # ── Test + Build + Sign ────────────────────────────────────────────────────────
+  # Single job: tests and the release build share one runner so Swift only
+  # compiles the source tree once. Skipped entirely if the version is already
+  # released (unless force_rebuild is set).
+  build-test:
+    name: Test, Build & Sign
     needs: preflight
+    if: |
+      needs.preflight.outputs.release_exists == 'false' ||
+      inputs.force_rebuild == true
     runs-on: macos-15
+    timeout-minutes: 30
     permissions:
       contents: read
       issues: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
     defaults:
       run:
         working-directory: src/macos
@@ -87,50 +99,6 @@ jobs:
           key: swift-${{ runner.os }}-${{ hashFiles('src/macos/Package.swift') }}
           restore-keys: swift-${{ runner.os }}-
 
-      - name: Run unit tests
-        run: |
-          swift test --parallel 2>&1 | tee ../../test-output-macos.txt
-          exit ${PIPESTATUS[0]}
-
-      - name: Upload test diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-diagnostics-macos-${{ github.run_id }}
-          path: test-output-macos.txt
-          retention-days: 30
-
-      - name: Report test failure
-        if: failure()
-        uses: ./.github/actions/report-failure
-        with:
-          platform: macos
-          version: ${{ needs.preflight.outputs.version }}
-          failure_type: TEST_FAILURE
-          log_path: test-output-macos.txt
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-  # ── Build & Sign ──────────────────────────────────────────────────────────────
-  build:
-    name: Build & Sign
-    needs: [preflight, test]
-    if: |
-      needs.preflight.outputs.release_exists == 'false' ||
-      inputs.force_rebuild == true
-    runs-on: macos-15
-    permissions:
-      contents: read
-      issues: write
-    outputs:
-      artifact_name: ${{ steps.package.outputs.artifact_name }}
-    env:
-      VERSION: ${{ needs.preflight.outputs.version }}
-    defaults:
-      run:
-        working-directory: src/macos
-    steps:
-      - uses: actions/checkout@v4
-
       - name: Cache Homebrew downloads
         uses: actions/cache@v4
         with:
@@ -140,6 +108,15 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen 2>/dev/null || brew upgrade xcodegen 2>/dev/null || true
 
+      # ── Tests ────────────────────────────────────────────────────────────────
+      # swift test compiles to .build/ (debug). The subsequent xcodebuild step
+      # reuses compiled Swift modules from the same directory, making it faster.
+      - name: Run unit tests
+        run: |
+          swift test --parallel 2>&1 | tee ../../test-output-macos.txt
+          exit ${PIPESTATUS[0]}
+
+      # ── Build ────────────────────────────────────────────────────────────────
       - name: Stamp version into project.yml
         run: |
           sed -i '' "s/MARKETING_VERSION:.*/MARKETING_VERSION: ${VERSION}/" project.yml
@@ -161,13 +138,13 @@ jobs:
             2>&1 | tee ../../build-output-macos.txt
           exit ${PIPESTATUS[0]}
 
+      # ── Sign ─────────────────────────────────────────────────────────────────
       - name: Import signing certificate
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
         run: |
           echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/certificate.p12
-
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
           KEYCHAIN_PWD=$(openssl rand -hex 16)
 
@@ -185,7 +162,6 @@ jobs:
             -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
-          echo "KEYCHAIN_PWD=$KEYCHAIN_PWD" >> $GITHUB_ENV
           rm /tmp/certificate.p12
 
       - name: Locate, sign, and verify app bundle
@@ -193,17 +169,15 @@ jobs:
           APP=$(find .build/derived -name "LanMessenger.app" -type d | head -1)
           if [ -z "$APP" ]; then
             echo "::error::LanMessenger.app not found in derived data"
-            find .build/derived -type d -maxdepth 6 | head -30
+            find .build/derived -type d -maxdepth 6 | head -20
             exit 1
           fi
           echo "APP_PATH=$APP" >> $GITHUB_ENV
-          echo "Found app: $APP"
 
           codesign --deep --force --options runtime \
             --entitlements LanMessenger/LanMessenger.entitlements \
             --sign "Apple Development: davefelzy20@gmail.com (7FAZT3258V)" \
             "$APP"
-
           codesign --verify --deep --strict "$APP"
           echo "✓ Code signing verified"
 
@@ -211,22 +185,17 @@ jobs:
           # NOTARIZE_ZIP="/tmp/notarize-${VERSION}.zip"
           # ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
           # xcrun notarytool submit "$NOTARIZE_ZIP" \
-          #   --apple-id davefelzy20@gmail.com \
-          #   --team-id 7FAZT3258V \
-          #   --password "${{ secrets.APPLE_APP_PASSWORD }}" \
-          #   --wait
-          # xcrun stapler staple "$APP"
-          # rm "$NOTARIZE_ZIP"
+          #   --apple-id davefelzy20@gmail.com --team-id 7FAZT3258V \
+          #   --password "${{ secrets.APPLE_APP_PASSWORD }}" --wait
+          # xcrun stapler staple "$APP" && rm "$NOTARIZE_ZIP"
 
       - name: Package as zip
         id: package
         run: |
           ARTIFACT_NAME="LanMessenger-macOS-${VERSION}.zip"
           ditto -c -k --keepParent "$APP_PATH" "$ARTIFACT_NAME"
-          SHA256=$(shasum -a 256 "$ARTIFACT_NAME" | cut -d' ' -f1)
           echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
-          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
-          echo "Packaged: $ARTIFACT_NAME (SHA256: $SHA256)"
+          echo "Packaged: $ARTIFACT_NAME"
 
       - name: Upload artifact for downstream jobs
         uses: actions/upload-artifact@v4
@@ -239,15 +208,17 @@ jobs:
         if: always()
         run: security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
 
-      - name: Upload build diagnostics on failure
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-diagnostics-macos-${{ github.run_id }}
-          path: build-output-macos.txt
+          name: diagnostics-macos-${{ github.run_id }}
+          path: |
+            test-output-macos.txt
+            build-output-macos.txt
           retention-days: 30
 
-      - name: Report build failure
+      - name: Report failure
         if: failure()
         uses: ./.github/actions/report-failure
         with:
@@ -257,14 +228,15 @@ jobs:
           log_path: build-output-macos.txt
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Startup Smoke Test ────────────────────────────────────────────────────────
+  # ── Startup Smoke Test ─────────────────────────────────────────────────────────
   smoke:
     name: Startup Smoke Test
-    needs: [preflight, build]
+    needs: [preflight, build-test]
     if: |
-      needs.build.result == 'success' &&
+      needs.build-test.result == 'success' &&
       inputs.skip_smoke != true
     runs-on: macos-15
+    timeout-minutes: 5
     permissions:
       contents: read
       issues: write
@@ -309,14 +281,15 @@ jobs:
           log_path: crash-reports/console.log
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Publish Platform Release ──────────────────────────────────────────────────
+  # ── Publish Platform Release ───────────────────────────────────────────────────
   publish:
     name: Publish Platform Release
-    needs: [preflight, build, smoke]
+    needs: [preflight, build-test, smoke]
     if: |
-      needs.build.result == 'success' &&
+      needs.build-test.result == 'success' &&
       (needs.smoke.result == 'success' || needs.smoke.result == 'skipped')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       issues: write

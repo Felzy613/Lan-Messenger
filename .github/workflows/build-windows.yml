@@ -31,9 +31,12 @@ permissions:
 
 jobs:
   # ── Preflight ─────────────────────────────────────────────────────────────────
+  # Runs on ubuntu (fast/cheap). Validates the version and checks whether we
+  # already published this version — if so, every downstream job is skipped.
   preflight:
-    name: Preflight — Version & Duplicate Check
+    name: Preflight
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
@@ -66,14 +69,23 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-  # ── Unit Tests ────────────────────────────────────────────────────────────────
-  test:
-    name: Unit Tests
+  # ── Test + Build + Package ────────────────────────────────────────────────────
+  # Single job: tests and the release build share one runner so .NET only
+  # compiles the source tree once. Skipped entirely if the version is already
+  # released (unless force_rebuild is set).
+  build-test:
+    name: Test, Build & Package
     needs: preflight
+    if: |
+      needs.preflight.outputs.release_exists == 'false' ||
+      inputs.force_rebuild == true
     runs-on: windows-2022
+    timeout-minutes: 20
     permissions:
       contents: read
       issues: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
     defaults:
       run:
         working-directory: src/windows-native
@@ -100,7 +112,10 @@ jobs:
       - name: Restore dependencies
         run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
 
-      - name: Build test project (via MSBuild)
+      # ── Tests ────────────────────────────────────────────────────────────────
+      # MSBuild compiles to bin\x64\Release\ which is reused by xcodebuild
+      # publish below, making this a single-compilation pipeline.
+      - name: Build test project
         shell: pwsh
         run: |
           msbuild LanMessenger.Tests\LanMessenger.Tests.csproj `
@@ -138,55 +153,7 @@ jobs:
             test-output-windows.txt
           retention-days: 30
 
-      - name: Report test failure
-        if: failure()
-        uses: ./.github/actions/report-failure
-        with:
-          platform: windows
-          version: ${{ needs.preflight.outputs.version }}
-          failure_type: TEST_FAILURE
-          log_path: test-output-windows.txt
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-  # ── Build & Package ───────────────────────────────────────────────────────────
-  build:
-    name: Build & Package
-    needs: [preflight, test]
-    if: |
-      needs.preflight.outputs.release_exists == 'false' ||
-      inputs.force_rebuild == true
-    runs-on: windows-2022
-    permissions:
-      contents: read
-      issues: write
-    outputs:
-      artifact_name: ${{ steps.package.outputs.artifact_name }}
-    env:
-      VERSION: ${{ needs.preflight.outputs.version }}
-    defaults:
-      run:
-        working-directory: src/windows-native
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Cache NuGet packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('src/windows-native/**/*.csproj') }}
-          restore-keys: nuget-${{ runner.os }}-
-
-      - name: Restore NuGet packages
-        run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
-
+      # ── Build ────────────────────────────────────────────────────────────────
       - name: Publish self-contained app
         shell: pwsh
         run: |
@@ -200,7 +167,7 @@ jobs:
             2>&1 | Tee-Object -FilePath ..\..\build-output-windows.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # Optional Authenticode signing — uncomment when CODE_SIGN_CERT / CODE_SIGN_PWD secrets are set:
+      # Optional Authenticode signing — uncomment once CODE_SIGN_CERT / CODE_SIGN_PWD secrets are set:
       # - name: Sign executable
       #   shell: pwsh
       #   run: |
@@ -241,15 +208,17 @@ jobs:
           path: src/windows-native/Output/${{ steps.package.outputs.artifact_name }}
           retention-days: 1
 
-      - name: Upload build diagnostics on failure
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-diagnostics-windows-${{ github.run_id }}
-          path: build-output-windows.txt
+          name: diagnostics-windows-${{ github.run_id }}
+          path: |
+            test-output-windows.txt
+            build-output-windows.txt
           retention-days: 30
 
-      - name: Report build failure
+      - name: Report failure
         if: failure()
         uses: ./.github/actions/report-failure
         with:
@@ -262,11 +231,12 @@ jobs:
   # ── Startup Smoke Test ────────────────────────────────────────────────────────
   smoke:
     name: Startup Smoke Test
-    needs: [preflight, build]
+    needs: [preflight, build-test]
     if: |
-      needs.build.result == 'success' &&
+      needs.build-test.result == 'success' &&
       inputs.skip_smoke != true
     runs-on: windows-2022
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
@@ -327,11 +297,12 @@ jobs:
   # ── Publish Platform Release ──────────────────────────────────────────────────
   publish:
     name: Publish Platform Release
-    needs: [preflight, build, smoke]
+    needs: [preflight, build-test, smoke]
     if: |
-      needs.build.result == 'success' &&
+      needs.build-test.result == 'success' &&
       (needs.smoke.result == 'success' || needs.smoke.result == 'skipped')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       issues: write
