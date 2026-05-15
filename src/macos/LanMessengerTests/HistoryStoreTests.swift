@@ -76,9 +76,7 @@ private func loadVectors() throws -> [String: Any] {
     if let url = Bundle(for: HistoryStoreTests.self).url(forResource: "known_good_exchange", withExtension: "json") {
         return try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
     }
-    let root = URL(fileURLWithPath: #file).deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().deletingLastPathComponent()
-    return try JSONSerialization.jsonObject(
-        with: Data(contentsOf: root.appendingPathComponent("test_vectors/known_good_exchange.json"))
-    ) as! [String: Any]
+    let url = URL(fileURLWithPath: #file).deletingLastPathComponent()
+        .appendingPathComponent("known_good_exchange.json")
+    return try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
 }

@@ -149,12 +149,9 @@ private func loadVectors() throws -> [String: Any] {
         let data = try Data(contentsOf: url)
         return try JSONSerialization.jsonObject(with: data) as! [String: Any]
     }
-    let packageDir = URL(fileURLWithPath: #file)
+    let url = URL(fileURLWithPath: #file)
         .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let url = packageDir.appendingPathComponent("test_vectors/known_good_exchange.json")
+        .appendingPathComponent("known_good_exchange.json")
     let data = try Data(contentsOf: url)
     return try JSONSerialization.jsonObject(with: data) as! [String: Any]
 }

@@ -70,8 +70,8 @@ final class FrameCodecTests: XCTestCase {
 // MARK: - Test helpers
 
 private func loadVectors() throws -> [String: Any] {
-    // Test vectors live at test_vectors/known_good_exchange.json relative to the package root.
-    // In Xcode, copy them as a bundle resource; for swift test, use the module bundle.
+    // Test vectors live at LanMessengerTests/known_good_exchange.json.
+    // In Xcode, accessed via bundle resource; for swift test, resolved relative to #file.
     let url = vectorsURL()
     let data = try Data(contentsOf: url)
     return try JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -82,13 +82,10 @@ private func vectorsURL() -> URL {
     if let url = Bundle(for: FrameCodecTests.self).url(forResource: "known_good_exchange", withExtension: "json") {
         return url
     }
-    // Fall back to relative path from Package.swift directory (swift test)
-    let packageDir = URL(fileURLWithPath: #file)
+    // Fall back to file-relative path (swift test)
+    return URL(fileURLWithPath: #file)
         .deletingLastPathComponent()   // LanMessengerTests/
-        .deletingLastPathComponent()   // macos/
-        .deletingLastPathComponent()   // lan-messenger-native/
-        .deletingLastPathComponent()   // repo root
-    return packageDir.appendingPathComponent("test_vectors/known_good_exchange.json")
+        .appendingPathComponent("known_good_exchange.json")
 }
 
 private extension Data {
