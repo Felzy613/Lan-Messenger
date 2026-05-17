@@ -10,6 +10,7 @@ struct ComposerView: View {
     @State private var draft = ""
     @State private var isDragTargeted = false
     @State private var measuredHeight: CGFloat = 36
+    @State private var typingTimer: Task<Void, Never>?
 
     private let minHeight: CGFloat = 36
     private let maxHeight: CGFloat = 120
@@ -73,7 +74,17 @@ struct ComposerView: View {
                 return true
             }
             .onChange(of: draft) { newValue in
-                model.sendTyping(!newValue.isEmpty, toPeerIP: peerIP)
+                typingTimer?.cancel()
+                if newValue.isEmpty {
+                    model.sendTyping(false, toPeerIP: peerIP)
+                } else {
+                    model.sendTyping(true, toPeerIP: peerIP)
+                    typingTimer = Task {
+                        try? await Task.sleep(for: .seconds(3))
+                        guard !Task.isCancelled else { return }
+                        model.sendTyping(false, toPeerIP: peerIP)
+                    }
+                }
             }
 
             Button(action: send) {
@@ -94,6 +105,8 @@ struct ComposerView: View {
     private func send() {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        typingTimer?.cancel()
+        typingTimer = nil
         model.sendMessage(trimmed, toPeerIP: peerIP, replyTo: replyTarget)
         draft = ""
         replyTarget = nil

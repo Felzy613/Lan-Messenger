@@ -15,6 +15,10 @@ final class FileTransferService {
 
     private let chunkSize = 64 * 1024   // 64 KiB
     private let tcpPort = 54232
+    // Serial queue: guarantees chunks are written in receive order even though
+    // crypto runs off the main actor. handleFileEnd is also routed through this
+    // queue so finalization always happens after the last chunk write.
+    private let chunkQueue = DispatchQueue(label: "com.dave.lanmessenger.file-chunks", qos: .utility)
 
     private init() {}
 
@@ -44,35 +48,60 @@ final class FileTransferService {
 
     private func handleFileChunk(_ pkt: FileChunkPacket, fromIP ip: String) {
         let key = FileTransferStore.TransferKey(ip: ip, transferId: pkt.transferId)
-        guard let transfer = FileTransferStore.shared.incoming[key] else { return }
+        guard let transfer = FileTransferStore.shared.incoming[key],
+              let fileHandle = transfer.fileHandle else { return }
 
-        let aad = Data(pkt.transferId.utf8)
-        guard let plaintext = try? SessionCrypto.decryptFromPeer(
-            myPrivate: KeyManager.shared.privateKey,
-            peerPublicKeyB64: transfer.senderPublicKeyB64,
-            nonceB64: pkt.nonce,
-            ciphertextB64: pkt.ciphertext,
-            aad: aad
-        ) else { return }
+        // Capture everything needed before leaving the main actor.
+        let nonce      = pkt.nonce
+        let ciphertext = pkt.ciphertext
+        let transferId = pkt.transferId
+        let senderKey  = transfer.senderPublicKeyB64
+        let filename   = transfer.filename
+        let totalSize  = transfer.totalSize
 
-        FileTransferStore.shared.appendChunk(plaintext, forKey: key)
-        let received = FileTransferStore.shared.incoming[key]?.bytesReceived ?? 0
-        onProgress?(ip, "Receiving \(transfer.filename)", received, transfer.totalSize)
+        // Decrypt and write on the serial background queue so the main thread
+        // stays free. The serial queue preserves TCP chunk ordering.
+        chunkQueue.async {
+            let aad = Data(transferId.utf8)
+            guard let plaintext = try? SessionCrypto.decryptFromPeer(
+                myPrivate: KeyManager.shared.privateKey,
+                peerPublicKeyB64: senderKey,
+                nonceB64: nonce,
+                ciphertextB64: ciphertext,
+                aad: aad
+            ) else { return }
+
+            fileHandle.write(plaintext)
+            let count = Int64(plaintext.count)
+
+            DispatchQueue.main.async { [weak self] in
+                FileTransferStore.shared.addBytesReceived(count, forKey: key)
+                let received = FileTransferStore.shared.incoming[key]?.bytesReceived ?? 0
+                self?.onProgress?(ip, "Receiving \(filename)", received, totalSize)
+            }
+        }
     }
 
     private func handleFileEnd(_ pkt: FileEndPacket, fromIP ip: String) {
         let key = FileTransferStore.TransferKey(ip: ip, transferId: pkt.transferId)
         guard let transfer = FileTransferStore.shared.incoming[key] else { return }
         let filename = transfer.filename
-        let sender = pkt.sender
+        let sender   = pkt.sender
 
-        guard let finalURL = FileTransferStore.shared.finalizeIncoming(
-            key: key,
-            inboxDir: ConfigStore.shared.inboxDirectory
-        ) else { return }
+        // Route through chunkQueue so finalization runs only after the last
+        // chunk write has completed (serial queue drains in order).
+        chunkQueue.async { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard let finalURL = FileTransferStore.shared.finalizeIncoming(
+                    key: key,
+                    inboxDir: ConfigStore.shared.inboxDirectory
+                ) else { return }
 
-        onComplete?(ip, "Receiving \(filename)", nil)
-        onIncomingFile?(ip, sender, finalURL)
+                self.onComplete?(ip, "Receiving \(filename)", nil)
+                self.onIncomingFile?(ip, sender, finalURL)
+            }
+        }
     }
 
     // MARK: - Send

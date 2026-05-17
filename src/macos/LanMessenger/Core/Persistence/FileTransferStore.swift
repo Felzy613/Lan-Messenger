@@ -68,6 +68,13 @@ final class FileTransferStore {
         incoming[key] = transfer
     }
 
+    // Called from the main actor after a chunk has been written on the background queue.
+    func addBytesReceived(_ bytes: Int64, forKey key: TransferKey) {
+        guard var transfer = incoming[key] else { return }
+        transfer.bytesReceived += bytes
+        incoming[key] = transfer
+    }
+
     // Finalizes the transfer: closes the handle, moves temp to final name (deduped).
     // Returns the final URL on success.
     func finalizeIncoming(key: TransferKey, inboxDir: URL) -> URL? {

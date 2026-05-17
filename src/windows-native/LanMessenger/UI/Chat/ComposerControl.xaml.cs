@@ -12,8 +12,9 @@ public sealed partial class ComposerControl : UserControl
     public event Action<bool>?                   TypingChanged;
     public event Action<IReadOnlyList<string>>?  FilesDropped;
 
-    private DateTime _lastTypingSent = DateTime.MinValue;
-    private bool     _typingActive;
+    private DateTime       _lastTypingSent = DateTime.MinValue;
+    private bool           _typingActive;
+    private DispatcherTimer? _typingTimer;
 
     public ComposerControl() => InitializeComponent();
 
@@ -46,6 +47,8 @@ public sealed partial class ComposerControl : UserControl
     {
         var text = InputBox.Text;
         if (string.IsNullOrWhiteSpace(text)) return;
+        _typingTimer?.Stop();
+        _typingTimer = null;
         Send?.Invoke(text);
         InputBox.Text = "";
         SetTyping(false);
@@ -53,7 +56,27 @@ public sealed partial class ComposerControl : UserControl
 
     private void InputBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        SetTyping(InputBox.Text.Length > 0);
+        _typingTimer?.Stop();
+        _typingTimer = null;
+
+        if (InputBox.Text.Length > 0)
+        {
+            SetTyping(true);
+            _typingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+            _typingTimer.Tick += OnTypingTimerTick;
+            _typingTimer.Start();
+        }
+        else
+        {
+            SetTyping(false);
+        }
+    }
+
+    private void OnTypingTimerTick(object? sender, object e)
+    {
+        _typingTimer?.Stop();
+        _typingTimer = null;
+        SetTyping(false);
     }
 
     private void SetTyping(bool active)
