@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Auto-bumps the patch version for any platform whose source files are staged.
+# Bumps version/macos.json + project.yml when src/macos/ changes.
+# Bumps version/windows.json + LanMessenger.csproj when src/windows-native/ changes.
+#
+# Install: cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+bump_patch() {
+    local version="$1"
+    local IFS='.'
+    read -ra parts <<< "$version"
+    local last=$(( ${#parts[@]} - 1 ))
+    parts[$last]=$(( parts[$last] + 1 ))
+    echo "${parts[*]}"
+}
+
+json_version() {
+    python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$1"
+}
+
+write_json_version() {
+    python3 -c "
+import json, sys
+path, ver = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    d = json.load(f)
+d['version'] = ver
+with open(path, 'w') as f:
+    json.dump(d, f)
+    f.write('\n')
+" "$1" "$2"
+}
+
+# Only examine source files — skip version files themselves to avoid double-bumping
+# when the user manually stages a version update.
+STAGED=$(git diff --cached --name-only | grep -v '^version/')
+
+BUMP_MACOS=0
+BUMP_WINDOWS=0
+
+while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    [[ "$file" == src/macos/* ]] && BUMP_MACOS=1
+    [[ "$file" == src/windows-native/* ]] && BUMP_WINDOWS=1
+done <<< "$STAGED"
+
+if [[ $BUMP_MACOS -eq 1 ]]; then
+    MACOS_JSON="$REPO_ROOT/version/macos.json"
+    current=$(json_version "$MACOS_JSON")
+    next=$(bump_patch "$current")
+    write_json_version "$MACOS_JSON" "$next"
+
+    # Sync MAJOR.MINOR into project.yml (Xcode uses MARKETING_VERSION without patch)
+    major_minor="${next%.*}"
+    PROJECT_YML="$REPO_ROOT/src/macos/project.yml"
+    sed -i '' "s/MARKETING_VERSION: \"[0-9][0-9.]*\"/MARKETING_VERSION: \"$major_minor\"/" "$PROJECT_YML"
+
+    git add "$MACOS_JSON" "$PROJECT_YML"
+    echo "  [version] macOS: $current → $next"
+fi
+
+if [[ $BUMP_WINDOWS -eq 1 ]]; then
+    WIN_JSON="$REPO_ROOT/version/windows.json"
+    current=$(json_version "$WIN_JSON")
+    next=$(bump_patch "$current")
+    write_json_version "$WIN_JSON" "$next"
+
+    # Sync into .csproj <Version> tag
+    CSPROJ="$REPO_ROOT/src/windows-native/LanMessenger/LanMessenger.csproj"
+    sed -i '' "s|<Version>[0-9][0-9.]*</Version>|<Version>$next</Version>|" "$CSPROJ"
+
+    git add "$WIN_JSON" "$CSPROJ"
+    echo "  [version] Windows: $current → $next"
+fi

@@ -92,6 +92,23 @@ Read `PROTOCOL.md` before touching any networking or crypto code. Key non-obviou
 - `ConfigStore.config` must be `var` (not `private(set) var`) — `MessagingService` mutates sub-properties on the struct value type directly
 - Filename sanitization: use `name.components(separatedBy: "/").last ?? ""` not `URL(fileURLWithPath:)` (URL returns CWD for empty string); strip null bytes **before** passing through URL
 
+## Version Management
+
+Every commit that touches `src/macos/` or `src/windows-native/` automatically bumps the patch version (e.g. `1.3.1 → 1.3.2`) via the pre-commit hook at `scripts/hooks/pre-commit`. The hook is **not** tracked by git — new contributors must install it manually:
+
+```bash
+cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+```
+
+**Version sources of truth:**
+
+| Platform | JSON (primary) | Synced to |
+|----------|---------------|-----------|
+| macOS | `version/macos.json` | `src/macos/project.yml` (`MARKETING_VERSION` — MAJOR.MINOR only) |
+| Windows | `version/windows.json` | `src/windows-native/LanMessenger/LanMessenger.csproj` (`<Version>`) |
+
+The hook bumps the last numeric segment only. To bump minor or major, edit the relevant JSON manually before staging — the hook will skip re-bumping files staged from `version/` directly.
+
 ## Test Vector Verification
 
 Before live-device testing, verify crypto against `known_good_exchange.json` (three vectors: text message, file_chunk, history file). These vectors are the ground truth for cross-platform interoperability. The macOS tests load this file from `LanMessengerTests/known_good_exchange.json`; the Windows tests load from `LanMessenger.Tests/known_good_exchange.json`.
