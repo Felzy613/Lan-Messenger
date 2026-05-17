@@ -94,11 +94,19 @@ Read `PROTOCOL.md` before touching any networking or crypto code. Key non-obviou
 
 ## Version Management
 
-Every commit that touches `src/macos/` or `src/windows-native/` automatically bumps the patch version (e.g. `1.3.1 → 1.3.2`) via the pre-commit hook at `scripts/hooks/pre-commit`. The hook is **not** tracked by git — new contributors must install it manually:
+Every commit that touches `src/macos/` or `src/windows-native/` automatically bumps the version via the pre-commit hook at `scripts/hooks/pre-commit`. The hook is **not** tracked by git — new contributors must install it manually:
 
 ```bash
 cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 ```
+
+**Bump level** is controlled by the `BUMP` env var (default: `patch`):
+
+| Command | Example result |
+|---------|---------------|
+| `git commit -m "fix: ..."` | `1.2.3 → 1.2.4` (patch, default) |
+| `BUMP=minor git commit -m "feat: ..."` | `1.2.3 → 1.3.0` |
+| `BUMP=major git commit -m "..."` | `1.2.3 → 2.0.0` |
 
 **Version sources of truth:**
 
@@ -107,7 +115,7 @@ cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-com
 | macOS | `version/macos.json` | `src/macos/project.yml` (`MARKETING_VERSION` — MAJOR.MINOR only) |
 | Windows | `version/windows.json` | `src/windows-native/LanMessenger/LanMessenger.csproj` (`<Version>`) |
 
-The hook bumps the last numeric segment only. To bump minor or major, edit the relevant JSON manually before staging — the hook will skip re-bumping files staged from `version/` directly.
+To bump manually without triggering the hook again, edit `version/*.json` directly and stage those files — the hook skips files under `version/`.
 
 ## Test Vector Verification
 
