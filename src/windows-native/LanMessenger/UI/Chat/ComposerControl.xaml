@@ -13,12 +13,12 @@
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
-        <!-- Attach button — solid subtle background ensures full hit-test area -->
+        <!-- Attach button — Segoe MDL2 "Attach" glyph matches the macOS SF Symbol paperclip -->
         <Button x:Name="AttachBtn"
                 Grid.Column="0"
-                Width="38" Height="38"
+                Width="32" Height="32"
                 Padding="0"
-                CornerRadius="19"
+                CornerRadius="16"
                 BorderThickness="0"
                 ToolTipService.ToolTip="Attach file"
                 Click="AttachBtn_Click">
@@ -30,10 +30,10 @@
                 <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
             </Button.Resources>
-            <TextBlock Text="📎"
-                       FontSize="18"
-                       HorizontalAlignment="Center"
-                       VerticalAlignment="Center" />
+            <FontIcon FontFamily="Segoe MDL2 Assets"
+                      Glyph="&#xE723;"
+                      FontSize="16"
+                      Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
         </Button>
 
         <!-- Input box — custom Border keeps the WhatsApp rounded style at all focus states -->

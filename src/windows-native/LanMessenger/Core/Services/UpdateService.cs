@@ -181,16 +181,40 @@ public sealed class UpdateService
 
                 onProgress?.Invoke(new(UpdateProgressState.Installing, 1));
                 Log("Launching installer in silent mode");
+
+                // Remove the Zone.Identifier ADS that HttpClient can leave on downloaded
+                // files. If the stream is present, ShellExecute with Verb="open" will fail
+                // with error 5 (Access Denied) before UAC even appears; removing it first
+                // lets the elevation flow proceed normally.
+                try { File.Delete(setupPath + ":Zone.Identifier"); } catch { }
+
                 // /VERYSILENT runs with no UI, /SUPPRESSMSGBOXES squelches errors, /NORESTART
                 // avoids forced reboot, /CLOSEAPPLICATIONS+/RESTARTAPPLICATIONS lets Inno
                 // shut us down and relaunch the new build after install.
                 var psi = new ProcessStartInfo(setupPath)
                 {
                     Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",
-                    UseShellExecute = true,  // launch elevated installer via shell
-                    Verb = "open",
+                    UseShellExecute = true,
+                    Verb = "runas",  // explicitly request elevation so UAC always fires cleanly
                 };
-                Process.Start(psi);
+                try
+                {
+                    Process.Start(psi);
+                }
+                catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+                {
+                    // User clicked "No" on the UAC prompt — treat as a soft cancel, not a crash.
+                    Log("UAC prompt declined by user");
+                    onProgress?.Invoke(new(UpdateProgressState.Failed, 1, "Update canceled"));
+                    return false;
+                }
+                catch (Win32Exception ex) when (ex.NativeErrorCode == 5)
+                {
+                    // ShellExecute handed the launch off to the UAC elevation broker but
+                    // couldn't return a process handle — the installer will start once the
+                    // user approves.  Log and fall through so we still schedule the exit.
+                    Log($"ShellExecute elevation handoff (error 5); scheduling exit");
+                }
                 Log("Installer spawned — exiting current process so the installer can replace files");
 
                 // Give the installer a moment to start, then quit ourselves so files
