@@ -1,4 +1,5 @@
 using LanMessenger.Core.Persistence;
+using LanMessenger.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -179,7 +180,26 @@ public sealed partial class ContactsPage : Page
     {
         if (_model is null) return;
         var picker = new PeerPickerDialog(_model) { XamlRoot = XamlRoot };
-        await picker.ShowAsync();
+        var result = await picker.ShowAsync();
+        // ShowAsync has fully returned — safe to open another ContentDialog.
+        if (result == ContentDialogResult.Primary)
+            await RunNamingFlowAsync(picker.SelectedPeers);
         Refresh();
+    }
+
+    private async Task RunNamingFlowAsync(IReadOnlyList<PeerInfo> peers)
+    {
+        foreach (var peer in peers)
+        {
+            var dialog = new NameContactDialog(peer) { XamlRoot = XamlRoot };
+            var result = await dialog.ShowAsync();
+            string finalName = peer.Username;
+            if (result == ContentDialogResult.Primary)
+            {
+                var entered = dialog.NameValue;
+                if (!string.IsNullOrWhiteSpace(entered)) finalName = entered.Trim();
+            }
+            _model!.AddContact(peer.PublicKeyB64, finalName, peer.IP);
+        }
     }
 }

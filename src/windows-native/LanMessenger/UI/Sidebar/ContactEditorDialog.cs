@@ -151,6 +151,9 @@ public sealed class PeerPickerDialog : ContentDialog
     private readonly ListView _list;
     private readonly HashSet<string> _selectedKeys = [];
 
+    // Populated when the user confirms; read by the caller after ShowAsync returns.
+    public IReadOnlyList<PeerInfo> SelectedPeers { get; private set; } = [];
+
     public PeerPickerDialog(AppModel model)
     {
         _model = model;
@@ -166,11 +169,13 @@ public sealed class PeerPickerDialog : ContentDialog
         Closed += (_, _) => _model.PropertyChanged -= OnModelChanged;
 
         Content = _list;
-        PrimaryButtonClick += async (_, args) =>
+        // Snapshot selection before the dialog closes; the naming flow runs in the
+        // caller after ShowAsync() fully completes so no two dialogs overlap.
+        PrimaryButtonClick += (_, _) =>
         {
-            args.Cancel = true;       // we want to keep the dialog open while naming
-            Hide();
-            await RunNamingFlowAsync();
+            SelectedPeers = _model.Peers.Values
+                .Where(p => _selectedKeys.Contains(p.PublicKeyB64))
+                .ToList();
         };
     }
 
@@ -244,26 +249,6 @@ public sealed class PeerPickerDialog : ContentDialog
     private void UpdateSaveEnabled() =>
         IsPrimaryButtonEnabled = _selectedKeys.Count > 0;
 
-    // Walks through each selected peer asking the user for a custom display name
-    // before persisting the contact. "Skip" keeps the peer-advertised name.
-    private async System.Threading.Tasks.Task RunNamingFlowAsync()
-    {
-        var toAdd = _model.Peers.Values
-            .Where(p => _selectedKeys.Contains(p.PublicKeyB64))
-            .ToList();
-        foreach (var peer in toAdd)
-        {
-            var dialog = new NameContactDialog(peer) { XamlRoot = XamlRoot };
-            var result = await dialog.ShowAsync();
-            string finalName = peer.Username;
-            if (result == ContentDialogResult.Primary)
-            {
-                var entered = dialog.NameValue;
-                if (!string.IsNullOrWhiteSpace(entered)) finalName = entered.Trim();
-            }
-            _model.AddContact(peer.PublicKeyB64, finalName, peer.IP);
-        }
-    }
 }
 
 // Two-button dialog prompting for a custom display name for a freshly-discovered peer.
