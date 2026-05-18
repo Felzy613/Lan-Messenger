@@ -476,7 +476,12 @@ final class AppModel: ObservableObject {
             updateProgress = .downloading(0)
             do {
                 try await UpdateService.shared.downloadAndInstall(info: info) { progress in
-                    Task { @MainActor in self.updateProgress = .downloading(progress) }
+                    Task { @MainActor in
+                        // Service uses 0…0.9 for download, 0.9…1.0 for SHA256 verify.
+                        self.updateProgress = progress < 0.9
+                            ? .downloading(progress)
+                            : .verifying
+                    }
                 }
                 updateProgress = .installing
             } catch {
@@ -606,6 +611,7 @@ final class AppModel: ObservableObject {
 enum UpdateProgress: Equatable {
     case idle
     case downloading(Double)
+    case verifying
     case installing
     case failed(String)
 }

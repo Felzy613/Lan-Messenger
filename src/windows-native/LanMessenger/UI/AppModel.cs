@@ -157,16 +157,20 @@ public sealed partial class AppModel : ObservableObject
         var updated = new Dictionary<string, PeerInfo>(current);
         if (updated.TryGetValue(publicKeyB64, out var existing))
         {
-            existing.LastSeen = DateTime.UtcNow;
-        }
-        else
-        {
-            updated[publicKeyB64] = new PeerInfo
+            if (existing.IP == ip)
             {
-                IP = ip, Username = username, Port = port,
-                PublicKeyB64 = publicKeyB64, LastSeen = DateTime.UtcNow,
-            };
+                // Same IP — just bump the heartbeat timestamp; no structural change.
+                // The 2-second timeout timer handles online/offline UI transitions.
+                existing.LastSeen = DateTime.UtcNow;
+                return;
+            }
+            // IP changed — fall through to replace the entry below.
         }
+        updated[publicKeyB64] = new PeerInfo
+        {
+            IP = ip, Username = username, Port = port,
+            PublicKeyB64 = publicKeyB64, LastSeen = DateTime.UtcNow,
+        };
         Peers = updated;
         RefreshConversations();
         MessagingService.Shared.DeliverPending(ip, publicKeyB64);

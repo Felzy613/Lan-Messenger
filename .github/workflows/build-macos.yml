@@ -194,14 +194,20 @@ jobs:
         run: |
           ARTIFACT_NAME="LanMessenger-macOS-${VERSION}.zip"
           ditto -c -k --keepParent "$APP_PATH" "$ARTIFACT_NAME"
+          # Write sha256sum sidecar: "<hash>  <filename>"
+          HASH=$(shasum -a 256 "$ARTIFACT_NAME" | awk '{print $1}')
+          echo "$HASH  $ARTIFACT_NAME" > "${ARTIFACT_NAME}.sha256"
           echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
-          echo "Packaged: $ARTIFACT_NAME"
+          echo "sha256=$HASH" >> $GITHUB_OUTPUT
+          echo "Packaged: $ARTIFACT_NAME (SHA256: $HASH)"
 
       - name: Upload artifact for downstream jobs
         uses: actions/upload-artifact@v4
         with:
           name: macos-build-${{ github.run_id }}
-          path: src/macos/${{ steps.package.outputs.artifact_name }}
+          path: |
+            src/macos/${{ steps.package.outputs.artifact_name }}
+            src/macos/${{ steps.package.outputs.artifact_name }}.sha256
           retention-days: 1
 
       - name: Clean up keychain
@@ -316,6 +322,7 @@ jobs:
         run: |
           TAG="macos-v${VERSION}"
           ARTIFACT=$(ls dist/*.zip | head -1)
+          SIDECAR="${ARTIFACT}.sha256"
 
           printf '%s\n' \
             "macOS platform build v${VERSION}" \
@@ -327,11 +334,14 @@ jobs:
             "Platform pre-release. Combined release auto-created by Release Orchestration workflow." \
             > /tmp/release-notes.md
 
+          ASSETS="$ARTIFACT"
+          [ -f "$SIDECAR" ] && ASSETS="$ASSETS $SIDECAR"
+
           gh release create "$TAG" \
             --title "macOS v${VERSION}" \
             --prerelease \
             --notes-file /tmp/release-notes.md \
-            "$ARTIFACT"
+            $ASSETS
 
           echo "::notice::Published platform release: $TAG"
 

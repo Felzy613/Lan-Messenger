@@ -84,6 +84,10 @@ public sealed partial class ContactsPage : Page
     }
 
     private List<ContactRowViewModel> _allRows = [];
+    // WinUI 3 allows only one ContentDialog per XamlRoot at a time.
+    // This flag serialises our dialog opens so rapid clicks and migration
+    // dialogs from other pages don't trigger the 0x80000019 COMException.
+    private bool _dialogOpen;
 
     public ContactsPage()
     {
@@ -99,7 +103,7 @@ public sealed partial class ContactsPage : Page
 
     private void Refresh()
     {
-        var onlineIPs = _model?.Peers.Values.Select(p => p.IP).ToHashSet() ?? [];
+        var onlineIPs = _model?.Peers.Values.Where(p => p.IsOnline).Select(p => p.IP).ToHashSet() ?? [];
         _allRows = ConfigStore.Shared.Config.Contacts.Select(c => new ContactRowViewModel
         {
             PublicKeyB64 = c.PublicKeyB64,
@@ -143,48 +147,77 @@ public sealed partial class ContactsPage : Page
     private async void DeleteBtn_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement el || el.Tag is not string keyB64) return;
-        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == keyB64);
-        var dialog = new ContentDialog
+        if (_dialogOpen) return;
+        _dialogOpen = true;
+        try
         {
-            Title             = "Remove contact?",
-            Content           = $"Remove {contact?.Username ?? "contact"} and delete the conversation?",
-            PrimaryButtonText = "Remove",
-            CloseButtonText   = "Cancel",
-            DefaultButton     = ContentDialogButton.Close,
-            XamlRoot          = XamlRoot,
-        };
-        var result = await dialog.ShowAsync();
-        if (result == ContentDialogResult.Primary)
-        {
-            _model?.DeleteContact(keyB64);
-            Refresh();
+            var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == keyB64);
+            var dialog = new ContentDialog
+            {
+                Title             = "Remove contact?",
+                Content           = $"Remove {contact?.Username ?? "contact"} and delete the conversation?",
+                PrimaryButtonText = "Remove",
+                CloseButtonText   = "Cancel",
+                DefaultButton     = ContentDialogButton.Close,
+                XamlRoot          = XamlRoot,
+            };
+            var result = await dialog.ShowAsync();
+            if (result == ContentDialogResult.Primary)
+            {
+                _model?.DeleteContact(keyB64);
+                Refresh();
+            }
         }
+        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80000019))
+        {
+            // Another ContentDialog is already open — silently ignore this request.
+        }
+        finally { _dialogOpen = false; }
     }
 
     private async void EditBtn_Click(object sender, RoutedEventArgs e)
     {
         if (_model is null) return;
         if (sender is not FrameworkElement el || el.Tag is not string keyB64) return;
-        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == keyB64);
-        if (contact is null) return;
-        var editor = new ContactEditorDialog(contact) { XamlRoot = XamlRoot };
-        var result = await editor.ShowAsync();
-        if (result == ContentDialogResult.Primary)
+        if (_dialogOpen) return;
+        _dialogOpen = true;
+        try
         {
-            _model.UpdateContact(keyB64, editor.NameValue, editor.PhotoB64Value);
-            Refresh();
+            var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == keyB64);
+            if (contact is null) return;
+            var editor = new ContactEditorDialog(contact) { XamlRoot = XamlRoot };
+            var result = await editor.ShowAsync();
+            if (result == ContentDialogResult.Primary)
+            {
+                _model.UpdateContact(keyB64, editor.NameValue, editor.PhotoB64Value);
+                Refresh();
+            }
         }
+        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80000019))
+        {
+            // Another ContentDialog is already open — silently ignore this request.
+        }
+        finally { _dialogOpen = false; }
     }
 
     private async void AddFromPeers_Click(object sender, RoutedEventArgs e)
     {
-        if (_model is null) return;
-        var picker = new PeerPickerDialog(_model) { XamlRoot = XamlRoot };
-        var result = await picker.ShowAsync();
-        // ShowAsync has fully returned — safe to open another ContentDialog.
-        if (result == ContentDialogResult.Primary)
-            await RunNamingFlowAsync(picker.SelectedPeers);
-        Refresh();
+        if (_model is null || _dialogOpen) return;
+        _dialogOpen = true;
+        try
+        {
+            var picker = new PeerPickerDialog(_model) { XamlRoot = XamlRoot };
+            var result = await picker.ShowAsync();
+            // ShowAsync has fully returned — safe to open another ContentDialog.
+            if (result == ContentDialogResult.Primary)
+                await RunNamingFlowAsync(picker.SelectedPeers);
+            Refresh();
+        }
+        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80000019))
+        {
+            // Another ContentDialog is already open (e.g. migration prompt) — silently ignore.
+        }
+        finally { _dialogOpen = false; }
     }
 
     private async Task RunNamingFlowAsync(IReadOnlyList<PeerInfo> peers)

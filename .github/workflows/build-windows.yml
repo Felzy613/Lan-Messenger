@@ -197,6 +197,8 @@ jobs:
           }
 
           $Hash = (Get-FileHash $ArtifactPath -Algorithm SHA256).Hash.ToLower()
+          # Write the sha256sum sidecar: "<hash>  <filename>" format
+          "$Hash  $ArtifactName" | Out-File -FilePath "Output\$ArtifactName.sha256" -Encoding ascii -NoNewline
           echo "artifact_name=$ArtifactName" >> $env:GITHUB_OUTPUT
           echo "sha256=$Hash" >> $env:GITHUB_OUTPUT
           Write-Host "Packaged: $ArtifactName (SHA256: $Hash)"
@@ -205,7 +207,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-build-${{ github.run_id }}
-          path: src/windows-native/Output/${{ steps.package.outputs.artifact_name }}
+          path: |
+            src/windows-native/Output/${{ steps.package.outputs.artifact_name }}
+            src/windows-native/Output/${{ steps.package.outputs.artifact_name }}.sha256
           retention-days: 1
 
       - name: Upload diagnostics on failure
@@ -329,6 +333,7 @@ jobs:
         run: |
           TAG="windows-v${VERSION}"
           ARTIFACT=$(ls dist/*.exe | head -1)
+          SIDECAR="${ARTIFACT}.sha256"
 
           printf '%s\n' \
             "Windows platform build v${VERSION}" \
@@ -340,11 +345,14 @@ jobs:
             "Platform pre-release. Combined release auto-created by Release Orchestration workflow." \
             > /tmp/release-notes.md
 
+          ASSETS="$ARTIFACT"
+          [ -f "$SIDECAR" ] && ASSETS="$ASSETS $SIDECAR"
+
           gh release create "$TAG" \
             --title "Windows v${VERSION}" \
             --prerelease \
             --notes-file /tmp/release-notes.md \
-            "$ARTIFACT"
+            $ASSETS
 
           echo "::notice::Published platform release: $TAG"
 

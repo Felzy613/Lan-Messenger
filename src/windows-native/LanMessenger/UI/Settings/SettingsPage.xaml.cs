@@ -74,6 +74,13 @@ public sealed partial class SettingsPage : Page
                 UpdateProgressText.Visibility = Visibility.Visible;
                 UpdateProgressText.Text = $"Downloading… {(int)(progress.Fraction * 100)}%";
                 break;
+            case UpdateProgressState.Verifying:
+                InstallNowBtn.IsEnabled = false;
+                UpdateProgressBar.Visibility = Visibility.Visible;
+                UpdateProgressBar.Value = progress.Fraction;
+                UpdateProgressText.Visibility = Visibility.Visible;
+                UpdateProgressText.Text = "Verifying integrity…";
+                break;
             case UpdateProgressState.Installing:
                 InstallNowBtn.IsEnabled = false;
                 UpdateProgressBar.Visibility = Visibility.Visible;

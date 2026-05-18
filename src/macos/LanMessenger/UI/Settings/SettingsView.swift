@@ -122,7 +122,7 @@ struct SettingsView: View {
     private func installButton(info: UpdateInfo) -> some View {
         Group {
             switch model.updateProgress {
-            case .downloading, .installing:
+            case .downloading, .verifying, .installing:
                 EmptyView()
             default:
                 Button("Install") { model.installUpdate() }
@@ -138,6 +138,14 @@ struct SettingsView: View {
         case .downloading(let p):
             ProgressView(value: p) {
                 Text("Downloading… \(Int(p * 100))%")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        case .verifying:
+            HStack {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Verifying integrity…")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

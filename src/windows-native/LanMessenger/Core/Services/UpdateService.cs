@@ -1,26 +1,30 @@
 using LanMessenger.Core.Persistence;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace LanMessenger.Core.Services;
 
-public sealed record UpdateInfo(string Version, string Notes, Uri DownloadUrl, long ExpectedSize);
+// Represents an available update found on GitHub Releases.
+// Sha256Url is null for releases that pre-date SHA256 sidecar publishing.
+public sealed record UpdateInfo(string Version, string Notes, Uri DownloadUrl, Uri? Sha256Url, long ExpectedSize);
 
-public enum UpdateProgressState { Idle, Downloading, Installing, Failed }
+public enum UpdateProgressState { Idle, Downloading, Verifying, Installing, Failed }
 
 public sealed record UpdateProgress(UpdateProgressState State, double Fraction = 0, string? Message = null);
 
-// Fetches updates from GitHub Releases, picks the Windows installer asset, downloads,
-// verifies, then spawns the installer in silent mode and exits.
+// Fetches updates from GitHub Releases, picks the Windows installer asset,
+// downloads and verifies it (SHA256 when a .sha256 sidecar is present), then
+// spawns the Inno Setup installer in silent mode and exits.
 //
-// Layout assumptions (matching .github/workflows/release.yml):
-//   - Per-platform tag:  windows-vX.Y.Z
-//   - Combined tag:      release-winX.Y.Z-macA.B.C
-//   - Asset filename:    LanMessenger-Setup-X.Y.Z.exe (Inno Setup installer)
+// Release layout (matching .github/workflows/release.yml):
+//   - Combined tag:      release-winX.Y.Z-macA.B.C   ← preferred
+//   - Per-platform tag:  windows-vX.Y.Z               ← fallback
+//   - Asset:             LanMessenger-Setup-X.Y.Z.exe
+//   - Sidecar:           LanMessenger-Setup-X.Y.Z.exe.sha256  (optional)
 public sealed class UpdateService
 {
     public static UpdateService Shared { get; } = new();
@@ -29,8 +33,10 @@ public sealed class UpdateService
     private static HttpClient CreateClient()
     {
         var c = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        c.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("LanMessenger-Windows", CurrentStaticVersion));
-        c.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        c.DefaultRequestHeaders.UserAgent.Add(
+            new ProductInfoHeaderValue("LanMessenger-Windows", CurrentStaticVersion));
+        c.DefaultRequestHeaders.Accept.Add(
+            new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         c.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
         return c;
     }
@@ -69,18 +75,11 @@ public sealed class UpdateService
             }
             var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                Log("Unexpected JSON shape");
-                return null;
-            }
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) { Log("Unexpected JSON shape"); return null; }
 
             var picked = PickLatestWindows(doc.RootElement);
-            if (picked is null)
-            {
-                Log("No Windows release found");
-                return null;
-            }
+            if (picked is null) { Log("No Windows release found"); return null; }
+
             if (CompareVersions(picked.Version, CurrentVersion) > 0)
             {
                 Log($"Update available: {picked.Version} (we're on {CurrentVersion})");
@@ -89,43 +88,15 @@ public sealed class UpdateService
             Log($"Already on latest ({CurrentVersion} >= {picked.Version})");
             return null;
         }
-        catch (Exception ex)
-        {
-            Log($"Check failed: {ex.Message}");
-            return null;
-        }
+        catch (Exception ex) { Log($"Check failed: {ex.Message}"); return null; }
     }
 
-    // Backwards-compatible entry point used by the existing Settings page.
-    public async Task<string?> CheckForUpdateAsync(string repoOrUrl)
-    {
-        var repo = NormalizeRepo(repoOrUrl);
-        var info = await CheckAsync(repo).ConfigureAwait(false);
-        return info?.Version;
-    }
+    // MARK: - Download + verify + install
 
-    private static string NormalizeRepo(string s)
-    {
-        s = (s ?? "").Trim();
-        if (string.IsNullOrEmpty(s)) return ConfigStore.Shared.Config.UpdateRepo;
-        // Accept "owner/repo", "github.com/owner/repo", "https://github.com/owner/repo"
-        if (s.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                var uri = new Uri(s);
-                var parts = uri.AbsolutePath.Trim('/').Split('/');
-                if (parts.Length >= 2) return $"{parts[0]}/{parts[1]}";
-            }
-            catch { }
-        }
-        if (s.Contains('/') && !s.Contains(' ')) return s;
-        return ConfigStore.Shared.Config.UpdateRepo;
-    }
-
-    // MARK: - Download + install
-
-    public async Task<bool> DownloadAndInstallAsync(UpdateInfo info, Action<UpdateProgress>? onProgress = null, CancellationToken ct = default)
+    public async Task<bool> DownloadAndInstallAsync(
+        UpdateInfo info,
+        Action<UpdateProgress>? onProgress = null,
+        CancellationToken ct = default)
     {
         if (!await _gate.WaitAsync(0, ct).ConfigureAwait(false))
         {
@@ -137,13 +108,11 @@ public sealed class UpdateService
         {
             var stagingDir = ConfigStore.Shared.UpdateStagingDirectory;
             Directory.CreateDirectory(stagingDir);
-            // Single-instance install lock — if another update is running in another process, bail out.
+
+            // Single-process install lock.
             var lockPath = Path.Combine(stagingDir, "install.lock");
             FileStream? lockFile = null;
-            try
-            {
-                lockFile = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-            }
+            try { lockFile = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
             catch
             {
                 Log("Install lock held by another process");
@@ -159,11 +128,25 @@ public sealed class UpdateService
                 var setupPath = Path.Combine(stagingDir, fileName);
                 if (File.Exists(setupPath)) File.Delete(setupPath);
 
+                // Step 1: fetch the expected SHA256 (if sidecar was published)
+                string? expectedSHA256 = null;
+                if (info.Sha256Url is not null)
+                {
+                    Log($"Fetching SHA256 sidecar: {info.Sha256Url}");
+                    expectedSHA256 = await FetchSHA256SidecarAsync(info.Sha256Url, ct).ConfigureAwait(false);
+                    if (expectedSHA256 is not null)
+                        Log($"Expected SHA256: {expectedSHA256}");
+                    else
+                        Log("SHA256 sidecar unavailable — integrity check will use size only");
+                }
+
+                // Step 2: download
                 onProgress?.Invoke(new(UpdateProgressState.Downloading, 0));
                 Log($"Downloading {info.DownloadUrl} → {setupPath}");
-                await DownloadAsync(info.DownloadUrl, setupPath, info.ExpectedSize, onProgress, ct).ConfigureAwait(false);
+                await DownloadAsync(info.DownloadUrl, setupPath, info.ExpectedSize, p =>
+                    onProgress?.Invoke(new(UpdateProgressState.Downloading, p * 0.9)), ct).ConfigureAwait(false);
 
-                // Sanity-check the file
+                // Step 3: verify size
                 var actualSize = new FileInfo(setupPath).Length;
                 if (actualSize < 512 * 1024)
                 {
@@ -177,48 +160,54 @@ public sealed class UpdateService
                     onProgress?.Invoke(new(UpdateProgressState.Failed, 1, "Size mismatch — refusing to install"));
                     return false;
                 }
-                Log($"Download verified ({actualSize} bytes)");
+                Log($"Download complete ({actualSize} bytes)");
 
+                // Step 4: verify SHA256 (if available)
+                onProgress?.Invoke(new(UpdateProgressState.Verifying, 0.9));
+                if (expectedSHA256 is not null)
+                {
+                    Log("Verifying SHA256…");
+                    var actualSHA256 = await ComputeSHA256HexAsync(setupPath, ct).ConfigureAwait(false);
+                    Log($"Actual SHA256:   {actualSHA256}");
+                    if (!string.Equals(actualSHA256, expectedSHA256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Log("SHA256 mismatch — refusing to install");
+                        onProgress?.Invoke(new(UpdateProgressState.Failed, 1, "Integrity check failed — download may be corrupt"));
+                        return false;
+                    }
+                    Log("SHA256 verified ✓");
+                }
+
+                // Step 5: launch installer
                 onProgress?.Invoke(new(UpdateProgressState.Installing, 1));
                 Log("Launching installer in silent mode");
 
-                // Remove the Zone.Identifier ADS that HttpClient can leave on downloaded
-                // files. If the stream is present, ShellExecute with Verb="open" will fail
-                // with error 5 (Access Denied) before UAC even appears; removing it first
-                // lets the elevation flow proceed normally.
+                // Remove Zone.Identifier so ShellExecute elevation proceeds cleanly.
                 try { File.Delete(setupPath + ":Zone.Identifier"); } catch { }
 
-                // /VERYSILENT runs with no UI, /SUPPRESSMSGBOXES squelches errors, /NORESTART
-                // avoids forced reboot, /CLOSEAPPLICATIONS+/RESTARTAPPLICATIONS lets Inno
-                // shut us down and relaunch the new build after install.
                 var psi = new ProcessStartInfo(setupPath)
                 {
                     Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",
                     UseShellExecute = true,
-                    Verb = "runas",  // explicitly request elevation so UAC always fires cleanly
+                    Verb = "runas",
                 };
                 try
                 {
                     Process.Start(psi);
                 }
-                catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+                catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
                 {
-                    // User clicked "No" on the UAC prompt — treat as a soft cancel, not a crash.
                     Log("UAC prompt declined by user");
                     onProgress?.Invoke(new(UpdateProgressState.Failed, 1, "Update canceled"));
                     return false;
                 }
-                catch (Win32Exception ex) when (ex.NativeErrorCode == 5)
+                catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 5)
                 {
-                    // ShellExecute handed the launch off to the UAC elevation broker but
-                    // couldn't return a process handle — the installer will start once the
-                    // user approves.  Log and fall through so we still schedule the exit.
+                    // Elevation handoff succeeded; installer starts after UAC approval.
                     Log($"ShellExecute elevation handoff (error 5); scheduling exit");
                 }
-                Log("Installer spawned — exiting current process so the installer can replace files");
 
-                // Give the installer a moment to start, then quit ourselves so files
-                // aren't locked. Inno will relaunch us via /RESTARTAPPLICATIONS.
+                Log("Installer spawned — exiting so the installer can replace files");
                 _ = Task.Run(async () =>
                 {
                     await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
@@ -234,64 +223,79 @@ public sealed class UpdateService
             onProgress?.Invoke(new(UpdateProgressState.Failed, 0, ex.Message));
             return false;
         }
-        finally
-        {
-            _gate.Release();
-        }
+        finally { _gate.Release(); }
     }
 
     // MARK: - Helpers
 
+    // Finds the best Windows release: prefers combined tags, falls back to platform tags.
     private UpdateInfo? PickLatestWindows(JsonElement releases)
     {
-        // Releases array, newest first. Pick the first non-draft release that has
-        // a Windows installer asset.
-        var ordered = new List<JsonElement>();
-        foreach (var r in releases.EnumerateArray()) ordered.Add(r);
-        ordered.Sort((a, b) =>
+        var all = new List<JsonElement>();
+        foreach (var r in releases.EnumerateArray()) all.Add(r);
+        all.Sort((a, b) =>
         {
             var da = a.TryGetProperty("published_at", out var pa) ? pa.GetString() ?? "" : "";
             var db = b.TryGetProperty("published_at", out var pb) ? pb.GetString() ?? "" : "";
-            return string.CompareOrdinal(db, da);
+            return string.CompareOrdinal(db, da); // newest first
         });
 
-        foreach (var rel in ordered)
+        // Two passes: combined releases first, then per-platform.
+        foreach (var combined in new[] { true, false })
         {
-            if (rel.TryGetProperty("draft", out var d) && d.ValueKind == JsonValueKind.True) continue;
-            if (!rel.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) continue;
-            var tag = rel.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
-            var version = ExtractVersion(tag);
-            if (string.IsNullOrEmpty(version)) continue;
+            foreach (var rel in all)
+            {
+                if (rel.TryGetProperty("draft", out var d) && d.ValueKind == JsonValueKind.True) continue;
+                if (!rel.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) continue;
 
-            JsonElement? winAsset = null;
-            foreach (var asset in assets.EnumerateArray())
-            {
-                var name = (asset.TryGetProperty("name", out var n) ? n.GetString() : "")?.ToLowerInvariant() ?? "";
-                if (name.EndsWith(".exe") && (name.Contains("setup") || name.Contains("windows") || name.Contains("-win")))
-                {
-                    winAsset = asset; break;
-                }
-            }
-            // Looser fallback: any .exe in the release
-            if (winAsset is null)
-            {
+                var tag = rel.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
+                var isCombined = tag.StartsWith("release-", StringComparison.OrdinalIgnoreCase);
+                if (combined != isCombined) continue;
+
+                var version = ExtractVersion(tag);
+                if (string.IsNullOrEmpty(version)) continue;
+
+                JsonElement? winAsset = null;
                 foreach (var asset in assets.EnumerateArray())
                 {
                     var name = (asset.TryGetProperty("name", out var n) ? n.GetString() : "")?.ToLowerInvariant() ?? "";
-                    if (name.EndsWith(".exe")) { winAsset = asset; break; }
+                    if (name.EndsWith(".exe") && (name.Contains("setup") || name.Contains("windows") || name.Contains("-win")))
+                    { winAsset = asset; break; }
                 }
+                if (winAsset is null)
+                {
+                    foreach (var asset in assets.EnumerateArray())
+                    {
+                        var name = (asset.TryGetProperty("name", out var n) ? n.GetString() : "")?.ToLowerInvariant() ?? "";
+                        if (name.EndsWith(".exe")) { winAsset = asset; break; }
+                    }
+                }
+                if (winAsset is null) continue;
+
+                var urlStr = winAsset.Value.TryGetProperty("browser_download_url", out var u) ? u.GetString() : null;
+                if (string.IsNullOrEmpty(urlStr) || !Uri.TryCreate(urlStr, UriKind.Absolute, out var url)) continue;
+
+                long size = 0;
+                if (winAsset.Value.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number)
+                    size = s.GetInt64();
+
+                // Look for an optional .sha256 sidecar among the same release's assets.
+                var assetName = winAsset.Value.TryGetProperty("name", out var an) ? an.GetString() ?? "" : "";
+                Uri? sha256Uri = null;
+                foreach (var asset in assets.EnumerateArray())
+                {
+                    var sidecarName = asset.TryGetProperty("name", out var sn) ? sn.GetString() ?? "" : "";
+                    if (sidecarName == assetName + ".sha256")
+                    {
+                        var sidUrl = asset.TryGetProperty("browser_download_url", out var su) ? su.GetString() : null;
+                        if (!string.IsNullOrEmpty(sidUrl)) Uri.TryCreate(sidUrl, UriKind.Absolute, out sha256Uri);
+                        break;
+                    }
+                }
+
+                var notes = rel.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
+                return new UpdateInfo(version, notes, url, sha256Uri, size);
             }
-            if (winAsset is null) continue;
-
-            var urlStr = winAsset.Value.TryGetProperty("browser_download_url", out var u) ? u.GetString() : null;
-            if (string.IsNullOrEmpty(urlStr) || !Uri.TryCreate(urlStr, UriKind.Absolute, out var url)) continue;
-
-            long size = 0;
-            if (winAsset.Value.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number)
-                size = s.GetInt64();
-
-            var notes = rel.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
-            return new UpdateInfo(version, notes, url, size);
         }
         return null;
     }
@@ -304,7 +308,6 @@ public sealed class UpdateService
         var idx = lower.IndexOf("win", StringComparison.Ordinal);
         if (idx < 0) idx = 0;
         var span = lower.AsSpan(idx);
-        // Skip non-digits
         var start = 0;
         while (start < span.Length && !char.IsDigit(span[start])) start++;
         var end = start;
@@ -326,7 +329,37 @@ public sealed class UpdateService
         return 0;
     }
 
-    private async Task DownloadAsync(Uri url, string destination, long expectedSize, Action<UpdateProgress>? progress, CancellationToken ct)
+    // Downloads the .sha256 sidecar (tiny text file) and returns the hex hash.
+    // Returns null if unavailable or malformed.
+    private async Task<string?> FetchSHA256SidecarAsync(Uri url, CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await _http.GetAsync(url, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return null;
+            var text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            // Accept "<hex>  <filename>" (sha256sum format) or just "<hex>".
+            var hex = text.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                          .FirstOrDefault(p => p.Length == 64 && p.All(c => "0123456789abcdefABCDEF".Contains(c)));
+            return hex?.ToLowerInvariant();
+        }
+        catch { return null; }
+    }
+
+    // Streams a file through SHA256 and returns the lowercase hex digest.
+    private static async Task<string> ComputeSHA256HexAsync(string filePath, CancellationToken ct)
+    {
+        using var sha = SHA256.Create();
+        await using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, true);
+        var buf = new byte[64 * 1024];
+        int read;
+        while ((read = await fs.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
+            sha.TransformBlock(buf, 0, read, null, 0);
+        sha.TransformFinalBlock([], 0, 0);
+        return BitConverter.ToString(sha.Hash!).Replace("-", "").ToLowerInvariant();
+    }
+
+    private async Task DownloadAsync(Uri url, string destination, long expectedSize, Action<double>? onProgress, CancellationToken ct)
     {
         using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
@@ -345,10 +378,10 @@ public sealed class UpdateService
             if (total > 0 && (now - lastReport).TotalMilliseconds > 150)
             {
                 lastReport = now;
-                progress?.Invoke(new(UpdateProgressState.Downloading, Math.Min(1.0, (double)received / total)));
+                onProgress?.Invoke(Math.Min(1.0, (double)received / total));
             }
         }
-        progress?.Invoke(new(UpdateProgressState.Downloading, 1.0));
+        onProgress?.Invoke(1.0);
     }
 
     private void Log(string message)
