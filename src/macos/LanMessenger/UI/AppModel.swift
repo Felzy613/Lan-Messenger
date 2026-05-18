@@ -529,6 +529,10 @@ final class AppModel: ObservableObject {
         FileTransferService.shared.onProgress = { [weak self] ip, label, bytes, total in
             self?.activeTransfers[ip] = (label, bytes, total)
         }
+        FileTransferService.shared.onError = { [weak self] ip, _ in
+            // Clear the in-progress banner so the UI doesn't stay stuck at 0%.
+            self?.activeTransfers.removeValue(forKey: ip)
+        }
         FileTransferService.shared.onComplete = { [weak self] ip, _, localURL in
             guard let self else { return }
             self.activeTransfers.removeValue(forKey: ip)

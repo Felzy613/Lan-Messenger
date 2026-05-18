@@ -4,29 +4,47 @@ using LanMessenger.Core.Protocol;
 using Microsoft.UI.Dispatching;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading.Channels;
 
 namespace LanMessenger.Core.Services;
 
 // Handles outgoing file transfers (queued per peer) and incoming file reassembly.
 // Outgoing: fresh TCP connection per file; file_start / file_chunks / file_end.
 // Incoming: receives chunks via the shared TCP listener, writes to temp, finalizes on file_end.
+//
+// Threading model
+// ───────────────
+//  • HandleFileStart / HandleFileChunk / HandleFileEnd are called on the UI thread
+//    (via DispatcherQueue) — all dictionary bookkeeping happens there.
+//  • Each incoming transfer owns an unbounded Channel<Func<Task>>.  Chunk work
+//    (decrypt + WriteAsync) is written to the channel from the UI thread and consumed
+//    by a single background Task, keeping the UI free while preserving TCP ordering.
+//  • The finalization work (FinalizeIncoming) is also sent through the same channel
+//    so it always runs after the last chunk write completes.
+//  • Outgoing I/O runs entirely on a background Task (Task.Run) and never touches
+//    the UI thread except through Dispatch().
 public sealed class FileTransferService
 {
     public static FileTransferService Shared { get; } = new();
 
-    public Action<string, string, long, long>?   OnProgress     { get; set; }  // peerIP, label, bytes, total
-    public Action<string, string, string?>?      OnComplete     { get; set; }  // peerIP, label, localPath (sender side only)
-    public Action<string, string, string>?       OnIncomingFile { get; set; }  // peerIP, sender, finalPath
+    public Action<string, string, long, long>?  OnProgress     { get; set; }  // peerIP, label, bytes, total
+    public Action<string, string, string?>?     OnComplete     { get; set; }  // peerIP, label, localPath (sender only)
+    public Action<string, string>?              OnError        { get; set; }  // peerIP, message
+    public Action<string, string, string>?      OnIncomingFile { get; set; }  // peerIP, sender, finalPath
 
     private DispatcherQueue? _dq;
     private const int ChunkSize = 64 * 1024; // 64 KiB
     private const int TcpPort   = 54232;
 
+    // Per-transfer channel for ordered background chunk processing.
+    // Accessed only from the UI thread (HandleFileStart/Chunk/End).
+    private readonly Dictionary<TransferKey, Channel<Func<Task>>> _transferChannels = [];
+
     private FileTransferService() { }
 
     public void SetDispatcherQueue(DispatcherQueue dq) => _dq = dq;
 
-    // MARK: - Receive (called from NetworkCoordinator dispatch)
+    // MARK: - Receive (called from NetworkCoordinator on UI thread)
 
     public void HandlePacket(ValidatedPacket packet)
     {
@@ -40,10 +58,26 @@ public sealed class FileTransferService
 
     private void HandleFileStart(FileStartPacket pkt, string ip)
     {
+        var key  = new TransferKey(ip, pkt.TransferId);
         var safe = PacketValidator.SanitizeFilename(pkt.Filename);
-        FileTransferStore.Shared.BeginIncoming(
+
+        var transfer = FileTransferStore.Shared.BeginIncoming(
             pkt.TransferId, pkt.Filename, pkt.Size, ip, pkt.SenderPublicKeyB64,
             ConfigStore.Shared.InboxDirectory);
+
+        if (transfer is null)
+        {
+            Dispatch(() => OnError?.Invoke(ip, "Cannot save incoming file — check disk space and inbox permissions"));
+            return;
+        }
+
+        // Create an unbounded channel (single reader) for ordered chunk processing.
+        var ch = Channel.CreateUnbounded<Func<Task>>(new UnboundedChannelOptions { SingleReader = true });
+        _transferChannels[key] = ch;
+
+        // Spin up one background Task that drains this channel in order.
+        _ = Task.Run(() => DrainChannelAsync(ch.Reader));
+
         Dispatch(() => OnProgress?.Invoke(ip, $"Receiving {safe}", 0, pkt.Size));
     }
 
@@ -51,32 +85,77 @@ public sealed class FileTransferService
     {
         var key = new TransferKey(ip, pkt.TransferId);
         if (!FileTransferStore.Shared.Incoming.TryGetValue(key, out var transfer)) return;
+        if (!_transferChannels.TryGetValue(key, out var ch)) return;
 
-        var aad = Encoding.UTF8.GetBytes(pkt.TransferId);
-        byte[] plaintext;
-        try { plaintext = SessionCrypto.DecryptFromPeer(KeyManager.Shared.PrivateKey, transfer.SenderPublicKeyB64, pkt.Nonce, pkt.Ciphertext, aad); }
-        catch { return; }
+        // Snapshot all packet data before yielding to the background channel —
+        // the packet object may be reused after this call returns.
+        var nonce      = pkt.Nonce;
+        var ciphertext = pkt.Ciphertext;
+        var transferId = pkt.TransferId;
+        var senderKey  = transfer.SenderPublicKeyB64;
+        var filename   = transfer.Filename;
+        var totalSize  = transfer.TotalSize;
 
-        FileTransferStore.Shared.AppendChunk(plaintext, key);
-        var received = FileTransferStore.Shared.Incoming.TryGetValue(key, out var t2) ? t2.BytesReceived : 0;
-        Dispatch(() => OnProgress?.Invoke(ip, $"Receiving {transfer.Filename}", received, transfer.TotalSize));
+        // Enqueue work onto the channel.  The background consumer decrypts and writes;
+        // the UI thread returns immediately and stays responsive.
+        ch.Writer.TryWrite(async () =>
+        {
+            var aad = Encoding.UTF8.GetBytes(transferId);
+            byte[] plaintext;
+            try
+            {
+                plaintext = SessionCrypto.DecryptFromPeer(
+                    KeyManager.Shared.PrivateKey, senderKey, nonce, ciphertext, aad);
+            }
+            catch { return; }
+
+            FileTransferStore.Shared.AppendChunk(plaintext, key);
+            var received = FileTransferStore.Shared.Incoming.TryGetValue(key, out var t2)
+                           ? t2.BytesReceived : 0;
+            Dispatch(() => OnProgress?.Invoke(ip, $"Receiving {filename}", received, totalSize));
+        });
     }
 
     private void HandleFileEnd(FileEndPacket pkt, string ip)
     {
         var key = new TransferKey(ip, pkt.TransferId);
         if (!FileTransferStore.Shared.Incoming.TryGetValue(key, out var transfer)) return;
+        if (!_transferChannels.TryGetValue(key, out var ch)) return;
+
+        // Remove the channel entry now (on UI thread) before handing off finalization.
+        _transferChannels.Remove(key);
+
         var filename = transfer.Filename;
         var sender   = pkt.Sender;
 
-        var finalPath = FileTransferStore.Shared.FinalizeIncoming(key, ConfigStore.Shared.InboxDirectory);
-        if (finalPath is null) return;
-
-        Dispatch(() =>
+        // Enqueue the finalization work — the channel consumer guarantees it only
+        // runs after every preceding chunk write has completed.
+        ch.Writer.TryWrite(async () =>
         {
-            OnComplete?.Invoke(ip, $"Receiving {filename}", null);  // receiver — no outgoing bubble
-            OnIncomingFile?.Invoke(ip, sender, finalPath);
+            var finalPath = FileTransferStore.Shared.FinalizeIncoming(
+                key, ConfigStore.Shared.InboxDirectory);
+            if (finalPath is null) return;
+
+            Dispatch(() =>
+            {
+                OnComplete?.Invoke(ip, $"Receiving {filename}", null);
+                OnIncomingFile?.Invoke(ip, sender, finalPath);
+            });
+            await Task.CompletedTask; // satisfies Func<Task> signature
         });
+
+        // Signal the consumer that no more items will arrive for this transfer.
+        ch.Writer.Complete();
+    }
+
+    // Background channel consumer — single reader, processes items in FIFO order.
+    private static async Task DrainChannelAsync(ChannelReader<Func<Task>> reader)
+    {
+        await foreach (var work in reader.ReadAllAsync().ConfigureAwait(false))
+        {
+            try   { await work().ConfigureAwait(false); }
+            catch { /* drop bad chunk, transfer continues */ }
+        }
     }
 
     // MARK: - Send
@@ -99,33 +178,50 @@ public sealed class FileTransferService
         var item = q.Peek();
 
         FileTransferStore.Shared.MarkTransferStarted(peerIP);
-        Task.Run(async () =>
+        _ = Task.Run(async () =>
         {
-            var success = await SendFileAsync(item.Path, peerIP, peerPublicKeyB64, item.Filename);
+            var success = await SendFileAsync(item.Path, peerIP, peerPublicKeyB64, item.Filename)
+                               .ConfigureAwait(false);
             Dispatch(() =>
             {
                 FileTransferStore.Shared.MarkTransferFinished(peerIP, success);
-                StartNextIfIdle(peerIP, peerPublicKeyB64);
+                if (success)
+                {
+                    // Advance to the next queued file.
+                    StartNextIfIdle(peerIP, peerPublicKeyB64);
+                }
+                else
+                {
+                    // Do NOT retry immediately — the item stays queued and will be
+                    // retried when RetryQueue() is called (e.g., on peer reconnect).
+                    OnError?.Invoke(peerIP, $"Failed to send {item.Filename} — will retry when peer reconnects");
+                }
             });
         });
     }
 
-    private async Task<bool> SendFileAsync(string path, string peerIP, string peerPublicKeyB64, string filename)
+    private async Task<bool> SendFileAsync(
+        string path, string peerIP, string peerPublicKeyB64, string filename)
     {
         if (!File.Exists(path)) return false;
         var totalSize = new FileInfo(path).Length;
 
         try
         {
-            using var tcp    = new TcpClient();
-            await tcp.ConnectAsync(peerIP, TcpPort).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            var stream = tcp.GetStream();
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(peerIP, TcpPort)
+                     .WaitAsync(TimeSpan.FromSeconds(10))
+                     .ConfigureAwait(false);
 
+            // Disable Nagle's algorithm — reduces latency on the final small frame.
+            tcp.NoDelay = true;
+
+            var stream     = tcp.GetStream();
             var transferId = Guid.NewGuid().ToString("N").ToLowerInvariant();
             var myKey      = KeyManager.Shared.PublicKeyB64;
             var myName     = ConfigStore.Shared.Config.Username;
 
-            // file_start
+            // ── file_start ────────────────────────────────────────────────────────
             var startPacket = new Dictionary<string, object?>
             {
                 ["type"] = "file_start", ["transfer_id"] = transferId,
@@ -135,15 +231,17 @@ public sealed class FileTransferService
             await stream.WriteAsync(FrameCodec.EncodeDict(startPacket)).ConfigureAwait(false);
             Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", 0, totalSize));
 
-            // chunks — throttle progress callbacks so the UI doesn't thrash on big files.
-            using var handle = File.OpenRead(path);
-            var buf = new byte[ChunkSize];
-            long sent = 0;
-            long lastReported = 0;
-            var  lastReportAt = DateTime.UtcNow;
-            var  minInterval  = TimeSpan.FromMilliseconds(100);
-            var  minBytes     = Math.Max(totalSize / 50, (long)ChunkSize * 4);
+            // ── file_chunks ───────────────────────────────────────────────────────
+            using var handle     = File.OpenRead(path);
+            var  buf             = new byte[ChunkSize];
+            long sent            = 0;
+            long lastReported    = 0;
+            var  lastReportAt    = DateTime.UtcNow;
+            var  minInterval     = TimeSpan.FromMilliseconds(100);
+            // Update every chunk for small files; throttle to ~10 Hz for large ones.
+            var  minBytes        = (long)ChunkSize;
             int  read;
+
             while ((read = await handle.ReadAsync(buf.AsMemory(0, ChunkSize)).ConfigureAwait(false)) > 0)
             {
                 var chunk = buf[..read];
@@ -158,25 +256,31 @@ public sealed class FileTransferService
                     ["nonce"] = nonceB64, ["ciphertext"] = ctB64,
                 };
                 await stream.WriteAsync(FrameCodec.EncodeDict(chunkPacket)).ConfigureAwait(false);
+
                 sent += read;
                 var now = DateTime.UtcNow;
                 if (sent - lastReported >= minBytes || (now - lastReportAt) >= minInterval)
                 {
-                    var bytesSoFar = sent;
+                    var snap = sent;
                     lastReported = sent;
                     lastReportAt = now;
-                    Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", bytesSoFar, totalSize));
+                    Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", snap, totalSize));
                 }
             }
 
-            // file_end
+            // ── file_end ──────────────────────────────────────────────────────────
             var endPacket = new Dictionary<string, object?>
             {
                 ["type"] = "file_end", ["transfer_id"] = transferId,
                 ["sender"] = myName, ["sender_public_key_b64"] = myKey, ["port"] = TcpPort,
             };
             await stream.WriteAsync(FrameCodec.EncodeDict(endPacket)).ConfigureAwait(false);
-            Dispatch(() => OnComplete?.Invoke(peerIP, $"Sending {filename}", path));
+
+            Dispatch(() =>
+            {
+                OnProgress?.Invoke(peerIP, $"Sending {filename}", totalSize, totalSize);
+                OnComplete?.Invoke(peerIP, $"Sending {filename}", path);
+            });
             return true;
         }
         catch { return false; }

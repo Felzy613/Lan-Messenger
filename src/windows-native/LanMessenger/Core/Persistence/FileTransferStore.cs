@@ -111,7 +111,9 @@ public sealed class FileTransferStore
     public void MarkTransferFinished(string peerIP, bool success)
     {
         ActiveOutgoing.Remove(peerIP);
-        if (OutgoingQueues.TryGetValue(peerIP, out var q) && q.Count > 0)
-            q.Dequeue(); // remove the just-finished item
+        // Only dequeue on success.  A failed item stays at the front of the queue
+        // so RetryQueue() can re-attempt it when the peer comes back online.
+        if (success && OutgoingQueues.TryGetValue(peerIP, out var q) && q.Count > 0)
+            q.Dequeue();
     }
 }
