@@ -107,6 +107,7 @@
         <tb:TaskbarIcon x:Name="TrayIcon"
                         ToolTipText="LAN Messenger"
                         NoLeftClickDelay="True"
+                        IconSource="Assets/icon.ico"
                         LeftClickCommand="{x:Bind ShowFromTrayCommand, Mode=OneWay}">
             <tb:TaskbarIcon.ContextFlyout>
                 <MenuFlyout>
