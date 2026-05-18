@@ -395,8 +395,24 @@ final class UpdateService {
             sleep 0.5
         done
         if kill -0 \(pid) 2>/dev/null; then
-            log "ERROR: process \(pid) still running after 60s — aborting"
-            exit 1
+            log "process \(pid) still running after 60s — sending SIGTERM"
+            kill -TERM \(pid) 2>/dev/null || true
+            sleep 2
+            if kill -0 \(pid) 2>/dev/null; then
+                log "process \(pid) still alive — sending SIGKILL"
+                kill -9 \(pid) 2>/dev/null || true
+                sleep 1
+            fi
+        fi
+
+        APP_EXEC="$(basename "$DST" .app)"
+        OTHERS=$(pgrep -x "$APP_EXEC" 2>/dev/null || true)
+        if [ -n "$OTHERS" ]; then
+            log "killing remaining $APP_EXEC instances: $OTHERS"
+            pkill -TERM -x "$APP_EXEC" 2>/dev/null || true
+            sleep 1
+            pkill -9 -x "$APP_EXEC" 2>/dev/null || true
+            sleep 0.5
         fi
 
         if [ ! -d "$NEW_APP" ]; then

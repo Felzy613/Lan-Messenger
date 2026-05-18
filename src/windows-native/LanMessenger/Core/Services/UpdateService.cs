@@ -182,6 +182,15 @@ public sealed class UpdateService
                 onProgress?.Invoke(new(UpdateProgressState.Installing, 1));
                 Log("Launching installer in silent mode");
 
+                // Kill all other instances of this app so the installer isn't blocked
+                // waiting for files to be unlocked.
+                var currentPid = Environment.ProcessId;
+                foreach (var proc in Process.GetProcessesByName("LanMessenger"))
+                {
+                    if (proc.Id == currentPid) continue;
+                    try { proc.Kill(entireProcessTree: true); proc.WaitForExit(2000); } catch { }
+                }
+
                 // Remove Zone.Identifier so ShellExecute elevation proceeds cleanly.
                 try { File.Delete(setupPath + ":Zone.Identifier"); } catch { }
 
@@ -207,11 +216,14 @@ public sealed class UpdateService
                     Log($"ShellExecute elevation handoff (error 5); scheduling exit");
                 }
 
-                Log("Installer spawned — exiting so the installer can replace files");
+                Log("Installer spawned — force-exiting so the installer can replace files");
                 _ = Task.Run(async () =>
                 {
                     await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-                    Microsoft.UI.Xaml.Application.Current.Exit();
+                    // Environment.Exit is synchronous and kills the process immediately,
+                    // unlike Application.Current.Exit() which queues an async WinUI shutdown
+                    // and can leave file handles open long enough to block the installer.
+                    Environment.Exit(0);
                 });
                 return true;
             }
