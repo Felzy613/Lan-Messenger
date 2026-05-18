@@ -58,7 +58,8 @@ with open(path, 'w') as f:
 
 # Only examine source files — skip version files themselves to avoid double-bumping
 # when the user manually stages a version update.
-STAGED=$(git diff --cached --name-only | grep -v '^version/')
+# `|| true` prevents grep's exit-1-on-no-match from aborting the script under set -e.
+STAGED=$(git diff --cached --name-only | grep -v '^version/' || true)
 
 BUMP_MACOS=0
 BUMP_WINDOWS=0
