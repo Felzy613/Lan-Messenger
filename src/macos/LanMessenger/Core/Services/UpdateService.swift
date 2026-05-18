@@ -405,7 +405,16 @@ final class UpdateService {
             fi
         fi
 
-        APP_EXEC="$(basename "$DST" .app)"
+        # Determine the on-disk executable name from Info.plist so we handle
+        # bundles whose folder is "LAN Messenger.app" (display name) but whose
+        # executable is "LanMessenger" (target name). Falls back to filename.
+        APP_EXEC=""
+        if [ -f "$DST/Contents/Info.plist" ]; then
+            APP_EXEC=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" \
+                "$DST/Contents/Info.plist" 2>/dev/null || true)
+        fi
+        [ -z "$APP_EXEC" ] && APP_EXEC="$(basename "$DST" .app)"
+
         OTHERS=$(pgrep -x "$APP_EXEC" 2>/dev/null || true)
         if [ -n "$OTHERS" ]; then
             log "killing remaining $APP_EXEC instances: $OTHERS"
@@ -439,6 +448,12 @@ final class UpdateService {
         else
             log "codesign verify failed (continuing anyway)"
         fi
+
+        # Re-register with Launch Services so Spotlight/Finder/Dock pick up
+        # the new bundle metadata (icon, version, capabilities) without
+        # waiting for the periodic Launch Services rebuild.
+        /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+            -f -R "$DST" >/dev/null 2>&1 || true
 
         log "relaunching $DST"
         /usr/bin/open "$DST" || log "WARN: open failed"

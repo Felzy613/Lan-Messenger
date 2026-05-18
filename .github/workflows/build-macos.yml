@@ -1,5 +1,31 @@
 name: Build macOS
 
+# End-to-end macOS release pipeline.
+#
+#   preflight  →  build-test-package  →  validate  →  publish
+#
+# preflight        Ubuntu. Reads version/macos.json, validates semver, checks if
+#                  the macos-v{version} release already exists. Skips the rest
+#                  when it does (unless force_rebuild is set).
+#
+# build-test-pkg   macOS runner. Runs unit tests, regenerates the icon catalog
+#                  + AppIcon.icns from Images/Logo.png, builds + signs the .app,
+#                  then packages a DMG (primary), ZIP (updater), and PKG (IT)
+#                  through scripts/macos/package.sh. Every artifact gets an
+#                  accompanying .sha256 sidecar.
+#
+# validate         macOS runner. Downloads the artifacts and runs three checks:
+#                    1. validate-bundle.sh  — structural / branding integrity
+#                    2. validate-dmg.sh     — DMG mounts and contains a usable
+#                                              .app + /Applications symlink
+#                    3. smoke-test.sh       — installs the DMG into /Applications
+#                                              and confirms the app actually
+#                                              starts and stays alive
+#
+# publish          Ubuntu. Creates the `macos-v{version}` release with every
+#                  artifact + sidecar attached. The Release Orchestration
+#                  workflow picks it up for the combined release.
+
 on:
   push:
     branches: [main]
@@ -7,9 +33,10 @@ on:
       - 'src/macos/**'
       - 'version/macos.json'
       - 'shared/**'
+      - 'scripts/macos/**'
       - '.github/workflows/build-macos.yml'
       - '.github/actions/**'
-      - 'scripts/macos/**'
+      - 'Images/Logo.png'
   workflow_dispatch:
     inputs:
       force_rebuild:
@@ -17,11 +44,14 @@ on:
         type: boolean
         default: false
       skip_smoke:
-        description: 'Skip startup smoke test'
+        description: 'Skip the install+launch smoke test'
+        type: boolean
+        default: false
+      notarize:
+        description: 'Notarize the signed artifacts (requires NOTARY_* secrets)'
         type: boolean
         default: false
 
-# One macOS build at a time — prevents parallel runs from corrupting releases
 concurrency:
   group: build-macos
   cancel-in-progress: false
@@ -30,9 +60,7 @@ permissions:
   contents: read
 
 jobs:
-  # ── Preflight ──────────────────────────────────────────────────────────────────
-  # Runs on ubuntu (fast/cheap). Validates the version and checks whether we
-  # already published this version — if so, every downstream job is skipped.
+  # ── Preflight ───────────────────────────────────────────────────────────────
   preflight:
     name: Preflight
     runs-on: ubuntu-latest
@@ -50,13 +78,13 @@ jobs:
         run: |
           VERSION=$(jq -r '.version' version/macos.json)
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "::error::Invalid semver '$VERSION' in version/macos.json — must match X.Y or X.Y.Z"
+            echo "::error::Invalid semver '$VERSION' in version/macos.json"
             exit 1
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "macOS version: $VERSION"
 
-      - name: Check for existing platform release
+      - name: Check whether release already exists
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -64,31 +92,25 @@ jobs:
           TAG="macos-v${{ steps.version.outputs.version }}"
           if gh release view "$TAG" --json tagName &>/dev/null; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "::notice::Release $TAG already exists — skipping (use force_rebuild to override)"
+            echo "::notice::Release $TAG already exists — skipping pipeline"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-  # ── Test + Build + Sign ────────────────────────────────────────────────────────
-  # Single job: tests and the release build share one runner so Swift only
-  # compiles the source tree once. Skipped entirely if the version is already
-  # released (unless force_rebuild is set).
-  build-test:
-    name: Test, Build & Sign
+  # ── Test, build, sign, and package ──────────────────────────────────────────
+  build-test-package:
+    name: Test, Build & Package
     needs: preflight
     if: |
       needs.preflight.outputs.release_exists == 'false' ||
       inputs.force_rebuild == true
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 35
     permissions:
       contents: read
       issues: write
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
-    defaults:
-      run:
-        working-directory: src/macos
     steps:
       - uses: actions/checkout@v4
 
@@ -108,45 +130,44 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen 2>/dev/null || brew upgrade xcodegen 2>/dev/null || true
 
-      # ── Tests ────────────────────────────────────────────────────────────────
-      # swift test compiles to .build/ (debug). The subsequent xcodebuild step
-      # reuses compiled Swift modules from the same directory, making it faster.
+      # Run unit tests first — fail fast before we spend time on packaging.
       - name: Run unit tests
+        working-directory: src/macos
         run: |
+          set -o pipefail
           swift test --parallel 2>&1 | tee ../../test-output-macos.txt
           exit ${PIPESTATUS[0]}
 
-      # ── Build ────────────────────────────────────────────────────────────────
-      - name: Stamp version into project.yml
+      # Regenerate the icon catalog + AppIcon.icns on the mac runner. The
+      # repo-committed icons are correct, but iconutil only exists on macOS
+      # so this step is what ensures AppIcon.icns is always fresh and matches
+      # Images/Logo.png byte-for-byte at release time.
+      - name: Regenerate icon set + AppIcon.icns
         run: |
-          sed -i '' "s/MARKETING_VERSION:.*/MARKETING_VERSION: ${VERSION}/" project.yml
-          grep MARKETING_VERSION project.yml
+          python3 -m pip install --quiet --user Pillow
+          python3 src/macos/scripts/generate_icon.py
+          ls -la src/macos/LanMessenger/Assets.xcassets/AppIcon.appiconset/
 
-      - name: Generate Xcode project
-        run: xcodegen generate
-
-      - name: Build Release configuration
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -project LanMessenger.xcodeproj \
-            -scheme LanMessenger \
-            -configuration Release \
-            -derivedDataPath .build/derived \
-            CODE_SIGNING_ALLOWED=NO \
-            SWIFT_OPTIMIZATION_LEVEL='-O' \
-            2>&1 | tee ../../build-output-macos.txt
-          exit ${PIPESTATUS[0]}
-
-      # ── Sign ─────────────────────────────────────────────────────────────────
+      # Import the developer signing certificate (only when present). We
+      # gracefully fall back to ad-hoc signing when MACOS_CERTIFICATE is not
+      # configured, so forks and PR runs still produce installable artifacts.
       - name: Import signing certificate
+        id: signing
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
-          echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/certificate.p12
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            echo "::notice::No MACOS_CERTIFICATE secret — using ad-hoc signing"
+            echo "identity=" >> $GITHUB_OUTPUT
+            echo "keychain=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
           KEYCHAIN_PWD=$(openssl rand -hex 16)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/certificate.p12
 
           security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -155,64 +176,68 @@ jobs:
             -k "$KEYCHAIN_PATH" \
             -P "$MACOS_CERTIFICATE_PWD" \
             -T /usr/bin/codesign \
-            -T /usr/bin/security
+            -T /usr/bin/security \
+            -T /usr/bin/productbuild
           security list-keychain -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
 
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          # If the workflow's secret tells us which identity string to use,
+          # honor it. Otherwise, autodetect by name.
+          IDENTITY="${MACOS_SIGNING_IDENTITY}"
+          if [ -z "$IDENTITY" ]; then
+            IDENTITY=$(security find-identity -p codesigning -v "$KEYCHAIN_PATH" \
+              | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          fi
+          if [ -z "$IDENTITY" ]; then
+            IDENTITY=$(security find-identity -p codesigning -v "$KEYCHAIN_PATH" \
+              | awk -F'"' 'NR==1{print $2}')
+          fi
+
+          echo "identity=$IDENTITY" >> $GITHUB_OUTPUT
+          echo "keychain=$KEYCHAIN_PATH" >> $GITHUB_OUTPUT
+          echo "::notice::Signing identity: $IDENTITY"
           rm /tmp/certificate.p12
 
-      - name: Locate, sign, and verify app bundle
+      # Hand control to scripts/macos/package.sh — the single source of truth
+      # for how to build, sign, and package the macOS app. Same script is used
+      # for local builds.
+      - name: Build + package (DMG, ZIP, PKG)
+        env:
+          VERSION: ${{ env.VERSION }}
+          SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARIZE: ${{ inputs.notarize && '1' || '0' }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          OUTPUT_DIR: ${{ github.workspace }}/dist/macos
+          KEEP_BUILD: '1'
         run: |
-          APP=$(find .build/derived -name "LanMessenger.app" -type d | head -1)
-          if [ -z "$APP" ]; then
-            echo "::error::LanMessenger.app not found in derived data"
-            find .build/derived -type d -maxdepth 6 | head -20
-            exit 1
-          fi
-          echo "APP_PATH=$APP" >> $GITHUB_ENV
+          chmod +x scripts/macos/package.sh
+          scripts/macos/package.sh
 
-          codesign --deep --force --options runtime \
-            --entitlements LanMessenger/LanMessenger.entitlements \
-            --sign "Apple Development: davefelzy20@gmail.com (7FAZT3258V)" \
-            "$APP"
-          codesign --verify --deep --strict "$APP"
-          echo "✓ Code signing verified"
-
-          # Optional notarization — uncomment once APPLE_APP_PASSWORD secret is set:
-          # NOTARIZE_ZIP="/tmp/notarize-${VERSION}.zip"
-          # ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
-          # xcrun notarytool submit "$NOTARIZE_ZIP" \
-          #   --apple-id davefelzy20@gmail.com --team-id 7FAZT3258V \
-          #   --password "${{ secrets.APPLE_APP_PASSWORD }}" --wait
-          # xcrun stapler staple "$APP" && rm "$NOTARIZE_ZIP"
-
-      - name: Package as zip
-        id: package
+      - name: List produced artifacts
         run: |
-          ARTIFACT_NAME="LanMessenger-macOS-${VERSION}.zip"
-          ditto -c -k --keepParent "$APP_PATH" "$ARTIFACT_NAME"
-          # Write sha256sum sidecar: "<hash>  <filename>"
-          HASH=$(shasum -a 256 "$ARTIFACT_NAME" | awk '{print $1}')
-          echo "$HASH  $ARTIFACT_NAME" > "${ARTIFACT_NAME}.sha256"
-          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
-          echo "sha256=$HASH" >> $GITHUB_OUTPUT
-          echo "Packaged: $ARTIFACT_NAME (SHA256: $HASH)"
+          ls -lh dist/macos/
 
-      - name: Upload artifact for downstream jobs
+      - name: Upload artifacts for downstream jobs
         uses: actions/upload-artifact@v4
         with:
           name: macos-build-${{ github.run_id }}
           path: |
-            src/macos/${{ steps.package.outputs.artifact_name }}
-            src/macos/${{ steps.package.outputs.artifact_name }}.sha256
+            dist/macos/*.dmg
+            dist/macos/*.dmg.sha256
+            dist/macos/*.zip
+            dist/macos/*.zip.sha256
+            dist/macos/*.pkg
+            dist/macos/*.pkg.sha256
           retention-days: 1
+          if-no-files-found: error
 
       - name: Clean up keychain
-        if: always()
-        run: security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+        if: always() && steps.signing.outputs.keychain != ''
+        run: security delete-keychain "${{ steps.signing.outputs.keychain }}" 2>/dev/null || true
 
       - name: Upload diagnostics on failure
         if: failure()
@@ -221,8 +246,9 @@ jobs:
           name: diagnostics-macos-${{ github.run_id }}
           path: |
             test-output-macos.txt
-            build-output-macos.txt
+            src/macos/build/package.log
           retention-days: 30
+          if-no-files-found: ignore
 
       - name: Report failure
         if: failure()
@@ -231,53 +257,93 @@ jobs:
           platform: macos
           version: ${{ needs.preflight.outputs.version }}
           failure_type: BUILD_FAILURE
-          log_path: build-output-macos.txt
+          log_path: src/macos/build/package.log
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Startup Smoke Test ─────────────────────────────────────────────────────────
-  smoke:
-    name: Startup Smoke Test
-    needs: [preflight, build-test]
-    if: |
-      needs.build-test.result == 'success' &&
-      inputs.skip_smoke != true
+  # ── Validate (install + launch smoke test) ──────────────────────────────────
+  validate:
+    name: Validate (install + launch)
+    needs: [preflight, build-test-package]
+    if: needs.build-test-package.result == 'success'
     runs-on: macos-15
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions:
       contents: read
       issues: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download build artifact
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: macos-build-${{ github.run_id }}
-          path: smoke-artifacts/
+          path: dist/macos/
 
-      - name: Run startup smoke test
+      - name: List downloaded artifacts
+        run: ls -lh dist/macos/
+
+      - name: Verify SHA256 sidecars match
+        working-directory: dist/macos
+        run: |
+          FAIL=0
+          for SC in *.sha256; do
+            EXPECTED=$(awk '{print $1}' "$SC")
+            FILE=$(basename "$SC" .sha256)
+            if [ ! -f "$FILE" ]; then
+              echo "::error::Sidecar $SC references missing file $FILE"
+              FAIL=$((FAIL + 1))
+              continue
+            fi
+            ACTUAL=$(/usr/bin/shasum -a 256 "$FILE" | awk '{print $1}')
+            if [ "$EXPECTED" != "$ACTUAL" ]; then
+              echo "::error::SHA256 mismatch for $FILE: expected $EXPECTED, got $ACTUAL"
+              FAIL=$((FAIL + 1))
+            else
+              echo "  ✓ $FILE"
+            fi
+          done
+          [ "$FAIL" -eq 0 ]
+
+      - name: Validate DMG (mount + bundle integrity)
+        run: |
+          chmod +x scripts/macos/validate-dmg.sh scripts/macos/validate-bundle.sh
+          DMG=$(ls dist/macos/*.dmg | head -1)
+          scripts/macos/validate-dmg.sh "$DMG"
+
+      - name: Smoke-test the DMG install flow
+        if: inputs.skip_smoke != true
         run: |
           chmod +x scripts/macos/smoke-test.sh
-          scripts/macos/smoke-test.sh smoke-artifacts/*.zip
+          DMG=$(ls dist/macos/*.dmg | head -1)
+          scripts/macos/smoke-test.sh "$DMG"
 
-      - name: Collect crash diagnostics
+      - name: Smoke-test the ZIP install flow (updater channel)
+        if: inputs.skip_smoke != true
+        run: |
+          ZIP=$(ls dist/macos/*.zip | head -1)
+          scripts/macos/smoke-test.sh "$ZIP"
+
+      - name: Collect diagnostics on failure
         if: failure()
         run: |
           mkdir -p crash-reports/
           cp ~/Library/Logs/DiagnosticReports/LanMessenger* crash-reports/ 2>/dev/null || true
-          log show --process LanMessenger --last 5m --info 2>/dev/null \
-            > crash-reports/console.log || true
+          log show --process LanMessenger --last 5m --info > crash-reports/console.log 2>/dev/null || true
           cp smoke.log crash-reports/ 2>/dev/null || true
+          cp dist/macos/smoke.log crash-reports/dmg-smoke.log 2>/dev/null || true
 
-      - name: Upload crash diagnostics
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-diagnostics-macos-${{ github.run_id }}
+          name: validate-diagnostics-macos-${{ github.run_id }}
           path: crash-reports/
           retention-days: 30
+          if-no-files-found: ignore
 
-      - name: Report smoke failure
+      - name: Report failure
         if: failure()
         uses: ./.github/actions/report-failure
         with:
@@ -287,13 +353,13 @@ jobs:
           log_path: crash-reports/console.log
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Publish Platform Release ───────────────────────────────────────────────────
+  # ── Publish release ─────────────────────────────────────────────────────────
   publish:
     name: Publish Platform Release
-    needs: [preflight, build-test, smoke]
+    needs: [preflight, build-test-package, validate]
     if: |
-      needs.build-test.result == 'success' &&
-      (needs.smoke.result == 'success' || needs.smoke.result == 'skipped')
+      needs.build-test-package.result == 'success' &&
+      needs.validate.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -305,13 +371,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download build artifact
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: macos-build-${{ github.run_id }}
           path: dist/
 
-      - name: Remove existing platform release (force rebuild only)
+      - name: Remove existing release (force rebuild only)
         if: inputs.force_rebuild == true
         run: |
           TAG="macos-v${VERSION}"
@@ -321,29 +387,41 @@ jobs:
       - name: Create platform release
         run: |
           TAG="macos-v${VERSION}"
-          ARTIFACT=$(ls dist/*.zip | head -1)
-          SIDECAR="${ARTIFACT}.sha256"
+          cd dist
 
-          printf '%s\n' \
-            "macOS platform build v${VERSION}" \
-            "" \
-            "Commit: ${{ github.sha }}" \
-            "Branch: ${{ github.ref_name }}" \
-            "Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "" \
-            "Platform pre-release. Combined release auto-created by Release Orchestration workflow." \
-            > /tmp/release-notes.md
+          # Compose release notes describing every artifact we publish.
+          {
+            echo "macOS platform build v${VERSION}"
+            echo ""
+            echo "Commit: ${{ github.sha }}"
+            echo "Branch: ${{ github.ref_name }}"
+            echo "Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo ""
+            echo "## Download"
+            echo ""
+            echo "| Format | When to use |"
+            echo "|--------|-------------|"
+            echo "| **\`.dmg\`** | Standard download for everyone. Open, drag to Applications, eject. |"
+            echo "| **\`.pkg\`** | IT-managed installs (MDM, JAMF, Munki). Installs silently to /Applications. |"
+            echo "| **\`.zip\`** | Updater channel — used by the in-app updater. Top-level is \`LAN Messenger.app\`. |"
+            echo ""
+            echo "Each artifact ships with a matching \`.sha256\` sidecar."
+            echo ""
+            echo "Platform pre-release. Combined release auto-created by Release Orchestration workflow."
+          } > /tmp/release-notes.md
 
-          ASSETS="$ARTIFACT"
-          [ -f "$SIDECAR" ] && ASSETS="$ASSETS $SIDECAR"
+          ASSETS=()
+          for f in *.dmg *.dmg.sha256 *.zip *.zip.sha256 *.pkg *.pkg.sha256; do
+            [ -f "$f" ] && ASSETS+=("$f")
+          done
 
           gh release create "$TAG" \
             --title "macOS v${VERSION}" \
             --prerelease \
             --notes-file /tmp/release-notes.md \
-            $ASSETS
+            "${ASSETS[@]}"
 
-          echo "::notice::Published platform release: $TAG"
+          echo "::notice::Published $TAG with ${#ASSETS[@]} asset(s)"
 
       - name: Close resolved CI failure issues
         run: |

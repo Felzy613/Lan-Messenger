@@ -1,66 +1,28 @@
-#!/bin/bash
-# build_app.sh — Build LAN Messenger.app and copy it to releases/macos/.
+#!/usr/bin/env bash
+# build_app.sh — Convenience wrapper for local developers.
 #
-# Usage (run from src/macos/):
-#   ./scripts/build_app.sh
+# Calls the canonical packaging pipeline at scripts/macos/package.sh, which
+# builds + signs + packages a DMG/ZIP/PKG. By default it skips PKG (faster)
+# and uses ad-hoc signing (no Apple Developer cert required).
 #
-# Prerequisites:
-#   - Xcode installed
-#   - xcodegen installed (brew install xcodegen) — only needed if .xcodeproj is missing
+# Usage (from src/macos/):
+#   ./scripts/build_app.sh             # ad-hoc, no PKG
+#   SKIP_PKG=0 ./scripts/build_app.sh  # also build PKG
+#   SIGNING_IDENTITY="Developer ID Application: …" ./scripts/build_app.sh
 #
-# The script produces:
-#   <repo-root>/releases/macos/LAN Messenger.app   (or LanMessenger.app)
+# Artifacts land in <repo-root>/dist/macos/.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
-RELEASES_DIR="$REPO_ROOT/releases/macos"
-BUILD_DIR="$PROJECT_DIR/build"
-XCODEPROJ="$PROJECT_DIR/LanMessenger.xcodeproj"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-# ── 0. Generate project if needed ────────────────────────────────────────────
-if [ ! -d "$XCODEPROJ" ]; then
-    if ! command -v xcodegen &>/dev/null; then
-        echo "❌  LanMessenger.xcodeproj not found and xcodegen is not installed."
-        echo "    Run:  brew install xcodegen"
-        exit 1
-    fi
-    echo "▶  Generating Xcode project…"
-    xcodegen generate --spec "$PROJECT_DIR/project.yml" --project "$PROJECT_DIR"
+# Read version from the canonical version file so local builds match what
+# CI would produce off the same commit.
+if [ -z "${VERSION:-}" ]; then
+    VERSION=$(jq -r '.version' "$REPO_ROOT/version/macos.json")
 fi
+export VERSION
+export SKIP_PKG="${SKIP_PKG:-1}"
 
-mkdir -p "$BUILD_DIR/derived" "$RELEASES_DIR"
-
-# ── 1. Build ──────────────────────────────────────────────────────────────────
-echo "▶  Building Release…"
-if ! xcodebuild \
-    -project "$XCODEPROJ" \
-    -scheme  LanMessenger \
-    -configuration Release \
-    -derivedDataPath "$BUILD_DIR/derived" \
-    build 2>&1 | tee /tmp/xcodebuild.log | grep -E "^(error:|Build succeeded|BUILD FAILED)" ; then
-    echo "❌  Build failed. Full log: /tmp/xcodebuild.log"
-    exit 1
-fi
-
-# ── 2. Locate the .app ───────────────────────────────────────────────────────
-APP_SRC=$(find "$BUILD_DIR/derived" \( -name "LAN Messenger.app" -o -name "LanMessenger.app" \) -maxdepth 8 | head -1)
-if [ -z "$APP_SRC" ]; then
-    echo "❌  .app bundle not found in derived data at $BUILD_DIR/derived"
-    exit 1
-fi
-
-# ── 3. Copy to releases/macos/ ───────────────────────────────────────────────
-echo "▶  Copying '$(basename "$APP_SRC")' to releases/macos/…"
-rm -rf "$RELEASES_DIR/LAN Messenger.app" "$RELEASES_DIR/LanMessenger.app"
-cp -R "$APP_SRC" "$RELEASES_DIR/"
-
-# ── 4. Clean build artifacts ─────────────────────────────────────────────────
-echo "▶  Removing build artifacts…"
-rm -rf "$BUILD_DIR"
-
-APP_DEST="$RELEASES_DIR/$(basename "$APP_SRC")"
-echo ""
-echo "✅  Done: $APP_DEST"
+exec "$REPO_ROOT/scripts/macos/package.sh"
