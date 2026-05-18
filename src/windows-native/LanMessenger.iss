@@ -40,8 +40,16 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; Firewall rules — allow inbound UDP 54231 (discovery) and TCP 54232 (messaging).
+; The installer runs elevated, so netsh succeeds. Scoped to private/domain profiles only.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LAN Messenger Discovery"" dir=in action=allow protocol=UDP localport=54231 profile=private,domain program=""{app}\{#MyAppExeName}"""; Flags: runhidden; StatusMsg: "Configuring firewall...";
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LAN Messenger Messaging"" dir=in action=allow protocol=TCP localport=54232 profile=private,domain program=""{app}\{#MyAppExeName}"""; Flags: runhidden; StatusMsg: "Configuring firewall...";
 ; Two launch entries:
 ;   - Interactive installs: standard "Launch app" checkbox on the final page.
 ;   - Silent installs (in-app updater): always relaunch so the user lands back in the app.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: WizardSilent
+
+[UninstallRun]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LAN Messenger Discovery"""; Flags: runhidden;
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LAN Messenger Messaging"""; Flags: runhidden;

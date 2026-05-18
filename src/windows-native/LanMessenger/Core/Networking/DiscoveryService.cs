@@ -67,6 +67,10 @@ public sealed class DiscoveryService : IDisposable
         _sendSocket.EnableBroadcast = true;
         _sendSocket.MulticastLoopback = false;
         _sendSocket.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastTimeToLive, 1);
+        // Windows delivers ICMP "port unreachable" responses as WSAECONNRESET (10054) on the
+        // next socket operation, permanently poisoning the socket. Sending unicast beacons to
+        // recently-offline peers triggers this. Disable the behavior so the socket stays alive.
+        try { _sendSocket.Client.IOControl(unchecked((int)0x9800000C), new byte[] { 0, 0, 0, 0 }, null); } catch { }
     }
 
     private void SendBeacon()
@@ -106,7 +110,7 @@ public sealed class DiscoveryService : IDisposable
         _recvSocket.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         _recvSocket.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
         try { _recvSocket.JoinMulticastGroup(IPAddress.Parse(MulticastGroup)); } catch { }
-        _recvSocket.Client.ReceiveTimeout = 1000; // 1 s so loop checks cancellation
+        try { _recvSocket.Client.IOControl(unchecked((int)0x9800000C), new byte[] { 0, 0, 0, 0 }, null); } catch { }
     }
 
     private async Task ReceiveLoop(CancellationToken ct)
