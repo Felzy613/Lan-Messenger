@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import Network
 
 // Represents a discovered or saved peer.
 struct PeerInfo: Identifiable {
@@ -45,6 +44,7 @@ final class AppModel: ObservableObject {
     @Published var pendingImportKeyData: Data? = nil
     @Published var availableUpdate: UpdateInfo? = nil
     @Published var updateProgress: UpdateProgress = .idle
+    @Published var isLocalNetworkAvailable: Bool = true
 
     // MARK: - Services
     let coordinator = NetworkCoordinator()
@@ -62,8 +62,8 @@ final class AppModel: ObservableObject {
     // MARK: - Start
 
     private func start() {
-        let localIPs = localIPAddresses()
-        coordinator.start(username: ConfigStore.shared.config.username, localIPs: Set(localIPs))
+        coordinator.start(username: ConfigStore.shared.config.username)
+        isLocalNetworkAvailable = coordinator.isLocalNetworkAvailable
         NotificationService.shared.requestAuthorization()
         removeOwnContact()
         loadHistory()
@@ -123,10 +123,10 @@ final class AppModel: ObservableObject {
     // MARK: - Peers
 
     private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String) {
-        // Last-resort self-suppression — defends against stale `ownIPs` snapshots in
-        // DiscoveryService when the machine's network interfaces change after start.
+        // Last-resort self-suppression — defends against stale `ownIPs` in
+        // the discovery service when the machine's network interfaces change.
         if publicKeyB64.isEmpty || publicKeyB64 == KeyManager.shared.publicKeyB64 { return }
-        if Set(localIPAddresses()).contains(ip) { return }
+        if coordinator.network.localIPs.contains(ip) { return }
 
         // If we have a saved contact for this device ID whose IP has changed,
         // migrate the conversation history so the user doesn't lose context.
@@ -160,14 +160,15 @@ final class AppModel: ObservableObject {
     }
 
     private func startPeerTimeoutTimer() {
+        // NetworkInterfaceMonitor (owned by the coordinator) keeps ownIPs live
+        // across DHCP/Wi-Fi/VPN transitions, so this timer no longer needs to
+        // poke it on every tick.
         peerTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let before = self.peers.count
                 self.peers = self.peers.filter { $0.value.isOnline }
                 if self.peers.count != before { self.refreshConversations() }
-                // Refresh ownIPs so the self-detection filter survives DHCP/interface changes.
-                self.coordinator.discovery.ownIPs = Set(self.localIPAddresses())
             }
         }
     }
@@ -583,28 +584,6 @@ final class AppModel: ObservableObject {
     private func peerByIP(_ ip: String) -> PeerInfo? {
         peers.values.first { $0.ip == ip }
     }
-
-    private func localIPAddresses() -> [String] {
-        var addresses: [String] = []
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0 else { return [] }
-        defer { freeifaddrs(ifaddr) }
-        var ptr = ifaddr
-        while let current = ptr {
-            let flags = Int32(current.pointee.ifa_flags)
-            guard (flags & IFF_UP) != 0, (flags & IFF_LOOPBACK) == 0,
-                  current.pointee.ifa_addr.pointee.sa_family == UInt8(AF_INET) else {
-                ptr = current.pointee.ifa_next; continue
-            }
-            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            if getnameinfo(current.pointee.ifa_addr, socklen_t(current.pointee.ifa_addr.pointee.sa_len),
-                           &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST) == 0 {
-                addresses.append(String(cString: hostname))
-            }
-            ptr = current.pointee.ifa_next
-        }
-        return addresses
-    }
 }
 
 // Update-related view-model state.
@@ -634,5 +613,10 @@ extension AppModel: NetworkCoordinatorDelegate {
 
     func coordinator(_ c: NetworkCoordinator, didDiscoverPeer packet: DiscoveryPacket, fromIP ip: String) {
         upsertPeer(ip: ip, username: packet.username, port: packet.port, publicKeyB64: packet.publicKeyB64)
+    }
+
+    func coordinatorNetworkAvailabilityChanged(_ c: NetworkCoordinator) {
+        let available = c.isLocalNetworkAvailable
+        if isLocalNetworkAvailable != available { isLocalNetworkAvailable = available }
     }
 }

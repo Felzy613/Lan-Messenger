@@ -6,9 +6,6 @@ using LanMessenger.Core.Protocol;
 using LanMessenger.Core.Services;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
-using System.Net;
-using System.Net.NetworkInformation;
-using System.Net.Sockets;
 
 namespace LanMessenger.UI;
 
@@ -54,6 +51,7 @@ public sealed partial class AppModel : ObservableObject
     [ObservableProperty] private string?                         _pendingImportKeyB64;
     [ObservableProperty] private UpdateInfo?                     _availableUpdate;
     [ObservableProperty] private UpdateProgress                  _updateProgress = new(UpdateProgressState.Idle);
+    [ObservableProperty] private bool                            _isLocalNetworkAvailable = true;
 
     public readonly NetworkCoordinator Coordinator = new();
     private DispatcherQueue _dq;
@@ -71,10 +69,9 @@ public sealed partial class AppModel : ObservableObject
 
     private void Start()
     {
-        var localIPs = GetLocalIPAddresses();
         try
         {
-            Coordinator.Start(ConfigStore.Shared.Config.Username, [..localIPs], _dq);
+            Coordinator.Start(ConfigStore.Shared.Config.Username, _dq);
         }
         catch (Exception ex)
         {
@@ -85,6 +82,12 @@ public sealed partial class AppModel : ObservableObject
                 $"Another instance may already be running, or a firewall is blocking the ports.\n\n" +
                 $"Error: {ex.Message}", ex);
         }
+        IsLocalNetworkAvailable = Coordinator.IsLocalNetworkAvailable;
+        Coordinator.NetworkAvailabilityChanged += () =>
+        {
+            var available = Coordinator.IsLocalNetworkAvailable;
+            if (IsLocalNetworkAvailable != available) IsLocalNetworkAvailable = available;
+        };
         NotificationService.Shared.Register();
         LoadHistory();
         StartPeerTimeoutTimer();
@@ -121,11 +124,11 @@ public sealed partial class AppModel : ObservableObject
 
     private void UpsertPeer(string ip, string username, int port, string publicKeyB64)
     {
-        // Last-resort self-suppression — defends against stale `OwnIPs` snapshots in
-        // DiscoveryService when the machine's network interfaces change after start.
+        // Last-resort self-suppression — defends against stale OwnIPs in the
+        // discovery service when the machine's network interfaces change.
         if (string.IsNullOrEmpty(publicKeyB64) ||
             publicKeyB64 == KeyManager.Shared.PublicKeyB64) return;
-        if (GetLocalIPAddresses().Contains(ip)) return;
+        if (Coordinator.Network.LocalIPs.Contains(ip)) return;
 
         // If we have a saved contact for this device ID whose IP has changed,
         // migrate the conversation history so the user doesn't lose context.
@@ -182,6 +185,8 @@ public sealed partial class AppModel : ObservableObject
         // Keep peers in the dictionary even when they go offline — their public key
         // is needed to queue outgoing messages for delivery when they reconnect.
         // IsOnline is computed from LastSeen, so the UI still shows them as offline.
+        // NetworkInterfaceMonitor (owned by Coordinator) keeps OwnIPs live, so this
+        // timer no longer needs to poke it on every tick.
         _peerTimeoutTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         var _lastOnlineSet = new HashSet<string>();
         _peerTimeoutTimer.Tick += (_, _) =>
@@ -192,8 +197,6 @@ public sealed partial class AppModel : ObservableObject
                 _lastOnlineSet = nowOnline;
                 RefreshConversations();
             }
-            // Refresh OwnIPs so the self-detection filter survives DHCP/interface changes.
-            Coordinator.Discovery.OwnIPs = [..GetLocalIPAddresses()];
         };
         _peerTimeoutTimer.Start();
     }
@@ -653,20 +656,4 @@ public sealed partial class AppModel : ObservableObject
     }
 
     private PeerInfo? PeerByIP(string ip) => Peers.Values.FirstOrDefault(p => p.IP == ip);
-
-    private static List<string> GetLocalIPAddresses()
-    {
-        var result = new List<string>();
-        foreach (var iface in NetworkInterface.GetAllNetworkInterfaces())
-        {
-            if (iface.OperationalStatus != OperationalStatus.Up) continue;
-            foreach (var addr in iface.GetIPProperties().UnicastAddresses)
-            {
-                if (addr.Address.AddressFamily == AddressFamily.InterNetwork &&
-                    !IPAddress.IsLoopback(addr.Address))
-                    result.Add(addr.Address.ToString());
-            }
-        }
-        return result;
-    }
 }

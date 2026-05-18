@@ -7,16 +7,18 @@ using System.Net.Sockets;
 
 namespace LanMessenger.Core.Networking;
 
-// Owns all PeerSessions and the DiscoveryService.
+// Owns all PeerSessions, the DiscoveryService, and the NetworkInterfaceMonitor.
 // Routes validated packets to callbacks (MessagingService / FileTransferService).
 // Manages the TCP listener for inbound connections from peers.
 // Callbacks are dispatched to the UI thread via the stored DispatcherQueue.
 public sealed class NetworkCoordinator : IDisposable
 {
-    public event Action<ValidatedPacket>?   PacketReceived;
+    public event Action<ValidatedPacket>?         PacketReceived;
     public event Action<DiscoveryPacket, string>? PeerDiscovered;
+    public event Action?                          NetworkAvailabilityChanged;
 
-    public readonly DiscoveryService Discovery = new();
+    public readonly NetworkInterfaceMonitor Network  = new();
+    public readonly DiscoveryService        Discovery;
     private readonly Dictionary<string, PeerSession> _sessions = [];
     private TcpListener? _listener;
     private CancellationTokenSource _cts = new();
@@ -25,25 +27,37 @@ public sealed class NetworkCoordinator : IDisposable
 
     private const int TcpPort = 54232;
 
+    public bool IsLocalNetworkAvailable => Network.IsLocalNetworkAvailable;
+
     private string OwnPublicKeyB64 => KeyManager.Shared.PublicKeyB64;
 
-    public void Start(string username, HashSet<string> localIPs, DispatcherQueue dispatcherQueue)
+    public NetworkCoordinator()
+    {
+        Discovery = new DiscoveryService(Network);
+    }
+
+    public void Start(string username, DispatcherQueue dispatcherQueue)
     {
         if (_running) return;
         _running = true;
         _cts = new CancellationTokenSource();
         _dispatcherQueue = dispatcherQueue;
 
+        // Monitor must be running BEFORE Discovery so the first beacon sees a
+        // populated interface set.
+        Network.Start();
+        Network.Changed += () =>
+            _dispatcherQueue?.TryEnqueue(() => NetworkAvailabilityChanged?.Invoke());
+
         // Configure discovery
         Discovery.OwnPublicKeyB64 = OwnPublicKeyB64;
-        Discovery.OwnIPs          = localIPs;
         Discovery.BuildPayload    = () => new DiscoveryPacket
         {
             Type         = "discovery",
             Username     = username,
             Port         = TcpPort,
             PublicKeyB64 = OwnPublicKeyB64,
-            Ips          = [.. localIPs],
+            Ips          = [.. Network.LocalIPs],
         };
         Discovery.ExtraTargets = () => _sessions.Keys;
         Discovery.PeerDiscovered += (pkt, ip) =>
@@ -51,7 +65,10 @@ public sealed class NetworkCoordinator : IDisposable
         Discovery.Start();
 
         StartTcpListener();
-        LanLogger.Info("Net", $"coordinator started user='{username}' tcp={TcpPort} udp=54231 ips=[{string.Join(",", localIPs)}]");
+
+        LanLogger.Info("Net",
+            $"coordinator started user='{username}' tcp={TcpPort} udp=54231 " +
+            $"interfaces={Network.Adapters.Count} available={Network.IsLocalNetworkAvailable}");
     }
 
     public void Stop()
@@ -59,17 +76,20 @@ public sealed class NetworkCoordinator : IDisposable
         _running = false;
         _cts.Cancel();
         Discovery.Stop();
+        Network.Stop();
         lock (_sessions)
         {
             foreach (var s in _sessions.Values) s.Stop();
             _sessions.Clear();
         }
-        _listener?.Stop();
+        try { _listener?.Stop(); } catch { }
+        _listener = null;
     }
 
     public void Dispose() => Stop();
 
-    // Send a pre-encoded frame to a peer. Uses persistent session if available, else fire-and-forget TCP.
+    // Send a pre-encoded frame to a peer. Uses persistent session if available,
+    // else fire-and-forget TCP.
     public void Send(byte[] frame, string toIP, int port = TcpPort)
     {
         PeerSession? session;
@@ -78,20 +98,22 @@ public sealed class NetworkCoordinator : IDisposable
         if (session is not null)
         {
             session.Send(frame);
+            return;
         }
-        else
+
+        Task.Run(async () =>
         {
-            Task.Run(async () =>
+            try
             {
-                try
-                {
-                    using var tcp = new TcpClient();
-                    await tcp.ConnectAsync(toIP, port).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                    await tcp.GetStream().WriteAsync(frame).ConfigureAwait(false);
-                }
-                catch { }
-            });
-        }
+                using var tcp = new TcpClient();
+                await tcp.ConnectAsync(toIP, port).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await tcp.GetStream().WriteAsync(frame).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                LanLogger.Info("Net", $"one-shot send to {toIP}:{port} failed: {ex.GetType().Name} {ex.Message}");
+            }
+        });
     }
 
     public void Send(IEnumerable<byte[]> frames, string toIP, int port = TcpPort)
@@ -122,6 +144,7 @@ public sealed class NetworkCoordinator : IDisposable
         _listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         _listener.Start(backlog: 16); // throws SocketException if port is already bound
         Task.Run(() => AcceptLoop(_cts.Token));
+        LanLogger.Info("Net", $"TCP listener bound on 0.0.0.0:{TcpPort}");
     }
 
     private async Task AcceptLoop(CancellationToken ct)
@@ -135,7 +158,10 @@ public sealed class NetworkCoordinator : IDisposable
                 _ = Task.Run(() => HandleInbound(client, fromIP, ct));
             }
             catch (OperationCanceledException) { break; }
-            catch { }
+            catch (Exception ex)
+            {
+                LanLogger.Info("Net", $"accept failed: {ex.GetType().Name} {ex.Message}");
+            }
         }
     }
 
