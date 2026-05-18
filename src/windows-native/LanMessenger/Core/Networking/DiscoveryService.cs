@@ -1,4 +1,5 @@
 using LanMessenger.Core.Protocol;
+using LanMessenger.Core.Services;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
@@ -146,6 +147,7 @@ public sealed class DiscoveryService : IDisposable
             SendUdp(JsonSerializer.SerializeToUtf8Bytes(reply), fromIP, DiscoveryPort);
         }
 
+        LanLogger.Info("Discovery", $"{pkt.Type} from {fromIP} user='{pkt.Username}' port={pkt.Port}");
         PeerDiscovered?.Invoke(pkt, fromIP);
     }
 }

@@ -58,7 +58,7 @@ public sealed class MessagingService
             Incoming        = false,
             Timestamp       = timestamp,
             MessageId       = messageId,
-            Status          = "Sending",
+            Status          = MessageStatus.Sending,
             ReadReceiptSent = false,
             ReplyToMessageId = replyTo?.MessageId,
             ReplyToPreview   = replyPreview,
@@ -67,6 +67,7 @@ public sealed class MessagingService
         HistoryStore.Shared.Append(entry, peerIP);
         HistoryStore.Shared.Save();
         Dispatch(() => OnMessageReceived?.Invoke(peerIP, entry));
+        LanLogger.Info("Send", $"text msgId={messageId} peer={peerIP} bytes={text.Length}");
 
         (string nonceB64, string ctB64)? encrypted;
         try
@@ -75,9 +76,10 @@ public sealed class MessagingService
                 KeyManager.Shared.PrivateKey, peerPublicKeyB64,
                 Encoding.UTF8.GetBytes(text), aad);
         }
-        catch
+        catch (Exception ex)
         {
-            UpdateStatus("Failed", messageId, peerIP);
+            LanLogger.Error("Send", $"encrypt failed msgId={messageId} peer={peerIP}: {ex.Message}");
+            ApplyStatus(MessageStatus.Failed, messageId, peerIP);
             return;
         }
 
@@ -101,13 +103,17 @@ public sealed class MessagingService
 
         Task.Run(async () =>
         {
-            var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort);
+            var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"text msgId={messageId}");
             Dispatch(() =>
             {
-                var status = success ? "Sent" : "Queued";
+                var status = success ? MessageStatus.Sent : MessageStatus.Queued;
                 if (!success) QueuePending(messageId, text, peerPublicKeyB64, timestamp);
-                UpdateStatus(status, messageId, peerIP);
-                HistoryStore.Shared.Save();
+                // ApplyStatus persists when the rank check passes; nothing else
+                // to save here. Crucially, if a "Delivered" receipt already
+                // arrived between the WriteAsync and this dispatch, the rank
+                // check drops this update and the message correctly stays at
+                // two ticks instead of regressing to one.
+                ApplyStatus(status, messageId, peerIP);
             });
         });
     }
@@ -142,7 +148,7 @@ public sealed class MessagingService
             ["sender_public_key_b64"] = KeyManager.Shared.PublicKeyB64,
             ["port"]                  = TcpPort,
         };
-        Task.Run(() => FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort));
+        Task.Run(() => FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"typing active={active}"));
     }
 
     // MARK: - Send receipt
@@ -157,7 +163,11 @@ public sealed class MessagingService
             ["sender_public_key_b64"] = KeyManager.Shared.PublicKeyB64,
             ["port"]                  = TcpPort,
         };
-        Task.Run(() => FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort));
+        Task.Run(async () =>
+        {
+            var ok = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"{type} msgId={messageId}");
+            if (!ok) LanLogger.Warn("Receipt", $"failed to send {type} msgId={messageId} peer={peerIP}");
+        });
     }
 
     // MARK: - Deliver pending messages for a newly-online peer
@@ -167,13 +177,18 @@ public sealed class MessagingService
         var pending = ConfigStore.Shared.Config.PendingMessages
             .Where(m => m.PeerPublicKeyB64 == peerPublicKeyB64).ToList();
         if (pending.Count == 0) return;
+        LanLogger.Info("Send", $"delivering {pending.Count} pending msgs to peer={peerIP}");
 
         foreach (var msg in pending)
         {
             var aad = Encoding.UTF8.GetBytes(msg.MessageId);
             (string nonceB64, string ctB64) encrypted;
             try { encrypted = SessionCrypto.EncryptForPeer(KeyManager.Shared.PrivateKey, peerPublicKeyB64, Encoding.UTF8.GetBytes(msg.Text), aad); }
-            catch { continue; }
+            catch (Exception ex)
+            {
+                LanLogger.Error("Send", $"pending encrypt failed msgId={msg.MessageId}: {ex.Message}");
+                continue;
+            }
 
             var packet = new Dictionary<string, object?>
             {
@@ -188,8 +203,8 @@ public sealed class MessagingService
             };
             Task.Run(async () =>
             {
-                var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort);
-                if (success) Dispatch(() => UpdateStatus("Sent", msg.MessageId, peerIP));
+                var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"pending msgId={msg.MessageId}");
+                if (success) Dispatch(() => ApplyStatus(MessageStatus.Sent, msg.MessageId, peerIP));
             });
         }
 
@@ -204,7 +219,15 @@ public sealed class MessagingService
         var aad = Encoding.UTF8.GetBytes(pkt.MessageId);
         byte[] plaintext;
         try { plaintext = SessionCrypto.DecryptFromPeer(KeyManager.Shared.PrivateKey, pkt.SenderPublicKeyB64, pkt.Nonce, pkt.Ciphertext, aad); }
-        catch { return; }
+        catch (Exception ex)
+        {
+            // Silent receiver-side decrypt failure was historically a primary reason
+            // for "single check mark" — sender never got a sent_receipt. Log so the
+            // user can correlate failed deliveries with key mismatches.
+            LanLogger.Error("Recv", $"decrypt failed msgId={pkt.MessageId} peer={ip}: {ex.Message}");
+            return;
+        }
+        LanLogger.Info("Recv", $"text msgId={pkt.MessageId} peer={ip} bytes={plaintext.Length}");
 
         // If the packet didn't carry a preview but we know the original, fill it in.
         var preview = pkt.ReplyToPreview;
@@ -248,24 +271,24 @@ public sealed class MessagingService
     {
         // sent_receipt = delivered to the peer (two grey ticks)
         // read_receipt = read by the peer (two blue ticks)
-        var status = pkt.Type == "read_receipt" ? "Read" : "Delivered";
-
-        // Don't downgrade Read → Delivered if a sent_receipt arrives after the read_receipt.
-        var current = HistoryStore.Shared.Entries(ip)
-            .FirstOrDefault(e => e.MessageId == pkt.MessageId)?.Status ?? "";
-        if (status == "Delivered" && current == "Read") return;
-
-        HistoryStore.Shared.UpdateStatus(status, pkt.MessageId, ip);
-        HistoryStore.Shared.Save();
-        Dispatch(() => OnStatusUpdate?.Invoke(ip, pkt.MessageId, status));
+        var status = pkt.Type == "read_receipt" ? MessageStatus.Read : MessageStatus.Delivered;
+        LanLogger.Info("Recv", $"{pkt.Type} msgId={pkt.MessageId} peer={ip}");
+        // ApplyStatus is rank-aware: a late "Sent" dispatch from the sender's
+        // own TCP-write completion cannot regress this. See MessageStatus.cs.
+        ApplyStatus(status, pkt.MessageId, ip);
     }
 
     // MARK: - Helpers
 
-    private void UpdateStatus(string status, string messageId, string peerIP)
+    // Single funnel for every status mutation. Always rank-aware so the
+    // races described in MessageStatus.cs can't downgrade a message.
+    private void ApplyStatus(string status, string messageId, string peerIP)
     {
-        HistoryStore.Shared.UpdateStatus(status, messageId, peerIP);
+        var applied = HistoryStore.Shared.UpdateStatus(status, messageId, peerIP);
+        if (!applied) return;
+        HistoryStore.Shared.Save();
         OnStatusUpdate?.Invoke(peerIP, messageId, status);
+        LanLogger.Info("Status", $"msgId={messageId} peer={peerIP} -> {status}");
     }
 
     private void QueuePending(string messageId, string text, string peerPublicKeyB64, double timestamp)
@@ -283,16 +306,45 @@ public sealed class MessagingService
         ConfigStore.Shared.Save();
     }
 
-    private static async Task<bool> FireTcpAsync(byte[] frame, string ip, int port)
+    private static async Task<bool> FireTcpAsync(byte[] frame, string ip, int port, string description)
     {
+        // One-shot TCP per packet. We explicitly Shutdown(Send) and wait for
+        // the peer's FIN with a short read before closing — without this, the
+        // OS sometimes aborted the connection (RST) between WriteAsync and
+        // Dispose on slow / loaded Windows machines, causing the receiver to
+        // drop the in-flight frame. That was a major source of cross-platform
+        // delivery failures with macOS peers.
         try
         {
-            using var tcp = new System.Net.Sockets.TcpClient();
+            using var tcp = new System.Net.Sockets.TcpClient { NoDelay = true };
             await tcp.ConnectAsync(ip, port).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            await tcp.GetStream().WriteAsync(frame).ConfigureAwait(false);
+            // Linger off, but with a short timeout — kernel will gracefully
+            // flush the send buffer instead of resetting on Dispose.
+            tcp.LingerState = new System.Net.Sockets.LingerOption(true, 2);
+
+            var stream = tcp.GetStream();
+            await stream.WriteAsync(frame).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+
+            // Half-close: tells the peer we're done sending. The peer's read
+            // loop will see EOF after consuming the frame and close its end.
+            try { tcp.Client.Shutdown(System.Net.Sockets.SocketShutdown.Send); } catch { }
+
+            // Brief drain so the kernel actually transmits before we Dispose.
+            // We don't care what (if anything) the peer sends — we just need
+            // to give the FIN/data exchange ~1 s to complete.
+            var drainBuf = new byte[1];
+            using var drainCts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            try { await stream.ReadAsync(drainBuf.AsMemory(0, 1), drainCts.Token).ConfigureAwait(false); }
+            catch { /* timeout or peer reset — frame is already on the wire */ }
+
             return true;
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Net", $"FireTcp failed peer={ip}:{port} desc={description}: {ex.GetType().Name} {ex.Message}");
+            return false;
+        }
     }
 
     private void Dispatch(Action action) => _dq?.TryEnqueue(() => action());

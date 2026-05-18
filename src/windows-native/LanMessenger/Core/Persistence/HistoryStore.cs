@@ -95,11 +95,25 @@ public sealed class HistoryStore
             e.ReadReceiptSent = true;
     }
 
-    public void UpdateStatus(string status, string messageId, string peerIP)
+    // Rank-aware status update — never downgrades a delivered/read message back
+    // to "Sent". Without this guard, the late "Sent" dispatch from the sender's
+    // TCP-write completion would frequently overwrite the "Delivered" status
+    // set by the receiver's sent_receipt, leaving the user with a single
+    // check mark forever on cross-platform exchanges.
+    //
+    // Returns true if the status was actually applied (so callers know whether
+    // to fire OnStatusUpdate and persist to disk).
+    public bool UpdateStatus(string status, string messageId, string peerIP)
     {
-        if (!_history.TryGetValue(peerIP, out var list)) return;
+        if (!_history.TryGetValue(peerIP, out var list)) return false;
+        var applied = false;
         foreach (var e in list.Where(e => e.MessageId == messageId))
+        {
+            if (!MessageStatus.ShouldApply(status, e.Status)) continue;
             e.Status = status;
+            applied = true;
+        }
+        return applied;
     }
 
     public List<MessageEntry> Entries(string peerIP) =>

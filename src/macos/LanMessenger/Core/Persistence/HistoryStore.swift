@@ -130,12 +130,24 @@ final class HistoryStore {
         history[peerIP] = entries
     }
 
-    func updateStatus(_ status: String, forMessageId messageId: String, peerIP: String) {
-        guard var entries = history[peerIP] else { return }
+    // Rank-aware status update — never downgrades a delivered/read message back
+    // to "Sent". Without this guard, the late "Sent" dispatch from the sender's
+    // TCP-write completion would frequently overwrite the "Delivered" status
+    // set by the receiver's sent_receipt, leaving the user with a single
+    // check mark forever on cross-platform exchanges. Returns true iff the
+    // status was actually applied.
+    @discardableResult
+    func updateStatus(_ status: String, forMessageId messageId: String, peerIP: String) -> Bool {
+        guard var entries = history[peerIP] else { return false }
+        var applied = false
         for i in entries.indices where entries[i].messageId == messageId {
-            entries[i].status = status
+            if MessageStatus.shouldApply(status, over: entries[i].status) {
+                entries[i].status = status
+                applied = true
+            }
         }
-        history[peerIP] = entries
+        if applied { history[peerIP] = entries }
+        return applied
     }
 
     func entries(forPeerIP ip: String) -> [MessageEntry] {

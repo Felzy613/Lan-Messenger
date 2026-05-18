@@ -235,21 +235,21 @@ final class MessagingService {
     private func handleReceipt(_ pkt: ReceiptPacket, fromIP ip: String) {
         // sent_receipt = the peer has received the message (two grey ticks)
         // read_receipt = the peer has read it (two blue ticks)
-        let status = pkt.type == "read_receipt" ? "Read" : "Delivered"
-
-        // Don't downgrade Read → Delivered if a read receipt arrived before the sent receipt.
-        let current = HistoryStore.shared.entries(forPeerIP: ip)
-            .first(where: { $0.messageId == pkt.messageId })?.status ?? ""
-        if status == "Delivered", current == "Read" { return }
-
+        let status = pkt.type == "read_receipt" ? MessageStatus.read : MessageStatus.delivered
+        // updateStatus is now rank-aware (see HistoryStore + MessageStatus): a
+        // late "Sent" dispatch from the sender's own TCP-write completion
+        // cannot regress this, and a "Delivered" cannot regress a prior "Read".
         updateStatus(status, forMessageId: pkt.messageId, peerIP: ip)
-        HistoryStore.shared.save()
     }
 
     // MARK: - Helpers
 
     private func updateStatus(_ status: String, forMessageId id: String, peerIP: String) {
-        HistoryStore.shared.updateStatus(status, forMessageId: id, peerIP: peerIP)
+        // Only notify the UI when the rank-aware HistoryStore actually applied
+        // the change — otherwise the OnStatusUpdate listener would re-set the
+        // status on its in-memory copy and the message would regress.
+        guard HistoryStore.shared.updateStatus(status, forMessageId: id, peerIP: peerIP) else { return }
+        HistoryStore.shared.save()
         onStatusUpdate?(peerIP, id, status)
     }
 

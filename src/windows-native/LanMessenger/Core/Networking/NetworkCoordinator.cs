@@ -1,5 +1,6 @@
 using LanMessenger.Core.Crypto;
 using LanMessenger.Core.Protocol;
+using LanMessenger.Core.Services;
 using Microsoft.UI.Dispatching;
 using System.Net;
 using System.Net.Sockets;
@@ -50,6 +51,7 @@ public sealed class NetworkCoordinator : IDisposable
         Discovery.Start();
 
         StartTcpListener();
+        LanLogger.Info("Net", $"coordinator started user='{username}' tcp={TcpPort} udp=54231 ips=[{string.Join(",", localIPs)}]");
     }
 
     public void Stop()
@@ -143,6 +145,11 @@ public sealed class NetworkCoordinator : IDisposable
         {
             try
             {
+                // Short receive timeout so half-open / abandoned connections are
+                // released promptly — important on Windows where the system
+                // default would otherwise keep the accepted socket alive for
+                // minutes if the peer crashed mid-frame.
+                client.ReceiveTimeout = 30_000;
                 var stream = client.GetStream();
                 while (!ct.IsCancellationRequested)
                 {
@@ -152,9 +159,11 @@ public sealed class NetworkCoordinator : IDisposable
                     var pkt = PacketValidator.Validate(frameData, fromIP, OwnPublicKeyB64);
                     if (pkt is not null)
                         _dispatcherQueue?.TryEnqueue(() => PacketReceived?.Invoke(pkt));
+                    else
+                        LanLogger.Warn("Net", $"dropped invalid frame from {fromIP} bytes={frameData.Length}");
                 }
             }
-            catch { }
+            catch (Exception ex) { LanLogger.Warn("Net", $"inbound from {fromIP} ended: {ex.GetType().Name} {ex.Message}"); }
         }
     }
 }
