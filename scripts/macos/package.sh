@@ -101,13 +101,11 @@ xcodebuild archive \
     -destination 'generic/platform=macOS' \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGN_IDENTITY="-" \
-    CODE_SIGNING_REQUIRED=NO \
-    CODE_SIGNING_ALLOWED=NO \
     MARKETING_VERSION="$MARKETING_VERSION" \
     CURRENT_PROJECT_VERSION="${VERSION##*.}" \
     SWIFT_OPTIMIZATION_LEVEL='-O' \
     GCC_OPTIMIZATION_LEVEL='s' \
-    >/dev/null
+    2>&1 | grep -E "^(error:|warning: |.*Build complete|.*FAILED)" || true
 
 APP_IN_ARCHIVE="$ARCHIVE_PATH/Products/Applications/${APP_NAME_BUNDLE}.app"
 if [ ! -d "$APP_IN_ARCHIVE" ]; then
@@ -127,8 +125,8 @@ echo "  Executable:  $(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$
 echo "  Identifier:  $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist")"
 echo "  Version:     $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
 echo "  Bundle size: $(du -sh "$APP_PATH" | awk '{print $1}')"
-echo "  Resources:"
-ls -la "$APP_PATH/Contents/Resources" | head -20
+echo "  Contents:"
+find "$APP_PATH/Contents" -maxdepth 2 | sort || true
 
 # ── 4. Code-sign ──────────────────────────────────────────────────────────────
 # Deep-sign with the hardened runtime. We sign every embedded framework/binary
