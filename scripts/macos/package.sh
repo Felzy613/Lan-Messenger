@@ -225,7 +225,7 @@ rm -f "$TMP_DMG" "$DMG_PATH"
 
 # Mount, decorate the window (icon positions + icon-view mode), unmount.
 MOUNT_PT=$(/usr/bin/hdiutil attach -readwrite -noverify -noautoopen "$TMP_DMG" | \
-    awk '/\/Volumes\//{print $NF; exit}')
+    awk '/\/Volumes\//{match($0, /\/Volumes\/.*/); print substr($0, RSTART); exit}')
 echo "  Decorating $MOUNT_PT"
 
 # Set the volume icon (uses the AppIcon.icns we copied into the bundle so the
