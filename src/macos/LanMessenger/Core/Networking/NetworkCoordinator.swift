@@ -1,36 +1,63 @@
 import Foundation
 
-// Owns all PeerSessions and the DiscoveryService.
-// Routes validated packets to MessagingService / FileTransferService via the delegate.
-// Manages the TCP listener for inbound connections from peers.
+// Owns all PeerSessions, the DiscoveryService, and the NetworkInterfaceMonitor.
+// Routes validated packets to MessagingService / FileTransferService via the
+// delegate. Manages the TCP listener for inbound connections from peers.
 //
 // All delegate callbacks fire on the main queue.
 
 protocol NetworkCoordinatorDelegate: AnyObject {
     @MainActor func coordinator(_ c: NetworkCoordinator, didReceivePacket packet: ValidatedPacket)
     @MainActor func coordinator(_ c: NetworkCoordinator, didDiscoverPeer packet: DiscoveryPacket, fromIP: String)
+    @MainActor func coordinatorNetworkAvailabilityChanged(_ c: NetworkCoordinator)
+}
+
+// Default no-op for the availability hook so existing implementers don't need to add it.
+extension NetworkCoordinatorDelegate {
+    @MainActor func coordinatorNetworkAvailabilityChanged(_ c: NetworkCoordinator) {}
 }
 
 final class NetworkCoordinator: NSObject {
 
     weak var delegate: NetworkCoordinatorDelegate?
 
-    let discovery = DiscoveryService()
+    let network: NetworkInterfaceMonitor
+    let discovery: DiscoveryService
+
     private var sessions: [String: PeerSession] = [:]   // keyed by peerIP
     private var listenerSocket: Int32 = -1
     private let listenerQueue = DispatchQueue(label: "com.dave.lanmessenger.listener", qos: .utility)
     private let tcpPort: UInt16 = 54232
     private var running = false
+    private var monitorObserverID: UUID?
+
+    var isLocalNetworkAvailable: Bool { network.isLocalNetworkAvailable }
+    var localIPs: Set<String> { network.localIPs }
 
     private var ownPublicKeyB64: String { KeyManager.shared.publicKeyB64 }
 
-    func start(username: String, localIPs: Set<String>) {
+    override init() {
+        let monitor = NetworkInterfaceMonitor()
+        self.network = monitor
+        self.discovery = DiscoveryService(monitor: monitor)
+        super.init()
+    }
+
+    func start(username: String) {
         guard !running else { return }
         running = true
 
-        // Configure discovery
+        // Monitor must be running BEFORE discovery so the first beacon sees a
+        // populated interface set.
+        network.start()
+        monitorObserverID = network.addObserver { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.delegate?.coordinatorNetworkAvailabilityChanged(self)
+            }
+        }
+
         discovery.ownPublicKeyB64 = ownPublicKeyB64
-        discovery.ownIPs = localIPs
         discovery.delegate = self
         discovery.buildPayload = { [weak self] in
             DiscoveryPacket(
@@ -38,7 +65,7 @@ final class NetworkCoordinator: NSObject {
                 username: username,
                 port: 54232,
                 publicKeyB64: self?.ownPublicKeyB64 ?? "",
-                ips: Array(localIPs)
+                ips: self?.network.localIPs.map { $0 } ?? []
             )
         }
         discovery.extraTargets = { [weak self] in
@@ -47,11 +74,17 @@ final class NetworkCoordinator: NSObject {
         discovery.start()
 
         startTCPListener()
+
+        NetLogger.info("Net",
+            "coordinator started user='\(username)' tcp=\(tcpPort) udp=54231 " +
+            "interfaces=\(network.adapters.count) available=\(network.isLocalNetworkAvailable)")
     }
 
     func stop() {
         running = false
         discovery.stop()
+        if let id = monitorObserverID { network.removeObserver(id); monitorObserverID = nil }
+        network.stop()
         sessions.values.forEach { $0.stop() }
         sessions.removeAll()
         if listenerSocket >= 0 { Darwin.close(listenerSocket); listenerSocket = -1 }
@@ -59,11 +92,9 @@ final class NetworkCoordinator: NSObject {
 
     // Send a pre-encoded frame to a peer by IP. Opens a one-shot connection if needed.
     func send(frame: Data, toIP: String, port: Int = 54232) {
-        // Use existing session if available; otherwise fire-and-forget
         if let session = sessions[toIP] {
             session.send(frame)
         } else {
-            // One-shot TCP for messages to known peers without a persistent session
             DispatchQueue.global(qos: .utility).async {
                 guard let socket = self.openSocket(ip: toIP, port: port) else { return }
                 defer { Darwin.close(socket) }
@@ -101,7 +132,10 @@ final class NetworkCoordinator: NSObject {
 
     private func startTCPListener() {
         listenerSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-        guard listenerSocket >= 0 else { return }
+        guard listenerSocket >= 0 else {
+            NetLogger.error("Net", "listener socket() failed: \(String(cString: strerror(errno)))")
+            return
+        }
 
         var enable: Int32 = 1
         setsockopt(listenerSocket, SOL_SOCKET, SO_REUSEADDR, &enable, socklen_t(MemoryLayout<Int32>.size))
@@ -110,12 +144,16 @@ final class NetworkCoordinator: NSObject {
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = tcpPort.bigEndian
         addr.sin_addr.s_addr = INADDR_ANY
-        withUnsafePointer(to: &addr) { ptr in
+        let bindResult = withUnsafePointer(to: &addr) { ptr -> Int32 in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                _ = Darwin.bind(listenerSocket, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                Darwin.bind(listenerSocket, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
+        if bindResult != 0 {
+            NetLogger.error("Net", "listener bind() failed: \(String(cString: strerror(errno)))")
+        }
         _ = listen(listenerSocket, 16)
+        NetLogger.info("Net", "TCP listener bound on 0.0.0.0:\(tcpPort)")
 
         listenerQueue.async { [weak self] in
             while self?.running == true {
