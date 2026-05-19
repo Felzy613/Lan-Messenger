@@ -28,7 +28,7 @@ echo "  ✓ hdiutil verify passed"
 # Mount in a private mount point — `-nobrowse` keeps Finder from popping the
 # disk on the runner's desktop.
 MOUNT_OUT=$(/usr/bin/hdiutil attach -nobrowse -noverify -noautoopen "$DMG")
-MOUNT_PT=$(echo "$MOUNT_OUT" | awk '/\/Volumes\//{print $NF; exit}')
+MOUNT_PT=$(echo "$MOUNT_OUT" | awk '/\/Volumes\//{match($0, /\/Volumes\/.*/); print substr($0, RSTART); exit}')
 if [ -z "$MOUNT_PT" ] || [ ! -d "$MOUNT_PT" ]; then
     echo "::error::Could not determine mount point"
     echo "$MOUNT_OUT"

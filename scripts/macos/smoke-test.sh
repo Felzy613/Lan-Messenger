@@ -83,7 +83,7 @@ case "$ARTIFACT" in
     *.dmg)
         log "▶  Mounting DMG"
         MOUNT_OUT=$(/usr/bin/hdiutil attach -nobrowse -noverify -noautoopen "$ARTIFACT")
-        MOUNT_PT=$(echo "$MOUNT_OUT" | awk '/\/Volumes\//{print $NF; exit}')
+        MOUNT_PT=$(echo "$MOUNT_OUT" | awk '/\/Volumes\//{match($0, /\/Volumes\/.*/); print substr($0, RSTART); exit}')
         [ -d "$MOUNT_PT" ] || fail "DMG mount failed (no /Volumes/ entry)"
         log "  Mounted at: $MOUNT_PT"
 
