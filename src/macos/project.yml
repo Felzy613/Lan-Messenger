@@ -40,10 +40,6 @@ targets:
           - "**/*.md"
           - "**/*.plist"
           - "**/*.entitlements"
-          - "Assets.xcassets/**"
-
-    resources:
-      - path: LanMessenger/Assets.xcassets
 
     settings:
       base:
