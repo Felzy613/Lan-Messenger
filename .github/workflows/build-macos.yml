@@ -144,8 +144,9 @@ jobs:
       # Images/Logo.png byte-for-byte at release time.
       - name: Regenerate icon set + AppIcon.icns
         run: |
-          python3 -m pip install --quiet --user Pillow
-          python3 src/macos/scripts/generate_icon.py
+          python3 -m venv /tmp/icon-venv
+          /tmp/icon-venv/bin/pip install --quiet Pillow
+          /tmp/icon-venv/bin/python3 src/macos/scripts/generate_icon.py
           ls -la src/macos/LanMessenger/Assets.xcassets/AppIcon.appiconset/
 
       # Import the developer signing certificate (only when present). We
