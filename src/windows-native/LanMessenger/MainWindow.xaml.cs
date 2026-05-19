@@ -77,16 +77,69 @@ public sealed partial class MainWindow : Window
     private async void ShowContactsPage()
     {
         if (_activeDialog is not null) return;
+        var page = new ContactsPage { Model = Model };
         var dialog = new ContentDialog
         {
             Title           = "Contacts",
             CloseButtonText = "Done",
-            Content         = new ContactsPage { Model = Model },
+            Content         = page,
             XamlRoot        = Content.XamlRoot,
         };
+        // The "Search LAN" flow can't open its own ContentDialog while this
+        // one is up (WinUI 3 allows only one per XamlRoot). Hide ourselves,
+        // run the picker + naming dialogs in sequence, then reopen Contacts
+        // so the user lands back on the updated list.
+        page.SearchLanRequested += () => RunSearchLanFlowAsync(dialog);
         _activeDialog = dialog;
         try { await dialog.ShowAsync(); }
         finally { _activeDialog = null; }
+    }
+
+    private async void RunSearchLanFlowAsync(ContentDialog contactsDialog)
+    {
+        // Closing the outer dialog frees the XamlRoot for the picker. ShowAsync
+        // on contactsDialog will resume on the awaiter in ShowContactsPage —
+        // we deliberately don't reopen until the picker (and any subsequent
+        // naming dialogs) have fully closed.
+        contactsDialog.Hide();
+        _activeDialog = null;
+
+        var picker = new PeerPickerDialog(Model) { XamlRoot = Content.XamlRoot };
+        _activeDialog = picker;
+        IReadOnlyList<PeerInfo> selected;
+        try
+        {
+            var result = await picker.ShowAsync();
+            if (result != ContentDialogResult.Primary)
+            {
+                _activeDialog = null;
+                ShowContactsPage();
+                return;
+            }
+            selected = picker.SelectedPeers;
+        }
+        finally { if (ReferenceEquals(_activeDialog, picker)) _activeDialog = null; }
+
+        foreach (var peer in selected)
+        {
+            var nameDialog = new NameContactDialog(peer) { XamlRoot = Content.XamlRoot };
+            _activeDialog = nameDialog;
+            try
+            {
+                var nameResult = await nameDialog.ShowAsync();
+                var finalName = peer.Username;
+                if (nameResult == ContentDialogResult.Primary)
+                {
+                    var entered = nameDialog.NameValue;
+                    if (!string.IsNullOrWhiteSpace(entered)) finalName = entered.Trim();
+                }
+                Model.AddContact(peer.PublicKeyB64, finalName, peer.IP);
+            }
+            finally { if (ReferenceEquals(_activeDialog, nameDialog)) _activeDialog = null; }
+        }
+
+        // Reopen the Contacts dialog so the user sees the new contacts inline.
+        ShowContactsPage();
     }
 
     private async void ShowSettingsPage()

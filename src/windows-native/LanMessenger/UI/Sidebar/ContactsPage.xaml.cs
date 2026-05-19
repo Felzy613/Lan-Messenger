@@ -83,10 +83,17 @@ public sealed partial class ContactsPage : Page
         }
     }
 
+    // Raised when the user taps the green "Search LAN" row. The Contacts page
+    // is hosted inside a ContentDialog and WinUI 3 forbids a second
+    // ContentDialog on the same XamlRoot, so the peer picker has to be opened
+    // by MainWindow *after* it dismisses the outer Contacts dialog. The host
+    // also runs the post-pick NameContactDialog naming loop.
+    public event Action? SearchLanRequested;
+
     private List<ContactRowViewModel> _allRows = [];
-    // WinUI 3 allows only one ContentDialog per XamlRoot at a time.
-    // This flag serialises our dialog opens so rapid clicks and migration
-    // dialogs from other pages don't trigger the 0x80000019 COMException.
+    // Serialises Edit/Delete dialog opens so rapid clicks don't trigger
+    // the 0x80000019 COMException. The Search-LAN flow is hoisted to
+    // MainWindow and does not use this guard.
     private bool _dialogOpen;
 
     public ContactsPage()
@@ -200,39 +207,12 @@ public sealed partial class ContactsPage : Page
         finally { _dialogOpen = false; }
     }
 
-    private async void AddFromPeers_Click(object sender, RoutedEventArgs e)
+    private void AddFromPeers_Click(object sender, RoutedEventArgs e)
     {
-        if (_model is null || _dialogOpen) return;
-        _dialogOpen = true;
-        try
-        {
-            var picker = new PeerPickerDialog(_model) { XamlRoot = XamlRoot };
-            var result = await picker.ShowAsync();
-            // ShowAsync has fully returned — safe to open another ContentDialog.
-            if (result == ContentDialogResult.Primary)
-                await RunNamingFlowAsync(picker.SelectedPeers);
-            Refresh();
-        }
-        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80000019))
-        {
-            // Another ContentDialog is already open (e.g. migration prompt) — silently ignore.
-        }
-        finally { _dialogOpen = false; }
-    }
-
-    private async Task RunNamingFlowAsync(IReadOnlyList<PeerInfo> peers)
-    {
-        foreach (var peer in peers)
-        {
-            var dialog = new NameContactDialog(peer) { XamlRoot = XamlRoot };
-            var result = await dialog.ShowAsync();
-            string finalName = peer.Username;
-            if (result == ContentDialogResult.Primary)
-            {
-                var entered = dialog.NameValue;
-                if (!string.IsNullOrWhiteSpace(entered)) finalName = entered.Trim();
-            }
-            _model!.AddContact(peer.PublicKeyB64, finalName, peer.IP);
-        }
+        // The peer picker is a ContentDialog and this page is itself hosted in
+        // a ContentDialog — WinUI 3 throws 0x80000019 if we try to open one
+        // here. MainWindow listens for this event, hides the outer dialog,
+        // opens the picker, and runs the naming flow.
+        SearchLanRequested?.Invoke();
     }
 }

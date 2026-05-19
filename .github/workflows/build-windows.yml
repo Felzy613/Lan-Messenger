@@ -179,6 +179,24 @@ jobs:
       #       "publish-output\LanMessenger.exe"
       #     Remove-Item cert.pfx
 
+      # The Inno Setup script bundles vc_redist.x64.exe and chain-installs it
+      # so SessionCrypto's libsodium dependency loads on clean Windows 10 boxes
+      # (the GitHub runners have the runtime preinstalled, real users often don't).
+      # aka.ms/vs/17/release/vc_redist.x64.exe is Microsoft's stable permalink
+      # for the current VC++ 2015-2022 x64 redistributable.
+      - name: Download VC++ 2015-2022 x64 redistributable
+        shell: pwsh
+        run: |
+          $Url  = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+          $Dest = "vc_redist.x64.exe"
+          Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+          if (-not (Test-Path $Dest)) {
+            Write-Error "Failed to download $Url"
+            exit 1
+          }
+          $size = (Get-Item $Dest).Length
+          Write-Host "Downloaded $Dest ($size bytes)"
+
       - name: Build Inno Setup installer
         id: package
         shell: pwsh
