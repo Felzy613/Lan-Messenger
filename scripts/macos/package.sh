@@ -91,33 +91,38 @@ MARKETING_VERSION="${VERSION%.*}"
 sed -i '' "s/MARKETING_VERSION:.*/MARKETING_VERSION: \"$MARKETING_VERSION\"/" project.yml
 xcodegen generate >/dev/null
 
-# ── 3. Build a Release archive ────────────────────────────────────────────────
-step "Building Release archive (xcodebuild)"
-xcodebuild archive \
+# ── 3. Build Release ─────────────────────────────────────────────────────────
+# xcodebuild archive silently drops Contents/Resources (compiled asset catalog)
+# when code signing is ad-hoc. A plain Release build to derivedData produces a
+# complete bundle and is what the old workflow used successfully.
+step "Building Release (xcodebuild)"
+DERIVED_DIR="$BUILD_DIR/derived"
+xcodebuild build \
     -project "$MAC_DIR/LanMessenger.xcodeproj" \
     -scheme  LanMessenger \
     -configuration Release \
-    -archivePath "$ARCHIVE_PATH" \
+    -derivedDataPath "$DERIVED_DIR" \
     -destination 'generic/platform=macOS' \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGN_IDENTITY="-" \
+    ONLY_ACTIVE_ARCH=NO \
     MARKETING_VERSION="$MARKETING_VERSION" \
     CURRENT_PROJECT_VERSION="${VERSION##*.}" \
     SWIFT_OPTIMIZATION_LEVEL='-O' \
     GCC_OPTIMIZATION_LEVEL='s' \
-    2>&1 | grep -E "^(error:|warning: |.*Build complete|.*FAILED)" || true
+    2>&1 | grep -E "error:|Build complete|FAILED" || true
 
-APP_IN_ARCHIVE="$ARCHIVE_PATH/Products/Applications/${APP_NAME_BUNDLE}.app"
-if [ ! -d "$APP_IN_ARCHIVE" ]; then
-    echo "::error::Archive produced no .app at $APP_IN_ARCHIVE"
-    find "$ARCHIVE_PATH" -name "*.app" -maxdepth 5
+APP_IN_BUILD=$(find "$DERIVED_DIR/Build/Products/Release" -name "${APP_NAME_BUNDLE}.app" -type d 2>/dev/null | head -1)
+if [ -z "$APP_IN_BUILD" ]; then
+    echo "::error::${APP_NAME_BUNDLE}.app not found in derived data"
+    find "$DERIVED_DIR/Build" -name "*.app" -maxdepth 5 2>/dev/null || true
     exit 1
 fi
 
-# Copy out of the archive — we sign + ship from $EXPORT_DIR.
+# Copy to EXPORT_DIR — we sign + ship from there.
 rm -rf "$EXPORT_DIR"
 mkdir -p "$EXPORT_DIR"
-cp -R "$APP_IN_ARCHIVE" "$EXPORT_DIR/"
+cp -R "$APP_IN_BUILD" "$EXPORT_DIR/"
 APP_PATH="$EXPORT_DIR/${APP_NAME_BUNDLE}.app"
 
 step "Inspecting bundle"
