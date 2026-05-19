@@ -25,18 +25,6 @@
       "size": "32x32"
     },
     {
-      "filename": "icon_64x64.png",
-      "idiom": "mac",
-      "scale": "1x",
-      "size": "64x64"
-    },
-    {
-      "filename": "icon_64x64@2x.png",
-      "idiom": "mac",
-      "scale": "2x",
-      "size": "64x64"
-    },
-    {
       "filename": "icon_128x128.png",
       "idiom": "mac",
       "scale": "1x",
@@ -67,10 +55,10 @@
       "size": "512x512"
     },
     {
-      "filename": "icon_1024x1024.png",
+      "filename": "icon_512x512@2x.png",
       "idiom": "mac",
-      "scale": "1x",
-      "size": "1024x1024"
+      "scale": "2x",
+      "size": "512x512"
     }
   ],
   "info": {

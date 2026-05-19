@@ -70,7 +70,20 @@ final class AppModel: ObservableObject {
         startPeerTimeoutTimer()
         checkMigration()
         applyDockPolicy()
+        reconcileLoginItem()
         scheduleAutoUpdateCheck()
+    }
+
+    // If the user previously asked for launch-at-login but the system's
+    // SMAppService record was lost (typical after the app bundle is moved,
+    // re-signed, or replaced by the updater), silently re-register so the
+    // preference survives across upgrades.
+    private func reconcileLoginItem() {
+        guard ConfigStore.shared.config.launchAtLogin else { return }
+        let status = LoginItemService.currentStatus
+        if case .disabled = status {
+            _ = LoginItemService.setEnabled(true)
+        }
     }
 
     // Remove any saved contact whose public key matches our own.

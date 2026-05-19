@@ -201,13 +201,14 @@ jobs:
         run: |
           mkdir -p dist/macos dist/windows
 
-          # Download the main asset and the optional SHA256 sidecar
-          gh release download "${{ steps.tags.outputs.mac_tag }}" \
-            --pattern "*.zip" \
-            --dir dist/macos/
-          gh release download "${{ steps.tags.outputs.mac_tag }}" \
-            --pattern "*.zip.sha256" \
-            --dir dist/macos/ 2>/dev/null || true
+          # macOS publishes DMG (primary), PKG (IT/MDM), ZIP (updater), each
+          # with a SHA256 sidecar. Grab them all so the combined release
+          # mirrors what's on the platform release exactly.
+          for PATTERN in '*.dmg' '*.dmg.sha256' '*.pkg' '*.pkg.sha256' '*.zip' '*.zip.sha256'; do
+            gh release download "${{ steps.tags.outputs.mac_tag }}" \
+              --pattern "$PATTERN" \
+              --dir dist/macos/ 2>/dev/null || true
+          done
 
           gh release download "${{ steps.tags.outputs.win_tag }}" \
             --pattern "*.exe" \
@@ -225,11 +226,14 @@ jobs:
           steps.tags.outputs.skip != 'true' &&
           steps.release.outputs.skip != 'true'
         run: |
-          MAC_FILE=$(ls dist/macos/*.zip 2>/dev/null | head -1)
+          # macOS: require at least the DMG to be present (it's the primary
+          # download). ZIP and PKG are optional but ride along when they exist.
+          MAC_DMG=$(ls dist/macos/*.dmg 2>/dev/null | head -1)
+          MAC_ZIP=$(ls dist/macos/*.zip 2>/dev/null | head -1)
           WIN_FILE=$(ls dist/windows/*.exe 2>/dev/null | head -1)
 
-          if [ -z "$MAC_FILE" ]; then
-            echo "::error::macOS artifact missing after download"
+          if [ -z "$MAC_DMG" ] && [ -z "$MAC_ZIP" ]; then
+            echo "::error::macOS release has neither .dmg nor .zip"
             exit 1
           fi
           if [ -z "$WIN_FILE" ]; then
@@ -237,21 +241,15 @@ jobs:
             exit 1
           fi
 
-          # Sanity-check file sizes (both must be > 512 KiB)
-          MAC_SIZE=$(stat -c%s "$MAC_FILE" 2>/dev/null || stat -f%z "$MAC_FILE")
-          WIN_SIZE=$(stat -c%s "$WIN_FILE" 2>/dev/null || stat -f%z "$WIN_FILE")
-
-          if [ "$MAC_SIZE" -lt 524288 ]; then
-            echo "::error::macOS artifact is suspiciously small (${MAC_SIZE} bytes)"
-            exit 1
-          fi
-          if [ "$WIN_SIZE" -lt 524288 ]; then
-            echo "::error::Windows artifact is suspiciously small (${WIN_SIZE} bytes)"
-            exit 1
-          fi
-
-          echo "✓ macOS: $(basename $MAC_FILE) ($(numfmt --to=iec $MAC_SIZE))"
-          echo "✓ Windows: $(basename $WIN_FILE) ($(numfmt --to=iec $WIN_SIZE))"
+          for F in $MAC_DMG $MAC_ZIP dist/macos/*.pkg "$WIN_FILE"; do
+            [ -f "$F" ] || continue
+            SIZE=$(stat -c%s "$F" 2>/dev/null || stat -f%z "$F")
+            if [ "$SIZE" -lt 524288 ]; then
+              echo "::error::Artifact suspiciously small ($SIZE bytes): $F"
+              exit 1
+            fi
+            echo "✓ $(basename "$F") ($(numfmt --to=iec "$SIZE"))"
+          done
 
       - name: Fetch per-platform commit SHAs for release notes
         id: commits
@@ -280,19 +278,23 @@ jobs:
           MAC_SHA="${{ steps.commits.outputs.mac_sha }}"
           WIN_SHA="${{ steps.commits.outputs.win_sha }}"
 
-          printf '%s\n' \
-            "LAN Messenger Combined Release" \
-            "" \
-            "Windows ${WIN_VER} (${WIN_SHA}) + macOS ${MAC_VER} (${MAC_SHA})" \
-            "Released: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "Triggered by: ${{ github.event.workflow_run.name }}" \
-            "" \
-            "Windows Installer: LanMessenger-Setup-${WIN_VER}.exe" \
-            "  Self-contained (.NET 8 bundled). Requires Windows 10 build 19041+, x64." \
-            "" \
-            "macOS App: LanMessenger-macOS-${MAC_VER}.zip" \
-            "  Requires macOS 13.0 (Ventura)+. Unzip and move to Applications." \
-            > /tmp/combined-notes.md
+          {
+            echo "LAN Messenger Combined Release"
+            echo ""
+            echo "Windows ${WIN_VER} (${WIN_SHA}) + macOS ${MAC_VER} (${MAC_SHA})"
+            echo "Released: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "Triggered by: ${{ github.event.workflow_run.name }}"
+            echo ""
+            echo "## Windows"
+            echo "- \`LanMessenger-Setup-${WIN_VER}.exe\` — self-contained installer (.NET 8 bundled). Requires Windows 10 build 19041+, x64."
+            echo ""
+            echo "## macOS"
+            echo "- \`LanMessenger-macOS-${MAC_VER}.dmg\` — primary download. Open, drag to Applications, eject."
+            echo "- \`LanMessenger-macOS-${MAC_VER}.pkg\` — IT-managed install (MDM, JAMF, Munki) into /Applications."
+            echo "- \`LanMessenger-macOS-${MAC_VER}.zip\` — updater-channel artifact; in-app updater downloads this."
+            echo ""
+            echo "Requires macOS 13.0 (Ventura) or later. Each artifact ships with a \`.sha256\` sidecar."
+          } > /tmp/combined-notes.md
 
           gh release create "$TAG" \
             --title "${{ steps.release.outputs.release_title }}" \
@@ -302,17 +304,20 @@ jobs:
           echo "draft_tag=$TAG" >> $GITHUB_OUTPUT
           echo "Created draft release: $TAG"
 
-      - name: Upload macOS artifact
+      - name: Upload macOS artifacts
         if: |
           steps.early_exit.outputs.skip != 'true' &&
           steps.tags.outputs.skip != 'true' &&
           steps.release.outputs.skip != 'true'
         run: |
           TAG="${{ steps.draft.outputs.draft_tag }}"
-          gh release upload "$TAG" dist/macos/*.zip --clobber
-          # Upload sidecar if present (optional — only exists for new releases)
-          ls dist/macos/*.sha256 2>/dev/null && \
-            gh release upload "$TAG" dist/macos/*.sha256 --clobber || true
+          # Upload every macOS artifact that landed in dist/macos. The for-loop
+          # is defensive against older platform releases that only carry .zip.
+          for f in dist/macos/*.dmg dist/macos/*.dmg.sha256 \
+                   dist/macos/*.pkg dist/macos/*.pkg.sha256 \
+                   dist/macos/*.zip dist/macos/*.zip.sha256; do
+            [ -f "$f" ] && gh release upload "$TAG" "$f" --clobber || true
+          done
 
       - name: Upload Windows artifact
         if: |

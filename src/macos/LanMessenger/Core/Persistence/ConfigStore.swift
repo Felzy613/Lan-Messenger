@@ -71,6 +71,11 @@ struct AppConfig: Codable {
     var updateServerURL: String = ""
     var inboxDir: String = ""
     var hideFromDock: Bool = false
+    // User's preference for SMAppService-managed Login Item registration.
+    // The OS-side status is the source of truth at runtime; this is just what
+    // the user asked for so we can re-apply it if SMAppService loses our
+    // registration (e.g. after an app-bundle move).
+    var launchAtLogin: Bool = false
     // GitHub repo to source updates from (owner/repo).
     var updateRepo: String = "felzy613/lan-messenger"
     // Last update check time (Unix seconds). Used to throttle background checks.
@@ -85,6 +90,7 @@ struct AppConfig: Codable {
         case updateServerURL = "update_server_url"
         case inboxDir = "inbox_dir"
         case hideFromDock = "hide_from_dock"
+        case launchAtLogin = "launch_at_login"
         case updateRepo = "update_repo"
         case lastUpdateCheck = "last_update_check"
     }
@@ -102,6 +108,7 @@ struct AppConfig: Codable {
         updateServerURL = (try c.decodeIfPresent(String.self, forKey: .updateServerURL)) ?? ""
         inboxDir = (try c.decodeIfPresent(String.self, forKey: .inboxDir)) ?? ""
         hideFromDock = (try c.decodeIfPresent(Bool.self, forKey: .hideFromDock)) ?? false
+        launchAtLogin = (try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? false
         updateRepo = (try c.decodeIfPresent(String.self, forKey: .updateRepo)) ?? "felzy613/lan-messenger"
         lastUpdateCheck = (try c.decodeIfPresent(Double.self, forKey: .lastUpdateCheck)) ?? 0
     }

@@ -30,7 +30,13 @@ let package = Package(
             ],
             resources: [],
             swiftSettings: [
-                .unsafeFlags(["-framework", "Security"]),
+                // Frameworks that SPM doesn't autolink for executable targets.
+                // Security        — KeyManager (Keychain)
+                // ServiceManagement — LoginItemService (SMAppService)
+                .unsafeFlags([
+                    "-framework", "Security",
+                    "-framework", "ServiceManagement",
+                ]),
             ]
         ),
         .testTarget(

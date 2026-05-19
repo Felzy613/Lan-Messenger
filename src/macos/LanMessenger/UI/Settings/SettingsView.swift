@@ -8,6 +8,9 @@ struct SettingsView: View {
     @State private var updateRepo = ConfigStore.shared.config.updateRepo
     @State private var inboxDir = ConfigStore.shared.config.inboxDir
     @State private var hideFromDock = ConfigStore.shared.config.hideFromDock
+    @State private var launchAtLogin = ConfigStore.shared.config.launchAtLogin
+    @State private var loginItemStatusText = ""
+    @State private var loginItemNeedsApproval = false
     @State private var updateStatus = ""
     @State private var isCheckingUpdates = false
 
@@ -20,6 +23,29 @@ struct SettingsView: View {
 
                 Section("Appearance") {
                     Toggle("Hide from Dock (menu bar only)", isOn: $hideFromDock)
+                }
+
+                Section("Startup") {
+                    Toggle("Launch at login", isOn: $launchAtLogin)
+                        .onChange(of: launchAtLogin) { newValue in
+                            applyLoginItem(enabled: newValue)
+                        }
+                    if !loginItemStatusText.isEmpty {
+                        HStack(spacing: 8) {
+                            Image(systemName: loginItemNeedsApproval ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                                .foregroundStyle(loginItemNeedsApproval ? .orange : Theme.accent)
+                            Text(loginItemStatusText)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            if loginItemNeedsApproval {
+                                Button("Open Login Items…") {
+                                    LoginItemService.openSystemLoginItemsPane()
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                    }
                 }
 
                 Section("Files") {
@@ -115,6 +141,40 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: 460, minHeight: 380)
+        .onAppear { refreshLoginItemStatus() }
+    }
+
+    private func applyLoginItem(enabled: Bool) {
+        let status = LoginItemService.setEnabled(enabled)
+        ConfigStore.shared.config.launchAtLogin = enabled
+        ConfigStore.shared.save()
+        renderLoginItemStatus(status, requested: enabled)
+    }
+
+    private func refreshLoginItemStatus() {
+        renderLoginItemStatus(LoginItemService.currentStatus, requested: launchAtLogin)
+    }
+
+    private func renderLoginItemStatus(_ status: LoginItemService.Status, requested: Bool) {
+        switch status {
+        case .enabled:
+            loginItemStatusText = "Will start when you log in."
+            loginItemNeedsApproval = false
+        case .disabled:
+            loginItemStatusText = requested
+                ? "Couldn't register — try moving the app to /Applications."
+                : ""
+            loginItemNeedsApproval = false
+        case .requiresApproval:
+            loginItemStatusText = "Approval needed in System Settings → Login Items."
+            loginItemNeedsApproval = true
+        case .notSupported:
+            loginItemStatusText = "Not supported on this macOS version."
+            loginItemNeedsApproval = false
+        case .error(let msg):
+            loginItemStatusText = "Couldn't update login item: \(msg)"
+            loginItemNeedsApproval = false
+        }
     }
 
     // MARK: - Update UI helpers
