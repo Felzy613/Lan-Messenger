@@ -1,44 +1,119 @@
 ---
 name: Repo file layout
-description: Where files live in the LAN Messenger repo, including native rewrite additions
+description: Current LAN Messenger repo layout after the native macOS and Windows rewrite
 type: project
 ---
 
-The repo root is the Python app. Native rewrite files are added alongside the existing structure.
+The current repo is organized around two native apps plus shared docs, scripts,
+versions, and CI. The older notes that referenced `lan-messenger-native/`,
+root-level `main.py`, PyInstaller specs, `test_vectors/`, or `QA_CHECKLIST.md`
+are stale for this checkout.
 
-## Existing Python App (do not delete)
-
-```
-main.py                          # ~4,417 lines — the reference implementation
-requirements.txt
-LanMessenger.spec                # PyInstaller spec
-PACKAGING.md
-macos/                           # Python build scripts for macOS DMG
-windows/                         # Python build scripts for Windows installer
-update_server/                   # Update manifest server files
-assets/                          # Icons (.icns, .png, .ico)
-```
-
-## Native Rewrite Additions (branch: claude/hardcore-ride-3aec16)
+## Root
 
 ```
-PROTOCOL.md                      # Canonical wire format spec (Phase 1)
-QA_CHECKLIST.md                  # Manual 87-case test plan (Phase 1)
-tools/
-  generate_vectors.py            # Deterministic test vector generator (Phase 1)
-test_vectors/
-  known_good_exchange.json       # Pre-computed crypto vectors (Phase 1)
-lan-messenger-native/            # (planned — Phase 2+)
-  macos/
-    LanMessenger.xcodeproj
-    LanMessenger/                # Swift sources
-    LanMessengerTests/
-  windows/
-    LanMessenger.sln
-    LanMessenger/                # C# WinUI 3 sources
-    LanMessenger.Tests/
+README.md
+CLAUDE.md
+PROTOCOL.md
+docs/
+memory/
+scripts/
+version/
+src/
 ```
 
-**Why:** PROTOCOL.md and QA_CHECKLIST.md live at repo root so they're equally
-accessible for both platforms. Native app code goes under lan-messenger-native/
-to avoid collision with the existing Python macos/ and windows/ directories.
+## Documentation
+
+```
+docs/
+  ARCHITECTURE.md
+  DEVELOPMENT.md
+  FILE_MAP.md
+  RELEASE_AND_OPERATIONS.md
+```
+
+`PROTOCOL.md` is the protocol and persistence source of truth. `CLAUDE.md` is
+the operational guide for agents/developers. `docs/FILE_MAP.md` has the
+file-by-file inventory.
+
+## macOS Native App
+
+```
+src/macos/
+  Package.swift
+  project.yml
+  VERSION                         # legacy marker only
+  scripts/
+    build_app.sh
+    build_dmg.sh
+    generate_icon.py
+  LanMessenger/
+    App/
+    Core/
+      Protocol/
+      Crypto/
+      Networking/
+      Persistence/
+      Services/
+    UI/
+    Info.plist
+    LanMessenger.entitlements
+    Assets.xcassets/
+  LanMessengerTests/
+    known_good_exchange.json
+```
+
+SwiftPM (`Package.swift`) is the fast dev/test path. `project.yml` generates the
+Xcode project used by packaging; generated `LanMessenger.xcodeproj` is ignored.
+
+## Windows Native App
+
+```
+src/windows-native/
+  LanMessenger.sln
+  LanMessenger.iss
+  VERSION                         # legacy marker only
+  LanMessenger/
+    LanMessenger.csproj
+    App.xaml
+    MainWindow.xaml
+    Core/
+      Protocol/
+      Crypto/
+      Networking/
+      Persistence/
+      Services/
+    UI/
+    Assets/
+  LanMessenger.Tests/
+    LanMessenger.Tests.csproj
+    known_good_exchange.json
+```
+
+Use Visual Studio MSBuild for WinUI builds and tests. Inno Setup builds the
+installer.
+
+## Scripts And CI
+
+```
+scripts/hooks/pre-commit
+scripts/macos/package.sh
+scripts/macos/validate-bundle.sh
+scripts/macos/validate-dmg.sh
+scripts/macos/smoke-test.sh
+scripts/windows/smoke-test.ps1
+scripts/shared/close-ci-issues.sh
+
+.github/workflows/
+.github/actions/
+```
+
+## Version Sources
+
+```
+version/macos.json
+version/windows.json
+```
+
+These are the canonical release versions. `src/macos/VERSION` and
+`src/windows-native/VERSION` are legacy markers and are not CI sources of truth.

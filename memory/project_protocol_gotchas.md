@@ -1,56 +1,77 @@
 ---
 name: Protocol implementation gotchas
-description: Non-obvious facts about the LAN Messenger wire protocol discovered by reading main.py, important for native implementations
+description: Non-obvious LAN Messenger wire-protocol and persistence details for native clients
 type: project
 ---
 
-These are things that the implementation plan document describes at a high level but
-the actual code reveals specifically. Native app developers must know all of these.
-
-**Why:** Subtle protocol mismatches will silently break interoperability. These were
-verified by reading main.py source, not inferred from the plan.
-
-**How to apply:** Check each item when implementing the corresponding feature in native code.
+Use this before touching discovery, framing, crypto, receipts, file transfer,
+history, or config migration. `PROTOCOL.md` is the authoritative spec.
 
 ## Discovery
 
-- Discovery packets are raw UTF-8 JSON on UDP — **no length prefix framing**. Framing only applies to TCP.
-- Discovery reply is sent back to `{source_ip}:54231` (the UDP discovery port), NOT to the TCP port.
-- Receiver rejects discovery packets where source IP is in its own local_ips list (not just where public_key matches).
-- The `ips` field in the discovery payload is the sender's local IPv4 list (may be multiple, e.g. Ethernet + Wi-Fi).
-- Discovery also sends to last-known IP of saved contacts (unicast) to reach peers across subnets.
+- UDP discovery packets are raw UTF-8 JSON. They are not length-prefixed.
+- Discovery replies are sent to `{source_ip}:54231` over UDP, not to TCP port
+  `54232`.
+- Do not reply to `discovery_reply`.
+- Drop packets from own local IPs and packets with own public key.
+- Discovery should send on every eligible IPv4 interface, not only the default
+  route.
+- Saved/current peer IPs are used as unicast hints for cross-subnet reach.
 
 ## Framing
 
-- Size check is `size <= 0 or size > 50 * 1024 * 1024` — the ≤0 case must also be rejected (not just >50 MiB).
+- TCP frames are 4-byte unsigned big-endian length plus UTF-8 JSON body.
+- Reject length `<= 0` and length `> 50 MiB`.
+- One logical packet is one frame.
 
 ## Crypto
 
-- HKDF salt is `None` in Python's cryptography library, which means empty bytes. Native implementations must use empty salt (`b""` / `Data()` / `[]`), not a null pointer that might be treated differently.
-- AES-GCM ciphertext includes the 16-byte tag appended at the end: the Python library's `.encrypt()` returns `ciphertext + tag`. Native apps must concatenate before base64-encoding and split before decrypting.
-- CryptoKit on macOS returns ciphertext and tag separately via `AES.GCM.SealedBox`; use `sealed.ciphertext + sealed.tag` to produce the correct byte layout.
+- X25519 public keys are raw 32-byte keys encoded with standard base64.
+- HKDF salt is empty bytes.
+- Session info string is `lan-messenger`.
+- History info string is `lan-messenger-history`.
+- AES-GCM tag is appended to ciphertext before base64 encoding.
+- Text AAD is `message_id` UTF-8 bytes.
+- File chunk AAD is `transfer_id` UTF-8 bytes.
+- History AAD is `history-v1` UTF-8 bytes.
 
-## History File
+## IDs
 
-- History is keyed by **IP address** (string), not by public key. This means if a peer's IP changes, their history appears as a new conversation. This is a known limitation of the Python app carried forward.
-- History AAD is the literal bytes `b"history-v1"` (10 bytes). Native apps must use exactly this, not a string comparison or different encoding.
-- Inner JSON uses compact separators: `json.dumps(..., separators=(",", ":"))`. The format doesn't need to match exactly for reading (JSON parsers accept any whitespace), but the 200-message cap and IP-keyed structure must be preserved.
+- `message_id` and `transfer_id` are 32 lowercase hex characters with no dashes.
 
-## Receipts
+## History
 
-- `sent_receipt` is sent by the **receiver** (not the sender) immediately after successfully decrypting a `text` packet.
-- `read_receipt` is sent by the **receiver** when the user opens the conversation — only once per message (`read_receipt_sent` flag in history prevents duplicates across restarts).
+- History is keyed by peer IP, not public key. This is a compatibility constraint.
+- Saved contact IP changes are handled by migrating history from old IP to new IP.
+- Each conversation is capped at 200 entries.
+- Reply fields are optional: `reply_to_message_id`, `reply_to_preview`,
+  `reply_to_sender`.
+- File bubbles are stored as text with `__FILE__:` prefix.
+
+## Receipts And Status
+
+- `sent_receipt` is sent by the receiver after successful decrypt.
+- `read_receipt` is sent by the receiver when the conversation is opened/read.
+- Status updates must be monotonic: `Sent` must not overwrite `Delivered` or
+  `Read`.
 
 ## File Transfer
 
-- Temp file naming: `{inbox_dir}/{transfer_id}_{filename}.part` — exactly this format.
-- On `file_end`: rename temp file to final name; if final name exists, try `{stem}_1{suffix}`, `{stem}_2{suffix}`, ... up to 999, then fall back to random 8-hex suffix.
-- File transfer uses a **separate TCP connection** per transfer (not the persistent peer session). The sender opens `socket.create_connection((peer.ip, peer.port), timeout=5)` for each file transfer.
+- Each transfer uses a dedicated TCP connection.
+- Packet sequence is `file_start`, ordered encrypted `file_chunk` frames,
+  `file_end`.
+- Chunks have no sequence number; keep decrypt/write processing ordered.
+- Incoming temp file is `{transfer_id}_{filename}.part`.
+- Final names dedupe with `_1` through `_999`, then an 8-hex fallback.
+- Progress callbacks must be throttled so large files do not flood the UI thread.
 
-## Message IDs and Transfer IDs
+## Filename Sanitization
 
-- Both are `uuid.uuid4().hex` — 32 lowercase hex characters with no dashes. Not a UUID string with dashes. Native apps must generate in the same format.
+- macOS/POSIX splits only on `/`; backslashes are ordinary filename characters.
+- Windows treats both `/` and `\` as path separators.
+- Both trim whitespace, remove null bytes, and default to `file`.
 
-## Config Migration
+## Migration
 
-- Python stores the private key as `private_key_b64` in plain JSON. Native apps must NOT do this. On import from Python config, move the key to Keychain (macOS) or DPAPI (Windows) and remove it from the JSON.
+- Legacy config may include `private_key_b64`; native apps import it into secure
+  storage instead of keeping it in config JSON.

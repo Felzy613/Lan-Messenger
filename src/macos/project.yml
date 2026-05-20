@@ -3,14 +3,14 @@
 # Prerequisites:
 #   brew install xcodegen
 #
-# Usage (from lan-messenger-native/macos/):
+# Usage (from src/macos/):
 #   xcodegen generate
 #   open LanMessenger.xcodeproj
 #
 # After opening in Xcode:
-#   1. Select the LanMessenger target → Signing & Capabilities
+#   1. Select the LanMessenger target -> Signing & Capabilities
 #   2. Set your Team (personal or paid Apple Developer account)
-#   3. Product → Run to test; Product → Archive to build a release
+#   3. Product -> Run to test; Product -> Archive to build a release
 #
 # Note: swift build / swift test still work independently via Package.swift.
 

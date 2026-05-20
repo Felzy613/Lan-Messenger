@@ -1,49 +1,49 @@
 ---
 name: Swift build gotchas for LAN Messenger native
-description: Swift compiler issues discovered and fixed during Phase 2 — important for future sessions editing the macOS source
+description: macOS Swift/SPM/XcodeGen patterns and compiler gotchas for this repo
 type: project
 ---
 
-Discoveries from getting `swift build` and `swift test` clean on the macOS SPM package.
+Current macOS source root: `src/macos/`.
 
-**Why:** These were real compiler errors that needed specific fixes; future sessions editing these files should know the patterns.
+## Build Paths
 
-**How to apply:** When editing networking or crypto code, watch for these patterns.
+- Fast dev path: `cd src/macos && swift build && swift test`.
+- Xcode project is generated from `src/macos/project.yml` with `xcodegen generate`.
+- Generated `LanMessenger.xcodeproj` is ignored and should not be treated as
+  durable source.
+- Packaging path: root `scripts/macos/package.sh`.
 
-## 1. `bind` name collision in NetworkCoordinator and DiscoveryService
+## Compiler And Runtime Gotchas
 
-`NetworkCoordinator` and `DiscoveryService` extend `NSObject` (or are in a context where `bind(_:_:_:)` is an instance method). When calling the POSIX `bind()` syscall inside these classes, must use `Darwin.bind(...)` to disambiguate.
+1. `bind` name collision:
+   - Classes with NSObject context must call `Darwin.bind(...)` for POSIX bind.
 
-## 2. InputStream read with pointer arithmetic
+2. `InputStream.read` pointer arithmetic:
+   - Use `withUnsafeMutableBytes` and `advanced(by:)` for offset reads.
 
-`stream.read(&buffer + offset, maxLength: n)` is illegal — produces a temporary pointer. Must use:
-```swift
-buffer.withUnsafeMutableBytes { ptr in
-    stream.read(ptr.baseAddress!.advanced(by: offset).assumingMemoryBound(to: UInt8.self), maxLength: n)
-}
-```
-This applies to both `FrameCodec.readExact` and `PeerSession.tryReadExact`.
+3. Main actor callbacks:
+   - Background networking callbacks should hop to the main actor with
+     `Task { @MainActor ... }` or `DispatchQueue.main.async`.
 
-## 3. @MainActor protocol + nonisolated call sites
+4. `ConfigStore.config` mutability:
+   - It is intentionally mutable because services update nested struct fields.
 
-`NetworkCoordinatorDelegate` was first annotated `@MainActor` on the protocol, which caused errors in non-isolated call sites. Solution: annotate each method `@MainActor` individually, and call them via `Task { @MainActor [weak self] in ... }` from background threads/queues.
+5. Filename sanitization:
+   - Use string splitting for POSIX semantics. `URL(fileURLWithPath: "")` can
+     produce current-directory behavior and is not equivalent.
+   - Strip null bytes before path handling.
 
-## 4. ConfigStore.config must be var (not private(set) var)
+6. Test vectors:
+   - SPM test resources must live inside the package tree. The current vector
+     path is `src/macos/LanMessengerTests/known_good_exchange.json`.
 
-MessagingService directly mutates `ConfigStore.shared.config.pendingMessages`. Using `private(set)` prevents sub-property mutation on a struct value type. Changed to plain `var config`.
+7. Swift concurrency:
+   - Keep blocking socket and file I/O off the main actor and off cooperative
+     async paths where possible. Dedicated dispatch queues are used for file
+     chunks and file sends.
 
-## 5. Filename sanitization: use string splitting not URL
-
-`URL(fileURLWithPath: "")` returns the current directory on macOS (not `""`). The correct POSIX-equivalent of Python's `Path(name).name` is:
-```swift
-name.components(separatedBy: "/").last ?? ""
-```
-Also: null bytes in filenames must be removed with `.replacingOccurrences(of: "\0", with: "")` BEFORE passing through URL (URL percent-encodes them as `%00`).
-
-## 6. Test vectors must be inside the package directory
-
-SPM `.copy("../../../test_vectors/...")` resources are rejected if outside the package root. Solution: copy `known_good_exchange.json` into `LanMessengerTests/` and reference it as `.copy("known_good_exchange.json")`. Both locations are kept in sync.
-
-## 7. Swift 6 Sendable warnings (not errors yet)
-
-Several warnings about captured vars in concurrently-executing closures (FileTransferService). These are warnings in Swift 5.9 mode but will become errors in Swift 6. Acceptable for now; fix in a later pass when migrating to Swift 6 concurrency.
+8. Packaging:
+   - `project.yml` stamps `MARKETING_VERSION` as `MAJOR.MINOR`; full versions
+     come from `version/macos.json` in CI/package scripts.
+   - The package script regenerates the Xcode project and builds with xcodebuild.

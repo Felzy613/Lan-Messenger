@@ -1,122 +1,310 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is the working guide for agents and developers changing LAN Messenger.
+It reflects the current native app tree, not the older Python/Tkinter codebase.
 
-## Project Overview
+## Current Project Truth
 
-LAN Messenger is a peer-to-peer local-network chat app with two native implementations:
+LAN Messenger is now two native applications:
 
-- **macOS**: Swift/SwiftUI, SPM package at `src/macos/`
-- **Windows**: C#/WinUI 3, VS solution at `src/windows-native/`
+- macOS: Swift 5.9, SwiftUI, Swift Package Manager under `src/macos/`.
+- Windows: C#/.NET 8, WinUI 3, Windows App SDK under `src/windows-native/`.
 
-Both must remain wire-protocol compatible so they can interoperate. The authoritative protocol spec is `PROTOCOL.md`.
+The apps must remain wire-compatible. Treat [PROTOCOL.md](PROTOCOL.md) as the
+source of truth for networking, framing, crypto, validation, persistence formats,
+and cross-platform behavior.
 
-## Build & Test Commands
+The repo does not commit `LanMessenger.xcodeproj`. macOS development uses
+`Package.swift` for build/test and `project.yml` plus XcodeGen for app packaging.
 
-### macOS (Swift/SPM)
+## Documentation First Stops
+
+- [README.md](README.md) - project overview and quick start.
+- [PROTOCOL.md](PROTOCOL.md) - protocol and persistence spec.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - system model, flows, services,
+  storage, UI, updates, and failure modes.
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) - local workflow and validation.
+- [docs/RELEASE_AND_OPERATIONS.md](docs/RELEASE_AND_OPERATIONS.md) - CI,
+  packaging, update channels, smoke tests, and diagnostics.
+- [docs/FILE_MAP.md](docs/FILE_MAP.md) - detailed file inventory.
+- [memory/](memory/) - repo-local project memory for future sessions.
+
+Update the relevant docs when changing behavior, storage formats, protocol fields,
+build commands, CI, packaging, or release behavior.
+
+## Build And Test Commands
+
+### macOS
 
 ```bash
-cd "src/macos"
-swift build          # compile
-swift test           # run all 40 unit tests
+cd src/macos
+swift build
+swift test
+swift run
 ```
 
-The Xcode project (`LanMessenger.xcodeproj`) also works; SPM and Xcode share the same sources. Target: macOS 13+.
+Generate an Xcode project only when needed:
 
-### Windows (C#/WinUI 3)
+```bash
+cd src/macos
+xcodegen generate
+open LanMessenger.xcodeproj
+```
 
-Must be run on a Windows machine with Visual Studio 2022 + Windows App SDK 1.5:
+Package locally through the same pipeline CI uses:
+
+```bash
+VERSION=$(jq -r '.version' version/macos.json) scripts/macos/package.sh
+```
+
+or from inside `src/macos`:
+
+```bash
+./scripts/build_app.sh
+./scripts/build_dmg.sh
+```
+
+### Windows
+
+Run on Windows with Visual Studio 2022, .NET 8, Windows App SDK support, and x64.
+Use VS MSBuild for WinUI packaging tasks.
 
 ```powershell
 cd src\windows-native
-dotnet build LanMessenger.sln          # compile
-dotnet test LanMessenger.Tests         # run unit tests
+msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
+msbuild LanMessenger.Tests\LanMessenger.Tests.csproj /p:Configuration=Release /p:Platform=x64
+$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse | Select-Object -First 1
+dotnet vstest $testDll.FullName --logger:"console;verbosity=normal"
 ```
 
-Target: .NET 8, Windows 10 (19041+), x64 only.
+Build the self-contained app:
 
-## Repository Layout
-
+```powershell
+msbuild LanMessenger\LanMessenger.csproj `
+  /t:Publish `
+  /p:Configuration=Release `
+  /p:Platform=x64 `
+  /p:RuntimeIdentifier=win-x64 `
+  /p:SelfContained=true
 ```
-PROTOCOL.md                   # Authoritative wire-protocol spec — read this first
+
+## Repo Layout
+
+```text
+PROTOCOL.md
+docs/
+memory/
+scripts/
+version/
 src/
-  macos/                      # Swift/SPM native app (Phases 2–3 complete)
+  macos/
     Package.swift
+    project.yml
     LanMessenger/
-      App/                    # @main entry, NavigationSplitView, tray
+      App/
       Core/
-        Protocol/             # PacketTypes, FrameCodec, PacketValidator
-        Crypto/               # KeyManager (Keychain), SessionCrypto, HistoryCrypto
-        Networking/           # DiscoveryService (UDP), PeerSession (TCP), NetworkCoordinator
-        Persistence/          # ConfigStore, HistoryStore, FileTransferStore
-        Services/             # MessagingService, FileTransferService, NotificationService, UpdateService
-      UI/                     # AppModel (@MainActor root state), Theme, AvatarView, Sidebar/, Chat/, Settings/
-    LanMessengerTests/        # 40 unit tests (keep green)
-      known_good_exchange.json  # Must live here (not in repo root) — SPM rejects resources outside package root
-  windows-native/             # C#/WinUI 3 native app (Phase 5–7 in progress)
-    LanMessenger/             # Same Core/ + UI/ structure as macOS
-    LanMessenger.Tests/       # MSTest unit tests
-      known_good_exchange.json
+        Protocol/
+        Crypto/
+        Networking/
+        Persistence/
+        Services/
+      UI/
+    LanMessengerTests/
+  windows-native/
+    LanMessenger.sln
+    LanMessenger/
+      Core/
+      UI/
+    LanMessenger.Tests/
+    LanMessenger.iss
 ```
 
-## Wire Protocol — Critical Facts
+## Architecture In One Page
 
-Read `PROTOCOL.md` before touching any networking or crypto code. Key non-obvious points:
+Startup:
 
-**Transport**
-- UDP port 54231 for discovery — **no length-prefix framing** on UDP packets (raw JSON only)
-- TCP port 54232 for messages — 4-byte big-endian uint32 length prefix + UTF-8 JSON body
-- Max frame size check is `size <= 0 OR size > 50 MiB` — both ends must be rejected
-- Discovery replies go back to `{source_ip}:54231` (UDP), not the TCP port
+1. Platform app entry creates `AppModel`.
+2. `AppModel` starts `NetworkCoordinator`.
+3. `NetworkCoordinator` starts `NetworkInterfaceMonitor`, `DiscoveryService`,
+   and the TCP listener.
+4. `AppModel` wires `MessagingService`, `FileTransferService`,
+   `NotificationService`, update checks, migration checks, and timers.
 
-**Cryptography**
-- Keys: X25519 key exchange; HKDF-SHA256 with **empty salt** (`b""` / `Data()`) to derive a 32-byte AES-256-GCM symmetric key
-- Session key info string: `b"lan-messenger"`; history key info string: `b"lan-messenger-history"`
-- AES-GCM: 12-byte nonce, 16-byte tag **appended** to ciphertext before base64 encoding (CryptoKit returns these separately — concatenate manually)
-- Message AAD: `message_id.encode("utf-8")`; file chunk AAD: `transfer_id.encode("utf-8")`; history AAD: `b"history-v1"`
-- Private key storage: Keychain on macOS (`com.dave.lanmessenger` / `privateKey`), DPAPI on Windows (`%APPDATA%\LanMessenger\private.key.dpapi`) — never plain JSON
+Discovery:
 
-**IDs & History**
-- `message_id` and `transfer_id` are `uuid4().hex` — 32 lowercase hex chars, **no dashes**
-- History is keyed by **peer IP address** (not public key); stored at `~/Library/Application Support/LanMessenger/history.enc` (macOS) or `%APPDATA%\LanMessenger\history.enc` (Windows); capped at 200 messages per conversation
+1. Every 1.5 seconds, discovery emits raw JSON over UDP 54231 to subnet broadcast,
+   multicast `239.255.42.99`, limited broadcast, and extra unicast targets.
+2. Receivers self-suppress by local IP and public key.
+3. A `discovery` datagram gets a `discovery_reply` sent back to source IP on UDP
+   54231.
+4. `AppModel` upserts peers by public key and migrates saved contact history if
+   the peer appears on a new IP.
 
-**File Transfer**
-- Each transfer uses a **separate TCP connection** (not the persistent peer session)
-- Temp file path: `{inbox_dir}/{transfer_id}_{filename}.part`; rename on `file_end`; deduplicate as `{stem}_1{suffix}`, `{stem}_2{suffix}`, ... up to 999, then random 8-hex suffix
+Messaging:
 
-## Known Swift Build Gotchas (`src/macos/`)
+1. The sender creates a 32-character lowercase hex `message_id`.
+2. Plaintext is encrypted with X25519/HKDF/AES-GCM using `message_id` as AAD.
+3. A one-shot TCP connection writes one framed JSON packet.
+4. Receiver validates, decrypts, appends history, updates UI, and emits
+   `sent_receipt`.
+5. Opening a conversation sends `read_receipt` for unread incoming messages.
+6. Status updates are rank-aware so late `Sent` callbacks cannot downgrade
+   `Delivered` or `Read`.
 
-- `bind()` inside classes extending `NSObject`: use `Darwin.bind(...)` to avoid collision with `NSObject.bind(_:_:_:)`
-- `InputStream.read` with pointer offset: use `buffer.withUnsafeMutableBytes { ptr in stream.read(ptr.baseAddress!.advanced(by: offset)..., maxLength: n) }` — pointer arithmetic on the buffer directly is illegal
-- `@MainActor` on delegate protocols causes errors at non-isolated call sites; annotate each method individually and dispatch from background threads via `Task { @MainActor [weak self] in ... }`
-- `ConfigStore.config` must be `var` (not `private(set) var`) — `MessagingService` mutates sub-properties on the struct value type directly
-- Filename sanitization: use `name.components(separatedBy: "/").last ?? ""` not `URL(fileURLWithPath:)` (URL returns CWD for empty string); strip null bytes **before** passing through URL
+File transfer:
+
+1. Files use a separate TCP connection per transfer.
+2. Sender writes `file_start`, many encrypted `file_chunk` packets, then
+   `file_end`.
+3. Each chunk uses `transfer_id` as AAD.
+4. Receiver writes to `{transfer_id}_{filename}.part`, finalizes on `file_end`,
+   and deduplicates final filenames.
+
+Persistence:
+
+- Config is JSON in the platform app-data directory.
+- Private keys are not stored in config. macOS uses Keychain. Windows uses DPAPI.
+- History is encrypted JSON, keyed by peer IP, capped at 200 messages per peer.
+- Pending offline text and file queues live in config.
+
+## Protocol Rules That Must Not Drift
+
+Transport:
+
+- UDP discovery port: `54231`.
+- TCP message/file port: `54232`.
+- UDP discovery is raw UTF-8 JSON with no frame prefix.
+- TCP frames are 4-byte unsigned big-endian length plus UTF-8 JSON body.
+- Reject frame sizes `<= 0` or `> 50 MiB`.
+- Discovery replies go to `{source_ip}:54231`, not the TCP port.
+
+Crypto:
+
+- X25519 key agreement.
+- HKDF-SHA256 with empty salt.
+- Session info string: `lan-messenger`.
+- History info string: `lan-messenger-history`.
+- AES-256-GCM nonce is 12 bytes.
+- Transmitted ciphertext is `ciphertext || 16-byte tag`, then base64.
+- Text AAD is raw UTF-8 `message_id`.
+- File chunk AAD is raw UTF-8 `transfer_id`.
+- History AAD is raw UTF-8 `history-v1`.
+
+IDs:
+
+- `message_id` and `transfer_id` are `uuid4().hex` style values:
+  32 lowercase hex characters, no dashes.
+
+History:
+
+- Keyed by peer IP address for compatibility.
+- Capped to 200 entries per peer.
+- Optional reply fields must decode cleanly when missing.
+
+Files:
+
+- Maximum advertised file size is 2 GiB.
+- Chunk plaintext size is 64 KiB.
+- Temp file format is `{transfer_id}_{filename}.part`.
+- Dedup final names with `_1` through `_999`, then an 8-hex fallback.
+
+Reply extension:
+
+- Native clients may include `reply_to_message_id`, `reply_to_preview`, and
+  `reply_to_sender` on `text` packets and history entries.
+- These fields are optional and unencrypted metadata. Older clients ignore them.
+
+## Platform-Specific Gotchas
+
+### macOS
+
+- Use `Darwin.bind(...)` inside classes that may collide with NSObject `bind`.
+- `InputStream.read` with offsets must use `withUnsafeMutableBytes` and
+  `advanced(by:)`.
+- Delegate callbacks from background queues must hop to `Task { @MainActor ... }`
+  or `DispatchQueue.main.async`.
+- `ConfigStore.config` is mutable because services mutate nested value-type
+  fields directly.
+- POSIX filename sanitization splits on `/` only. Backslashes are not path
+  separators on macOS and are intentionally preserved.
+- SPM resources must live inside `src/macos`; test vectors are copied into
+  `LanMessengerTests/`.
+- `project.yml` is the XcodeGen source. Do not edit generated Xcode project files
+  as durable source.
+- `scripts/macos/package.sh` is the canonical packaging path.
+
+### Windows
+
+- Use Visual Studio MSBuild for WinUI projects. Plain `dotnet build` can miss
+  Windows SDK/PRI packaging behavior.
+- `LanMessenger.csproj` includes an `IncludePriFileInPublishOutput` target;
+  removing it can break unpackaged WinUI startup with missing XAML resources.
+- `NSec.Cryptography` depends on libsodium and the VC++ runtime. CI copies CRT
+  DLLs app-local and the Inno installer also chain-installs `vc_redist.x64.exe`.
+- `DiscoveryService` disables `SIO_UDP_CONNRESET` so ICMP port unreachable does
+  not poison UDP sockets.
+- Windows filename sanitization treats both `/` and `\` as path separators.
+- Windows keeps peer records when offline so public keys remain available for
+  offline queueing.
 
 ## Version Management
 
-Every commit that touches `src/macos/` or `src/windows-native/` automatically bumps the version via the pre-commit hook at `scripts/hooks/pre-commit`. The hook is **not** tracked by git — new contributors must install it manually:
+Canonical version files:
+
+- `version/macos.json`
+- `version/windows.json`
+
+The pre-commit hook bumps platform versions when staged files are under the
+corresponding platform tree:
 
 ```bash
-cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+cp scripts/hooks/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
 ```
 
-**Bump level** is controlled by the `BUMP` env var (default: `patch`):
+Set `BUMP=minor` or `BUMP=major` for non-patch changes. The hook syncs:
 
-| Command | Example result |
-|---------|---------------|
-| `git commit -m "fix: ..."` | `1.2.3 → 1.2.4` (patch, default) |
-| `BUMP=minor git commit -m "feat: ..."` | `1.2.3 → 1.3.0` |
-| `BUMP=major git commit -m "..."` | `1.2.3 → 2.0.0` |
+- macOS: `version/macos.json` and `src/macos/project.yml`.
+- Windows: `version/windows.json` and `src/windows-native/LanMessenger/LanMessenger.csproj`.
 
-**Version sources of truth:**
+`src/macos/VERSION` and `src/windows-native/VERSION` are legacy markers and are
+not CI sources of truth.
 
-| Platform | JSON (primary) | Synced to |
-|----------|---------------|-----------|
-| macOS | `version/macos.json` | `src/macos/project.yml` (`MARKETING_VERSION` — MAJOR.MINOR only) |
-| Windows | `version/windows.json` | `src/windows-native/LanMessenger/LanMessenger.csproj` (`<Version>`) |
+## CI And Release
 
-To bump manually without triggering the hook again, edit `version/*.json` directly and stage those files — the hook skips files under `version/`.
+- PR checks run macOS Swift tests and Windows MSTest.
+- `Build macOS` runs tests, generates icons, builds/signs/packages DMG, ZIP,
+  and PKG, validates SHA256 sidecars, validates bundles/DMGs, smoke-tests install
+  and launch, then publishes a `macos-vX.Y.Z` pre-release.
+- `Build Windows` restores, tests, publishes self-contained WinUI output, bundles
+  VC++ runtime DLLs, downloads the VC++ redistributable, builds an Inno installer,
+  smoke-tests startup, then publishes a `windows-vX.Y.Z` pre-release.
+- `Release Orchestration` combines latest platform releases into
+  `release-winX.Y.Z-macA.B.C`.
+- `Integrity Check` audits releases weekly.
 
-## Test Vector Verification
+## Validation Checklist Before Finishing Work
 
-Before live-device testing, verify crypto against `known_good_exchange.json` (three vectors: text message, file_chunk, history file). These vectors are the ground truth for cross-platform interoperability. The macOS tests load this file from `LanMessengerTests/known_good_exchange.json`; the Windows tests load from `LanMessenger.Tests/known_good_exchange.json`.
+Use the smallest sufficient set for the change:
+
+- Docs-only: `git diff --check` and grep for stale paths/claims.
+- Protocol/crypto/framing: macOS `swift test`, Windows test suite when on Windows
+  or CI, and check both `known_good_exchange.json` copies.
+- macOS source: `cd src/macos && swift build && swift test`.
+- Windows source: restore/build/tests through MSBuild on Windows.
+- Packaging: platform workflow scripts or the relevant smoke test.
+- UI behavior: launch the app on the target OS and exercise the changed flow.
+
+## Do Not Accidentally Regress These Behaviors
+
+- Do not show random discovered peers as conversations unless there is saved
+  contact or message history.
+- Do not delete contacts when hiding a conversation. Hidden conversations can be
+  reopened from New Message.
+- Do not downgrade message status from `Read` or `Delivered` to `Sent`.
+- Do not store private keys in config JSON.
+- Do not switch discovery to TCP or frame UDP packets.
+- Do not rely on internet reachability for LAN availability.
+- Do not remove SHA256 sidecar support from updaters; combined releases may only
+  expose installer assets while sidecars live on per-platform releases.
+- Do not treat generated Xcode project files as source.

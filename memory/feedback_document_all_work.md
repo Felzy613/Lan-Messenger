@@ -9,7 +9,12 @@ After completing any phase of work, save comprehensive memory covering:
 - Key decisions and their rationale
 - Any gotchas discovered while reading the actual source code
 - What phase comes next
+- Any documentation files that should be updated so future sessions do not rely
+  on stale repo layout or build instructions
 
 **Why:** The user explicitly asked for this ("document everything you do for future sessions") so subsequent Claude sessions don't have to re-derive context from scratch.
 
-**How to apply:** At the end of every work session on this project, update `project_native_rewrite.md` with current phase status, and write any new feedback/project memory files for discoveries made during that session.
+**How to apply:** At the end of every work session on this project, update
+`project_native_rewrite.md` with current phase status when relevant, update
+`project_file_layout.md` when paths move, and write any new feedback/project
+memory files for discoveries made during that session.

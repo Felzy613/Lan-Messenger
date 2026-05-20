@@ -1,161 +1,160 @@
-# LAN Messenger Wire Protocol
+# LAN Messenger Protocol Specification
 
-Version: 1.0  
-Reference implementation: `main.py` (Python/Tkinter app, v1.5.0)
+Protocol version: 1.1  
+Current implementations: macOS Swift/SwiftUI and Windows C#/WinUI 3  
+Compatibility target: native clients must remain interoperable with each other
+and with any legacy client that implements the version 1.0 packet set.
 
-This document is the authoritative specification for the LAN Messenger wire
-protocol. All native implementations (macOS Swift, Windows C#) must conform to
-it exactly so they interoperate with the Python reference app.
+This file is authoritative for wire format, encryption, validation, and local
+persistence compatibility. Update it before or with any behavior change that
+crosses a platform boundary.
 
----
+## Table Of Contents
 
-## Table of Contents
+1. [Design Goals](#design-goals)
+2. [Constants](#constants)
+3. [Transport](#transport)
+4. [Discovery](#discovery)
+5. [Framing](#framing)
+6. [Packet Fields](#packet-fields)
+7. [Packet Types](#packet-types)
+8. [Cryptography](#cryptography)
+9. [History Format](#history-format)
+10. [Config Format](#config-format)
+11. [Validation Rules](#validation-rules)
+12. [Operational Flows](#operational-flows)
+13. [Compatibility Notes](#compatibility-notes)
 
-1. [Constants](#constants)
-2. [Framing (TCP)](#framing-tcp)
-3. [Discovery (UDP)](#discovery-udp)
-4. [Packet Types](#packet-types)
-   - [text](#text)
-   - [typing](#typing)
-   - [sent_receipt / read_receipt](#sent_receipt--read_receipt)
-   - [file_start](#file_start)
-   - [file_chunk](#file_chunk)
-   - [file_end](#file_end)
-5. [Cryptography](#cryptography)
-6. [History File Format](#history-file-format)
-7. [Validation Rules](#validation-rules)
-8. [Config File Format](#config-file-format)
+## Design Goals
 
----
+- Peer-to-peer LAN messaging with no server dependency.
+- Zero-config discovery across common home and office networks.
+- Cross-platform compatibility between macOS and Windows.
+- End-to-end encryption for message text and file chunks.
+- Local encrypted history that survives restarts.
+- Backward-compatible packet evolution: new optional fields must be safe for
+  older clients to ignore.
 
 ## Constants
 
 | Name | Value |
 |---|---|
 | UDP discovery port | `54231` |
-| TCP message port | `54232` |
+| TCP message/file port | `54232` |
 | Multicast group | `239.255.42.99` |
 | Multicast TTL | `1` |
 | Discovery interval | `1.5 s` |
-| Peer timeout | `7 s` (no heartbeat received) |
-| File chunk size | `65536` bytes (64 KiB) |
-| Max frame size | `52428800` bytes (50 MiB) |
+| Peer timeout | macOS UI: `20 s`; Windows UI: `7 s` |
+| TCP frame max size | `52_428_800` bytes (`50 MiB`) |
+| File chunk plaintext size | `65_536` bytes (`64 KiB`) |
+| Max advertised file size | `2 GiB` |
+| History cap | `200` messages per peer IP |
+| AES-GCM nonce size | `12` bytes |
+| AES-GCM tag size | `16` bytes |
 
----
+The peer-timeout difference is UI state only. It does not change packet format.
 
-## Framing (TCP)
+## Transport
 
-All TCP communication uses a simple length-prefix framing protocol:
+LAN Messenger uses two fixed ports:
 
-```
-┌─────────────────────────┬──────────────────────────────┐
-│  4-byte length (uint32) │  UTF-8 JSON body             │
-│  big-endian             │  (length bytes)              │
-└─────────────────────────┴──────────────────────────────┘
-```
+- UDP `54231` for discovery datagrams.
+- TCP `54232` for all framed message, receipt, typing, and file-transfer packets.
 
-- The length field is an **unsigned 32-bit integer in big-endian byte order**
-  (`struct.pack("!I", n)` in Python; `BinaryPrimitives.WriteUInt32BigEndian` in C#;
-  `withUnsafeMutableBytes` + CFByteOrder in Swift).
-- The body is the UTF-8 encoding of a JSON object.
-- **Discard and close the connection** if the declared length is 0 or greater
-  than 50 MiB (`52_428_800` bytes). Do not read the body in that case.
-- Every packet is a single framed JSON object. There is no multiplexing; each
-  logical packet occupies one frame.
+There is no server, rendezvous service, account system, or relay. A peer's
+current LAN IP address is learned from discovery or saved contact state.
 
-### Python reference
+## Discovery
 
-```python
-def send_frame(sock, payload):
-    data = json.dumps(payload).encode("utf-8")
-    sock.sendall(struct.pack("!I", len(data)))
-    sock.sendall(data)
+Discovery packets are raw UTF-8 JSON datagrams sent to UDP port `54231`.
+They are never TCP-framed.
 
-def recv_frame(sock):
-    header = recv_exact(sock, 4)
-    if not header:
-        return None
-    size = struct.unpack("!I", header)[0]
-    if size <= 0 or size > 50 * 1024 * 1024:
-        raise ValueError("Invalid frame size")
-    payload = recv_exact(sock, size)
-    if not payload:
-        return None
-    return json.loads(payload.decode("utf-8"))
-```
+### Discovery Targets
 
----
+Each running client periodically sends the same discovery payload to:
 
-## Discovery (UDP)
+- each interface's directed subnet broadcast address, for example
+  `192.168.1.255`;
+- multicast group `239.255.42.99`;
+- limited broadcast `255.255.255.255`;
+- unicast hints such as current peer IPs or saved last-known contact IPs.
 
-Discovery packets are **raw UTF-8 JSON** (no length prefix) sent and received on
-UDP port `54231`.
+Discovery uses every eligible IPv4 interface rather than relying on the OS
+default route. This matters on machines with VPN, Ethernet, Wi-Fi, Hyper-V, WSL,
+or other virtual adapters.
 
-### Sending
+### Discovery Packet
 
-Every `1.5 s` each node broadcasts a `discovery` packet to:
-
-1. `255.255.255.255:54231` — subnet broadcast
-2. `239.255.42.99:54231` — multicast group
-3. `x.x.x.255:54231` for each local IPv4 address (per-subnet broadcast)
-4. Last-known IP of each saved contact (unicast; helps cross-subnet reach)
-5. Current IP of each known peer (unicast)
-
-The UDP socket is created with `SO_BROADCAST = 1` and
-`IP_MULTICAST_TTL = 1`.
-
-### Receiving
-
-Bind to `0.0.0.0:54231` with `SO_REUSEADDR = 1` (and `SO_REUSEPORT` if
-available). Join the multicast group via `IP_ADD_MEMBERSHIP` for
-`239.255.42.99`.
-
-On receipt of a `discovery` packet from a remote IP, immediately reply with a
-`discovery_reply` packet sent directly to `{source_ip}:54231` (UDP, not TCP).
-
-### Packet format
-
-Both `discovery` and `discovery_reply` share the same JSON shape:
+`discovery` and `discovery_reply` have the same shape:
 
 ```json
 {
   "type": "discovery",
   "username": "Alice",
   "port": 54232,
-  "public_key_b64": "<base64url-safe? no — standard RFC 4648 base64>",
+  "public_key_b64": "base64-of-32-byte-x25519-public-key",
   "ips": ["192.168.1.42", "10.0.0.5"]
 }
 ```
 
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `type` | string | yes | `discovery` or `discovery_reply` |
+| `username` | string | yes | Sender display name |
+| `port` | integer | yes | Sender TCP port, normally `54232` |
+| `public_key_b64` | string | yes | Standard base64 of raw 32-byte X25519 public key |
+| `ips` | array of strings | yes | Sender's local IPv4 addresses |
+
+### Discovery Reply
+
+When a client receives `discovery`, it sends exactly one `discovery_reply` back
+to `{source_ip}:54231` over UDP. Do not send discovery replies to TCP port
+`54232`. Do not reply to `discovery_reply`; that creates a ping-pong loop.
+
+### Self Suppression
+
+Drop discovery packets if:
+
+- source IP is one of this machine's current local IPv4 addresses;
+- `public_key_b64` equals this client's public key;
+- `public_key_b64` is empty or malformed.
+
+## Framing
+
+All TCP packets use the same length-prefixed frame:
+
+```text
++-----------------------------+---------------------------+
+| 4-byte uint32 big-endian len | UTF-8 JSON body           |
++-----------------------------+---------------------------+
+```
+
+Rules:
+
+- Length is an unsigned 32-bit integer in network byte order.
+- Body is exactly `length` bytes of UTF-8 JSON.
+- Reject and close on length `<= 0` or `> 50 MiB`.
+- One logical packet equals one frame.
+- No multiplexing or stream-level compression exists.
+
+## Packet Fields
+
+Most TCP packets include:
+
 | Field | Type | Notes |
 |---|---|---|
-| `type` | string | `"discovery"` or `"discovery_reply"` |
-| `username` | string | Display name |
-| `port` | integer | TCP listen port (usually `54232`) |
-| `public_key_b64` | string | Standard base64 (RFC 4648) of raw 32-byte X25519 public key |
-| `ips` | array of strings | All local IPv4 addresses of the sender |
+| `type` | string | Packet discriminator |
+| `sender` | string | Display name |
+| `sender_public_key_b64` | string | Standard base64 raw X25519 public key |
+| `port` | integer | Sender's TCP port |
 
-### Self-suppression
-
-Discard any discovery packet whose `public_key_b64` equals your own, or whose
-source IP is one of your own local IPs.
-
----
+Discovery uses `public_key_b64` rather than `sender_public_key_b64`.
 
 ## Packet Types
 
-All TCP packets share these common fields where applicable:
-
-| Field | Present in | Notes |
-|---|---|---|
-| `type` | all | String identifying the packet type |
-| `sender` | all except discovery | Display name of the sender |
-| `sender_public_key_b64` | all except discovery | Standard base64 of sender's 32-byte X25519 public key |
-| `port` | all except discovery | Sender's TCP listen port |
-
 ### text
 
-Sends an encrypted text message.
+Encrypted text message.
 
 ```json
 {
@@ -163,76 +162,81 @@ Sends an encrypted text message.
   "message_id": "a3f1b2c4d5e6f7a8b9c0d1e2f3a4b5c6",
   "timestamp": 1715000000.123,
   "sender": "Alice",
-  "sender_public_key_b64": "<base64>",
+  "sender_public_key_b64": "base64-public-key",
   "port": 54232,
-  "nonce": "<base64 of 12 random bytes>",
-  "ciphertext": "<base64 of AES-256-GCM ciphertext + 16-byte tag>"
+  "nonce": "base64-12-byte-nonce",
+  "ciphertext": "base64-ciphertext-plus-tag",
+  "reply_to_message_id": "optional-32-hex-message-id",
+  "reply_to_preview": "optional preview",
+  "reply_to_sender": "optional sender label"
 }
 ```
 
-| Field | Type | Notes |
-|---|---|---|
-| `message_id` | string | 32 hex characters (`uuid4().hex`, no dashes) |
-| `timestamp` | float | Unix epoch seconds with sub-second precision |
-| `nonce` | string | Standard base64 of 12 random bytes |
-| `ciphertext` | string | Standard base64 of `ciphertext ‖ tag` (AES-GCM tag appended) |
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `message_id` | string | yes | 32 lowercase hex chars, no dashes |
+| `timestamp` | number | yes | Unix epoch seconds |
+| `nonce` | string | yes | Base64 of 12 bytes |
+| `ciphertext` | string | yes | Base64 of AES-GCM ciphertext plus 16-byte tag |
+| `reply_to_message_id` | string | no | Native reply extension |
+| `reply_to_preview` | string | no | Native reply extension, unencrypted metadata |
+| `reply_to_sender` | string | no | Native reply extension, unencrypted metadata |
 
-**AAD**: `message_id.encode("utf-8")` — the raw ASCII bytes of the 32-hex string.
+AAD: raw UTF-8 bytes of `message_id`.  
+Plaintext: UTF-8 message text.
 
-**Plaintext**: UTF-8 encoded message text.
-
-**On receipt**: decrypt, emit `sent_receipt` back to sender immediately.
-
----
+On successful decrypt, the receiver appends history and sends `sent_receipt`.
+When the user opens the conversation, the receiver sends `read_receipt` for
+incoming unread messages.
 
 ### typing
 
-Signals that the sender is or is not actively typing. Not encrypted.
+Unencrypted typing indicator.
 
 ```json
 {
   "type": "typing",
   "active": true,
   "sender": "Alice",
-  "sender_public_key_b64": "<base64>",
+  "sender_public_key_b64": "base64-public-key",
   "port": 54232
 }
 ```
 
-| Field | Type | Notes |
-|---|---|---|
-| `active` | boolean | `true` = user is typing; `false` = stopped |
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `active` | boolean | yes | `true` when typing, `false` when stopped |
 
----
+Clients throttle repeated `active=true` sends to avoid flooding.
 
-### sent_receipt / read_receipt
+### sent_receipt
 
-Delivery acknowledgements. Not encrypted.
+Unencrypted delivery acknowledgement from receiver to sender.
 
 ```json
 {
   "type": "sent_receipt",
   "message_id": "a3f1b2c4d5e6f7a8b9c0d1e2f3a4b5c6",
   "sender": "Alice",
-  "sender_public_key_b64": "<base64>",
+  "sender_public_key_b64": "base64-public-key",
   "port": 54232
 }
 ```
 
-- `sent_receipt`: sent by the **receiver** immediately on decrypting a `text`
-  packet successfully.
-- `read_receipt`: sent by the **receiver** when the user opens/views the
-  conversation containing the message.
+`sent_receipt` means the receiver successfully decrypted the original `text`
+packet. UI maps this to `Delivered`.
 
-| Field | Type | Notes |
-|---|---|---|
-| `message_id` | string | The `message_id` from the original `text` packet |
+### read_receipt
 
----
+Same shape as `sent_receipt`, but `type` is `read_receipt`.
+
+`read_receipt` means the receiver opened/read the conversation. UI maps this to
+`Read`. Clients should send it once per incoming message and persist
+`read_receipt_sent` to avoid duplicate receipts after restart.
 
 ### file_start
 
-Opens a file transfer. Not encrypted (metadata only).
+Starts an encrypted file transfer. Metadata is not encrypted.
 
 ```json
 {
@@ -241,282 +245,334 @@ Opens a file transfer. Not encrypted (metadata only).
   "filename": "photo.jpg",
   "size": 1048576,
   "sender": "Alice",
-  "sender_public_key_b64": "<base64>",
+  "sender_public_key_b64": "base64-public-key",
   "port": 54232
 }
 ```
 
-| Field | Type | Notes |
-|---|---|---|
-| `transfer_id` | string | 32 hex characters (`uuid4().hex`, no dashes) |
-| `filename` | string | Must be sanitized by receiver (see [Validation Rules](#validation-rules)) |
-| `size` | integer | Total file size in bytes |
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `transfer_id` | string | yes | 32 lowercase hex chars, no dashes |
+| `filename` | string | yes | Receiver sanitizes before writing |
+| `size` | integer | yes | Total plaintext bytes, `0..2 GiB` |
 
----
+Receiver creates:
+
+```text
+{inbox_dir}/{transfer_id}_{sanitized_filename}.part
+```
 
 ### file_chunk
 
-One chunk of encrypted file data. Each chunk is at most 64 KiB of plaintext.
+Encrypted chunk for the active transfer.
 
 ```json
 {
   "type": "file_chunk",
   "transfer_id": "c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
   "sender": "Alice",
-  "sender_public_key_b64": "<base64>",
+  "sender_public_key_b64": "base64-public-key",
   "port": 54232,
-  "nonce": "<base64 of 12 random bytes>",
-  "ciphertext": "<base64 of AES-256-GCM ciphertext + 16-byte tag>"
+  "nonce": "base64-12-byte-nonce",
+  "ciphertext": "base64-ciphertext-plus-tag"
 }
 ```
 
-**AAD**: `transfer_id.encode("utf-8")` — the raw ASCII bytes of the 32-hex string.
+AAD: raw UTF-8 bytes of `transfer_id`.  
+Plaintext: up to 64 KiB of file bytes.
 
-A fresh 12-byte random nonce is generated for **each chunk**.
-
----
+Chunks do not carry sequence numbers. Receivers must preserve TCP arrival order
+while decrypting and writing. The current macOS app uses a serial dispatch queue;
+the Windows app uses a per-transfer channel with a single reader.
 
 ### file_end
 
-Signals that all chunks have been sent.
+Completes a file transfer.
 
 ```json
 {
   "type": "file_end",
   "transfer_id": "c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
   "sender": "Alice",
-  "sender_public_key_b64": "<base64>",
+  "sender_public_key_b64": "base64-public-key",
   "port": 54232
 }
 ```
 
-On receipt: close and rename the temp file (`{transfer_id}_{filename}.part`)
-to its final name, deduplicating if necessary.
-
----
+The receiver closes the temp file and renames it to a deduplicated final path.
+If `photo.jpg` exists, try `photo_1.jpg` through `photo_999.jpg`, then use an
+8-hex fallback suffix.
 
 ## Cryptography
 
-### Key Generation
+### Key Agreement
 
-Generate an **X25519** private key on first launch. The raw 32-byte
-representation is the canonical form used everywhere.
+Each client owns a persistent X25519 keypair.
 
-- **Python**: `x25519.X25519PrivateKey.generate()`
-- **macOS**: `Curve25519.KeyAgreement.PrivateKey()`
-- **Windows**: BouncyCastle `X25519KeyPairGenerator`
+- macOS stores the raw private key in Keychain service
+  `com.dave.lanmessenger`, account `privateKey`.
+- Windows stores the raw private key encrypted with DPAPI at
+  `%APPDATA%\LanMessenger\private.key.dpapi`.
 
-Store the private key securely:
+Public keys are sent as standard RFC 4648 base64 of the raw 32-byte X25519
+public key.
 
-| Platform | Storage |
-|---|---|
-| Python | `~/.lan_messenger/config.json` → `private_key_b64` (plain base64 — insecure, native apps must migrate) |
-| macOS | Keychain — service `com.dave.lanmessenger`, account `privateKey` |
-| Windows | `%APPDATA%\LanMessenger\private.key.dpapi` (DPAPI-protected) |
+### Session Key Derivation
 
-### Shared Key Derivation (per-peer)
+For message and file content:
 
-```
-shared_secret = X25519(my_private_key, peer_public_key)   # raw 32 bytes
-symmetric_key = HKDF-SHA256(
-    ikm  = shared_secret,
-    salt = b"" (empty),
-    info = b"lan-messenger",
-    len  = 32
+```text
+shared_secret = X25519(my_private, peer_public)
+session_key = HKDF-SHA256(
+  ikm = shared_secret,
+  salt = empty bytes,
+  info = "lan-messenger",
+  length = 32
 )
 ```
 
-### Encryption
+The empty salt is intentional. Do not replace it with a random salt unless the
+packet format is versioned to carry that salt.
 
-```
-nonce      = random(12)                          # fresh per message/chunk
-tag_and_ct = AES-256-GCM.seal(
-    key          = symmetric_key,
-    nonce        = nonce,
-    plaintext    = <message or file chunk>,
-    aad          = <see per-packet AAD above>
-)
-```
+### Message/File Encryption
 
-AES-GCM tag size is **16 bytes** (standard). The ciphertext stored/transmitted
-is `ciphertext_bytes ‖ tag_bytes` concatenated, then base64-encoded.
-
-### Decryption
-
-```
-nonce      = base64_decode(nonce_b64)          # must be exactly 12 bytes
-ct_and_tag = base64_decode(ciphertext_b64)    # last 16 bytes = tag
-plaintext  = AES-256-GCM.open(
-    key   = symmetric_key,
-    nonce = nonce,
-    ct    = ct_and_tag,
-    aad   = <see per-packet AAD above>
-)
+```text
+nonce = random 12 bytes
+sealed = AES-256-GCM(session_key, nonce, plaintext, aad)
+wire_ciphertext = ciphertext || 16-byte tag
 ```
 
-Decryption must **raise / throw** on authentication failure (wrong key, wrong
-AAD, or tampered ciphertext). Never silently accept a bad tag.
+Transmit:
 
-### History Key Derivation (local)
+- `nonce`: base64(nonce)
+- `ciphertext`: base64(wire_ciphertext)
 
-The history file is encrypted with a key derived from the **raw private key
-bytes** (not a shared secret):
+### History Key Derivation
 
-```
+Local history encryption does not use peer key agreement.
+
+```text
 history_key = HKDF-SHA256(
-    ikm  = raw_private_key_bytes (32 bytes),
-    salt = b"" (empty),
-    info = b"lan-messenger-history",
-    len  = 32
+  ikm = raw 32-byte local private key,
+  salt = empty bytes,
+  info = "lan-messenger-history",
+  length = 32
 )
 ```
 
-AAD for history encryption/decryption: `b"history-v1"` (literal UTF-8 bytes).
+History AAD: raw UTF-8 bytes of `history-v1`.
 
----
+## History Format
 
-## History File Format
+History is stored as encrypted JSON at:
 
-File path:
-- Python / macOS migration source: `~/.lan_messenger/history.enc`
-- macOS native: `~/Library/Application Support/LanMessenger/history.enc`
-- Windows native: `%APPDATA%\LanMessenger\history.enc`
+- macOS: `~/Library/Application Support/LanMessenger/history.enc`
+- Windows: `%APPDATA%\LanMessenger\history.enc`
 
-Outer file (JSON):
+Outer encrypted file:
 
 ```json
 {
-  "nonce": "<base64 of 12-byte nonce>",
-  "ciphertext": "<base64 of AES-GCM ciphertext + 16-byte tag>"
+  "nonce": "base64-12-byte-nonce",
+  "ciphertext": "base64-ciphertext-plus-tag"
 }
 ```
 
-Inner plaintext (JSON, compact — no extra whitespace):
+Inner plaintext JSON:
 
 ```json
 {
-  "<peer_ip>": [
+  "192.168.1.42": [
     {
       "sender": "Alice",
-      "text": "Hello!",
+      "text": "Hello",
       "incoming": true,
       "timestamp": 1715000000.123,
       "message_id": "a3f1b2c4d5e6f7a8b9c0d1e2f3a4b5c6",
       "status": "",
-      "read_receipt_sent": false
+      "read_receipt_sent": false,
+      "reply_to_message_id": null,
+      "reply_to_preview": null,
+      "reply_to_sender": null
     }
   ]
 }
 ```
 
-- The outer dict is keyed by **peer IP address** (not public key).
-- Each conversation stores at most **200** most-recent entries.
-- `incoming`: `true` = received, `false` = sent by this user.
-- `status`: one of `""`, `"Sending"`, `"Sent"`, `"Queued"`, `"Failed"`, `"Read"`.
-- `read_receipt_sent`: whether a read receipt has already been emitted for this
-  entry (prevents duplicate sends on restart).
+Rules:
 
----
+- Top-level keys are peer IP addresses, not public keys.
+- Each peer list is capped to 200 entries.
+- File messages are represented as `text` values prefixed with `__FILE__:`.
+- Reply fields are optional and must decode cleanly if absent.
+- Status strings are UI lifecycle values: `Sending`, `Queued`, `Sent`,
+  `Delivered`, `Read`, `Failed`, or empty for incoming/no-status.
 
-## Validation Rules
+## Config Format
 
-All implementations **must** enforce these rules. Silently drop or close on
-violation — do not crash.
+Config is plain JSON, but private keys are not stored there.
 
-| Rule | Action on violation |
-|---|---|
-| Frame length ≤ 0 or > 50 MiB | Close connection |
-| Missing `type` field | Drop packet |
-| `type` not in known set | Drop packet |
-| `sender_public_key_b64` equals own public key | Drop packet |
-| `public_key_b64` (discovery) equals own | Drop packet |
-| Nonce not exactly 12 bytes after base64-decode | Drop / decryption failure |
-| `filename` containing path separators (`/`, `\`) or `..` | Sanitize: take only `Path(name).name`, strip leading/trailing whitespace, replace null bytes |
-| `size` < 0 or > 2 GiB | Drop `file_start` packet |
-| Ciphertext authentication failure (wrong tag) | Drop packet; do not deliver plaintext |
-| Discovery from own IP | Drop packet |
+macOS path:
 
-### Filename sanitization (reference)
-
-```python
-def sanitize_filename(name: str) -> str:
-    safe = Path(name).name.strip() or "file"
-    return safe.replace("\x00", "")
+```text
+~/Library/Application Support/LanMessenger/config.json
 ```
 
-The native apps must produce equivalent output. Any filename that resolves to
-empty after sanitization becomes `"file"`.
+Windows path:
 
-**Important platform note:** On macOS/Linux, backslash (`\`) is **not** a path
-separator (POSIX). A filename like `..\..\evil.exe` received from a Windows peer
-is treated as a single filename component — the backslashes are kept. Only
-forward slashes (`/`) are stripped as path separators. The Windows native app
-must apply equivalent Windows path sanitization using `Path.GetFileName()` which
-handles both separators.
-
-Swift/macOS equivalent:
-
-```swift
-static func sanitizeFilename(_ name: String) -> String {
-    let component = name.components(separatedBy: "/").last ?? ""
-    let stripped = component.trimmingCharacters(in: .whitespaces)
-                            .replacingOccurrences(of: "\0", with: "")
-    return stripped.isEmpty ? "file" : stripped
-}
+```text
+%APPDATA%\LanMessenger\config.json
 ```
 
----
+Fields used by one or both platforms:
 
-## Config File Format
+| Field | Type | Notes |
+|---|---|---|
+| `username` | string | Local display name |
+| `contacts` | array | Saved contacts by public key |
+| `hidden_conversations` | array of strings | Peer IPs hidden after delete |
+| `archived_conversations` | array of strings | Peer IPs in archive |
+| `pending_messages` | array | Offline text queue |
+| `pending_files` | array | Offline file queue |
+| `update_server_url` | string | Legacy/custom update source field |
+| `update_repo` | string | GitHub repo used by native update checks |
+| `last_update_check` | number | Unix seconds |
+| `inbox_dir` | string | Empty means platform default |
+| `photo_b64` | string | Optional per-contact avatar image |
+| `hide_from_dock` | boolean | macOS only |
+| `launch_at_login` | boolean | macOS only |
+| `start_in_tray` | boolean | Windows only |
+| `close_to_tray` | boolean | Windows only |
 
-Python config (stored in `~/.lan_messenger/config.json`):
+Contacts:
 
 ```json
 {
+  "public_key_b64": "base64-public-key",
   "username": "Alice",
-  "private_key_b64": "<base64 of raw 32-byte X25519 private key>",
-  "contacts": [
-    {
-      "public_key_b64": "<base64>",
-      "username": "Bob",
-      "last_ip": "192.168.1.55"
-    }
-  ],
-  "hidden_conversations": ["192.168.1.55"],
-  "pending_messages": [
-    {
-      "message_id": "...",
-      "peer_public_key_b64": "...",
-      "peer_username": "Bob",
-      "text": "Hey!",
-      "timestamp": 1715000000.0
-    }
-  ],
-  "update_server_url": "https://example.com/lan-messenger-update.json",
-  "inbox_dir": "/Users/alice/Downloads/LanMessenger"
+  "last_ip": "192.168.1.42",
+  "photo_b64": "optional-base64-image"
 }
 ```
 
-Native apps **must not** store `private_key_b64` in a plain JSON file. On first
-launch, if a Python config is found, prompt the user whether to import the
-existing key into secure storage (Keychain / DPAPI) or generate a fresh one.
+Pending messages:
 
----
+```json
+{
+  "message_id": "32-hex-id",
+  "peer_public_key_b64": "base64-public-key",
+  "peer_username": "Alice",
+  "text": "Message to retry",
+  "timestamp": 1715000000.123
+}
+```
 
-## Known Packet Set
+Pending files:
 
-The complete set of valid `type` values:
+```json
+{
+  "file_path": "/path/to/file",
+  "peer_public_key_b64": "base64-public-key",
+  "peer_username": "Alice",
+  "timestamp": 1715000000.123
+}
+```
 
-| Value | Transport | Direction |
-|---|---|---|
-| `discovery` | UDP | broadcast/multicast |
-| `discovery_reply` | UDP | unicast reply |
-| `text` | TCP | peer → peer |
-| `typing` | TCP | peer → peer |
-| `sent_receipt` | TCP | receiver → sender |
-| `read_receipt` | TCP | receiver → sender |
-| `file_start` | TCP | sender → receiver |
-| `file_chunk` | TCP | sender → receiver |
-| `file_end` | TCP | sender → receiver |
+## Validation Rules
 
-Any packet with a `type` value not in this table must be silently dropped.
+Drop packets that violate these rules:
+
+| Condition | Action |
+|---|---|
+| Missing `type` | Drop |
+| Unknown `type` | Drop |
+| Sender public key equals own key | Drop |
+| Discovery source IP is one of own local IPs | Drop |
+| Base64 nonce does not decode to exactly 12 bytes | Drop |
+| TCP frame length is `<= 0` or `> 50 MiB` | Close connection/drop |
+| `file_start.size < 0` or `> 2 GiB` | Drop |
+| Decryption/authentication fails | Drop content; do not send receipt |
+| Malformed JSON | Drop frame/datagram |
+
+Filename sanitization:
+
+- macOS follows POSIX behavior: split on `/`, trim whitespace, remove null bytes,
+  default to `file`.
+- Windows follows Windows behavior: treat both `/` and `\` as separators, trim
+  whitespace, remove null bytes, default to `file`.
+
+Do not write a sender-supplied path directly to disk.
+
+## Operational Flows
+
+### Text Send
+
+```text
+UI -> AppModel -> MessagingService
+  -> append outgoing history status=Sending
+  -> encrypt using message_id AAD
+  -> one-shot TCP frame
+  -> status Sent on write success, Queued on write failure
+```
+
+If write fails, the message is stored in `pending_messages`. When the peer is
+discovered again, the pending message is re-encrypted and retried.
+
+### Text Receive
+
+```text
+TCP listener -> PacketValidator -> MessagingService
+  -> decrypt using message_id AAD
+  -> append incoming history
+  -> notify UI
+  -> send sent_receipt
+```
+
+### Read Receipts
+
+When a conversation is visible/opened, the client sends `read_receipt` for every
+incoming entry whose `read_receipt_sent` flag is false, then persists the flag.
+
+### File Send
+
+```text
+UI -> AppModel -> FileTransferService
+  -> queue per peer
+  -> open dedicated TCP connection
+  -> file_start
+  -> encrypted file_chunk frames
+  -> file_end
+  -> append local file bubble on success
+```
+
+If the peer is offline, the file path is stored in `pending_files`. The file must
+still exist when retry occurs.
+
+### File Receive
+
+```text
+TCP listener -> PacketValidator -> FileTransferService
+  -> file_start creates temp file
+  -> chunks decrypt and append in-order off the UI thread
+  -> file_end finalizes temp file
+  -> append incoming file bubble and show notification
+```
+
+### Contact IP Migration
+
+Contacts are keyed by public key, but history is keyed by IP for compatibility.
+When a saved contact broadcasts the same public key from a new IP, clients migrate
+history, hidden conversation state, archived state, and selected conversation from
+old IP to new IP.
+
+## Compatibility Notes
+
+- New packet fields must be optional unless the protocol version is explicitly
+  bumped and both platforms are updated together.
+- `reply_to_*` fields are intentionally optional and unencrypted.
+- Existing history keyed by IP is a compatibility constraint. Do not switch to
+  public-key keys without a migration plan.
+- Combined GitHub releases may expose only public installers. In-app updaters
+  also inspect per-platform releases for ZIP/EXE assets and SHA256 sidecars.
+- Legacy Python config migration may import non-key config fields and optionally
+  import a raw base64 private key into the platform secure store.

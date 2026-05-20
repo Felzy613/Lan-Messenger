@@ -1,7 +1,24 @@
 # Memory Index
 
-- [LAN Messenger Native Rewrite](project_native_rewrite.md) — Active project: replacing Python/Tkinter with Swift/SwiftUI + C#/WinUI 3 native apps. Phase 1 done; Phase 2 (macOS Xcode scaffold) is next.
-- [Repo file layout](project_file_layout.md) — Where existing Python files live vs. where native rewrite files go (lan-messenger-native/)
-- [Protocol implementation gotchas](project_protocol_gotchas.md) — Non-obvious facts verified by reading main.py: discovery has no framing, history keyed by IP, HKDF uses empty salt, AES-GCM tag layout, temp file naming, etc.
-- [Document all work for future sessions](feedback_document_all_work.md) — User wants comprehensive memory updated after every session so future Claude instances don't re-derive context
-- [Swift build gotchas](project_swift_build_notes.md) — Compiler errors fixed in Phase 2: Darwin.bind, InputStream pointer arithmetic, @MainActor protocol delegation, ConfigStore mutability, filename sanitization via string split, test vector resource paths
+Repo-local memory for LAN Messenger. These notes are documentation for future
+sessions and should stay aligned with the current native app tree.
+
+- [LAN Messenger Native Rewrite](project_native_rewrite.md) - Current native
+  project status, platform scope, tests, and next work themes.
+- [Repo file layout](project_file_layout.md) - Current root/docs/scripts/source
+  layout and source-of-truth files.
+- [Protocol implementation gotchas](project_protocol_gotchas.md) - Non-obvious
+  protocol compatibility details to check before wire, crypto, file-transfer, or
+  persistence changes.
+- [Swift build gotchas](project_swift_build_notes.md) - macOS/Swift build,
+  XcodeGen, SPM, and compiler patterns discovered during implementation.
+- [Document all work for future sessions](feedback_document_all_work.md) -
+  Standing user preference to keep docs and memory current after project work.
+
+Current source roots:
+
+- macOS native app: `src/macos/`
+- Windows native app: `src/windows-native/`
+- Protocol spec: `PROTOCOL.md`
+- High-detail docs: `docs/`
+- Canonical versions: `version/macos.json`, `version/windows.json`
