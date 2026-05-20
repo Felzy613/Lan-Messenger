@@ -83,19 +83,14 @@ public sealed partial class ContactsPage : Page
         }
     }
 
-    // Raised when the user taps the green "Search LAN" row. The Contacts page
-    // is hosted inside a ContentDialog and WinUI 3 forbids a second
-    // ContentDialog on the same XamlRoot, so the peer picker has to be opened
-    // by MainWindow *after* it dismisses the outer Contacts dialog. The host
-    // also runs the post-pick NameContactDialog naming loop.
+    // Raised for actions that need their own ContentDialog. The Contacts page
+    // is hosted inside a ContentDialog and WinUI 3 forbids a second one on the
+    // same XamlRoot, so MainWindow closes Contacts before opening the next dialog.
     public event Action? SearchLanRequested;
+    public event Action<string>? EditContactRequested;
+    public event Action<string>? DeleteContactRequested;
 
     private List<ContactRowViewModel> _allRows = [];
-    // Serialises Edit/Delete dialog opens so rapid clicks don't trigger
-    // the 0x80000019 COMException. The Search-LAN flow is hoisted to
-    // MainWindow and does not use this guard.
-    private bool _dialogOpen;
-
     public ContactsPage()
     {
         InitializeComponent();
@@ -151,60 +146,16 @@ public sealed partial class ContactsPage : Page
         ApplyFilter();
     }
 
-    private async void DeleteBtn_Click(object sender, RoutedEventArgs e)
+    private void DeleteBtn_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement el || el.Tag is not string keyB64) return;
-        if (_dialogOpen) return;
-        _dialogOpen = true;
-        try
-        {
-            var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == keyB64);
-            var dialog = new ContentDialog
-            {
-                Title             = "Remove contact?",
-                Content           = $"Remove {contact?.Username ?? "contact"} and delete the conversation?",
-                PrimaryButtonText = "Remove",
-                CloseButtonText   = "Cancel",
-                DefaultButton     = ContentDialogButton.Close,
-                XamlRoot          = XamlRoot,
-            };
-            var result = await dialog.ShowAsync();
-            if (result == ContentDialogResult.Primary)
-            {
-                _model?.DeleteContact(keyB64);
-                Refresh();
-            }
-        }
-        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80000019))
-        {
-            // Another ContentDialog is already open — silently ignore this request.
-        }
-        finally { _dialogOpen = false; }
+        DeleteContactRequested?.Invoke(keyB64);
     }
 
-    private async void EditBtn_Click(object sender, RoutedEventArgs e)
+    private void EditBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (_model is null) return;
         if (sender is not FrameworkElement el || el.Tag is not string keyB64) return;
-        if (_dialogOpen) return;
-        _dialogOpen = true;
-        try
-        {
-            var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == keyB64);
-            if (contact is null) return;
-            var editor = new ContactEditorDialog(contact) { XamlRoot = XamlRoot };
-            var result = await editor.ShowAsync();
-            if (result == ContentDialogResult.Primary)
-            {
-                _model.UpdateContact(keyB64, editor.NameValue, editor.PhotoB64Value);
-                Refresh();
-            }
-        }
-        catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80000019))
-        {
-            // Another ContentDialog is already open — silently ignore this request.
-        }
-        finally { _dialogOpen = false; }
+        EditContactRequested?.Invoke(keyB64);
     }
 
     private void AddFromPeers_Click(object sender, RoutedEventArgs e)

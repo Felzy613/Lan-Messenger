@@ -1,4 +1,5 @@
 using LanMessenger.Core.Persistence;
+using LanMessenger.Core.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -50,6 +51,10 @@ public sealed partial class ChatPage : Page
             {
                 _model.PropertyChanged    -= OnModelPropertyChanged;
                 _model.MessageStatusUpdated -= OnMessageStatusUpdated;
+                Composer.Send             -= OnSend;
+                Composer.TypingChanged    -= OnTyping;
+                Composer.AttachRequested  -= OnAttachRequested;
+                Composer.FilesDropped     -= OnFilesDropped;
             }
             _model = value;
             if (_model is not null)
@@ -58,6 +63,7 @@ public sealed partial class ChatPage : Page
                 _model.MessageStatusUpdated += OnMessageStatusUpdated;
                 Composer.Send             += OnSend;
                 Composer.TypingChanged    += OnTyping;
+                Composer.AttachRequested  += OnAttachRequested;
                 Composer.FilesDropped     += OnFilesDropped;
                 RefreshForSelectedPeer(forceReload: true);
             }
@@ -194,7 +200,7 @@ public sealed partial class ChatPage : Page
 
         var typing = _model.TypingStates.TryGetValue(ip, out var t) ? t : default;
         HeaderSubtext.Text = typing.Active
-            ? $"{typing.Sender} is typing…"
+            ? "typing..."
             : (online ? "Online" : "Offline");
     }
 
@@ -335,6 +341,52 @@ public sealed partial class ChatPage : Page
     {
         if (_model is null || _model.SelectedPeerIP is null) return;
         _model.SendTyping(active, _model.SelectedPeerIP);
+    }
+
+    private async void OnAttachRequested()
+    {
+        if (_model is null || _model.SelectedPeerIP is null) return;
+
+        var targetPeerIP = _model.SelectedPeerIP;
+        Composer.IsAttachmentPickerOpen = true;
+        try
+        {
+            if (Application.Current is not global::LanMessenger.App app || app.MainWindow is null) return;
+
+            var picker = new Windows.Storage.Pickers.FileOpenPicker();
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(app.MainWindow);
+            if (hwnd == IntPtr.Zero)
+            {
+                LanLogger.Warn("Attachment", "File picker skipped because MainWindow handle was unavailable.");
+                return;
+            }
+
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+            picker.FileTypeFilter.Add("*");
+
+            var files = await picker.PickMultipleFilesAsync();
+            if (files is null || files.Count == 0) return;
+
+            foreach (var file in files)
+            {
+                if (!string.IsNullOrWhiteSpace(file.Path))
+                {
+                    _model.SendFile(file.Path, targetPeerIP);
+                }
+                else
+                {
+                    LanLogger.Warn("Attachment", $"Skipped picked file without a filesystem path: {file.Name}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Error("Attachment", "File picker failed.", ex);
+        }
+        finally
+        {
+            Composer.IsAttachmentPickerOpen = false;
+        }
     }
 
     private void OnFilesDropped(IReadOnlyList<string> paths)

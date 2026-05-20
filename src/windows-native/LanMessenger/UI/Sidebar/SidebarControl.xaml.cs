@@ -132,7 +132,7 @@ public sealed partial class SidebarControl : UserControl
         {
             var c = target[i];
             var online = c.IsOnline;
-            var preview = c.IsTyping ? $"{c.TypingSender} is typing…" : c.LastMessage;
+            var preview = c.IsTyping ? "typing..." : c.LastMessage;
             if (byIP.TryGetValue(c.PeerIP, out var existing))
             {
                 existing.PeerName    = c.PeerName;

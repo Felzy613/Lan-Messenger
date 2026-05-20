@@ -111,9 +111,11 @@
                         LeftClickCommand="{x:Bind ShowFromTrayCommand, Mode=OneWay}">
             <tb:TaskbarIcon.ContextFlyout>
                 <MenuFlyout>
-                    <MenuFlyoutItem Text="Open LAN Messenger" Click="TrayOpen_Click" />
+                    <MenuFlyoutItem Text="Open LAN Messenger"
+                                    Command="{x:Bind OpenFromTrayCommand, Mode=OneWay}" />
                     <MenuFlyoutSeparator />
-                    <MenuFlyoutItem Text="Quit" Click="TrayQuit_Click" />
+                    <MenuFlyoutItem Text="Quit"
+                                    Command="{x:Bind QuitFromTrayCommand, Mode=OneWay}" />
                 </MenuFlyout>
             </tb:TaskbarIcon.ContextFlyout>
         </tb:TaskbarIcon>

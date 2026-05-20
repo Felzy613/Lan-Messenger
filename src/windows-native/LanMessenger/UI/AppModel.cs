@@ -403,17 +403,27 @@ public sealed partial class AppModel : ObservableObject
 
     // Queue or send a file. If the peer is offline, the path is persisted in
     // config and retried whenever the peer comes back online.
-    public void SendFile(string filePath, string peerIP)
+    public bool SendFile(string filePath, string peerIP)
     {
+        if (!File.Exists(filePath))
+        {
+            LanLogger.Warn("Attachment", $"Cannot send missing file: {filePath}");
+            return false;
+        }
+
         var onlinePeer = PeerByIP(peerIP);
         var publicKey = onlinePeer?.PublicKeyB64
             ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64;
-        if (publicKey is null) return;
+        if (publicKey is null)
+        {
+            LanLogger.Warn("Attachment", $"Cannot send file because no public key is available for {peerIP}.");
+            return false;
+        }
 
         if (onlinePeer is not null)
         {
             FileTransferService.Shared.Enqueue(filePath, peerIP, publicKey);
-            return;
+            return true;
         }
 
         // Offline: persist for later, add a "Queued" outgoing bubble so the user sees the file.
@@ -444,6 +454,7 @@ public sealed partial class AppModel : ObservableObject
         l.Add(entry);
         Messages = msgs;
         RefreshConversations();
+        return true;
     }
 
     private void DeliverPendingFiles(string peerIP, string peerPublicKeyB64)

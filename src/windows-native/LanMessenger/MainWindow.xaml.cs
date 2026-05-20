@@ -28,11 +28,16 @@ public sealed partial class MainWindow : Window
     private bool _allowExit;
 
     public ICommand ShowFromTrayCommand { get; }
+    public ICommand OpenFromTrayCommand { get; }
+    public ICommand QuitFromTrayCommand { get; }
 
     public MainWindow()
     {
-        InitializeComponent();
         ShowFromTrayCommand = new DelegateCommand(() => ShowWindowFromTray());
+        OpenFromTrayCommand = new DelegateCommand(() => ShowWindowFromTray());
+        QuitFromTrayCommand = new DelegateCommand(() => QuitFromTray());
+
+        InitializeComponent();
         Title = "LAN Messenger";
         Model = new AppModel(DispatcherQueue.GetForCurrentThread());
 
@@ -90,9 +95,64 @@ public sealed partial class MainWindow : Window
         // run the picker + naming dialogs in sequence, then reopen Contacts
         // so the user lands back on the updated list.
         page.SearchLanRequested += () => RunSearchLanFlowAsync(dialog);
+        page.EditContactRequested += key => RunEditContactFlowAsync(dialog, key);
+        page.DeleteContactRequested += key => RunDeleteContactFlowAsync(dialog, key);
         _activeDialog = dialog;
         try { await dialog.ShowAsync(); }
-        finally { _activeDialog = null; }
+        finally { if (ReferenceEquals(_activeDialog, dialog)) _activeDialog = null; }
+    }
+
+    private async void RunEditContactFlowAsync(ContentDialog contactsDialog, string publicKeyB64)
+    {
+        contactsDialog.Hide();
+        _activeDialog = null;
+
+        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
+        if (contact is null)
+        {
+            ShowContactsPage();
+            return;
+        }
+
+        var editor = new ContactEditorDialog(contact) { XamlRoot = Content.XamlRoot };
+        _activeDialog = editor;
+        try
+        {
+            var result = await editor.ShowAsync();
+            if (result == ContentDialogResult.Primary)
+                Model.UpdateContact(publicKeyB64, editor.NameValue, editor.PhotoB64Value);
+        }
+        finally { if (ReferenceEquals(_activeDialog, editor)) _activeDialog = null; }
+
+        ShowContactsPage();
+    }
+
+    private async void RunDeleteContactFlowAsync(ContentDialog contactsDialog, string publicKeyB64)
+    {
+        contactsDialog.Hide();
+        _activeDialog = null;
+
+        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
+        var dialog = new ContentDialog
+        {
+            Title             = "Remove contact?",
+            Content           = $"Remove {contact?.Username ?? "contact"} and delete the conversation?",
+            PrimaryButtonText = "Remove",
+            CloseButtonText   = "Cancel",
+            DefaultButton     = ContentDialogButton.Close,
+            XamlRoot          = Content.XamlRoot,
+        };
+
+        _activeDialog = dialog;
+        try
+        {
+            var result = await dialog.ShowAsync();
+            if (result == ContentDialogResult.Primary)
+                Model.DeleteContact(publicKeyB64);
+        }
+        finally { if (ReferenceEquals(_activeDialog, dialog)) _activeDialog = null; }
+
+        ShowContactsPage();
     }
 
     private async void RunSearchLanFlowAsync(ContentDialog contactsDialog)
@@ -248,9 +308,7 @@ public sealed partial class MainWindow : Window
         SetForegroundWindow(hwnd);
     }
 
-    private void TrayOpen_Click(object sender, RoutedEventArgs e) => ShowWindowFromTray();
-
-    private void TrayQuit_Click(object sender, RoutedEventArgs e)
+    private void QuitFromTray()
     {
         _allowExit = true;
         Application.Current.Exit();

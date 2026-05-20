@@ -10,6 +10,7 @@ public sealed partial class ComposerControl : UserControl
 {
     public event Action<string>?                 Send;
     public event Action<bool>?                   TypingChanged;
+    public event Action?                         AttachRequested;
     public event Action<IReadOnlyList<string>>?  FilesDropped;
 
     private DateTime         _lastTypingSent = DateTime.MinValue;
@@ -18,6 +19,17 @@ public sealed partial class ComposerControl : UserControl
     // TextChanged fires on every character; allocating + GC-ing a timer there
     // is a measurable contributor to UI hitches while typing.
     private DispatcherTimer? _typingIdleTimer;
+    private bool             _isAttachmentPickerOpen;
+
+    public bool IsAttachmentPickerOpen
+    {
+        get => _isAttachmentPickerOpen;
+        set
+        {
+            _isAttachmentPickerOpen = value;
+            AttachBtn.IsEnabled = !value;
+        }
+    }
 
     public ComposerControl()
     {
@@ -91,21 +103,10 @@ public sealed partial class ComposerControl : UserControl
         TypingChanged?.Invoke(active);
     }
 
-    private async void AttachBtn_Click(object sender, RoutedEventArgs e)
+    private void AttachBtn_Click(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            if (Application.Current is not App app || app.MainWindow is null) return;
-            var picker = new Windows.Storage.Pickers.FileOpenPicker();
-            WinRT.Interop.InitializeWithWindow.Initialize(
-                picker, WinRT.Interop.WindowNative.GetWindowHandle(app.MainWindow));
-            picker.FileTypeFilter.Add("*");
-
-            var files = await picker.PickMultipleFilesAsync();
-            if (files is null || files.Count == 0) return;
-            FilesDropped?.Invoke(files.Select(f => f.Path).ToList());
-        }
-        catch { /* picker cancelled or window handle unavailable */ }
+        if (_isAttachmentPickerOpen) return;
+        AttachRequested?.Invoke();
     }
 
     private void OnDragOver(object sender, DragEventArgs e)
