@@ -167,6 +167,35 @@ jobs:
             2>&1 | Tee-Object -FilePath ..\..\build-output-windows.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # App-local deployment of the VC++ 2015-2022 runtime DLLs that
+      # libsodium.dll (NSec.Cryptography) P/Invokes. Without these, SessionCrypto's
+      # static constructor throws TypeInitializationException on Win10 boxes
+      # that don't have the VC++ redistributable installed system-wide.
+      # Windows DLL search order finds DLLs next to the .exe before falling
+      # back to System32, so app-local copies work on every machine regardless
+      # of what's installed. Microsoft's CRT redistribution license explicitly
+      # covers shipping these DLLs alongside an app.
+      - name: Copy VC++ runtime DLLs into publish output (app-local)
+        shell: pwsh
+        run: |
+          $PublishDir = "LanMessenger\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\publish"
+          if (-not (Test-Path $PublishDir)) {
+            Write-Error "Publish dir not found: $PublishDir"
+            Get-ChildItem LanMessenger\bin -Recurse -Directory | Select-Object FullName
+            exit 1
+          }
+          $Dlls = @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll')
+          foreach ($d in $Dlls) {
+            $src = Join-Path $env:WINDIR "System32\$d"
+            if (-not (Test-Path $src)) {
+              Write-Error "Missing runtime DLL on builder: $src"
+              exit 1
+            }
+            Copy-Item $src -Destination $PublishDir -Force
+            $size = (Get-Item (Join-Path $PublishDir $d)).Length
+            Write-Host "Bundled $d ($size bytes) into $PublishDir"
+          }
+
       # Optional Authenticode signing — uncomment once CODE_SIGN_CERT / CODE_SIGN_PWD secrets are set:
       # - name: Sign executable
       #   shell: pwsh
