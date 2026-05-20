@@ -53,10 +53,22 @@ public sealed partial class AppModel : ObservableObject
     [ObservableProperty] private UpdateProgress                  _updateProgress = new(UpdateProgressState.Idle);
     [ObservableProperty] private bool                            _isLocalNetworkAvailable = true;
 
+    // Fires when a single message's status changes (Sent / Delivered / Read).
+    // ChatPage listens to update one row in place — far cheaper than firing
+    // Messages PropertyChanged, which would re-evaluate every observer that
+    // reads the whole dictionary.
+    public event Action<string, string, string>? MessageStatusUpdated;
+
     public readonly NetworkCoordinator Coordinator = new();
     private DispatcherQueue _dq;
     private DispatcherTimer? _peerTimeoutTimer;
     private DispatcherTimer? _updateCheckTimer;
+
+    // Bursts of incoming packets (a chatty room, an active file transfer, a peer
+    // typing fast) can produce many RefreshConversations calls per frame. Each
+    // one rebuilds the entire Conversations list and re-binds every sidebar row.
+    // Coalesce them to one per dispatcher tick so the UI thread stays free.
+    private bool _refreshConvosScheduled;
 
     public AppModel(DispatcherQueue dq)
     {
@@ -69,9 +81,20 @@ public sealed partial class AppModel : ObservableObject
 
     private void Start()
     {
+        // First launch: replace the bare "User" default with the OS account
+        // name so peers immediately see something meaningful instead of "User".
+        if (ConfigStore.Shared.Config.Username == "User")
+        {
+            var fallback = Environment.UserName?.Trim() ?? "";
+            if (fallback.Length > 0 && fallback != "User")
+            {
+                ConfigStore.Shared.Config.Username = fallback;
+                ConfigStore.Shared.Save();
+            }
+        }
         try
         {
-            Coordinator.Start(ConfigStore.Shared.Config.Username, _dq);
+            Coordinator.Start(_dq);
         }
         catch (Exception ex)
         {
@@ -133,6 +156,20 @@ public sealed partial class AppModel : ObservableObject
         // If we have a saved contact for this device ID whose IP has changed,
         // migrate the conversation history so the user doesn't lose context.
         var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
+        if (contact is not null)
+        {
+            // Refresh the stored display name when the peer broadcasts a real
+            // name and the local copy is the bare default. We don't overwrite
+            // names the user explicitly set themselves.
+            var cleaned = (username ?? "").Trim();
+            if (cleaned.Length > 0 && cleaned != "User"
+                && contact.Username != cleaned
+                && (string.IsNullOrEmpty(contact.Username) || contact.Username is "User" or "Unknown"))
+            {
+                contact.Username = cleaned;
+                ConfigStore.Shared.Save();
+            }
+        }
         if (contact is not null && contact.LastIP != ip)
         {
             var oldIP = contact.LastIP;
@@ -203,7 +240,27 @@ public sealed partial class AppModel : ObservableObject
 
     // MARK: - Conversations
 
+    // Public entry point used everywhere — coalesces bursts of calls to a
+    // single rebuild per dispatcher tick. Callers that need the rebuild to
+    // complete synchronously (initial load, contact mutations) can call
+    // RefreshConversationsNow directly.
     private void RefreshConversations()
+    {
+        if (_refreshConvosScheduled) return;
+        _refreshConvosScheduled = true;
+        if (!_dq.TryEnqueue(DispatcherQueuePriority.Normal, () =>
+        {
+            _refreshConvosScheduled = false;
+            RefreshConversationsNow();
+        }))
+        {
+            // Dispatcher not available — fall back to synchronous refresh.
+            _refreshConvosScheduled = false;
+            RefreshConversationsNow();
+        }
+    }
+
+    private void RefreshConversationsNow()
     {
         // Threads only exist for saved contacts (or IPs we have history with) —
         // random discovered peers must not auto-appear as conversations.
@@ -577,7 +634,9 @@ public sealed partial class AppModel : ObservableObject
         {
             if (!Messages.TryGetValue(ip, out var list)) return;
             foreach (var e in list.Where(e => e.MessageId == msgId)) e.Status = status;
-            OnPropertyChanged(nameof(Messages));
+            // Targeted notification — no full Messages PropertyChanged. ChatPage
+            // updates one row in place; Sidebar ignores status updates entirely.
+            MessageStatusUpdated?.Invoke(ip, msgId, status);
         };
 
         MessagingService.Shared.OnTypingUpdate = (ip, sender, active) =>

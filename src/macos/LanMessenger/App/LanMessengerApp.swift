@@ -6,6 +6,17 @@ import AppKit
 // main window with the red "X". The menu-bar item provides a way back in.
 
 final class LanMessengerAppDelegate: NSObject, NSApplicationDelegate {
+    // Apply the dock policy as early as possible — before any NSWindow gets a
+    // chance to materialize. Flipping to .accessory only after the main
+    // SwiftUI window appears is unreliable: AppKit has already promoted the
+    // app to .regular, and macOS sometimes leaves a vestigial Dock icon
+    // until the user toggles the setting twice. Reading the config here also
+    // means a relaunch picks up the persisted preference automatically.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        let hideFromDock = ConfigStore.shared.config.hideFromDock
+        NSApp.setActivationPolicy(hideFromDock ? .accessory : .regular)
+    }
+
     // Don't quit when the last window closes — we live in the menu bar.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false

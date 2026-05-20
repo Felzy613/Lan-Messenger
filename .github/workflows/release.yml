@@ -201,21 +201,18 @@ jobs:
         run: |
           mkdir -p dist/macos dist/windows
 
-          # macOS publishes DMG (primary), PKG (IT/MDM), ZIP (updater), each
-          # with a SHA256 sidecar. Grab them all so the combined release
-          # mirrors what's on the platform release exactly.
-          for PATTERN in '*.dmg' '*.dmg.sha256' '*.pkg' '*.pkg.sha256' '*.zip' '*.zip.sha256'; do
-            gh release download "${{ steps.tags.outputs.mac_tag }}" \
-              --pattern "$PATTERN" \
-              --dir dist/macos/ 2>/dev/null || true
-          done
+          # The combined release exposes ONLY the two user-facing installers
+          # (.dmg, .exe). All update-channel artifacts (.zip, .pkg, .sha256s)
+          # live on the per-platform pre-releases so the public Releases page
+          # stays uncluttered. The in-app updaters already walk to per-platform
+          # tags as a fallback when an asset isn't on the combined release.
+          gh release download "${{ steps.tags.outputs.mac_tag }}" \
+            --pattern "*.dmg" \
+            --dir dist/macos/
 
           gh release download "${{ steps.tags.outputs.win_tag }}" \
             --pattern "*.exe" \
             --dir dist/windows/
-          gh release download "${{ steps.tags.outputs.win_tag }}" \
-            --pattern "*.exe.sha256" \
-            --dir dist/windows/ 2>/dev/null || true
 
           echo "Downloaded artifacts:"
           ls -lh dist/macos/ dist/windows/
@@ -226,23 +223,19 @@ jobs:
           steps.tags.outputs.skip != 'true' &&
           steps.release.outputs.skip != 'true'
         run: |
-          # macOS: require at least the DMG to be present (it's the primary
-          # download). ZIP and PKG are optional but ride along when they exist.
           MAC_DMG=$(ls dist/macos/*.dmg 2>/dev/null | head -1)
-          MAC_ZIP=$(ls dist/macos/*.zip 2>/dev/null | head -1)
           WIN_FILE=$(ls dist/windows/*.exe 2>/dev/null | head -1)
 
-          if [ -z "$MAC_DMG" ] && [ -z "$MAC_ZIP" ]; then
-            echo "::error::macOS release has neither .dmg nor .zip"
+          if [ -z "$MAC_DMG" ]; then
+            echo "::error::macOS .dmg missing after download from ${{ steps.tags.outputs.mac_tag }}"
             exit 1
           fi
           if [ -z "$WIN_FILE" ]; then
-            echo "::error::Windows artifact missing after download"
+            echo "::error::Windows .exe missing after download from ${{ steps.tags.outputs.win_tag }}"
             exit 1
           fi
 
-          for F in $MAC_DMG $MAC_ZIP dist/macos/*.pkg "$WIN_FILE"; do
-            [ -f "$F" ] || continue
+          for F in "$MAC_DMG" "$WIN_FILE"; do
             SIZE=$(stat -c%s "$F" 2>/dev/null || stat -f%z "$F")
             if [ "$SIZE" -lt 524288 ]; then
               echo "::error::Artifact suspiciously small ($SIZE bytes): $F"
@@ -285,15 +278,16 @@ jobs:
             echo "Released: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "Triggered by: ${{ github.event.workflow_run.name }}"
             echo ""
-            echo "## Windows"
-            echo "- \`LanMessenger-Setup-${WIN_VER}.exe\` — self-contained installer (.NET 8 bundled). Requires Windows 10 build 19041+, x64."
+            echo "## Downloads"
+            echo "- **Windows** — \`LanMessenger-Setup-${WIN_VER}.exe\` (self-contained, Windows 10 19041+, x64)"
+            echo "- **macOS** — \`LanMessenger-macOS-${MAC_VER}.dmg\` (open, drag to Applications, eject; macOS 13+)"
             echo ""
-            echo "## macOS"
-            echo "- \`LanMessenger-macOS-${MAC_VER}.dmg\` — primary download. Open, drag to Applications, eject."
-            echo "- \`LanMessenger-macOS-${MAC_VER}.pkg\` — IT-managed install (MDM, JAMF, Munki) into /Applications."
-            echo "- \`LanMessenger-macOS-${MAC_VER}.zip\` — updater-channel artifact; in-app updater downloads this."
+            echo "## Notes for IT / advanced users"
+            echo "Additional formats (.pkg for MDM installs, .zip for the update channel, and SHA-256 sidecars) are published on the per-platform pre-releases:"
+            echo "- macOS: \`${{ steps.tags.outputs.mac_tag }}\`"
+            echo "- Windows: \`${{ steps.tags.outputs.win_tag }}\`"
             echo ""
-            echo "Requires macOS 13.0 (Ventura) or later. Each artifact ships with a \`.sha256\` sidecar."
+            echo "The in-app updater finds them automatically — end users only need the two files above."
           } > /tmp/combined-notes.md
 
           gh release create "$TAG" \
@@ -304,32 +298,19 @@ jobs:
           echo "draft_tag=$TAG" >> $GITHUB_OUTPUT
           echo "Created draft release: $TAG"
 
-      - name: Upload macOS artifacts
+      - name: Upload installers (one .dmg + one .exe only)
         if: |
           steps.early_exit.outputs.skip != 'true' &&
           steps.tags.outputs.skip != 'true' &&
           steps.release.outputs.skip != 'true'
         run: |
           TAG="${{ steps.draft.outputs.draft_tag }}"
-          # Upload every macOS artifact that landed in dist/macos. The for-loop
-          # is defensive against older platform releases that only carry .zip.
-          for f in dist/macos/*.dmg dist/macos/*.dmg.sha256 \
-                   dist/macos/*.pkg dist/macos/*.pkg.sha256 \
-                   dist/macos/*.zip dist/macos/*.zip.sha256; do
-            [ -f "$f" ] && gh release upload "$TAG" "$f" --clobber || true
-          done
-
-      - name: Upload Windows artifact
-        if: |
-          steps.early_exit.outputs.skip != 'true' &&
-          steps.tags.outputs.skip != 'true' &&
-          steps.release.outputs.skip != 'true'
-        run: |
-          TAG="${{ steps.draft.outputs.draft_tag }}"
+          # Keep the public release deliberately minimal — just the two
+          # installers end users actually download. Sidecars, .zip, and .pkg
+          # remain on the per-platform pre-releases for the in-app updater
+          # and IT teams.
+          gh release upload "$TAG" dist/macos/*.dmg --clobber
           gh release upload "$TAG" dist/windows/*.exe --clobber
-          # Upload sidecar if present (optional — only exists for new releases)
-          ls dist/windows/*.sha256 2>/dev/null && \
-            gh release upload "$TAG" dist/windows/*.sha256 --clobber || true
 
       - name: Publish release (remove draft status)
         if: |

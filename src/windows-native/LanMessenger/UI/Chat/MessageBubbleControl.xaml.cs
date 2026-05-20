@@ -53,14 +53,13 @@ public sealed partial class MessageBubbleControl : UserControl
         {
             Bubble.HorizontalAlignment = HorizontalAlignment.Left;
             Bubble.Background          = Theme.IncomingBubbleBrush;
-            MessageText.Foreground     = new SolidColorBrush(Color.FromArgb(255, 17, 27, 33));
         }
         else
         {
             Bubble.HorizontalAlignment = HorizontalAlignment.Right;
             Bubble.Background          = Theme.OutgoingBubbleBrush;
-            MessageText.Foreground     = new SolidColorBrush(Color.FromArgb(255, 17, 27, 33));
         }
+        MessageText.Foreground = Theme.BubbleTextBrush;
 
         // Reply chip
         if (!string.IsNullOrEmpty(Row.ReplyToMessageId) && !string.IsNullOrEmpty(Row.ReplyToPreview))
@@ -107,7 +106,7 @@ public sealed partial class MessageBubbleControl : UserControl
                 break;
             case "Failed":
                 StatusText.Text       = "✗";
-                StatusText.Foreground = new SolidColorBrush(Color.FromArgb(255, 220, 60, 60));
+                StatusText.Foreground = Theme.BubbleFailedBrush;
                 break;
             default:
                 StatusText.Text = "";

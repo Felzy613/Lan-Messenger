@@ -107,8 +107,14 @@ public sealed partial class SidebarControl : UserControl
 
     private void OnModelPropertyChanged(object? s, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(AppModel.Conversations) or nameof(AppModel.Peers) or
-            nameof(AppModel.ArchivedConversations) or nameof(AppModel.Messages))
+        // AppModel.RefreshConversations() rebuilds Conversations whenever Peers
+        // / Messages / TypingStates change in a way that matters to the sidebar
+        // (new message, typing, online/offline). Listening to those properties
+        // separately is wasted work — every receipt and intermediate status
+        // update would otherwise trigger a full sidebar refresh and decode
+        // every visible avatar. ArchivedConversations is tracked separately
+        // because the archive footer count must update independently.
+        if (e.PropertyName is nameof(AppModel.Conversations) or nameof(AppModel.ArchivedConversations))
             Refresh();
     }
 

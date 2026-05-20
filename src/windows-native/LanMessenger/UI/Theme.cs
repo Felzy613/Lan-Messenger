@@ -32,13 +32,39 @@ public static class Theme
     public static readonly Color CheckGrey = Color.FromArgb(255, 140, 145, 152);
     public static readonly Color CheckBlue = Color.FromArgb(255,  79, 158, 247);
 
-    public static SolidColorBrush BrandAccentBrush      => new(BrandAccent);
-    public static SolidColorBrush OutgoingBubbleBrush   => new(OutgoingBubble);
-    public static SolidColorBrush IncomingBubbleBrush   => new(IncomingBubble);
-    public static SolidColorBrush ChatBackgroundBrush   => new(ChatBackground);
-    public static SolidColorBrush SidebarBackgroundBrush=> new(SidebarBackground);
-    public static SolidColorBrush CheckGreyBrush        => new(CheckGrey);
-    public static SolidColorBrush CheckBlueBrush        => new(CheckBlue);
+    // Shared brush instances — every bubble, sidebar row, and avatar refreshes
+    // multiple times per second when chats are busy. Using static readonly
+    // instances instead of per-call `new SolidColorBrush(...)` shaves a huge
+    // amount of GC pressure off the WhatsApp-style UI we render hundreds of
+    // times during scroll, typing, and live status updates.
+    public static readonly SolidColorBrush BrandAccentBrush       = new(BrandAccent);
+    public static readonly SolidColorBrush OutgoingBubbleBrush    = new(OutgoingBubble);
+    public static readonly SolidColorBrush IncomingBubbleBrush    = new(IncomingBubble);
+    public static readonly SolidColorBrush ChatBackgroundBrush    = new(ChatBackground);
+    public static readonly SolidColorBrush SidebarBackgroundBrush = new(SidebarBackground);
+    public static readonly SolidColorBrush CheckGreyBrush         = new(CheckGrey);
+    public static readonly SolidColorBrush CheckBlueBrush         = new(CheckBlue);
+
+    public static readonly SolidColorBrush BubbleTextBrush =
+        new(Color.FromArgb(255, 17, 27, 33));
+    public static readonly SolidColorBrush BubbleFailedBrush =
+        new(Color.FromArgb(255, 220, 60, 60));
+
+    // One brush per avatar palette colour — shared across every avatar row.
+    public static readonly SolidColorBrush[] AvatarBrushes;
+
+    static Theme()
+    {
+        AvatarBrushes = new SolidColorBrush[AvatarColors.Length];
+        for (var i = 0; i < AvatarColors.Length; i++)
+            AvatarBrushes[i] = new SolidColorBrush(AvatarColors[i]);
+    }
+
+    public static SolidColorBrush AvatarBrush(string name)
+    {
+        var idx = Math.Abs(name.GetHashCode()) % AvatarColors.Length;
+        return AvatarBrushes[idx];
+    }
 
     // Avatar palette — same 8 colors as macOS version ----------------------------
 

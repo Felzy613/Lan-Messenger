@@ -43,7 +43,7 @@ final class NetworkCoordinator: NSObject {
         super.init()
     }
 
-    func start(username: String) {
+    func start() {
         guard !running else { return }
         running = true
 
@@ -59,10 +59,12 @@ final class NetworkCoordinator: NSObject {
 
         discovery.ownPublicKeyB64 = ownPublicKeyB64
         discovery.delegate = self
+        // Read the username fresh on every beacon so changes in Settings
+        // propagate without restarting the network stack.
         discovery.buildPayload = { [weak self] in
             DiscoveryPacket(
                 type: "discovery",
-                username: username,
+                username: ConfigStore.shared.config.username,
                 port: 54232,
                 publicKeyB64: self?.ownPublicKeyB64 ?? "",
                 ips: self?.network.localIPs.map { $0 } ?? []
@@ -76,7 +78,7 @@ final class NetworkCoordinator: NSObject {
         startTCPListener()
 
         NetLogger.info("Net",
-            "coordinator started user='\(username)' tcp=\(tcpPort) udp=54231 " +
+            "coordinator started user='\(ConfigStore.shared.config.username)' tcp=\(tcpPort) udp=54231 " +
             "interfaces=\(network.adapters.count) available=\(network.isLocalNetworkAvailable)")
     }
 

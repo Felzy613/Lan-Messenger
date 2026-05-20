@@ -12,11 +12,19 @@ public sealed partial class ComposerControl : UserControl
     public event Action<bool>?                   TypingChanged;
     public event Action<IReadOnlyList<string>>?  FilesDropped;
 
-    private DateTime       _lastTypingSent = DateTime.MinValue;
-    private bool           _typingActive;
-    private DispatcherTimer? _typingTimer;
+    private DateTime         _lastTypingSent = DateTime.MinValue;
+    private bool             _typingActive;
+    // Reuse a single DispatcherTimer instead of allocating one per keystroke.
+    // TextChanged fires on every character; allocating + GC-ing a timer there
+    // is a measurable contributor to UI hitches while typing.
+    private DispatcherTimer? _typingIdleTimer;
 
-    public ComposerControl() => InitializeComponent();
+    public ComposerControl()
+    {
+        InitializeComponent();
+        _typingIdleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _typingIdleTimer.Tick += OnTypingTimerTick;
+    }
 
     private void SendBtn_Click(object sender, RoutedEventArgs e) => DoSend();
 
@@ -47,8 +55,7 @@ public sealed partial class ComposerControl : UserControl
     {
         var text = InputBox.Text;
         if (string.IsNullOrWhiteSpace(text)) return;
-        _typingTimer?.Stop();
-        _typingTimer = null;
+        _typingIdleTimer?.Stop();
         Send?.Invoke(text);
         InputBox.Text = "";
         SetTyping(false);
@@ -56,15 +63,11 @@ public sealed partial class ComposerControl : UserControl
 
     private void InputBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        _typingTimer?.Stop();
-        _typingTimer = null;
-
+        _typingIdleTimer?.Stop();
         if (InputBox.Text.Length > 0)
         {
             SetTyping(true);
-            _typingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-            _typingTimer.Tick += OnTypingTimerTick;
-            _typingTimer.Start();
+            _typingIdleTimer?.Start();
         }
         else
         {
@@ -74,8 +77,7 @@ public sealed partial class ComposerControl : UserControl
 
     private void OnTypingTimerTick(object? sender, object e)
     {
-        _typingTimer?.Stop();
-        _typingTimer = null;
+        _typingIdleTimer?.Stop();
         SetTyping(false);
     }
 

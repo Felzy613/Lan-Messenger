@@ -197,8 +197,28 @@ final class UpdateService {
 
         onProgress(1.0)
         // Quit ourselves so the helper can move the new bundle into place.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        // NSApp.terminate alone is unreliable for SwiftUI apps that own a
+        // MenuBarExtra — the menu bar scene can keep the run loop alive and
+        // swallow the terminate request. We:
+        //   1. Hop to main and ask AppKit to terminate immediately.
+        //   2. If we're still alive 2 s later, hard-exit so the apply script
+        //      stops waiting on our pid.
+        // The apply script also SIGTERM/KILLs us after 60 s as a last resort,
+        // but users should never have to wait that long.
+        await MainActor.run {
             NSApp.terminate(nil)
+        }
+        let logPath = self.logFileURL.path
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            let line = "[UpdateService \(ISO8601DateFormatter().string(from: Date()))] " +
+                "graceful terminate did not exit — hard-exiting (exit 0)\n"
+            if let data = line.data(using: .utf8),
+               let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath)) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+                try? handle.close()
+            }
+            exit(0)
         }
     }
 
@@ -232,11 +252,14 @@ final class UpdateService {
                       let url = URL(string: urlStr) else { continue }
 
                 let assetName = (asset["name"] as? String) ?? ""
-                let sha256URL = assets.first { a in
-                    (a["name"] as? String) == "\(assetName).sha256"
-                }.flatMap { a in
-                    (a["browser_download_url"] as? String).flatMap { URL(string: $0) }
-                }
+                // Look for the sidecar across every release, not just this one.
+                // The combined release intentionally only carries the bare .dmg
+                // and .exe — sidecars and the updater-channel .zip live on
+                // the per-platform pre-release.
+                let sha256URL = Self.findSidecarAcrossReleases(
+                    releases: sorted,
+                    sidecarFileName: "\(assetName).sha256"
+                )
 
                 let size = (asset["size"] as? Int64) ?? (asset["size"] as? Int).map(Int64.init) ?? 0
                 let notes = (release["body"] as? String) ?? ""
@@ -247,6 +270,24 @@ final class UpdateService {
                     sha256URL: sha256URL,
                     expectedSize: size
                 ), version)
+            }
+        }
+        return nil
+    }
+
+    private static func findSidecarAcrossReleases(
+        releases: [[String: Any]],
+        sidecarFileName: String
+    ) -> URL? {
+        for release in releases {
+            guard let assets = release["assets"] as? [[String: Any]] else { continue }
+            for asset in assets {
+                let name = (asset["name"] as? String) ?? ""
+                if name != sidecarFileName { continue }
+                if let urlStr = asset["browser_download_url"] as? String,
+                   let url = URL(string: urlStr) {
+                    return url
+                }
             }
         }
         return nil
@@ -390,12 +431,15 @@ final class UpdateService {
         log() { echo "[apply $$ $(date -u +%FT%TZ)] $*" >> "$LOG" 2>/dev/null || true; }
 
         log "waiting for pid \(pid) to exit"
-        for i in $(seq 1 120); do
+        # Swift caller asks AppKit to terminate immediately and then exit(0)s
+        # after 2 s, so 10 s here is comfortably more than the happy path while
+        # still being short enough that a stuck app doesn't make the user wait.
+        for i in $(seq 1 20); do
             if ! kill -0 \(pid) 2>/dev/null; then break; fi
             sleep 0.5
         done
         if kill -0 \(pid) 2>/dev/null; then
-            log "process \(pid) still running after 60s — sending SIGTERM"
+            log "process \(pid) still running after 10s — sending SIGTERM"
             kill -TERM \(pid) 2>/dev/null || true
             sleep 2
             if kill -0 \(pid) 2>/dev/null; then

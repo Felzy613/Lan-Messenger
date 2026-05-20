@@ -36,7 +36,7 @@ public sealed class NetworkCoordinator : IDisposable
         Discovery = new DiscoveryService(Network);
     }
 
-    public void Start(string username, DispatcherQueue dispatcherQueue)
+    public void Start(DispatcherQueue dispatcherQueue)
     {
         if (_running) return;
         _running = true;
@@ -49,12 +49,14 @@ public sealed class NetworkCoordinator : IDisposable
         Network.Changed += () =>
             _dispatcherQueue?.TryEnqueue(() => NetworkAvailabilityChanged?.Invoke());
 
-        // Configure discovery
+        // Configure discovery — read the username fresh on every beacon so
+        // changes the user makes in Settings propagate without needing to
+        // restart the network stack.
         Discovery.OwnPublicKeyB64 = OwnPublicKeyB64;
         Discovery.BuildPayload    = () => new DiscoveryPacket
         {
             Type         = "discovery",
-            Username     = username,
+            Username     = LanMessenger.Core.Persistence.ConfigStore.Shared.Config.Username,
             Port         = TcpPort,
             PublicKeyB64 = OwnPublicKeyB64,
             Ips          = [.. Network.LocalIPs],
@@ -67,7 +69,7 @@ public sealed class NetworkCoordinator : IDisposable
         StartTcpListener();
 
         LanLogger.Info("Net",
-            $"coordinator started user='{username}' tcp={TcpPort} udp=54231 " +
+            $"coordinator started user='{LanMessenger.Core.Persistence.ConfigStore.Shared.Config.Username}' tcp={TcpPort} udp=54231 " +
             $"interfaces={Network.Adapters.Count} available={Network.IsLocalNetworkAvailable}");
     }
 

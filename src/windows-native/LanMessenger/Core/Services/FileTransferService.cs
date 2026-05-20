@@ -40,6 +40,12 @@ public sealed class FileTransferService
     // Accessed only from the UI thread (HandleFileStart/Chunk/End).
     private readonly Dictionary<TransferKey, Channel<Func<Task>>> _transferChannels = [];
 
+    // Throttle for incoming progress UI events — 12 Hz. Without this, a 100 MB
+    // file (~1600 chunks) would post 1600 work items to the UI thread and
+    // freeze the chat window mid-transfer.
+    private readonly Dictionary<TransferKey, DateTime> _lastIncomingReportAt = [];
+    private static readonly TimeSpan ProgressInterval = TimeSpan.FromMilliseconds(80);
+
     private FileTransferService() { }
 
     public void SetDispatcherQueue(DispatcherQueue dq) => _dq = dq;
@@ -112,7 +118,20 @@ public sealed class FileTransferService
             FileTransferStore.Shared.AppendChunk(plaintext, key);
             var received = FileTransferStore.Shared.Incoming.TryGetValue(key, out var t2)
                            ? t2.BytesReceived : 0;
-            Dispatch(() => OnProgress?.Invoke(ip, $"Receiving {filename}", received, totalSize));
+
+            // Coalesce progress updates to ~12 Hz on the UI thread. The
+            // completion event in HandleFileEnd fires unconditionally so the
+            // bar always reaches 100%.
+            Dispatch(() =>
+            {
+                var now = DateTime.UtcNow;
+                var due = !_lastIncomingReportAt.TryGetValue(key, out var last) ||
+                          (now - last) >= ProgressInterval ||
+                          (totalSize > 0 && received >= totalSize);
+                if (!due) return;
+                _lastIncomingReportAt[key] = now;
+                OnProgress?.Invoke(ip, $"Receiving {filename}", received, totalSize);
+            });
         });
     }
 
@@ -138,6 +157,7 @@ public sealed class FileTransferService
 
             Dispatch(() =>
             {
+                _lastIncomingReportAt.Remove(key);
                 OnComplete?.Invoke(ip, $"Receiving {filename}", null);
                 OnIncomingFile?.Invoke(ip, sender, finalPath);
             });
@@ -232,14 +252,15 @@ public sealed class FileTransferService
             Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", 0, totalSize));
 
             // ── file_chunks ───────────────────────────────────────────────────────
+            // Throttle progress updates to ~12 Hz. The earlier code OR'd a
+            // byte-threshold check (== ChunkSize) with the time check, so the
+            // throttle never engaged: every chunk hopped to the UI thread and
+            // froze it on large files.
             using var handle     = File.OpenRead(path);
             var  buf             = new byte[ChunkSize];
             long sent            = 0;
-            long lastReported    = 0;
-            var  lastReportAt    = DateTime.UtcNow;
-            var  minInterval     = TimeSpan.FromMilliseconds(100);
-            // Update every chunk for small files; throttle to ~10 Hz for large ones.
-            var  minBytes        = (long)ChunkSize;
+            var  lastReportAt    = DateTime.MinValue;
+            var  minInterval     = TimeSpan.FromMilliseconds(80);
             int  read;
 
             while ((read = await handle.ReadAsync(buf.AsMemory(0, ChunkSize)).ConfigureAwait(false)) > 0)
@@ -259,10 +280,9 @@ public sealed class FileTransferService
 
                 sent += read;
                 var now = DateTime.UtcNow;
-                if (sent - lastReported >= minBytes || (now - lastReportAt) >= minInterval)
+                if ((now - lastReportAt) >= minInterval)
                 {
                     var snap = sent;
-                    lastReported = sent;
                     lastReportAt = now;
                     Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", snap, totalSize));
                 }

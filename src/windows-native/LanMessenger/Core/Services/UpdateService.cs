@@ -291,22 +291,33 @@ public sealed class UpdateService
                 if (winAsset.Value.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number)
                     size = s.GetInt64();
 
-                // Look for an optional .sha256 sidecar among the same release's assets.
+                // Look for the .sha256 sidecar across every release, not just
+                // this one. The public combined release intentionally only
+                // ships the bare installer; sidecars live on the per-platform
+                // pre-release. Walk all releases so we still get integrity
+                // verification.
                 var assetName = winAsset.Value.TryGetProperty("name", out var an) ? an.GetString() ?? "" : "";
-                Uri? sha256Uri = null;
-                foreach (var asset in assets.EnumerateArray())
-                {
-                    var sidecarName = asset.TryGetProperty("name", out var sn) ? sn.GetString() ?? "" : "";
-                    if (sidecarName == assetName + ".sha256")
-                    {
-                        var sidUrl = asset.TryGetProperty("browser_download_url", out var su) ? su.GetString() : null;
-                        if (!string.IsNullOrEmpty(sidUrl)) Uri.TryCreate(sidUrl, UriKind.Absolute, out sha256Uri);
-                        break;
-                    }
-                }
+                Uri? sha256Uri = FindSidecarAcrossReleases(all, assetName + ".sha256");
 
                 var notes = rel.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
                 return new UpdateInfo(version, notes, url, sha256Uri, size);
+            }
+        }
+        return null;
+    }
+
+    private static Uri? FindSidecarAcrossReleases(List<JsonElement> releases, string sidecarFileName)
+    {
+        foreach (var rel in releases)
+        {
+            if (!rel.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) continue;
+            foreach (var asset in assets.EnumerateArray())
+            {
+                var name = asset.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+                if (name != sidecarFileName) continue;
+                var urlStr = asset.TryGetProperty("browser_download_url", out var u) ? u.GetString() : null;
+                if (!string.IsNullOrEmpty(urlStr) && Uri.TryCreate(urlStr, UriKind.Absolute, out var url))
+                    return url;
             }
         }
         return null;

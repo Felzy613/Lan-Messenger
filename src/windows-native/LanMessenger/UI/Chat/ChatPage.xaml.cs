@@ -46,15 +46,36 @@ public sealed partial class ChatPage : Page
         get => _model;
         set
         {
-            if (_model is not null) _model.PropertyChanged -= OnModelPropertyChanged;
+            if (_model is not null)
+            {
+                _model.PropertyChanged    -= OnModelPropertyChanged;
+                _model.MessageStatusUpdated -= OnMessageStatusUpdated;
+            }
             _model = value;
             if (_model is not null)
             {
-                _model.PropertyChanged += OnModelPropertyChanged;
+                _model.PropertyChanged    += OnModelPropertyChanged;
+                _model.MessageStatusUpdated += OnMessageStatusUpdated;
                 Composer.Send             += OnSend;
                 Composer.TypingChanged    += OnTyping;
                 Composer.FilesDropped     += OnFilesDropped;
                 RefreshForSelectedPeer(forceReload: true);
+            }
+        }
+    }
+
+    // Direct row update — no full message-list re-evaluation. Receipts arrive
+    // in bursts during cross-platform delivery; using MergeMessages here would
+    // touch every row in the chat for each receipt.
+    private void OnMessageStatusUpdated(string peerIP, string msgId, string status)
+    {
+        if (peerIP != _boundPeerIP) return;
+        for (var i = 0; i < _rows.Count; i++)
+        {
+            if (_rows[i].MessageId == msgId)
+            {
+                _rows[i].Status = status;
+                return;
             }
         }
     }

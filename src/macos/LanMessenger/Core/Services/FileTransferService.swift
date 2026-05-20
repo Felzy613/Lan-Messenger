@@ -28,6 +28,16 @@ final class FileTransferService {
     private let chunkSize = 64 * 1024   // 64 KiB per chunk
     private let tcpPort   = 54232
 
+    // Throttle for incoming progress callbacks. A 100 MB file is ~1600 chunks,
+    // and pushing a @Published update per chunk floods the main thread and
+    // freezes the UI mid-transfer. We coalesce updates to ~12 Hz per peer.
+    private struct ProgressTicker {
+        var lastReportAt: Date = .distantPast
+        var lastReportedBytes: Int64 = 0
+    }
+    private var incomingTicker: [FileTransferStore.TransferKey: ProgressTicker] = [:]
+    private let progressInterval: TimeInterval = 0.08
+
     // Serial queue: preserves TCP chunk ordering during decrypt + write.
     // handleFileEnd is routed through here too so finalization always
     // happens after the last chunk write completes.
@@ -97,10 +107,27 @@ final class FileTransferService {
             fileHandle.write(plaintext)
             let count = Int64(plaintext.count)
 
+            // Always advance the persisted byte counter (cheap dictionary
+            // update); only push a UI progress event when the throttle
+            // window has elapsed. The final completion event is fired
+            // unconditionally from handleFileEnd, so the bar never gets
+            // stuck below 100%.
             DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
                 FileTransferStore.shared.addBytesReceived(count, forKey: key)
                 let received = FileTransferStore.shared.incoming[key]?.bytesReceived ?? 0
-                self?.onProgress?(ip, "Receiving \(filename)", received, totalSize)
+
+                var ticker = self.incomingTicker[key] ?? ProgressTicker()
+                let now = Date()
+                let finished = received >= totalSize && totalSize > 0
+                if finished || now.timeIntervalSince(ticker.lastReportAt) >= self.progressInterval {
+                    ticker.lastReportAt = now
+                    ticker.lastReportedBytes = received
+                    self.incomingTicker[key] = ticker
+                    self.onProgress?(ip, "Receiving \(filename)", received, totalSize)
+                } else {
+                    self.incomingTicker[key] = ticker
+                }
             }
         }
     }
@@ -120,6 +147,7 @@ final class FileTransferService {
                     key:      key,
                     inboxDir: ConfigStore.shared.inboxDirectory
                 ) else { return }
+                self.incomingTicker.removeValue(forKey: key)
                 self.onComplete?(ip, "Receiving \(filename)", nil)
                 self.onIncomingFile?(ip, sender, finalURL)
             }
@@ -264,13 +292,13 @@ final class FileTransferService {
         onProgress(0, totalSize)
 
         // ── file_chunks ───────────────────────────────────────────────────────────
-        // Update progress every chunk for small files; throttle to ~10 Hz for large
-        // files so the main thread isn't flooded with tiny updates.
+        // Throttle progress updates to ~12 Hz. The previous logic OR'd a
+        // byte threshold (== chunkSize) with the time threshold, so every
+        // chunk passed it — for a 100 MB file that's ~1600 main-thread
+        // hops that lock up the UI mid-transfer.
         var sent: Int64           = 0
-        var lastReported: Int64   = 0
-        var lastReportAt          = Date()
-        let minInterval: TimeInterval = 0.1
-        let minBytes: Int64       = Int64(chunkSize) // at least one update per chunk
+        var lastReportAt          = Date.distantPast
+        let minInterval: TimeInterval = 0.08
 
         while true {
             let chunk = handle.readData(ofLength: chunkSize)
@@ -294,8 +322,7 @@ final class FileTransferService {
 
             sent += Int64(chunk.count)
             let now = Date()
-            if sent - lastReported >= minBytes || now.timeIntervalSince(lastReportAt) >= minInterval {
-                lastReported = sent
+            if now.timeIntervalSince(lastReportAt) >= minInterval {
                 lastReportAt = now
                 onProgress(sent, totalSize)
             }

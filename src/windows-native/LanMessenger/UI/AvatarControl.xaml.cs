@@ -36,23 +36,39 @@ public sealed partial class AvatarControl : UserControl
         if (d is AvatarControl ctrl) ctrl.Refresh();
     }
 
+    // Cached so we skip the expensive base64 decode + BitmapImage decode on
+    // re-renders that don't actually change the photo. SidebarControl.Refresh
+    // fires on every conversation event (new message, status update, typing)
+    // and would otherwise re-decode every visible avatar every time.
+    private string _lastName = "";
+    private string? _lastPhotoB64;
+
     private async void Refresh()
     {
-        var color    = Theme.AvatarColor(NameText ?? "");
-        var initials = Theme.Initials(NameText ?? "");
-        BackgroundEllipse.Fill = new SolidColorBrush(color);
-        InitialsText.Text      = initials;
+        var name  = NameText ?? "";
+        var photo = PhotoB64;
 
-        if (string.IsNullOrEmpty(PhotoB64))
+        if (name != _lastName)
         {
-            PhotoEllipse.Visibility = Visibility.Collapsed;
-            InitialsText.Visibility = Visibility.Visible;
+            _lastName = name;
+            BackgroundEllipse.Fill = Theme.AvatarBrush(name);
+            InitialsText.Text      = Theme.Initials(name);
+        }
+
+        if (photo == _lastPhotoB64) return;
+        _lastPhotoB64 = photo;
+
+        if (string.IsNullOrEmpty(photo))
+        {
+            PhotoEllipse.Visibility      = Visibility.Collapsed;
+            InitialsText.Visibility      = Visibility.Visible;
             BackgroundEllipse.Visibility = Visibility.Visible;
+            PhotoBrush.ImageSource       = null;
             return;
         }
         try
         {
-            var bytes = System.Convert.FromBase64String(PhotoB64);
+            var bytes = System.Convert.FromBase64String(photo);
             var bitmap = new BitmapImage();
             using var stream = new InMemoryRandomAccessStream();
             using (var writer = new DataWriter(stream))
@@ -64,15 +80,15 @@ public sealed partial class AvatarControl : UserControl
             }
             stream.Seek(0);
             await bitmap.SetSourceAsync(stream);
-            PhotoBrush.ImageSource    = bitmap;
-            PhotoEllipse.Visibility   = Visibility.Visible;
-            InitialsText.Visibility   = Visibility.Collapsed;
+            PhotoBrush.ImageSource       = bitmap;
+            PhotoEllipse.Visibility      = Visibility.Visible;
+            InitialsText.Visibility      = Visibility.Collapsed;
             BackgroundEllipse.Visibility = Visibility.Collapsed;
         }
         catch
         {
-            PhotoEllipse.Visibility = Visibility.Collapsed;
-            InitialsText.Visibility = Visibility.Visible;
+            PhotoEllipse.Visibility      = Visibility.Collapsed;
+            InitialsText.Visibility      = Visibility.Visible;
             BackgroundEllipse.Visibility = Visibility.Visible;
         }
     }

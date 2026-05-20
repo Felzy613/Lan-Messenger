@@ -62,7 +62,16 @@ final class AppModel: ObservableObject {
     // MARK: - Start
 
     private func start() {
-        coordinator.start(username: ConfigStore.shared.config.username)
+        // First launch: replace the bare "User" default with the system's full
+        // name so peers immediately see something meaningful instead of "User".
+        if ConfigStore.shared.config.username == "User" {
+            let fallback = NSFullUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !fallback.isEmpty, fallback != "User" {
+                ConfigStore.shared.config.username = fallback
+                ConfigStore.shared.save()
+            }
+        }
+        coordinator.start()
         isLocalNetworkAvailable = coordinator.isLocalNetworkAvailable
         NotificationService.shared.requestAuthorization()
         removeOwnContact()
@@ -144,6 +153,16 @@ final class AppModel: ObservableObject {
         // If we have a saved contact for this device ID whose IP has changed,
         // migrate the conversation history so the user doesn't lose context.
         if let idx = ConfigStore.shared.config.contacts.firstIndex(where: { $0.publicKeyB64 == publicKeyB64 }) {
+            // Refresh the stored display name from the peer's current broadcast
+            // when the peer hasn't been manually renamed locally. This makes
+            // the sidebar reflect a peer who later set their name in Settings.
+            let stored = ConfigStore.shared.config.contacts[idx].username
+            let cleaned = username.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty, cleaned != "User", stored != cleaned,
+               (stored.isEmpty || stored == "User" || stored == "Unknown") {
+                ConfigStore.shared.config.contacts[idx].username = cleaned
+                ConfigStore.shared.save()
+            }
             let oldIP = ConfigStore.shared.config.contacts[idx].lastIP
             if oldIP != ip {
                 if let oldMessages = messages.removeValue(forKey: oldIP) {
