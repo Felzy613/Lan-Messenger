@@ -39,3 +39,7 @@ dist/
 # Local config
 .lan_messenger/
 config.json
+
+# Local runtime logs
+Logs/
+*.log

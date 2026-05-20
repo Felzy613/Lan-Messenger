@@ -34,7 +34,9 @@ public static class LanLogger
     public static void Info(string category, string message)      => Write("INFO",  category, message);
     public static void Warn(string category, string message)      => Write("WARN",  category, message);
     public static void Error(string category, string message)     => Write("ERROR", category, message);
-    public static void Error(string category, Exception ex)       => Write("ERROR", category, $"{ex.GetType().Name}: {ex.Message}");
+    public static void Error(string category, Exception ex)       => Write("ERROR", category, ex.ToString());
+    public static void Error(string category, string message, Exception ex) =>
+        Write("ERROR", category, $"{message}{Environment.NewLine}{ex}");
 
     private static void Write(string level, string category, string message)
     {

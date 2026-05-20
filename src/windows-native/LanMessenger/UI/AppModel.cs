@@ -81,6 +81,8 @@ public sealed partial class AppModel : ObservableObject
 
     private void Start()
     {
+        CryptoRuntimeDiagnostics.LogOnce();
+
         // First launch: replace the bare "User" default with the OS account
         // name so peers immediately see something meaningful instead of "User".
         if (ConfigStore.Shared.Config.Username == "User")

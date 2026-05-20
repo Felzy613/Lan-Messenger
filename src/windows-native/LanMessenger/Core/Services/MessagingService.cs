@@ -78,7 +78,7 @@ public sealed class MessagingService
         }
         catch (Exception ex)
         {
-            LanLogger.Error("Send", $"encrypt failed msgId={messageId} peer={peerIP}: {ex.Message}");
+            LanLogger.Error("Send", $"encrypt failed msgId={messageId} peer={peerIP}", ex);
             ApplyStatus(MessageStatus.Failed, messageId, peerIP);
             return;
         }
@@ -186,7 +186,7 @@ public sealed class MessagingService
             try { encrypted = SessionCrypto.EncryptForPeer(KeyManager.Shared.PrivateKey, peerPublicKeyB64, Encoding.UTF8.GetBytes(msg.Text), aad); }
             catch (Exception ex)
             {
-                LanLogger.Error("Send", $"pending encrypt failed msgId={msg.MessageId}: {ex.Message}");
+                LanLogger.Error("Send", $"pending encrypt failed msgId={msg.MessageId}", ex);
                 continue;
             }
 
@@ -224,7 +224,7 @@ public sealed class MessagingService
             // Silent receiver-side decrypt failure was historically a primary reason
             // for "single check mark" — sender never got a sent_receipt. Log so the
             // user can correlate failed deliveries with key mismatches.
-            LanLogger.Error("Recv", $"decrypt failed msgId={pkt.MessageId} peer={ip}: {ex.Message}");
+            LanLogger.Error("Recv", $"decrypt failed msgId={pkt.MessageId} peer={ip}", ex);
             return;
         }
         LanLogger.Info("Recv", $"text msgId={pkt.MessageId} peer={ip} bytes={plaintext.Length}");
