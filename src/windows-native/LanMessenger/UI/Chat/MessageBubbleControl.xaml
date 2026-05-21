@@ -11,7 +11,11 @@
             <Border.ContextFlyout>
                 <MenuFlyout x:Name="BubbleMenu">
                     <MenuFlyoutItem Text="Reply" Click="ReplyMenu_Click" />
-                    <MenuFlyoutItem Text="Copy" Click="CopyMenu_Click" />
+                    <MenuFlyoutItem Text="Copy"  Click="CopyMenu_Click" />
+                    <MenuFlyoutItem x:Name="ShowInExplorerMenu"
+                                    Text="Show in folder"
+                                    Click="ShowInExplorerMenu_Click"
+                                    Visibility="Collapsed" />
                 </MenuFlyout>
             </Border.ContextFlyout>
             <StackPanel Spacing="2">
@@ -43,16 +47,93 @@
                     </Grid>
                 </Border>
 
+                <!-- Inline image preview (visible only for image MediaKind).
+                     MaxWidth caps the bubble width so a 4K image cannot blow out
+                     the chat list layout. Tap opens the modal viewer. -->
+                <Border x:Name="ImageTile"
+                        CornerRadius="10"
+                        Visibility="Collapsed"
+                        Tapped="MediaTile_Tapped">
+                    <Grid>
+                        <Image x:Name="ImagePreview"
+                               Stretch="Uniform"
+                               MaxWidth="280"
+                               MaxHeight="280" />
+                        <ProgressRing x:Name="ImageProgress"
+                                      IsActive="True"
+                                      Width="28" Height="28"
+                                      Visibility="Collapsed" />
+                    </Grid>
+                </Border>
+
+                <!-- Inline video tile.  MediaPlayerElement is heavy, so the chat
+                     list shows a poster tile (filename + play icon) and the
+                     player is only constructed inside the modal preview. -->
+                <Border x:Name="VideoTile"
+                        CornerRadius="10"
+                        Background="#22000000"
+                        Padding="10"
+                        Visibility="Collapsed"
+                        Tapped="MediaTile_Tapped">
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid Grid.Column="0"
+                              Width="60" Height="60"
+                              Background="#000000"
+                              CornerRadius="8">
+                            <FontIcon Glyph="&#xE714;"
+                                      FontFamily="Segoe MDL2 Assets"
+                                      FontSize="28"
+                                      Foreground="White"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center" />
+                        </Grid>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock x:Name="VideoFilename"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis"
+                                       MaxLines="1" />
+                            <TextBlock Text="Tap to play"
+                                       FontSize="11"
+                                       Opacity="0.7" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Generic message text — hidden when an inline media tile is shown. -->
                 <TextBlock x:Name="MessageText"
                            TextWrapping="Wrap"
                            FontSize="14" />
-                <Button x:Name="OpenFileBtn"
-                        Content="Open file"
-                        Padding="0"
-                        Background="Transparent"
-                        BorderThickness="0"
-                        Visibility="Collapsed"
-                        Click="OpenFileBtn_Click" />
+
+                <!-- File actions row (visible for non-media file bubbles only).
+                     Open launches the file with its default app; "Show in folder"
+                     opens Explorer with the file selected. -->
+                <StackPanel x:Name="FileActions"
+                            Orientation="Horizontal"
+                            Spacing="6"
+                            Visibility="Collapsed">
+                    <Button x:Name="OpenFileBtn"
+                            Content="Open"
+                            Padding="8,2"
+                            Click="OpenFileBtn_Click" />
+                    <Button x:Name="ShowInExplorerBtn"
+                            Content="Show in folder"
+                            Padding="8,2"
+                            Click="ShowInExplorerBtn_Click"
+                            ToolTipService.ToolTip="Open File Explorer with this file selected" />
+                </StackPanel>
+
+                <!-- File-missing footer used when the referenced file no longer
+                     exists on disk (moved or deleted after history was written). -->
+                <TextBlock x:Name="FileMissingText"
+                           Text="File no longer available"
+                           FontSize="11"
+                           Opacity="0.7"
+                           Visibility="Collapsed" />
+
                 <StackPanel Orientation="Horizontal"
                             Spacing="4"
                             HorizontalAlignment="Right"

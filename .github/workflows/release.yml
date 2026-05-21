@@ -252,11 +252,51 @@ jobs:
           steps.release.outputs.skip != 'true'
         run: |
           MAC_SHA=$(gh release view "${{ steps.tags.outputs.mac_tag }}" \
-            --json targetCommitish -q .targetCommitish | head -c 8 || echo "unknown")
+            --json targetCommitish -q .targetCommitish || echo "unknown")
           WIN_SHA=$(gh release view "${{ steps.tags.outputs.win_tag }}" \
-            --json targetCommitish -q .targetCommitish | head -c 8 || echo "unknown")
-          echo "mac_sha=$MAC_SHA" >> $GITHUB_OUTPUT
-          echo "win_sha=$WIN_SHA" >> $GITHUB_OUTPUT
+            --json targetCommitish -q .targetCommitish || echo "unknown")
+          echo "mac_sha=${MAC_SHA:0:8}" >> $GITHUB_OUTPUT
+          echo "win_sha=${WIN_SHA:0:8}" >> $GITHUB_OUTPUT
+          # Full SHA for git-log range below
+          echo "mac_sha_full=$MAC_SHA" >> $GITHUB_OUTPUT
+          echo "win_sha_full=$WIN_SHA" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog from git commits
+        id: changelog
+        if: |
+          steps.early_exit.outputs.skip != 'true' &&
+          steps.tags.outputs.skip != 'true' &&
+          steps.release.outputs.skip != 'true'
+        run: |
+          # Find the previous combined release tag so we can show commits since then.
+          PREV_TAG=$(gh release list --limit 100 \
+            --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse
+                  | [.[] | select(.tagName | startswith("release-"))]
+                  | .[1].tagName // empty' 2>/dev/null || true)
+
+          echo "Previous combined release: ${PREV_TAG:-(none)}"
+
+          # Build changelog from git commit messages since PREV_TAG.
+          # If no previous release exists, show the 30 most recent commits.
+          # Merge commits are excluded; each subject line becomes a list item.
+          if [ -n "$PREV_TAG" ]; then
+            PREV_SHA=$(gh release view "$PREV_TAG" \
+              --json targetCommitish -q .targetCommitish 2>/dev/null || true)
+            if [ -n "$PREV_SHA" ]; then
+              CHANGELOG=$(git log --no-merges --pretty="format:- %s" \
+                "${PREV_SHA}..HEAD" 2>/dev/null | head -60 || true)
+            fi
+          fi
+
+          if [ -z "${CHANGELOG:-}" ]; then
+            CHANGELOG=$(git log --no-merges --pretty="format:- %s" \
+              -30 HEAD 2>/dev/null | head -60 || true)
+          fi
+
+          # Write to a temp file so the multi-line value survives the env boundary.
+          printf '%s\n' "$CHANGELOG" > /tmp/changelog-body.txt
+          echo "Changelog entries: $(wc -l < /tmp/changelog-body.txt)"
 
       - name: Create DRAFT combined release
         id: draft
@@ -271,39 +311,15 @@ jobs:
           MAC_SHA="${{ steps.commits.outputs.mac_sha }}"
           WIN_SHA="${{ steps.commits.outputs.win_sha }}"
 
-          # Extract changelog entries. The combined release uses the macOS version
-          # as the primary lookup key. If the Windows version differs, its entry
-          # is included as well so both apps show relevant notes.
-          CHANGELOG_MAC=$(awk -v ver="[${MAC_VER}]" '
-            /^## \[/ { in_ver = ($2 == ver); next }
-            in_ver   { print }
-          ' CHANGELOG.md)
-
-          CHANGELOG_WIN=""
-          if [ "$WIN_VER" != "$MAC_VER" ]; then
-            CHANGELOG_WIN=$(awk -v ver="[${WIN_VER}]" '
-              /^## \[/ { in_ver = ($2 == ver); next }
-              in_ver   { print }
-            ' CHANGELOG.md)
-          fi
+          # Use the git-log changelog generated in the previous step.
+          # Falls back to an empty section gracefully.
+          CHANGELOG=$(cat /tmp/changelog-body.txt 2>/dev/null || true)
 
           {
-            if [ -n "$CHANGELOG_MAC" ] || [ -n "$CHANGELOG_WIN" ]; then
+            if [ -n "$CHANGELOG" ]; then
               echo "## What's New"
               echo ""
-              if [ -n "$CHANGELOG_MAC" ] && [ -n "$CHANGELOG_WIN" ]; then
-                echo "### macOS ${MAC_VER}"
-                echo ""
-                printf '%s\n' "$CHANGELOG_MAC"
-                echo ""
-                echo "### Windows ${WIN_VER}"
-                echo ""
-                printf '%s\n' "$CHANGELOG_WIN"
-              elif [ -n "$CHANGELOG_MAC" ]; then
-                printf '%s\n' "$CHANGELOG_MAC"
-              else
-                printf '%s\n' "$CHANGELOG_WIN"
-              fi
+              printf '%s\n' "$CHANGELOG"
               echo ""
             fi
             echo "LAN Messenger Combined Release"

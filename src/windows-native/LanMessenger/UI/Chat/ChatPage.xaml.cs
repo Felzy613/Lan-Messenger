@@ -56,6 +56,7 @@ public sealed partial class ChatPage : Page
                 Composer.TypingChanged    -= OnTyping;
                 Composer.AttachRequested  -= OnAttachRequested;
                 Composer.FilesDropped     -= OnFilesDropped;
+                Composer.ScreenshotRequested -= OnScreenshotRequested;
             }
             _model = value;
             if (_model is not null)
@@ -66,6 +67,7 @@ public sealed partial class ChatPage : Page
                 Composer.TypingChanged    += OnTyping;
                 Composer.AttachRequested  += OnAttachRequested;
                 Composer.FilesDropped     += OnFilesDropped;
+                Composer.ScreenshotRequested += OnScreenshotRequested;
                 RefreshForSelectedPeer(forceReload: true);
             }
         }
@@ -355,17 +357,31 @@ public sealed partial class ChatPage : Page
         Composer.IsAttachmentPickerOpen = true;
         try
         {
-            if (Application.Current is not global::LanMessenger.App app || app.MainWindow is null) return;
-
-            var picker = new Windows.Storage.Pickers.FileOpenPicker();
-            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(app.MainWindow);
-            if (hwnd == IntPtr.Zero)
+            if (Application.Current is not global::LanMessenger.App app)
             {
-                LanLogger.Warn("Attachment", "File picker skipped because MainWindow handle was unavailable.");
+                LanLogger.Error("Attachment", "Application.Current is not App — cannot open file picker.");
+                return;
+            }
+            if (app.MainWindow is null)
+            {
+                LanLogger.Error("Attachment", "MainWindow is null — cannot open file picker.");
                 return;
             }
 
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(app.MainWindow);
+            if (hwnd == IntPtr.Zero)
+            {
+                LanLogger.Error("Attachment", "GetWindowHandle returned zero — cannot open file picker.");
+                return;
+            }
+
+            // Ensure the window is in the foreground so the picker appears on
+            // top of the app and isn't hidden behind other windows.
+            app.MainWindow.ShowWindowFromTray();
+
+            var picker = new Windows.Storage.Pickers.FileOpenPicker();
             WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+            picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Downloads;
             picker.FileTypeFilter.Add("*");
 
             var files = await picker.PickMultipleFilesAsync();
@@ -385,7 +401,22 @@ public sealed partial class ChatPage : Page
         }
         catch (Exception ex)
         {
-            LanLogger.Error("Attachment", "File picker failed.", ex);
+            LanLogger.Error("Attachment", $"File picker failed: {ex.GetType().Name}: {ex.Message}", ex);
+            // Show a user-visible error — previously the button would silently
+            // do nothing if the picker threw (e.g. COM apartment issues on
+            // some Windows configurations).
+            try
+            {
+                var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
+                {
+                    Title           = "Could not open file picker",
+                    Content         = $"The file picker failed to open.\n\n{ex.Message}",
+                    CloseButtonText = "OK",
+                    XamlRoot        = XamlRoot,
+                };
+                await dialog.ShowAsync();
+            }
+            catch { /* if even the error dialog fails, the LanLogger entry is the fallback */ }
         }
         finally
         {
@@ -398,6 +429,57 @@ public sealed partial class ChatPage : Page
         if (_model is null || _model.SelectedPeerIP is null) return;
         foreach (var p in paths)
             _model.SendFile(p, _model.SelectedPeerIP);
+    }
+
+    /// <summary>
+    /// User pressed the screenshot button in the composer.  We capture the
+    /// primary display off the UI thread, then route the resulting PNG path
+    /// through SendFile() — exactly as if the user had drag-dropped the file.
+    /// </summary>
+    private async void OnScreenshotRequested()
+    {
+        if (_model is null || _model.SelectedPeerIP is null) return;
+        var targetPeerIP = _model.SelectedPeerIP;
+
+        Composer.IsScreenshotBusy = true;
+        try
+        {
+            var path = await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync();
+            _model.SendFile(path, targetPeerIP);
+        }
+        catch (Core.Services.ScreenshotService.ScreenshotException ex)
+        {
+            LanMessenger.Core.Services.LanLogger.Warn("Screenshot", $"capture failed: {ex.Message}");
+            await ShowErrorAsync("Screenshot failed", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            LanMessenger.Core.Services.LanLogger.Error("Screenshot", "unexpected screenshot error", ex);
+            await ShowErrorAsync("Screenshot failed", ex.Message);
+        }
+        finally
+        {
+            Composer.IsScreenshotBusy = false;
+        }
+    }
+
+    private async Task ShowErrorAsync(string title, string message)
+    {
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                Title = title,
+                Content = message,
+                CloseButtonText = "OK",
+                XamlRoot = this.XamlRoot,
+            };
+            _ = await dialog.ShowAsync();
+        }
+        catch (Exception ex)
+        {
+            LanMessenger.Core.Services.LanLogger.Warn("ChatPage", $"error dialog failed: {ex.Message}");
+        }
     }
 
     // MARK: - Reply target

@@ -17,7 +17,10 @@ public sealed class PeerInfo
     public int      Port         { get; init; }
     public string   PublicKeyB64 { get; init; } = "";
     public DateTime LastSeen     { get; set; }
-    public bool     IsOnline     => (DateTime.UtcNow - LastSeen).TotalSeconds < 7;
+    // 20 s matches the macOS threshold (1.5 s beacon interval × ~13 misses).
+    // The previous 7 s value was too tight: normal Wi-Fi jitter and the 1.2 s
+    // dedup window caused peers to flip offline/online on a loaded LAN.
+    public bool     IsOnline     => (DateTime.UtcNow - LastSeen).TotalSeconds < 20;
 }
 
 // View model for one conversation row in the sidebar.
@@ -201,9 +204,18 @@ public sealed partial class AppModel : ObservableObject
         {
             if (existing.IP == ip)
             {
-                // Same IP — just bump the heartbeat timestamp; no structural change.
-                // The 2-second timeout timer handles online/offline UI transitions.
+                // Same IP — just bump the heartbeat timestamp.
+                // Check whether the peer was offline before this beacon arrived so we
+                // can deliver any messages that were queued while they were unreachable.
+                var wasOffline = !existing.IsOnline;
                 existing.LastSeen = DateTime.UtcNow;
+                if (wasOffline)
+                {
+                    LanLogger.Info("Net", $"peer {ip} ({publicKeyB64[..8]}) came back online — delivering pending queue");
+                    RefreshConversations();
+                    MessagingService.Shared.DeliverPending(ip, publicKeyB64);
+                    DeliverPendingFiles(ip, publicKeyB64);
+                }
                 return;
             }
             // IP changed — fall through to replace the entry below.

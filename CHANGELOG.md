@@ -1,13 +1,14 @@
 # Changelog
 
 All notable changes to LAN Messenger are documented here.
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-**How to add an entry:** under `[Unreleased]` add bullet points in the
-appropriate section (`### Added`, `### Fixed`, `### Changed`, `### Removed`).
-When CI cuts a release it extracts the matching `## [version]` section and
-includes it in the GitHub release body — that text is what both apps display
-in their Software Update screen.
+> **Release notes are now auto-generated from git commit messages.**
+> The CI `release.yml` workflow builds the "What's New" section automatically
+> by running `git log --no-merges` since the previous combined release tag.
+> You no longer need to edit this file before shipping — just write clear
+> commit subjects and they will appear in the release notes verbatim.
+>
+> Historical entries below are kept for reference.
 
 ## [Unreleased]
 

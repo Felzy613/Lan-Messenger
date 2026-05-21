@@ -12,6 +12,10 @@ sessions and should stay aligned with the current native app tree.
   persistence changes.
 - [Swift build gotchas](project_swift_build_notes.md) - macOS/Swift build,
   XcodeGen, SPM, and compiler patterns discovered during implementation.
+- [Inline media, Open File Location, and screenshot send](project_media_and_screenshot_features.md) -
+  Design notes for the cross-platform image/video bubbles, Open-file-location
+  helpers, and screenshot-capture flow that all route through the existing
+  FileTransferService with no protocol changes.
 - [Document all work for future sessions](feedback_document_all_work.md) -
   Standing user preference to keep docs and memory current after project work.
 
