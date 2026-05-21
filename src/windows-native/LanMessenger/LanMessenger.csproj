@@ -20,7 +20,7 @@
       Keep this in sync with version/windows.json so local builds show the right
       number in the Settings page.
     -->
-    <Version>1.5.9</Version>
+    <Version>1.5.10</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -36,8 +36,15 @@
       Windows-only Microsoft-maintained package; the warning about
       cross-platform support is irrelevant here because the project targets
       net8.0-windows10.0.19041.0 exclusively.
+
+      Version must be ≥ 8.0.7 because H.NotifyIcon.WinUI 2.1.0 transitively
+      pulls in H.GeneratedIcons.System.Drawing 2.1.0 with that floor.  A
+      lower version here triggers NuGet NU1605 (package downgrade detected)
+      and the restore fails in CI.  8.0.10 is the latest patch in the 8.x
+      line, matches Microsoft's current servicing level, and keeps us within
+      .NET 8 LTS support.
     -->
-    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
   </ItemGroup>
 
   <ItemGroup>
