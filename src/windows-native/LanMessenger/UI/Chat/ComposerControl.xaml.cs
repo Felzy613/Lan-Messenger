@@ -12,6 +12,7 @@ public sealed partial class ComposerControl : UserControl
     public event Action<bool>?                   TypingChanged;
     public event Action?                         AttachRequested;
     public event Action<IReadOnlyList<string>>?  FilesDropped;
+    public event Action?                         ScreenshotRequested;
 
     private DateTime         _lastTypingSent = DateTime.MinValue;
     private bool             _typingActive;
@@ -107,6 +108,28 @@ public sealed partial class ComposerControl : UserControl
     {
         if (_isAttachmentPickerOpen) return;
         AttachRequested?.Invoke();
+    }
+
+    /// <summary>
+    /// Toggles the busy indicator on the screenshot button.  Called by ChatPage
+    /// while the capture / file transfer enqueue is in flight so the user can
+    /// see that the action is being processed.
+    /// </summary>
+    public bool IsScreenshotBusy
+    {
+        get => ScreenshotProgress.Visibility == Visibility.Visible;
+        set
+        {
+            ScreenshotProgress.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+            ScreenshotIcon.Visibility     = value ? Visibility.Collapsed : Visibility.Visible;
+            ScreenshotBtn.IsEnabled       = !value;
+        }
+    }
+
+    private void ScreenshotBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsScreenshotBusy) return;
+        ScreenshotRequested?.Invoke();
     }
 
     private void OnDragOver(object sender, DragEventArgs e)

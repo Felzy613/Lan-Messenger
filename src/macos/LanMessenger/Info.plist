@@ -29,6 +29,9 @@
     <!-- Required for local network discovery (macOS 12+) -->
     <key>NSLocalNetworkUsageDescription</key>
     <string>LAN Messenger uses the local network to discover and message nearby peers.</string>
+    <!-- Required for screen capture (Capture screen and send composer action) -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>LAN Messenger captures the screen when you press the camera button in a conversation, so you can share the result with peers.</string>
     <!-- Notifications -->
     <key>NSUserNotificationAlertStyle</key>
     <string>alert</string>

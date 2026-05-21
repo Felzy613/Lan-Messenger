@@ -20,7 +20,7 @@
       Keep this in sync with version/windows.json so local builds show the right
       number in the Settings page.
     -->
-    <Version>1.5.6</Version>
+    <Version>1.5.8</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -30,6 +30,14 @@
     <PackageReference Include="NSec.Cryptography" Version="24.4.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <PackageReference Include="H.NotifyIcon.WinUI" Version="2.1.0" />
+    <!--
+      System.Drawing.Common is used by ScreenshotService for the BitBlt-style
+      screen capture (Graphics.CopyFromScreen + Bitmap.Save).  It's a
+      Windows-only Microsoft-maintained package; the warning about
+      cross-platform support is irrelevant here because the project targets
+      net8.0-windows10.0.19041.0 exclusively.
+    -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

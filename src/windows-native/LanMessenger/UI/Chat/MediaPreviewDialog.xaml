@@ -1,0 +1,30 @@
+<ContentDialog
+    x:Class="LanMessenger.UI.Chat.MediaPreviewDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    DefaultButton="Close"
+    CloseButtonText="Close"
+    PrimaryButtonText="Show in folder">
+
+    <Grid x:Name="ContentHost"
+          MinWidth="520" MinHeight="380"
+          Background="#10000000">
+        <!-- Image and MediaPlayerElement are mutually exclusive — only one is
+             made visible depending on the supplied MediaKind.  Both are sized
+             to fill the dialog so resizing the dialog resizes the content. -->
+        <Image x:Name="PreviewImage"
+               Stretch="Uniform"
+               Visibility="Collapsed" />
+        <MediaPlayerElement x:Name="PreviewPlayer"
+                            AreTransportControlsEnabled="True"
+                            AutoPlay="True"
+                            Stretch="Uniform"
+                            Visibility="Collapsed" />
+        <TextBlock x:Name="ErrorText"
+                   Text=""
+                   Foreground="White"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   Visibility="Collapsed" />
+    </Grid>
+</ContentDialog>

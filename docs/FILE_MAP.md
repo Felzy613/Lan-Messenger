@@ -154,6 +154,7 @@ state for the app.
 | `src/macos/LanMessenger/Core/Services/UpdateService.swift` | GitHub release checks, ZIP download, SHA256 verification, extraction, helper script install, and relaunch. |
 | `src/macos/LanMessenger/Core/Services/LoginItemService.swift` | macOS 13+ launch-at-login management through `SMAppService.mainApp`. |
 | `src/macos/LanMessenger/Core/Services/NetLogger.swift` | Structured network logger to app-data log file and `os_log`. |
+| `src/macos/LanMessenger/Core/Services/ScreenshotService.swift` | Primary-display capture with Screen Recording permission gate; writes PNG to a temp dir and returns the path for the existing file-transfer pipeline. |
 
 ## macOS UI
 
@@ -166,8 +167,10 @@ state for the app.
 | `src/macos/LanMessenger/UI/Sidebar/ConversationRowView.swift` | Sidebar row rendering: avatar, preview, timestamp, unread count, typing, online state. |
 | `src/macos/LanMessenger/UI/Sidebar/ContactsView.swift` | Contacts sheet, search, add-from-LAN scanner, contact editor, contact photos, naming flow. |
 | `src/macos/LanMessenger/UI/Chat/ChatView.swift` | Chat detail view, header, message list, reply banner, transfer banner, read marking. |
-| `src/macos/LanMessenger/UI/Chat/ComposerView.swift` | NSTextView-backed composer, Return-to-send, Shift+Return newline, drag/drop and file picker. |
-| `src/macos/LanMessenger/UI/Chat/MessageBubbleView.swift` | Text/file bubble rendering, status icons, reply chips, copy/show context menus. |
+| `src/macos/LanMessenger/UI/Chat/ComposerView.swift` | NSTextView-backed composer, Return-to-send, Shift+Return newline, drag/drop, file picker, and screenshot capture button. |
+| `src/macos/LanMessenger/UI/Chat/MessageBubbleView.swift` | Text/file bubble rendering, status icons, reply chips, copy/show context menus; delegates to `MediaBubbleView` for image and video attachments. |
+| `src/macos/LanMessenger/UI/Chat/MediaBubbleView.swift` | Inline image and video bubbles with async thumbnail decode (NSImage / AVAssetImageGenerator), an in-memory `ThumbnailCache`, and a modal preview sheet hosting `NSImageView`/`VideoPlayer`. |
+| `src/macos/LanMessenger/UI/Chat/MediaTypes.swift` | Extension-based image/video classification (`MediaKind`) and `FinderReveal` helper that opens Finder with the file selected off the main thread. |
 | `src/macos/LanMessenger/UI/Chat/FileTransferBannerView.swift` | In-chat transfer progress banner. |
 | `src/macos/LanMessenger/UI/Settings/SettingsView.swift` | Identity, dock/menu-bar behavior, login item, inbox, update source/check/install, about section. |
 
@@ -251,6 +254,7 @@ state for the app.
 | `src/windows-native/LanMessenger/Core/Services/UpdateService.cs` | GitHub release checks, EXE download, SHA256 verification, elevated silent installer handoff, and exit. |
 | `src/windows-native/LanMessenger/Core/Services/LanLogger.cs` | Structured log writer under `%APPDATA%\LanMessenger\Logs`. |
 | `src/windows-native/LanMessenger/Core/Services/CryptoRuntimeDiagnostics.cs` | One-time diagnostics for libsodium and VC++ runtime DLL availability. |
+| `src/windows-native/LanMessenger/Core/Services/ScreenshotService.cs` | Primary-display capture via GDI `CopyFromScreen`; writes PNG to `%TEMP%\LanMessenger-Screenshots` and returns the path for the existing file-transfer pipeline. |
 
 ## Windows UI
 
@@ -271,10 +275,13 @@ state for the app.
 | `src/windows-native/LanMessenger/UI/Sidebar/ContactEditorDialog.cs` | Contact editor, peer picker, naming dialog, and new-message dialog implementations. |
 | `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml` | Chat page XAML. |
 | `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml.cs` | Chat binding, selected peer handling, read receipts, messages, reply behavior, transfers. |
-| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml` | Composer XAML with text entry, send, attachment, and drop target UI. |
-| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml.cs` | Composer key handling, typing callbacks, send callbacks, and file drop/picker behavior. |
-| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml` | Message/file bubble XAML. |
-| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml.cs` | Bubble rendering, file open/copy behavior, status visuals, and reply interactions. |
+| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml` | Composer XAML with text entry, send, attachment, screenshot, and drop target UI. |
+| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml.cs` | Composer key handling, typing callbacks, send callbacks, file drop/picker, and screenshot-request event. |
+| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml` | Message/file bubble XAML including the inline image tile, video poster tile, and document action row. |
+| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml.cs` | Bubble rendering, inline media branching, "Open" / "Show in folder" actions, status visuals, reply interactions, and modal preview launch. |
+| `src/windows-native/LanMessenger/UI/Chat/MediaTypes.cs` | Extension-based image/video classification (`MediaKind`) and `FileReveal` helper that calls `explorer.exe /select` off the UI thread. |
+| `src/windows-native/LanMessenger/UI/Chat/MediaPreviewDialog.xaml` | Modal media viewer XAML (image / `MediaPlayerElement`). |
+| `src/windows-native/LanMessenger/UI/Chat/MediaPreviewDialog.xaml.cs` | Modal viewer code-behind: lazy media-source binding, transport-control teardown on close, and "Show in folder" primary-button handling. |
 | `src/windows-native/LanMessenger/UI/Chat/FileTransferBannerControl.xaml` | File transfer banner XAML. |
 | `src/windows-native/LanMessenger/UI/Chat/FileTransferBannerControl.xaml.cs` | File transfer banner code-behind. |
 | `src/windows-native/LanMessenger/UI/Settings/SettingsPage.xaml` | Settings dialog XAML. |

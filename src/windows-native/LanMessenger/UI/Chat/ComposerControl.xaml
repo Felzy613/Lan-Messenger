@@ -9,6 +9,7 @@
           Background="{ThemeResource LayerFillColorDefaultBrush}">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
@@ -36,8 +37,41 @@
                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
         </Button>
 
+        <!-- Screenshot button — captures primary display, writes a PNG to
+             %TEMP%\LanMessenger-Screenshots, and routes it through the normal
+             attachment pipeline. Disabled while a capture is in flight so a
+             double-tap can't enqueue two screenshots in a row. -->
+        <Button x:Name="ScreenshotBtn"
+                Grid.Column="1"
+                Width="32" Height="32"
+                Padding="0"
+                CornerRadius="16"
+                BorderThickness="0"
+                ToolTipService.ToolTip="Capture screen and send"
+                Click="ScreenshotBtn_Click">
+            <Button.Resources>
+                <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
+                <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
+                <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
+                <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
+            </Button.Resources>
+            <Grid>
+                <FontIcon x:Name="ScreenshotIcon"
+                          FontFamily="Segoe MDL2 Assets"
+                          Glyph="&#xE722;"
+                          FontSize="16"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <ProgressRing x:Name="ScreenshotProgress"
+                              IsActive="True"
+                              Width="18" Height="18"
+                              Visibility="Collapsed" />
+            </Grid>
+        </Button>
+
         <!-- Input box — custom Border keeps the WhatsApp rounded style at all focus states -->
-        <Border Grid.Column="1"
+        <Border Grid.Column="2"
                 Background="{ThemeResource ControlFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                 BorderThickness="1"
@@ -66,7 +100,7 @@
 
         <!-- Send button — WhatsApp green circle with up arrow, matching macOS arrow.up.circle.fill -->
         <Button x:Name="SendBtn"
-                Grid.Column="2"
+                Grid.Column="3"
                 Width="38" Height="38"
                 Padding="0"
                 CornerRadius="19"

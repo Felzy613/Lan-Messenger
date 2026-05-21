@@ -11,6 +11,8 @@ struct ComposerView: View {
     @State private var isDragTargeted = false
     @State private var measuredHeight: CGFloat = 36
     @State private var typingTimer: Task<Void, Never>?
+    @State private var screenshotBusy = false
+    @State private var screenshotError: String? = nil
 
     private let minHeight: CGFloat = 36
     private let maxHeight: CGFloat = 120
@@ -30,6 +32,25 @@ struct ComposerView: View {
             .foregroundStyle(.secondary)
             .padding(.bottom, 4)
             .help("Send file")
+
+            // Screenshot capture button.  Disabled while a capture is in
+            // progress so a double-tap can't enqueue two PNGs in a row.
+            Button { sendScreenshot() } label: {
+                ZStack {
+                    if screenshotBusy {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "camera.viewfinder")
+                            .font(.system(size: 16))
+                    }
+                }
+                .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.bottom, 4)
+            .disabled(screenshotBusy)
+            .help("Capture screen and send")
 
             ZStack(alignment: .topLeading) {
                 // Hidden, off-screen text used to measure ideal height for the draft string.
@@ -100,6 +121,34 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .alert("Screenshot failed",
+               isPresented: Binding(get: { screenshotError != nil },
+                                    set: { if !$0 { screenshotError = nil } })) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(screenshotError ?? "")
+        }
+    }
+
+    /// Captures the main display and sends it through the existing file-transfer
+    /// pipeline.  The capture and write happen off the main thread inside
+    /// ScreenshotService.  Errors (permission denied, capture failure) surface
+    /// as a SwiftUI alert.
+    private func sendScreenshot() {
+        guard !screenshotBusy else { return }
+        screenshotBusy = true
+        Task {
+            defer { screenshotBusy = false }
+            do {
+                let path = try await ScreenshotService.capturePrimaryDisplay()
+                // Hand off to the same path drag-drop and the file picker use.
+                model.sendFile(path: path, toPeerIP: peerIP)
+            } catch let error as ScreenshotError {
+                screenshotError = error.errorDescription
+            } catch {
+                screenshotError = error.localizedDescription
+            }
+        }
     }
 
     private func send() {

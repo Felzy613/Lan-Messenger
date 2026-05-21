@@ -9,12 +9,21 @@ struct MessageBubbleView: View {
     @Environment(\.colorScheme) var colorScheme
     // Tracks whether the received file still exists on disk (checked asynchronously).
     @State private var fileExists = false
+    // Surfaces FinderReveal errors (missing file, permissions) as an alert.
+    @State private var revealError: String? = nil
 
     // File messages use a "__FILE__:/path/to/file" prefix stored by AppModel.
     private var filePath: String? {
         entry.text.hasPrefix("__FILE__:")
             ? String(entry.text.dropFirst("__FILE__:".count))
             : nil
+    }
+
+    /// The media classification for the attached file, or `.other` if this is a text bubble.
+    /// Images and videos render through `MediaBubbleView` for an inline preview.
+    private var mediaKind: MediaKind {
+        guard let path = filePath else { return .other }
+        return MediaKind.from(path: path)
     }
 
     var body: some View {
@@ -34,7 +43,22 @@ struct MessageBubbleView: View {
     @ViewBuilder
     private var bubble: some View {
         if let path = filePath {
-            fileBubble(path: path)
+            // Photos and videos get an inline media bubble; everything else
+            // falls through to the generic "document" bubble.  MediaBubbleView
+            // handles its own file-existence check so it can render a
+            // "missing file" placeholder for moved/deleted media.
+            switch mediaKind {
+            case .image, .video:
+                MediaBubbleView(
+                    entry: entry,
+                    isFirstInRun: isFirstInRun,
+                    kind: mediaKind,
+                    onReply: onReply,
+                    onTapReplyTarget: onTapReplyTarget
+                )
+            case .other:
+                fileBubble(path: path)
+            }
         } else if entry.incoming {
             incomingBubble
         } else {
@@ -100,12 +124,11 @@ struct MessageBubbleView: View {
                 }
                 Spacer(minLength: 0)
                 if fileExists {
+                    // "Show" reveals the file in Finder. FinderReveal performs
+                    // the FileManager + NSWorkspace work off the main thread so
+                    // launching Finder cannot stutter the chat list.
                     Button {
-                        // activateFileViewerSelecting is dispatched off the main thread to
-                        // avoid blocking the UI while Finder launches or comes to the front.
-                        Task.detached(priority: .userInitiated) {
-                            NSWorkspace.shared.activateFileViewerSelecting([url])
-                        }
+                        FinderReveal.reveal(path: path) { msg in revealError = msg }
                     } label: {
                         Text("Show")
                             .font(.system(size: 11, weight: .semibold))
@@ -115,6 +138,7 @@ struct MessageBubbleView: View {
                             .foregroundStyle(Theme.accent)
                     }
                     .buttonStyle(.plain)
+                    .help("Show \(name) in Finder")
                 } else {
                     Text("Deleted")
                         .font(.system(size: 11))
@@ -150,11 +174,21 @@ struct MessageBubbleView: View {
             } label: { Label("Copy Path", systemImage: "doc.on.doc") }
             if fileExists {
                 Button {
-                    Task.detached(priority: .userInitiated) {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
-                    }
+                    FinderReveal.reveal(path: path) { msg in revealError = msg }
                 } label: { Label("Show in Finder", systemImage: "folder") }
+                Button {
+                    // Open with the default app. NSWorkspace.open is async and
+                    // does not block the UI thread.
+                    NSWorkspace.shared.open(url)
+                } label: { Label("Open", systemImage: "square.and.arrow.up") }
             }
+        }
+        .alert("Cannot open file location",
+               isPresented: Binding(get: { revealError != nil },
+                                    set: { if !$0 { revealError = nil } })) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(revealError ?? "")
         }
     }
 
