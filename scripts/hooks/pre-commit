@@ -76,10 +76,9 @@ if [[ $BUMP_MACOS -eq 1 ]]; then
     next=$(bump_version "$current" "$BUMP")
     write_json_version "$MACOS_JSON" "$next"
 
-    # Sync MAJOR.MINOR into project.yml (Xcode MARKETING_VERSION omits patch)
-    major_minor="${next%.*}"
+    # Sync full version (MAJOR.MINOR.PATCH) into project.yml
     PROJECT_YML="$REPO_ROOT/src/macos/project.yml"
-    sed -i '' "s/MARKETING_VERSION: \"[0-9][0-9.]*\"/MARKETING_VERSION: \"$major_minor\"/" "$PROJECT_YML"
+    sed -i '' "s/MARKETING_VERSION: \"[0-9][0-9.]*\"/MARKETING_VERSION: \"$next\"/" "$PROJECT_YML"
 
     git add "$MACOS_JSON" "$PROJECT_YML"
     echo "  [version] macOS ($BUMP): $current → $next"
