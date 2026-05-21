@@ -382,15 +382,25 @@ jobs:
           ARTIFACT=$(ls dist/*.exe | head -1)
           SIDECAR="${ARTIFACT}.sha256"
 
-          printf '%s\n' \
-            "Windows platform build v${VERSION}" \
-            "" \
-            "Commit: ${{ github.sha }}" \
-            "Branch: ${{ github.ref_name }}" \
-            "Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "" \
-            "Platform pre-release. Combined release auto-created by Release Orchestration workflow." \
-            > /tmp/release-notes.md
+          # Extract the changelog entry for this version (empty string if not found).
+          CHANGELOG_ENTRY=$(awk -v ver="[${VERSION}]" '
+            /^## \[/ { in_ver = ($2 == ver); next }
+            in_ver   { print }
+          ' CHANGELOG.md)
+
+          {
+            if [ -n "$CHANGELOG_ENTRY" ]; then
+              printf '## What'"'"'s New\n\n%s\n\n' "$CHANGELOG_ENTRY"
+            fi
+            printf '%s\n' \
+              "Windows platform build v${VERSION}" \
+              "" \
+              "Commit: ${{ github.sha }}" \
+              "Branch: ${{ github.ref_name }}" \
+              "Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              "" \
+              "Platform pre-release. Combined release auto-created by Release Orchestration workflow."
+          } > /tmp/release-notes.md
 
           ASSETS="$ARTIFACT"
           [ -f "$SIDECAR" ] && ASSETS="$ASSETS $SIDECAR"

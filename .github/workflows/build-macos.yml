@@ -386,10 +386,23 @@ jobs:
       - name: Create platform release
         run: |
           TAG="macos-v${VERSION}"
+
+          # Extract the changelog entry for this version (empty string if not found).
+          CHANGELOG_ENTRY=$(awk -v ver="[${VERSION}]" '
+            /^## \[/ { in_ver = ($2 == ver); next }
+            in_ver   { print }
+          ' CHANGELOG.md)
+
           cd dist
 
           # Compose release notes describing every artifact we publish.
           {
+            if [ -n "$CHANGELOG_ENTRY" ]; then
+              echo "## What's New"
+              echo ""
+              printf '%s\n' "$CHANGELOG_ENTRY"
+              echo ""
+            fi
             echo "macOS platform build v${VERSION}"
             echo ""
             echo "Commit: ${{ github.sha }}"

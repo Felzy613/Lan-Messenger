@@ -271,7 +271,41 @@ jobs:
           MAC_SHA="${{ steps.commits.outputs.mac_sha }}"
           WIN_SHA="${{ steps.commits.outputs.win_sha }}"
 
+          # Extract changelog entries. The combined release uses the macOS version
+          # as the primary lookup key. If the Windows version differs, its entry
+          # is included as well so both apps show relevant notes.
+          CHANGELOG_MAC=$(awk -v ver="[${MAC_VER}]" '
+            /^## \[/ { in_ver = ($2 == ver); next }
+            in_ver   { print }
+          ' CHANGELOG.md)
+
+          CHANGELOG_WIN=""
+          if [ "$WIN_VER" != "$MAC_VER" ]; then
+            CHANGELOG_WIN=$(awk -v ver="[${WIN_VER}]" '
+              /^## \[/ { in_ver = ($2 == ver); next }
+              in_ver   { print }
+            ' CHANGELOG.md)
+          fi
+
           {
+            if [ -n "$CHANGELOG_MAC" ] || [ -n "$CHANGELOG_WIN" ]; then
+              echo "## What's New"
+              echo ""
+              if [ -n "$CHANGELOG_MAC" ] && [ -n "$CHANGELOG_WIN" ]; then
+                echo "### macOS ${MAC_VER}"
+                echo ""
+                printf '%s\n' "$CHANGELOG_MAC"
+                echo ""
+                echo "### Windows ${WIN_VER}"
+                echo ""
+                printf '%s\n' "$CHANGELOG_WIN"
+              elif [ -n "$CHANGELOG_MAC" ]; then
+                printf '%s\n' "$CHANGELOG_MAC"
+              else
+                printf '%s\n' "$CHANGELOG_WIN"
+              fi
+              echo ""
+            fi
             echo "LAN Messenger Combined Release"
             echo ""
             echo "Windows ${WIN_VER} (${WIN_SHA}) + macOS ${MAC_VER} (${MAC_SHA})"
