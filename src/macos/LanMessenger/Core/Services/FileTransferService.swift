@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // Handles outgoing file transfers (one at a time per peer) and incoming file reassembly.
@@ -84,14 +85,17 @@ final class FileTransferService {
         guard let transfer   = FileTransferStore.shared.incoming[key],
               let fileHandle = transfer.fileHandle else { return }
 
-        // Capture everything needed before leaving the main actor.
-        let nonce      = pkt.nonce
-        let ciphertext = pkt.ciphertext
-        let transferId = pkt.transferId
-        let senderKey  = transfer.senderPublicKeyB64
-        let filename   = transfer.filename
-        let totalSize  = transfer.totalSize
-        let interval   = progressInterval
+        // Capture everything needed before leaving the main actor — including
+        // our own private key, so the background queue never touches a
+        // main-actor-owned singleton (data race / actor-isolation violation).
+        let nonce        = pkt.nonce
+        let ciphertext   = pkt.ciphertext
+        let transferId   = pkt.transferId
+        let senderKey    = transfer.senderPublicKeyB64
+        let filename     = transfer.filename
+        let totalSize    = transfer.totalSize
+        let interval     = progressInterval
+        let myPrivateKey = KeyManager.shared.privateKey  // Curve25519.KeyAgreement.PrivateKey
 
         // Decrypt and write on the serial background queue so the main thread stays
         // free. The serial queue preserves TCP chunk ordering.
@@ -101,7 +105,7 @@ final class FileTransferService {
             guard let self else { return }
             let aad = Data(transferId.utf8)
             guard let plaintext = try? SessionCrypto.decryptFromPeer(
-                myPrivate:          KeyManager.shared.privateKey,
+                myPrivate:          myPrivateKey,
                 peerPublicKeyB64:   senderKey,
                 nonceB64:           nonce,
                 ciphertextB64:      ciphertext,
@@ -188,6 +192,16 @@ final class FileTransferService {
         let path     = item.path
         let filename = item.filename
 
+        // Capture all main-actor-isolated values here, before the sendQueue
+        // dispatch.  sendFileBlocking is nonisolated and runs on a background
+        // serial queue; accessing KeyManager / ConfigStore singletons from that
+        // queue without first capturing their values on the main actor is a data
+        // race that can corrupt the chunk-encrypt loop and manifest as a sender
+        // freeze or crash for large files.
+        let myPrivateKey   = KeyManager.shared.privateKey  // Curve25519.KeyAgreement.PrivateKey
+        let myPublicKeyB64 = KeyManager.shared.publicKeyB64
+        let myName         = ConfigStore.shared.config.username
+
         NetLogger.info("FileTransfer", "starting outgoing \"\(filename)\" to \(peerIP)")
 
         // Dispatch blocking I/O to sendQueue so Swift's cooperative thread pool stays
@@ -199,6 +213,9 @@ final class FileTransferService {
                 peerIP:           peerIP,
                 peerPublicKeyB64: peerPublicKeyB64,
                 filename:         filename,
+                myPrivateKey:     myPrivateKey,
+                myPublicKeyB64:   myPublicKeyB64,
+                myName:           myName,
                 chunkSize:        65536,
                 tcpPort:          54232,
                 onProgress: { bytes, total in
@@ -231,11 +248,18 @@ final class FileTransferService {
     // Returns true on success; false on any I/O, connection, or crypto error.
     // `nonisolated` removes the implicit @MainActor inheritance so the method can be
     // called safely from the background sendQueue without a concurrency warning.
+    //
+    // `myPrivateKey`, `myPublicKeyB64`, and `myName` must be captured from the main
+    // actor BEFORE this method is called (see startNextIfIdle).  Accessing
+    // KeyManager / ConfigStore directly from the sendQueue is a data race.
     nonisolated private static func sendFileBlocking(
         path:             String,
         peerIP:           String,
         peerPublicKeyB64: String,
         filename:         String,
+        myPrivateKey:     Curve25519.KeyAgreement.PrivateKey,
+        myPublicKeyB64:   String,
+        myName:           String,
         chunkSize:        Int,
         tcpPort:          Int,
         onProgress:       @escaping (Int64, Int64) -> Void,
@@ -309,8 +333,7 @@ final class FileTransferService {
         NetLogger.verbose("FileTransfer", "outgoing \"\(filename)\": connected to \(peerIP):\(tcpPort)")
 
         let transferId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        let myKey      = KeyManager.shared.publicKeyB64
-        let myName     = ConfigStore.shared.config.username
+        let myKey      = myPublicKeyB64
 
         // ── file_start ────────────────────────────────────────────────────────────
         let startPkt: [String: Any] = [
@@ -339,7 +362,7 @@ final class FileTransferService {
 
             let aad = Data(transferId.utf8)
             guard let (nonceB64, ctB64) = try? SessionCrypto.encryptForPeer(
-                myPrivate:        KeyManager.shared.privateKey,
+                myPrivate:        myPrivateKey,
                 peerPublicKeyB64: peerPublicKeyB64,
                 plaintext:        chunk,
                 aad:              aad

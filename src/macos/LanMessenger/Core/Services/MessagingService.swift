@@ -279,6 +279,8 @@ final class MessagingService {
         guard fd >= 0 else { return false }
         defer { Darwin.close(fd) }
 
+        // 5-second send timeout — if a send stalls the background thread
+        // returns promptly so the message can be queued for later delivery.
         var tv = timeval(tv_sec: 5, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -287,12 +289,29 @@ final class MessagingService {
         addr.sin_port = UInt16(port).bigEndian
         addr.sin_addr.s_addr = inet_addr(toIP)
 
-        let connected = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                Darwin.connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+        // Non-blocking connect with a 5-second poll timeout.
+        // Darwin.connect() without a timeout can block for up to ~75 s when
+        // the peer is offline — that's long enough for a user to close the
+        // app before the message gets queued, losing it permanently.
+        let origFlags = fcntl(fd, F_GETFL, 0)
+        _ = fcntl(fd, F_SETFL, origFlags | O_NONBLOCK)
+        let connectResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        guard connected == 0 else { return false }
+        if connectResult != 0 {
+            guard errno == EINPROGRESS else { return false }
+            var pfd = pollfd()
+            pfd.fd     = fd
+            pfd.events = Int16(POLLOUT)
+            guard Darwin.poll(&pfd, 1, 5_000) > 0 else { return false }
+            var sockErr: Int32 = 0
+            var errLen = socklen_t(MemoryLayout<Int32>.size)
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockErr, &errLen)
+            guard sockErr == 0 else { return false }
+        }
+        _ = fcntl(fd, F_SETFL, origFlags)  // restore blocking mode for send
 
         var sent = 0
         while sent < frame.count {
