@@ -18,34 +18,44 @@ namespace LanMessenger.Core.Crypto;
 // AAD: b"history-v1" (the literal 10 UTF-8 bytes)
 //
 // File format (JSON): { "nonce": "<base64 12-byte nonce>", "ciphertext": "<base64 ct+tag>" }
+//
+// AES-GCM uses System.Security.Cryptography.AesGcm (BCL) rather than NSec's
+// Aes256Gcm so it runs on CPUs without AES-NI (e.g. older Windows 10 machines).
 public static class HistoryCrypto
 {
-    private static readonly HkdfSha256 _hkdf   = KeyDerivationAlgorithm.HkdfSha256;
-    private static readonly Aes256Gcm  _aes    = AeadAlgorithm.Aes256Gcm;
+    private static readonly HkdfSha256 _hkdf  = KeyDerivationAlgorithm.HkdfSha256;
 
-    private static readonly byte[] _info = Encoding.UTF8.GetBytes("lan-messenger-history");
-    public  static readonly byte[] Aad   = Encoding.UTF8.GetBytes("history-v1");
+    private static readonly byte[] _info  = Encoding.UTF8.GetBytes("lan-messenger-history");
+    public  static readonly byte[] Aad    = Encoding.UTF8.GetBytes("history-v1");
     private static readonly byte[] _empty = [];
 
-    // Derive the history symmetric key from the raw private key bytes.
-    public static Key HistoryKey(Key privateKey)
+    private const int KeySize   = 32;
+    private const int NonceSize = 12;
+    private const int TagSize   = 16;
+
+    // Derive the 32-byte history symmetric key from the private key bytes.
+    public static byte[] HistoryKey(Key privateKey)
     {
         byte[] raw = privateKey.Export(KeyBlobFormat.RawPrivateKey);
-        // NSec 24.x removed the public SharedSecret constructor; use BCL HKDF with raw IKM instead.
-        byte[] keyBytes = HKDF.DeriveKey(HashAlgorithmName.SHA256, raw, 32, salt: _empty, info: _info);
-        return Key.Import(_aes, keyBytes, KeyBlobFormat.RawSymmetricKey,
-            new KeyCreationParameters { ExportPolicy = KeyExportPolicies.AllowPlaintextExport });
+        // Use BCL HKDF directly since we have raw IKM bytes here.
+        return HKDF.DeriveKey(HashAlgorithmName.SHA256, raw, KeySize, salt: _empty, info: _info);
     }
 
     // Encrypt plaintext bytes. Returns the outer file JSON string.
     public static string EncryptHistory(byte[] plaintext, Key privateKey)
     {
-        using var key = HistoryKey(privateKey);
-
-        byte[] nonce = new byte[_aes.NonceSize]; // 12 bytes
+        var keyBytes  = HistoryKey(privateKey);
+        byte[] nonce      = new byte[NonceSize];
+        byte[] ciphertext = new byte[plaintext.Length];
+        byte[] tag        = new byte[TagSize];
         RandomNumberGenerator.Fill(nonce);
 
-        byte[] ciphertextWithTag = _aes.Encrypt(key, nonce, Aad, plaintext);
+        using var aesGcm = new AesGcm(keyBytes, TagSize);
+        aesGcm.Encrypt(nonce, plaintext, ciphertext, tag, Aad);
+
+        byte[] ciphertextWithTag = new byte[ciphertext.Length + TagSize];
+        ciphertext.CopyTo(ciphertextWithTag, 0);
+        tag.CopyTo(ciphertextWithTag, ciphertext.Length);
 
         var outer = new Dictionary<string, string>
         {
@@ -61,20 +71,20 @@ public static class HistoryCrypto
         using var doc = JsonDocument.Parse(fileJson);
         var root = doc.RootElement;
 
-        var nonceB64  = root.GetProperty("nonce").GetString()!;
-        var ctB64     = root.GetProperty("ciphertext").GetString()!;
+        byte[] nonce            = Convert.FromBase64String(root.GetProperty("nonce").GetString()!);
+        byte[] ciphertextWithTag = Convert.FromBase64String(root.GetProperty("ciphertext").GetString()!);
 
-        byte[] nonce           = Convert.FromBase64String(nonceB64);
-        byte[] ciphertextWithTag = Convert.FromBase64String(ctB64);
+        if (nonce.Length != NonceSize)          throw new CryptographicException("Invalid nonce length");
+        if (ciphertextWithTag.Length < TagSize) throw new CryptographicException("Ciphertext too short");
 
-        if (nonce.Length != 12)      throw new CryptographicException("Invalid nonce length");
-        if (ciphertextWithTag.Length < 16) throw new CryptographicException("Ciphertext too short");
+        int    ciphertextLen = ciphertextWithTag.Length - TagSize;
+        byte[] ciphertext    = ciphertextWithTag[..ciphertextLen];
+        byte[] tag           = ciphertextWithTag[ciphertextLen..];
+        byte[] plaintext     = new byte[ciphertextLen];
 
-        using var key = HistoryKey(privateKey);
-
-        var plaintext = _aes.Decrypt(key, nonce, Aad, ciphertextWithTag)
-            ?? throw new CryptographicException("History decryption failed");
-
+        var keyBytes = HistoryKey(privateKey);
+        using var aesGcm = new AesGcm(keyBytes, TagSize);
+        aesGcm.Decrypt(nonce, ciphertext, tag, plaintext, Aad);
         return plaintext;
     }
 }

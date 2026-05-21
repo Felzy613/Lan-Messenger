@@ -1,5 +1,6 @@
 using LanMessenger.Core.Protocol;
 using LanMessenger.Core.Services;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
@@ -45,6 +46,12 @@ public sealed class DiscoveryService : IDisposable
     // https://learn.microsoft.com/en-us/windows/win32/winsock/wsaioctl-2
     private const int SIO_UDP_CONNRESET = unchecked((int)0x9800000C);
     private static readonly byte[] DisableConnReset = [0, 0, 0, 0];
+
+    // Each beacon is emitted to three targets (subnet-bcast, multicast, limited-bcast) per
+    // interface, so the shared receive socket sees 2–3 copies per peer per cycle. Suppress
+    // duplicates within a window shorter than the 1.5 s beacon interval.
+    private readonly ConcurrentDictionary<string, long> _lastSeen = new();
+    private const long DedupWindowMs = 1200;
 
     private readonly NetworkInterfaceMonitor _monitor;
     private readonly Dictionary<string, Socket> _sendSockets = [];   // keyed by interface LocalIP
@@ -381,6 +388,14 @@ public sealed class DiscoveryService : IDisposable
     {
         var pkt = PacketValidator.ValidateDiscovery(data, fromIP, OwnPublicKeyB64, OwnIPs);
         if (pkt is null) return;
+
+        // Suppress duplicate copies of the same beacon (we send to three targets per
+        // interface so the receive socket sees each peer's beacon 2-3 times per cycle).
+        var dedupKey = $"{pkt.PublicKeyB64}:{pkt.Type}";
+        var now = Environment.TickCount64;
+        if (_lastSeen.TryGetValue(dedupKey, out var last) && now - last < DedupWindowMs)
+            return;
+        _lastSeen[dedupKey] = now;
 
         // Reply to "discovery" packets (not to "discovery_reply" — that would
         // create an infinite ping-pong).

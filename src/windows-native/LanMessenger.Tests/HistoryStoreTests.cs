@@ -25,11 +25,11 @@ public class HistoryStoreTests
     public void HistoryKeyIsDeterministic()
     {
         using var key = MakeKey();
-        using var k1  = HistoryCrypto.HistoryKey(key);
-        using var k2  = HistoryCrypto.HistoryKey(key);
+        var k1 = HistoryCrypto.HistoryKey(key);
+        var k2 = HistoryCrypto.HistoryKey(key);
         Assert.AreEqual(
-            Convert.ToBase64String(k1.Export(KeyBlobFormat.RawSymmetricKey)),
-            Convert.ToBase64String(k2.Export(KeyBlobFormat.RawSymmetricKey)));
+            Convert.ToBase64String(k1),
+            Convert.ToBase64String(k2));
     }
 
     [TestMethod]

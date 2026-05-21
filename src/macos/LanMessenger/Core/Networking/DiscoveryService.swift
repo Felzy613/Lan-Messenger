@@ -38,6 +38,14 @@ final class DiscoveryService {
     private let multicastGroup = "239.255.42.99"
     private let interval: TimeInterval = 1.5
 
+    // Each beacon is emitted to three targets (subnet-bcast, multicast, limited-bcast) per
+    // interface, so the receive socket sees 2–3 copies per peer per cycle. Suppress
+    // duplicates within a window shorter than the 1.5 s beacon interval.
+    // Safe to access without a lock: handleReceivedData is only ever called from
+    // the serial `queue` dispatch loop.
+    private var lastSeen: [String: Date] = [:]
+    private let dedupWindow: TimeInterval = 1.2
+
     private var sendSockets: [String: Int32] = [:]   // keyed by interface localIP
     private var recvSocket: Int32 = -1
     private var sendTimer: DispatchSourceTimer?
@@ -320,6 +328,15 @@ final class DiscoveryService {
             ownPublicKeyB64: ownPublicKeyB64,
             ownIPs: ownIPs
         ) else { return }
+
+        // Suppress duplicate copies of the same beacon (we send to three targets per
+        // interface so the receive socket sees each peer's beacon 2-3 times per cycle).
+        let dedupKey = "\(pkt.publicKeyB64):\(pkt.type)"
+        let now = Date()
+        if let last = lastSeen[dedupKey], now.timeIntervalSince(last) < dedupWindow {
+            return
+        }
+        lastSeen[dedupKey] = now
 
         // Reply to "discovery" packets (not to "discovery_reply" — that would
         // create an infinite ping-pong).

@@ -22,12 +22,12 @@ public class CryptoTests
         var alicePubB64 = Convert.ToBase64String(alice.PublicKey.Export(KeyBlobFormat.RawPublicKey));
         var bobPubB64   = Convert.ToBase64String(bob.PublicKey.Export(KeyBlobFormat.RawPublicKey));
 
-        using var keyFromAlice = SessionCrypto.SymmetricKey(alice, bobPubB64);
-        using var keyFromBob   = SessionCrypto.SymmetricKey(bob,   alicePubB64);
+        var keyFromAlice = SessionCrypto.SymmetricKey(alice, bobPubB64);
+        var keyFromBob   = SessionCrypto.SymmetricKey(bob,   alicePubB64);
 
         Assert.AreEqual(
-            Convert.ToBase64String(keyFromAlice.Export(KeyBlobFormat.RawSymmetricKey)),
-            Convert.ToBase64String(keyFromBob.Export(KeyBlobFormat.RawSymmetricKey)),
+            Convert.ToBase64String(keyFromAlice),
+            Convert.ToBase64String(keyFromBob),
             "Both sides must derive the same symmetric key");
     }
 
@@ -130,11 +130,11 @@ public class CryptoTests
     public void HistoryKeyIsDeterministic()
     {
         using var key = MakeKey();
-        using var k1  = HistoryCrypto.HistoryKey(key);
-        using var k2  = HistoryCrypto.HistoryKey(key);
+        var k1 = HistoryCrypto.HistoryKey(key);
+        var k2 = HistoryCrypto.HistoryKey(key);
         Assert.AreEqual(
-            Convert.ToBase64String(k1.Export(KeyBlobFormat.RawSymmetricKey)),
-            Convert.ToBase64String(k2.Export(KeyBlobFormat.RawSymmetricKey)));
+            Convert.ToBase64String(k1),
+            Convert.ToBase64String(k2));
     }
 
     [TestMethod]
