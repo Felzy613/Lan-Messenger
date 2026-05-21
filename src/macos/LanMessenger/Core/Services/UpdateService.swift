@@ -225,52 +225,52 @@ final class UpdateService {
     // MARK: - Release picker
 
     private func pickLatestMac(releases: [[String: Any]]) -> (UpdateInfo, String)? {
-        // Sort non-draft releases newest-first, then prefer combined tags over per-platform ones.
         let nonDraft = releases.filter { ($0["draft"] as? Bool) != true }
+        // Sort by Mac semantic version descending so newer versions are always
+        // preferred over older ones, regardless of publish date or tag style.
+        // This prevents old combined releases (which still carry a .zip) from
+        // being picked over a newer per-platform pre-release whose combined
+        // counterpart only ships a .pkg.
         let sorted = nonDraft.sorted { a, b in
-            ((a["published_at"] as? String) ?? "") > ((b["published_at"] as? String) ?? "")
+            let av = Self.extractVersion(fromTag: (a["tag_name"] as? String) ?? "")
+            let bv = Self.extractVersion(fromTag: (b["tag_name"] as? String) ?? "")
+            let cmp = Self.compareVersions(av, bv)
+            if cmp != 0 { return cmp > 0 }
+            return ((a["published_at"] as? String) ?? "") > ((b["published_at"] as? String) ?? "")
         }
-        for wantCombined in [true, false] {
-            for release in sorted {
-                let tag = (release["tag_name"] as? String) ?? ""
-                let isCombined = tag.lowercased().hasPrefix("release-")
-                if isCombined != wantCombined { continue }
+        for release in sorted {
+            let tag = (release["tag_name"] as? String) ?? ""
+            guard let assets = release["assets"] as? [[String: Any]] else { continue }
+            let version = Self.extractVersion(fromTag: tag)
+            guard !version.isEmpty else { continue }
 
-                guard let assets = release["assets"] as? [[String: Any]] else { continue }
-                let version = Self.extractVersion(fromTag: tag)
-                guard !version.isEmpty else { continue }
-
-                let macAsset = assets.first { asset in
-                    let name = ((asset["name"] as? String) ?? "").lowercased()
-                    return name.contains("macos") && name.hasSuffix(".zip")
-                } ?? assets.first { asset in
-                    let name = ((asset["name"] as? String) ?? "").lowercased()
-                    return name.contains("mac") && name.hasSuffix(".zip")
-                }
-                guard let asset = macAsset,
-                      let urlStr = asset["browser_download_url"] as? String,
-                      let url = URL(string: urlStr) else { continue }
-
-                let assetName = (asset["name"] as? String) ?? ""
-                // Look for the sidecar across every release, not just this one.
-                // The combined release intentionally only carries the bare .dmg
-                // and .exe — sidecars and the updater-channel .zip live on
-                // the per-platform pre-release.
-                let sha256URL = Self.findSidecarAcrossReleases(
-                    releases: sorted,
-                    sidecarFileName: "\(assetName).sha256"
-                )
-
-                let size = (asset["size"] as? Int64) ?? (asset["size"] as? Int).map(Int64.init) ?? 0
-                let notes = (release["body"] as? String) ?? ""
-                return (UpdateInfo(
-                    version: version,
-                    notes: notes,
-                    downloadURL: url,
-                    sha256URL: sha256URL,
-                    expectedSize: size
-                ), version)
+            let macAsset = assets.first { asset in
+                let name = ((asset["name"] as? String) ?? "").lowercased()
+                return name.contains("macos") && name.hasSuffix(".zip")
+            } ?? assets.first { asset in
+                let name = ((asset["name"] as? String) ?? "").lowercased()
+                return name.contains("mac") && name.hasSuffix(".zip")
             }
+            guard let asset = macAsset,
+                  let urlStr = asset["browser_download_url"] as? String,
+                  let url = URL(string: urlStr) else { continue }
+
+            let assetName = (asset["name"] as? String) ?? ""
+            // Sidecars live on the per-platform pre-release; search all releases.
+            let sha256URL = Self.findSidecarAcrossReleases(
+                releases: sorted,
+                sidecarFileName: "\(assetName).sha256"
+            )
+
+            let size = (asset["size"] as? Int64) ?? (asset["size"] as? Int).map(Int64.init) ?? 0
+            let notes = (release["body"] as? String) ?? ""
+            return (UpdateInfo(
+                version: version,
+                notes: notes,
+                downloadURL: url,
+                sha256URL: sha256URL,
+                expectedSize: size
+            ), version)
         }
         return nil
     }
