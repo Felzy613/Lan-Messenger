@@ -70,7 +70,8 @@ struct AppConfig: Codable {
     var pendingFiles: [PendingFileConfig] = []
     var updateServerURL: String = ""
     var inboxDir: String = ""
-    var hideFromDock: Bool = false
+    // Default true: hide from dock (menu-bar-only mode) out of the box.
+    var hideFromDock: Bool = true
     // User's preference for SMAppService-managed Login Item registration.
     // The OS-side status is the source of truth at runtime; this is just what
     // the user asked for so we can re-apply it if SMAppService loses our
@@ -80,6 +81,8 @@ struct AppConfig: Codable {
     var updateRepo: String = "felzy613/lan-messenger"
     // Last update check time (Unix seconds). Used to throttle background checks.
     var lastUpdateCheck: Double = 0
+    // When true, file-transfer and networking events are written to the log file.
+    var verboseLogging: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case username, contacts
@@ -93,6 +96,7 @@ struct AppConfig: Codable {
         case launchAtLogin = "launch_at_login"
         case updateRepo = "update_repo"
         case lastUpdateCheck = "last_update_check"
+        case verboseLogging = "verbose_logging"
     }
 
     init() {}
@@ -107,10 +111,12 @@ struct AppConfig: Codable {
         pendingFiles = (try c.decodeIfPresent([PendingFileConfig].self, forKey: .pendingFiles)) ?? []
         updateServerURL = (try c.decodeIfPresent(String.self, forKey: .updateServerURL)) ?? ""
         inboxDir = (try c.decodeIfPresent(String.self, forKey: .inboxDir)) ?? ""
-        hideFromDock = (try c.decodeIfPresent(Bool.self, forKey: .hideFromDock)) ?? false
+        // Existing configs that omit this key default to true (hide from dock).
+        hideFromDock = (try c.decodeIfPresent(Bool.self, forKey: .hideFromDock)) ?? true
         launchAtLogin = (try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? false
         updateRepo = (try c.decodeIfPresent(String.self, forKey: .updateRepo)) ?? "felzy613/lan-messenger"
         lastUpdateCheck = (try c.decodeIfPresent(Double.self, forKey: .lastUpdateCheck)) ?? 0
+        verboseLogging = (try c.decodeIfPresent(Bool.self, forKey: .verboseLogging)) ?? false
     }
 }
 
@@ -152,10 +158,7 @@ final class ConfigStore {
         configDir.appendingPathComponent("history.enc")
     }
 
-    var logsDirectory: URL {
-        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Logs/LanMessenger")
-    }
+    var logsDirectory: URL { NetLogger.logsDirectory }
 
     var updateStagingDirectory: URL {
         configDir.appendingPathComponent("Updates")

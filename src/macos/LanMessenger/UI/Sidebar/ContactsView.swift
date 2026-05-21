@@ -144,7 +144,7 @@ struct ContactsView: View {
                     Text(contact.username)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.primary)
-                    Text(online ? "Online" : contact.lastIP)
+                    Text(online ? "Online" : "Offline")
                         .font(.system(size: 12))
                         .foregroundStyle(online ? Theme.accent : .secondary)
                 }

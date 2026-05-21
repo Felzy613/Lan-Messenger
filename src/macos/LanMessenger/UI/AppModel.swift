@@ -34,6 +34,11 @@ final class AppModel: ObservableObject {
 
     // MARK: - Published UI state
     @Published var peers: [String: PeerInfo] = [:]                  // keyed by publicKeyB64
+
+    // Cache of ip → publicKeyB64 for every peer we've ever seen a packet from.
+    // Persists across peer timeout/reconnect so we can reply to unsaved contacts
+    // even if they've gone offline or aren't in the contacts list.
+    private var knownPeerKeys: [String: String] = [:]
     @Published var conversations: [ConversationViewModel] = []
     @Published var archivedConversations: [ConversationViewModel] = []
     @Published var selectedPeerIP: String?
@@ -185,6 +190,7 @@ final class AppModel: ObservableObject {
 
         let info = PeerInfo(ip: ip, username: username, port: port, publicKeyB64: publicKeyB64, lastSeen: Date())
         peers[publicKeyB64] = info
+        knownPeerKeys[ip] = publicKeyB64
         refreshConversations()
         // Deliver any queued messages and files for this peer.
         MessagingService.shared.deliverPending(toPeerIP: ip, peerPublicKeyB64: publicKeyB64)
@@ -293,9 +299,11 @@ final class AppModel: ObservableObject {
     // MARK: - Messaging
 
     func sendMessage(_ text: String, toPeerIP ip: String, replyTo: MessageEntry? = nil) {
-        // For offline peers, look up the public key from contacts so the message can still be queued.
+        // For offline peers, look up the public key from contacts or session cache
+        // so the message can still be queued. knownPeerKeys covers unsaved contacts.
         let publicKey: String? = peerByIP(ip)?.publicKeyB64
             ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == ip })?.publicKeyB64
+            ?? knownPeerKeys[ip]
         guard let key = publicKey else { return }
         MessagingService.shared.sendText(text, toPeerIP: ip, peerPublicKeyB64: key, replyTo: replyTo)
     }
@@ -334,6 +342,7 @@ final class AppModel: ObservableObject {
     func sendFile(path: String, toPeerIP ip: String) {
         let publicKey: String? = peerByIP(ip)?.publicKeyB64
             ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == ip })?.publicKeyB64
+            ?? knownPeerKeys[ip]
         guard let key = publicKey else { return }
 
         if peerByIP(ip) != nil {
@@ -470,7 +479,9 @@ final class AppModel: ObservableObject {
 
     // Show the main window (used by the menu-bar tray).
     func showMainWindow() {
-        NSApp.setActivationPolicy(.regular)
+        if !ConfigStore.shared.config.hideFromDock {
+            NSApp.setActivationPolicy(.regular)
+        }
         NSApp.activate(ignoringOtherApps: true)
         for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
             w.makeKeyAndOrderFront(nil)
@@ -633,6 +644,10 @@ extension AppModel: NetworkCoordinatorDelegate {
     func coordinator(_ c: NetworkCoordinator, didReceivePacket packet: ValidatedPacket) {
         // Refresh lastSeen for the sender so TCP activity keeps them online.
         if let key = packet.senderPublicKeyB64 { touchPeer(publicKeyB64: key) }
+        // Cache ip → publicKeyB64 so replies work even for unsaved / offline contacts.
+        if let key = packet.senderPublicKeyB64, !key.isEmpty {
+            knownPeerKeys[packet.senderIP] = key
+        }
         switch packet {
         case .text, .typing, .receipt:
             MessagingService.shared.handlePacket(packet)

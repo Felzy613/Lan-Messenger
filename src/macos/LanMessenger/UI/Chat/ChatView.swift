@@ -61,7 +61,7 @@ struct ChatView: View {
                         .frame(width: 8, height: 8)
                 }
                 if let typing = model.typingStates[peerIP], typing.active {
-                    Text("\(typing.sender) is typing…")
+                    Text("typing…")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .transition(.opacity)

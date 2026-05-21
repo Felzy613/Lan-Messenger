@@ -13,7 +13,7 @@ enum NetLogger {
     private static let queue = DispatchQueue(label: "com.dave.lanmessenger.logger", qos: .utility)
     private static let maxBytes: Int = 2 * 1024 * 1024
 
-    private static let logURL: URL = {
+    static let logURL: URL = {
         let fm = FileManager.default
         let dir = (fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                     ?? URL(fileURLWithPath: NSTemporaryDirectory()))
@@ -23,9 +23,20 @@ enum NetLogger {
         return dir.appendingPathComponent("client.log")
     }()
 
-    static func info(_ category: String, _ message: String)  { write("INFO",  category, message) }
-    static func warn(_ category: String, _ message: String)  { write("WARN",  category, message) }
-    static func error(_ category: String, _ message: String) { write("ERROR", category, message) }
+    static var logsDirectory: URL { logURL.deletingLastPathComponent() }
+
+    static func info(_ category: String, _ message: String)    { write("INFO",  category, message) }
+    static func warn(_ category: String, _ message: String)    { write("WARN",  category, message) }
+    static func error(_ category: String, _ message: String)   { write("ERROR", category, message) }
+
+    // Verbose: written only when the user has enabled verbose logging in Settings.
+    // Reading verboseLogging from a background thread is safe — it's a Bool that
+    // is only ever set on the main actor and torn reads are impossible on any
+    // Apple platform (atomic single-word loads).
+    static func verbose(_ category: String, _ message: String) {
+        guard ConfigStore.shared.config.verboseLogging else { return }
+        write("VERB",  category, message)
+    }
 
     private static func write(_ level: String, _ category: String, _ message: String) {
         let line = "[\(timestamp())] \(level.padding(toLength: 5, withPad: " ", startingAt: 0)) \(category): \(message)\n"

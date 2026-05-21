@@ -27,7 +27,7 @@ struct ConversationRowView: View {
                 }
                 HStack {
                     if conv.isTyping {
-                        Text("\(conv.typingSender) is typing…")
+                        Text("typing…")
                             .font(.system(size: 13))
                             .foregroundStyle(Theme.accent)
                             .italic()

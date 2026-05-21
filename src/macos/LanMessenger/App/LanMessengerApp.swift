@@ -40,7 +40,12 @@ enum WindowController {
     static var openWindow: ((String) -> Void)?
 
     static func showMainWindow() {
-        NSApp.setActivationPolicy(.regular)
+        // Only promote to .regular (dock visible) if the user has chosen to show
+        // the dock icon. When hideFromDock is true, stay in .accessory mode —
+        // windows can still be shown and focused without a dock tile.
+        if !ConfigStore.shared.config.hideFromDock {
+            NSApp.setActivationPolicy(.regular)
+        }
         NSApp.activate(ignoringOtherApps: true)
 
         // First try the captured SwiftUI action — that gives us a freshly-created window

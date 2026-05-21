@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
@@ -9,10 +10,12 @@ struct SettingsView: View {
     @State private var inboxDir = ConfigStore.shared.config.inboxDir
     @State private var hideFromDock = ConfigStore.shared.config.hideFromDock
     @State private var launchAtLogin = ConfigStore.shared.config.launchAtLogin
+    @State private var verboseLogging = ConfigStore.shared.config.verboseLogging
     @State private var loginItemStatusText = ""
     @State private var loginItemNeedsApproval = false
     @State private var updateStatus = ""
     @State private var isCheckingUpdates = false
+    @State private var logExportMessage = ""
 
     var body: some View {
         NavigationStack {
@@ -22,7 +25,12 @@ struct SettingsView: View {
                 }
 
                 Section("Appearance") {
-                    Toggle("Hide from Dock (menu bar only)", isOn: $hideFromDock)
+                    // Toggle is "Don't hide icon in dock" — ON means show in dock,
+                    // OFF (default) means hide from dock (menu-bar-only mode).
+                    Toggle("Don't hide icon in dock", isOn: Binding(
+                        get: { !hideFromDock },
+                        set: { hideFromDock = !$0 }
+                    ))
                 }
 
                 Section("Startup") {
@@ -62,6 +70,24 @@ struct SettingsView: View {
                             }
                             Button("Choose…") { pickInboxDir() }
                                 .buttonStyle(.bordered)
+                        }
+                    }
+                }
+
+                Section("Logging") {
+                    Toggle("Verbose logging", isOn: $verboseLogging)
+                    Text("Logs file transfers, connections, and protocol events to a file. Useful for diagnosing transfer failures.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button("Open Logs Folder") { openLogsFolder() }
+                            .buttonStyle(.bordered)
+                        Button("Export Log…") { exportLog() }
+                            .buttonStyle(.bordered)
+                        if !logExportMessage.isEmpty {
+                            Text(logExportMessage)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -140,7 +166,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .frame(minWidth: 460, minHeight: 380)
+        .frame(minWidth: 460, minHeight: 500)
         .onAppear { refreshLoginItemStatus() }
     }
 
@@ -233,8 +259,36 @@ struct SettingsView: View {
         ConfigStore.shared.config.updateRepo = updateRepo.trimmingCharacters(in: .whitespaces)
         ConfigStore.shared.config.inboxDir = inboxDir
         ConfigStore.shared.config.hideFromDock = hideFromDock
+        ConfigStore.shared.config.verboseLogging = verboseLogging
         ConfigStore.shared.save()
         model.applyDockPolicy()
+    }
+
+    private func openLogsFolder() {
+        NSWorkspace.shared.open(NetLogger.logsDirectory)
+    }
+
+    private func exportLog() {
+        let src = NetLogger.logURL
+        guard FileManager.default.fileExists(atPath: src.path) else {
+            logExportMessage = "No log file yet."
+            return
+        }
+        let panel = NSSavePanel()
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd_HHmmss"
+        panel.nameFieldStringValue = "LanMessenger-\(fmt.string(from: Date())).log"
+        panel.allowedContentTypes = [.plainText]
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: src, to: dest)
+            logExportMessage = "Exported ✓"
+        } catch {
+            logExportMessage = "Export failed: \(error.localizedDescription)"
+        }
     }
 
     private func pickInboxDir() {

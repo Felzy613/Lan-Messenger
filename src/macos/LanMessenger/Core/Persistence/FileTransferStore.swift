@@ -68,10 +68,11 @@ final class FileTransferStore {
         incoming[key] = transfer
     }
 
-    // Called from the main actor after a chunk has been written on the background queue.
-    func addBytesReceived(_ bytes: Int64, forKey key: TransferKey) {
+    // Called from the main actor with the coalesced byte count from ChunkQueueState.
+    // Sets an absolute value (not an increment) so that throttled updates don't drift.
+    func setBytesReceived(_ bytes: Int64, forKey key: TransferKey) {
         guard var transfer = incoming[key] else { return }
-        transfer.bytesReceived += bytes
+        transfer.bytesReceived = bytes
         incoming[key] = transfer
     }
 

@@ -33,6 +33,16 @@ legacy protocol where needed.
 - GitHub Releases update checks and platform-specific installers.
 - CI pipelines for platform tests, packaging, smoke tests, releases, and integrity.
 
+## macOS Bug Fixes Applied (2026-05-20)
+
+- **File transfer freeze**: eliminated per-chunk `DispatchQueue.main.async` hops for byte counting. Byte tracking now lives in `ChunkQueueState` (accessed only from the serial `chunkQueue`). Progress events are coalesced to ~12 Hz; for a 100 MB file this reduces main-thread dispatches from ~1600 to ~96.
+- **Unsaved contact reply**: `AppModel` now maintains `knownPeerKeys: [String: String]` (ip → publicKeyB64) populated from every received packet. `sendMessage` and `sendFile` use it as a fallback so replies work even for unsaved/offline contacts.
+- **Dock hiding default**: `hideFromDock` default changed from `false` to `true` (hide from dock out of the box). `WindowController.showMainWindow` and `AppModel.showMainWindow` no longer force `.regular` when the user wants to hide from dock.
+- **Settings renamed**: "Hide from Dock" toggle renamed to "Don't hide icon in dock" with inverted binding.
+- **Offline status**: Contacts page now shows "Offline" instead of the IP address for offline contacts.
+- **Typing indicator**: Changed from "\(sender) is typing…" to "typing…" in ChatView and ConversationRowView.
+- **Verbose logging**: Added `NetLogger.verbose()` gated by `AppConfig.verboseLogging`. FileTransferService now logs transfer lifecycle, progress, and errors. Settings page has a Logging section with toggle, Open Logs Folder, and Export Log buttons.
+
 ## Current Architecture
 
 Both platforms mirror these layers:
