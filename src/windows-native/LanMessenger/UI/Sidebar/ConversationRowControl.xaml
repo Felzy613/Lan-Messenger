@@ -12,16 +12,14 @@
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
-        <!-- Avatar with online dot -->
+        <!-- Avatar with online dot (always visible; color set by code-behind) -->
         <Grid Grid.Column="0">
-            <ui:AvatarControl x:Name="Avatar" Width="40" Height="40" />
-            <!-- Online indicator dot -->
+            <ui:AvatarControl x:Name="Avatar" Width="44" Height="44" />
             <Ellipse x:Name="OnlineDot"
-                     Width="10" Height="10"
-                     Fill="{ThemeResource AccentFillColorDefaultBrush}"
+                     Width="11" Height="11"
+                     Fill="#25D366"
                      Stroke="White" StrokeThickness="2"
-                     HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                     Visibility="Collapsed" />
+                     HorizontalAlignment="Right" VerticalAlignment="Bottom" />
         </Grid>
 
         <!-- Name + preview -->

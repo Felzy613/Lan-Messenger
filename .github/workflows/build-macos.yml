@@ -10,15 +10,15 @@ name: Build macOS
 #
 # build-test-pkg   macOS runner. Runs unit tests, regenerates the icon catalog
 #                  + AppIcon.icns from Images/Logo.png, builds + signs the .app,
-#                  then packages a DMG (primary), ZIP (updater), and PKG (IT)
-#                  through scripts/macos/package.sh. Every artifact gets an
-#                  accompanying .sha256 sidecar.
+#                  then packages a PKG (primary) and ZIP (updater) through
+#                  scripts/macos/package.sh. Every artifact gets an accompanying
+#                  .sha256 sidecar.
 #
 # validate         macOS runner. Downloads the artifacts and runs three checks:
 #                    1. validate-bundle.sh  — structural / branding integrity
-#                    2. validate-dmg.sh     — DMG mounts and contains a usable
-#                                              .app + /Applications symlink
-#                    3. smoke-test.sh       — installs the DMG into /Applications
+#                    2. validate-pkg.sh     — PKG expands cleanly and contains a
+#                                              valid .app with pre/postinstall scripts
+#                    3. smoke-test.sh       — installs the PKG into /Applications
 #                                              and confirms the app actually
 #                                              starts and stays alive
 #
@@ -204,7 +204,7 @@ jobs:
       # Hand control to scripts/macos/package.sh — the single source of truth
       # for how to build, sign, and package the macOS app. Same script is used
       # for local builds.
-      - name: Build + package (DMG, ZIP, PKG)
+      - name: Build + package (PKG, ZIP)
         env:
           VERSION: ${{ env.VERSION }}
           SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
@@ -227,12 +227,10 @@ jobs:
         with:
           name: macos-build-${{ github.run_id }}
           path: |
-            dist/macos/*.dmg
-            dist/macos/*.dmg.sha256
-            dist/macos/*.zip
-            dist/macos/*.zip.sha256
             dist/macos/*.pkg
             dist/macos/*.pkg.sha256
+            dist/macos/*.zip
+            dist/macos/*.zip.sha256
           retention-days: 1
           if-no-files-found: error
 
@@ -307,18 +305,18 @@ jobs:
           done
           [ "$FAIL" -eq 0 ]
 
-      - name: Validate DMG (mount + bundle integrity)
+      - name: Validate PKG (expand + bundle integrity)
         run: |
-          chmod +x scripts/macos/validate-dmg.sh scripts/macos/validate-bundle.sh
-          DMG=$(ls dist/macos/*.dmg | head -1)
-          scripts/macos/validate-dmg.sh "$DMG"
+          chmod +x scripts/macos/validate-pkg.sh scripts/macos/validate-bundle.sh
+          PKG=$(ls dist/macos/*.pkg | head -1)
+          scripts/macos/validate-pkg.sh "$PKG"
 
-      - name: Smoke-test the DMG install flow
+      - name: Smoke-test the PKG install flow
         if: inputs.skip_smoke != true
         run: |
           chmod +x scripts/macos/smoke-test.sh
-          DMG=$(ls dist/macos/*.dmg | head -1)
-          scripts/macos/smoke-test.sh "$DMG"
+          PKG=$(ls dist/macos/*.pkg | head -1)
+          scripts/macos/smoke-test.sh "$PKG"
 
       - name: Smoke-test the ZIP install flow (updater channel)
         if: inputs.skip_smoke != true
@@ -333,7 +331,7 @@ jobs:
           cp ~/Library/Logs/DiagnosticReports/LanMessenger* crash-reports/ 2>/dev/null || true
           log show --process LanMessenger --last 5m --info > crash-reports/console.log 2>/dev/null || true
           cp smoke.log crash-reports/ 2>/dev/null || true
-          cp dist/macos/smoke.log crash-reports/dmg-smoke.log 2>/dev/null || true
+          cp dist/macos/smoke.log crash-reports/pkg-smoke.log 2>/dev/null || true
 
       - name: Upload diagnostics on failure
         if: failure()
@@ -402,8 +400,7 @@ jobs:
             echo ""
             echo "| Format | When to use |"
             echo "|--------|-------------|"
-            echo "| **\`.dmg\`** | Standard download for everyone. Open, drag to Applications, eject. |"
-            echo "| **\`.pkg\`** | IT-managed installs (MDM, JAMF, Munki). Installs silently to /Applications. |"
+            echo "| **\`.pkg\`** | Standard download for everyone. Double-click to install to /Applications. MDM/JAMF/Munki compatible. |"
             echo "| **\`.zip\`** | Updater channel — used by the in-app updater. Top-level is \`LAN Messenger.app\`. |"
             echo ""
             echo "Each artifact ships with a matching \`.sha256\` sidecar."
@@ -412,7 +409,7 @@ jobs:
           } > /tmp/release-notes.md
 
           ASSETS=()
-          for f in *.dmg *.dmg.sha256 *.zip *.zip.sha256 *.pkg *.pkg.sha256; do
+          for f in *.pkg *.pkg.sha256 *.zip *.zip.sha256; do
             [ -f "$f" ] && ASSETS+=("$f")
           done
 

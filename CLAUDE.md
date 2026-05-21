@@ -61,7 +61,7 @@ or from inside `src/macos`:
 
 ```bash
 ./scripts/build_app.sh
-./scripts/build_dmg.sh
+./scripts/build_pkg.sh
 ```
 
 ### Windows
@@ -273,9 +273,9 @@ not CI sources of truth.
 ## CI And Release
 
 - PR checks run macOS Swift tests and Windows MSTest.
-- `Build macOS` runs tests, generates icons, builds/signs/packages DMG, ZIP,
-  and PKG, validates SHA256 sidecars, validates bundles/DMGs, smoke-tests install
-  and launch, then publishes a `macos-vX.Y.Z` pre-release.
+- `Build macOS` runs tests, generates icons, builds/signs/packages PKG and ZIP,
+  validates SHA256 sidecars, validates bundles/PKGs, smoke-tests install and
+  launch, then publishes a `macos-vX.Y.Z` pre-release.
 - `Build Windows` restores, tests, publishes self-contained WinUI output, bundles
   VC++ runtime DLLs, downloads the VC++ redistributable, builds an Inno installer,
   smoke-tests startup, then publishes a `windows-vX.Y.Z` pre-release.

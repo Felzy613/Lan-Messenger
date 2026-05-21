@@ -202,12 +202,12 @@ jobs:
           mkdir -p dist/macos dist/windows
 
           # The combined release exposes ONLY the two user-facing installers
-          # (.dmg, .exe). All update-channel artifacts (.zip, .pkg, .sha256s)
+          # (.pkg, .exe). All update-channel artifacts (.zip, .sha256s)
           # live on the per-platform pre-releases so the public Releases page
           # stays uncluttered. The in-app updaters already walk to per-platform
           # tags as a fallback when an asset isn't on the combined release.
           gh release download "${{ steps.tags.outputs.mac_tag }}" \
-            --pattern "*.dmg" \
+            --pattern "*.pkg" \
             --dir dist/macos/
 
           gh release download "${{ steps.tags.outputs.win_tag }}" \
@@ -223,11 +223,11 @@ jobs:
           steps.tags.outputs.skip != 'true' &&
           steps.release.outputs.skip != 'true'
         run: |
-          MAC_DMG=$(ls dist/macos/*.dmg 2>/dev/null | head -1)
+          MAC_PKG=$(ls dist/macos/*.pkg 2>/dev/null | head -1)
           WIN_FILE=$(ls dist/windows/*.exe 2>/dev/null | head -1)
 
-          if [ -z "$MAC_DMG" ]; then
-            echo "::error::macOS .dmg missing after download from ${{ steps.tags.outputs.mac_tag }}"
+          if [ -z "$MAC_PKG" ]; then
+            echo "::error::macOS .pkg missing after download from ${{ steps.tags.outputs.mac_tag }}"
             exit 1
           fi
           if [ -z "$WIN_FILE" ]; then
@@ -235,7 +235,7 @@ jobs:
             exit 1
           fi
 
-          for F in "$MAC_DMG" "$WIN_FILE"; do
+          for F in "$MAC_PKG" "$WIN_FILE"; do
             SIZE=$(stat -c%s "$F" 2>/dev/null || stat -f%z "$F")
             if [ "$SIZE" -lt 524288 ]; then
               echo "::error::Artifact suspiciously small ($SIZE bytes): $F"
@@ -280,10 +280,10 @@ jobs:
             echo ""
             echo "## Downloads"
             echo "- **Windows** — \`LanMessenger-Setup-${WIN_VER}.exe\` (self-contained, Windows 10 19041+, x64)"
-            echo "- **macOS** — \`LanMessenger-macOS-${MAC_VER}.dmg\` (open, drag to Applications, eject; macOS 13+)"
+            echo "- **macOS** — \`LanMessenger-macOS-${MAC_VER}.pkg\` (double-click to install to /Applications; macOS 13+)"
             echo ""
             echo "## Notes for IT / advanced users"
-            echo "Additional formats (.pkg for MDM installs, .zip for the update channel, and SHA-256 sidecars) are published on the per-platform pre-releases:"
+            echo "The .pkg is MDM/JAMF/Munki compatible and installs silently. The update-channel .zip and SHA-256 sidecars are published on the per-platform pre-releases:"
             echo "- macOS: \`${{ steps.tags.outputs.mac_tag }}\`"
             echo "- Windows: \`${{ steps.tags.outputs.win_tag }}\`"
             echo ""
@@ -298,7 +298,7 @@ jobs:
           echo "draft_tag=$TAG" >> $GITHUB_OUTPUT
           echo "Created draft release: $TAG"
 
-      - name: Upload installers (one .dmg + one .exe only)
+      - name: Upload installers (one .pkg + one .exe only)
         if: |
           steps.early_exit.outputs.skip != 'true' &&
           steps.tags.outputs.skip != 'true' &&
@@ -306,10 +306,9 @@ jobs:
         run: |
           TAG="${{ steps.draft.outputs.draft_tag }}"
           # Keep the public release deliberately minimal — just the two
-          # installers end users actually download. Sidecars, .zip, and .pkg
-          # remain on the per-platform pre-releases for the in-app updater
-          # and IT teams.
-          gh release upload "$TAG" dist/macos/*.dmg --clobber
+          # installers end users actually download. Sidecars and the updater-
+          # channel .zip remain on the per-platform pre-releases.
+          gh release upload "$TAG" dist/macos/*.pkg --clobber
           gh release upload "$TAG" dist/windows/*.exe --clobber
 
       - name: Publish release (remove draft status)

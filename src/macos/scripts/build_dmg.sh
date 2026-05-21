@@ -1,27 +1,15 @@
 #!/usr/bin/env bash
-# build_dmg.sh — Convenience wrapper that builds the same DMG CI ships.
+# build_dmg.sh — Deprecated. DMG is no longer the primary macOS installer.
 #
-# Calls the canonical packaging pipeline at scripts/macos/package.sh. All the
-# real logic lives there so a CI-built DMG and a developer-built DMG come from
-# the same code path.
+# The release pipeline now ships a PKG (with pre/postinstall scripts) as the
+# primary artifact. Use build_pkg.sh instead:
 #
-# Usage (from src/macos/):
-#   ./scripts/build_dmg.sh                                  # ad-hoc signed
-#   SIGNING_IDENTITY="Developer ID Application: …" \
-#     NOTARIZE=1 NOTARY_APPLE_ID=… NOTARY_TEAM_ID=… NOTARY_PASSWORD=… \
-#     ./scripts/build_dmg.sh                                # signed + notarized
+#   ./scripts/build_pkg.sh
 #
-# The resulting DMG lands in <repo-root>/dist/macos/.
+# This wrapper is kept only for backwards compatibility and now delegates to
+# build_pkg.sh.
 
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-if [ -z "${VERSION:-}" ]; then
-    VERSION=$(jq -r '.version' "$REPO_ROOT/version/macos.json")
-fi
-export VERSION
-export SKIP_PKG="${SKIP_PKG:-1}"
-
-exec "$REPO_ROOT/scripts/macos/package.sh"
+echo "::warning::build_dmg.sh is deprecated — the macOS release now ships a .pkg. Delegating to build_pkg.sh."
+exec "$SCRIPT_DIR/build_pkg.sh" "$@"

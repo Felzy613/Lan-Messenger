@@ -44,7 +44,7 @@
                 CornerRadius="20"
                 Padding="12,4">
             <TextBox x:Name="InputBox"
-                     PlaceholderText="Type a message"
+                     PlaceholderText="Message"
                      AcceptsReturn="False"
                      TextWrapping="Wrap"
                      MinHeight="32"
@@ -64,7 +64,7 @@
             </TextBox>
         </Border>
 
-        <!-- Send button — WhatsApp green, hover darkens slightly, icon stays white -->
+        <!-- Send button — WhatsApp green circle with up arrow, matching macOS arrow.up.circle.fill -->
         <Button x:Name="SendBtn"
                 Grid.Column="2"
                 Width="38" Height="38"
@@ -84,11 +84,10 @@
                 <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
             </Button.Resources>
-            <TextBlock Text="➤"
-                       FontSize="16"
-                       Foreground="White"
-                       HorizontalAlignment="Center"
-                       VerticalAlignment="Center" />
+            <FontIcon FontFamily="Segoe MDL2 Assets"
+                      Glyph="&#xE74A;"
+                      FontSize="14"
+                      Foreground="White" />
         </Button>
     </Grid>
 </UserControl>

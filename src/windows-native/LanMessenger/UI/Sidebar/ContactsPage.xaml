@@ -10,6 +10,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -83,7 +84,7 @@
                               Foreground="White" />
                 </Border>
                 <TextBlock Grid.Column="1"
-                           Text="Search LAN"
+                           Text="New contact"
                            Style="{ThemeResource BodyStrongTextBlockStyle}"
                            VerticalAlignment="Center" />
             </Grid>
@@ -94,9 +95,16 @@
                    Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
                    Margin="16,0" />
 
+        <!-- "Contacts" section header -->
+        <TextBlock Grid.Row="3"
+                   Text="Contacts"
+                   Style="{ThemeResource CaptionTextBlockStyle}"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                   Margin="16,8,16,4" />
+
         <!-- Contact list -->
         <ListView x:Name="ContactsList"
-                  Grid.Row="3"
+                  Grid.Row="4"
                   SelectionMode="None">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
@@ -167,7 +175,7 @@
         </ListView>
 
         <StackPanel x:Name="EmptyState"
-                    Grid.Row="3"
+                    Grid.Row="4"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
                     Spacing="10"
@@ -182,7 +190,7 @@
                        HorizontalAlignment="Center"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <TextBlock x:Name="EmptySubtitle"
-                       Text="Tap &quot;Search LAN&quot; to find peers on your network."
+                       Text="Tap &quot;New contact&quot; to find peers on your network."
                        HorizontalAlignment="Center"
                        TextAlignment="Center"
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />

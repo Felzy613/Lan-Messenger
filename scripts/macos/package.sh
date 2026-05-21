@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # package.sh — End-to-end macOS packaging pipeline.
 #
-# Build → sign → notarize (optional) → DMG + ZIP + PKG + SHA256 sidecars.
+# Build → sign → notarize (optional) → PKG + ZIP + SHA256 sidecars.
 #
 # Designed to run in two contexts:
 #   - GitHub Actions  (no env var work needed; secrets get exported by the workflow)
@@ -14,22 +14,19 @@
 #   SIGNING_IDENTITY  Code-signing identity. Pass an empty string or omit for ad-hoc
 #                     signing (produces a runnable but Gatekeeper-warned bundle).
 #                     Example: "Developer ID Application: Dave Felzy (7FAZT3258V)"
-#   NOTARIZE          "1" to notarize and staple the DMG/PKG. Requires NOTARY_*.
+#   NOTARIZE          "1" to notarize and staple the PKG. Requires NOTARY_*.
 #   NOTARY_APPLE_ID   Apple ID e-mail for notarytool.
 #   NOTARY_TEAM_ID    Team ID for notarytool.
 #   NOTARY_PASSWORD   App-specific password for notarytool.
 #   ENTITLEMENTS      Path to the .entitlements plist (defaults to the bundled one).
 #   OUTPUT_DIR        Where finished artifacts land (defaults to <repo>/dist/macos).
-#   SKIP_PKG          "1" to skip the .pkg installer (DMG + ZIP only).
 #   KEEP_BUILD        "1" to keep the build/ directory for inspection.
 #
 # Artifacts produced in $OUTPUT_DIR:
-#   LanMessenger-macOS-${VERSION}.dmg          Drag-to-Applications installer (primary)
-#   LanMessenger-macOS-${VERSION}.dmg.sha256
+#   LanMessenger-macOS-${VERSION}.pkg          Primary installer (double-click to install)
+#   LanMessenger-macOS-${VERSION}.pkg.sha256
 #   LanMessenger-macOS-${VERSION}.zip          Update channel artifact (top-level: LanMessenger.app)
 #   LanMessenger-macOS-${VERSION}.zip.sha256
-#   LanMessenger-macOS-${VERSION}.pkg          IT/MDM-friendly flat installer
-#   LanMessenger-macOS-${VERSION}.pkg.sha256
 #
 # Exit codes:
 #   0   all artifacts produced
@@ -57,7 +54,6 @@ ARTIFACT_BASE="LanMessenger-macOS-${VERSION}"
 
 SIGNING_IDENTITY="${SIGNING_IDENTITY-}"
 NOTARIZE="${NOTARIZE:-0}"
-SKIP_PKG="${SKIP_PKG:-0}"
 KEEP_BUILD="${KEEP_BUILD:-0}"
 
 # ── 1. Ensure host is macOS ───────────────────────────────────────────────────
@@ -79,7 +75,7 @@ exec > >(tee -a "$PKG_LOG") 2>&1
 
 step() { echo ""; echo "▶  $*"; }
 
-step "Pipeline starting — version $VERSION, signing=${SIGNING_IDENTITY:+yes (real)}${SIGNING_IDENTITY:-yes (ad-hoc)}, notarize=$NOTARIZE"
+step "Pipeline starting — version $VERSION, signing=${SIGNING_IDENTITY:+yes (real)}${SIGNING_IDENTITY:-yes (ad-hoc)}, notarize=$NOTARIZE, artifacts=PKG+ZIP"
 
 # ── 2. Generate Xcode project from project.yml ────────────────────────────────
 step "Generating Xcode project (xcodegen)"
@@ -200,105 +196,19 @@ rm -f "$ZIP_PATH"
     "${APP_NAME_DISPLAY}.app" "$ZIP_PATH" )
 echo "  $(basename "$ZIP_PATH") $(du -h "$ZIP_PATH" | awk '{print $1}')"
 
-# ── 8. Build the DMG (primary user-facing installer) ─────────────────────────
-step "Building DMG"
-DMG_PATH="$OUTPUT_DIR/${ARTIFACT_BASE}.dmg"
-TMP_DMG="$BUILD_DIR/tmp.dmg"
-VOLUME_NAME="LAN Messenger ${VERSION}"
+# ── 8. Build the PKG (primary user-facing installer) ─────────────────────────
+step "Building PKG"
+PKG_PATH="$OUTPUT_DIR/${ARTIFACT_BASE}.pkg"
+PKG_BUILD_ROOT="$BUILD_DIR/pkg-root"
+PKG_SCRIPTS_DIR="$BUILD_DIR/pkg-scripts"
+rm -rf "$PKG_BUILD_ROOT" "$PKG_SCRIPTS_DIR"
+mkdir -p "$PKG_BUILD_ROOT/Applications" "$PKG_SCRIPTS_DIR"
 
-# Build a clean DMG source directory containing only the .app + /Applications symlink.
-DMG_SRC="$BUILD_DIR/dmg-src"
-rm -rf "$DMG_SRC"
-mkdir -p "$DMG_SRC"
-/usr/bin/ditto "$APP_DISPLAY" "$DMG_SRC/${APP_NAME_DISPLAY}.app"
-ln -s /Applications "$DMG_SRC/Applications"
+/usr/bin/ditto "$APP_DISPLAY" "$PKG_BUILD_ROOT/Applications/${APP_NAME_DISPLAY}.app"
 
-# Size = app + 30 MiB headroom so hdiutil convert doesn't burst.
-APP_SIZE_MB=$(du -sm "$DMG_SRC" | awk '{print $1}')
-DMG_SIZE_MB=$(( APP_SIZE_MB + 30 ))
-
-rm -f "$TMP_DMG" "$DMG_PATH"
-/usr/bin/hdiutil create \
-    -srcfolder "$DMG_SRC" \
-    -volname   "$VOLUME_NAME" \
-    -fs        HFS+ \
-    -fsargs    "-c c=64,a=16,e=16" \
-    -format    UDRW \
-    -size      "${DMG_SIZE_MB}m" \
-    "$TMP_DMG" >/dev/null
-
-# Mount, decorate the window (icon positions + icon-view mode), unmount.
-MOUNT_PT=$(/usr/bin/hdiutil attach -readwrite -noverify -noautoopen "$TMP_DMG" | \
-    awk '/\/Volumes\//{match($0, /\/Volumes\/.*/); print substr($0, RSTART); exit}')
-echo "  Decorating $MOUNT_PT"
-
-# Set the volume icon (uses the AppIcon.icns we copied into the bundle so the
-# DMG icon matches the app exactly). Drop the icon into the volume root as
-# ".VolumeIcon.icns" — that's the magic filename Finder uses.
-if [ -f "$APP_DISPLAY/Contents/Resources/AppIcon.icns" ]; then
-    cp "$APP_DISPLAY/Contents/Resources/AppIcon.icns" "$MOUNT_PT/.VolumeIcon.icns"
-    # The SetFile/Finder bit makes the .VolumeIcon.icns take effect.
-    /usr/bin/SetFile -a C "$MOUNT_PT" 2>/dev/null || true
-fi
-
-# AppleScript decoration — set icon positions and visual mode. Wrapped in
-# `|| true` because the script step is cosmetic and shouldn't fail the build
-# if /Applications/Finder isn't responsive in the runner.
-/usr/bin/osascript <<APPLESCRIPT || true
-tell application "Finder"
-    tell disk "$VOLUME_NAME"
-        open
-        set current view of container window to icon view
-        set toolbar visible of container window to false
-        set statusbar visible of container window to false
-        set the bounds of container window to {300, 200, 900, 530}
-        set viewOptions to the icon view options of container window
-        set arrangement of viewOptions to not arranged
-        set icon size of viewOptions to 128
-        set position of item "${APP_NAME_DISPLAY}.app" of container window to {160, 180}
-        set position of item "Applications" of container window to {440, 180}
-        update without registering applications
-        close
-    end tell
-end tell
-APPLESCRIPT
-
-sync; sync
-/usr/bin/hdiutil detach "$MOUNT_PT" -quiet || /usr/bin/hdiutil detach "$MOUNT_PT" -force
-
-# Convert RW → compressed RO and re-sign the DMG envelope.
-/usr/bin/hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG_PATH" >/dev/null
-rm -f "$TMP_DMG"
-
-if [ -n "$SIGNING_IDENTITY" ]; then
-    echo "  Signing DMG"
-    /usr/bin/codesign --sign "$SIGNING_IDENTITY" --timestamp "$DMG_PATH"
-    if [ "$NOTARIZE" = "1" ]; then
-        echo "  Notarizing DMG"
-        xcrun notarytool submit "$DMG_PATH" \
-            --apple-id "$NOTARY_APPLE_ID" \
-            --team-id  "$NOTARY_TEAM_ID" \
-            --password "$NOTARY_PASSWORD" \
-            --wait
-        xcrun stapler staple "$DMG_PATH"
-    fi
-fi
-echo "  $(basename "$DMG_PATH") $(du -h "$DMG_PATH" | awk '{print $1}')"
-
-# ── 9. Build the PKG (flat installer for IT/MDM workflows) ───────────────────
-if [ "$SKIP_PKG" != "1" ]; then
-    step "Building PKG"
-    PKG_PATH="$OUTPUT_DIR/${ARTIFACT_BASE}.pkg"
-    PKG_BUILD_ROOT="$BUILD_DIR/pkg-root"
-    PKG_SCRIPTS_DIR="$BUILD_DIR/pkg-scripts"
-    rm -rf "$PKG_BUILD_ROOT" "$PKG_SCRIPTS_DIR"
-    mkdir -p "$PKG_BUILD_ROOT/Applications" "$PKG_SCRIPTS_DIR"
-
-    /usr/bin/ditto "$APP_DISPLAY" "$PKG_BUILD_ROOT/Applications/${APP_NAME_DISPLAY}.app"
-
-    # preinstall: gracefully terminate any running copy and stage a backup so
-    # postinstall can roll back if `ditto` fails mid-copy.
-    cat > "$PKG_SCRIPTS_DIR/preinstall" <<'PREINSTALL'
+# preinstall: gracefully terminate any running copy so it doesn't hold file
+# descriptors open while the installer lays new files into /Applications.
+cat > "$PKG_SCRIPTS_DIR/preinstall" <<'PREINSTALL'
 #!/bin/bash
 # preinstall — run before macOS lays new files into /Applications.
 # Quietly kill running copies so they don't hold file descriptors open.
@@ -315,10 +225,10 @@ fi
 exit 0
 PREINSTALL
 
-    # postinstall: clear quarantine xattr (otherwise the user gets a Gatekeeper
-    # dialog despite having explicitly run the installer) and re-register the
-    # bundle with Launch Services so Spotlight/Finder pick it up immediately.
-    cat > "$PKG_SCRIPTS_DIR/postinstall" <<'POSTINSTALL'
+# postinstall: clear quarantine xattr (otherwise the user gets a Gatekeeper
+# dialog despite having explicitly run the installer) and re-register the
+# bundle with Launch Services so Spotlight/Finder pick it up immediately.
+cat > "$PKG_SCRIPTS_DIR/postinstall" <<'POSTINSTALL'
 #!/bin/bash
 APP="/Applications/LAN Messenger.app"
 # Strip quarantine that the installer might have inherited from the
@@ -331,21 +241,21 @@ APP="/Applications/LAN Messenger.app"
 exit 0
 POSTINSTALL
 
-    chmod 755 "$PKG_SCRIPTS_DIR/preinstall" "$PKG_SCRIPTS_DIR/postinstall"
+chmod 755 "$PKG_SCRIPTS_DIR/preinstall" "$PKG_SCRIPTS_DIR/postinstall"
 
-    COMPONENT_PKG="$BUILD_DIR/component.pkg"
-    /usr/bin/pkgbuild \
-        --root      "$PKG_BUILD_ROOT" \
-        --install-location "/" \
-        --identifier "com.dave.lanmessenger.installer" \
-        --version   "$VERSION" \
-        --scripts   "$PKG_SCRIPTS_DIR" \
-        "$COMPONENT_PKG" >/dev/null
+COMPONENT_PKG="$BUILD_DIR/component.pkg"
+/usr/bin/pkgbuild \
+    --root      "$PKG_BUILD_ROOT" \
+    --install-location "/" \
+    --identifier "com.dave.lanmessenger.installer" \
+    --version   "$VERSION" \
+    --scripts   "$PKG_SCRIPTS_DIR" \
+    "$COMPONENT_PKG" >/dev/null
 
-    # Wrap in a distribution package so the GUI installer shows a proper
-    # welcome/license screen and the right product name.
-    DISTRIBUTION_XML="$BUILD_DIR/distribution.xml"
-    cat > "$DISTRIBUTION_XML" <<DISTRIBUTION
+# Wrap in a distribution package so the GUI installer shows the product name
+# and enforces the minimum OS version.
+DISTRIBUTION_XML="$BUILD_DIR/distribution.xml"
+cat > "$DISTRIBUTION_XML" <<DISTRIBUTION
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
     <title>LAN Messenger ${VERSION}</title>
@@ -370,45 +280,42 @@ POSTINSTALL
 </installer-gui-script>
 DISTRIBUTION
 
-    # productbuild --sign requires a "Developer ID Installer" certificate,
-    # which is distinct from the "Developer ID Application" cert. Only sign
-    # the PKG when INSTALLER_SIGNING_IDENTITY is explicitly set; otherwise
-    # ship an unsigned PKG. Installer-signing failures should never tank the
-    # build because the DMG (the primary download) is still signed.
-    INSTALLER_SIGNING_IDENTITY="${INSTALLER_SIGNING_IDENTITY-}"
-    if [ -n "$INSTALLER_SIGNING_IDENTITY" ]; then
-        echo "  Signing PKG with installer identity: $INSTALLER_SIGNING_IDENTITY"
-        if /usr/bin/productbuild \
-                --distribution "$DISTRIBUTION_XML" \
-                --package-path "$BUILD_DIR" \
-                --sign "$INSTALLER_SIGNING_IDENTITY" \
-                "$PKG_PATH" >/dev/null; then
-            if [ "$NOTARIZE" = "1" ]; then
-                echo "  Notarizing PKG"
-                xcrun notarytool submit "$PKG_PATH" \
-                    --apple-id "$NOTARY_APPLE_ID" \
-                    --team-id  "$NOTARY_TEAM_ID" \
-                    --password "$NOTARY_PASSWORD" \
-                    --wait
-                xcrun stapler staple "$PKG_PATH"
-            fi
-        else
-            echo "::warning::productbuild --sign failed — emitting unsigned PKG"
-            /usr/bin/productbuild \
-                --distribution "$DISTRIBUTION_XML" \
-                --package-path "$BUILD_DIR" \
-                "$PKG_PATH" >/dev/null
+# productbuild --sign requires a "Developer ID Installer" certificate, which is
+# distinct from the "Developer ID Application" cert used for the .app. Only sign
+# when INSTALLER_SIGNING_IDENTITY is explicitly provided; otherwise ship unsigned.
+INSTALLER_SIGNING_IDENTITY="${INSTALLER_SIGNING_IDENTITY-}"
+if [ -n "$INSTALLER_SIGNING_IDENTITY" ]; then
+    echo "  Signing PKG with installer identity: $INSTALLER_SIGNING_IDENTITY"
+    if /usr/bin/productbuild \
+            --distribution "$DISTRIBUTION_XML" \
+            --package-path "$BUILD_DIR" \
+            --sign "$INSTALLER_SIGNING_IDENTITY" \
+            "$PKG_PATH" >/dev/null; then
+        if [ "$NOTARIZE" = "1" ]; then
+            echo "  Notarizing PKG"
+            xcrun notarytool submit "$PKG_PATH" \
+                --apple-id "$NOTARY_APPLE_ID" \
+                --team-id  "$NOTARY_TEAM_ID" \
+                --password "$NOTARY_PASSWORD" \
+                --wait
+            xcrun stapler staple "$PKG_PATH"
         fi
     else
+        echo "::warning::productbuild --sign failed — emitting unsigned PKG"
         /usr/bin/productbuild \
             --distribution "$DISTRIBUTION_XML" \
             --package-path "$BUILD_DIR" \
             "$PKG_PATH" >/dev/null
     fi
-    echo "  $(basename "$PKG_PATH") $(du -h "$PKG_PATH" | awk '{print $1}')"
+else
+    /usr/bin/productbuild \
+        --distribution "$DISTRIBUTION_XML" \
+        --package-path "$BUILD_DIR" \
+        "$PKG_PATH" >/dev/null
 fi
+echo "  $(basename "$PKG_PATH") $(du -h "$PKG_PATH" | awk '{print $1}')"
 
-# ── 10. SHA256 sidecars ──────────────────────────────────────────────────────
+# ── 9. SHA256 sidecars ───────────────────────────────────────────────────────
 step "Writing SHA256 sidecars"
 write_sidecar() {
     local path="$1"
@@ -418,11 +325,10 @@ write_sidecar() {
     printf '%s  %s\n' "$hash" "$(basename "$path")" > "${path}.sha256"
     echo "  $(basename "$path").sha256  $hash"
 }
+write_sidecar "$PKG_PATH"
 write_sidecar "$ZIP_PATH"
-write_sidecar "$DMG_PATH"
-[ "$SKIP_PKG" = "1" ] || write_sidecar "$OUTPUT_DIR/${ARTIFACT_BASE}.pkg"
 
-# ── 11. Final inventory ──────────────────────────────────────────────────────
+# ── 10. Final inventory ──────────────────────────────────────────────────────
 step "Done"
 ( cd "$OUTPUT_DIR" && ls -lh "${ARTIFACT_BASE}".* )
 echo ""

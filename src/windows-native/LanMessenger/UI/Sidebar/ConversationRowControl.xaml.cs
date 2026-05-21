@@ -1,6 +1,8 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using System.ComponentModel;
+using Windows.UI;
 
 namespace LanMessenger.UI.Sidebar;
 
@@ -41,7 +43,10 @@ public sealed partial class ConversationRowControl : UserControl
         NameText.Text        = Row.PeerName;
         PreviewText.Text     = Row.LastMessage;
         TimestampText.Text   = Row.Timestamp;
-        OnlineDot.Visibility = Row.IsOnline ? Visibility.Visible : Visibility.Collapsed;
+        // Always show the dot; green when online, muted gray when offline — matches macOS sidebar
+        OnlineDot.Fill = new SolidColorBrush(Row.IsOnline
+            ? Color.FromArgb(255, 37, 211, 102)    // #25D366
+            : Color.FromArgb(115, 0, 0, 0));        // ~45% black → neutral gray over any bg
 
         if (Row.UnreadCount > 0)
         {

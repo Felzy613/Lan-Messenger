@@ -85,10 +85,11 @@ public sealed partial class MainWindow : Window
         var page = new ContactsPage { Model = Model };
         var dialog = new ContentDialog
         {
-            Title           = "Contacts",
-            CloseButtonText = "Done",
-            Content         = page,
-            XamlRoot        = Content.XamlRoot,
+            Title             = "Contacts",
+            PrimaryButtonText = "Done",
+            DefaultButton     = ContentDialogButton.Primary,
+            Content           = page,
+            XamlRoot          = Content.XamlRoot,
         };
         // The "Search LAN" flow can't open its own ContentDialog while this
         // one is up (WinUI 3 allows only one per XamlRoot). Hide ourselves,

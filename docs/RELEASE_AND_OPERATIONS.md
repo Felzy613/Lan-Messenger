@@ -9,9 +9,9 @@ LAN Messenger publishes platform pre-releases first, then a combined release.
 
 | Release type | Tag format | Assets |
 |---|---|---|
-| macOS platform | `macos-vX.Y.Z` | DMG, ZIP, PKG, SHA256 sidecars |
+| macOS platform | `macos-vX.Y.Z` | PKG, ZIP, SHA256 sidecars |
 | Windows platform | `windows-vX.Y.Z` | Inno Setup EXE, SHA256 sidecar |
-| Combined public release | `release-winX.Y.Z-macA.B.C` | end-user DMG and EXE only |
+| Combined public release | `release-winX.Y.Z-macA.B.C` | end-user PKG and EXE only |
 
 The combined release keeps the public downloads page clean. In-app updaters can
 still find update-channel ZIP/EXE assets and sidecars on the platform releases.
@@ -66,11 +66,11 @@ Pipeline:
 2. Build job runs Swift tests.
 3. Icon catalog and `AppIcon.icns` are regenerated from `Images/Logo.png`.
 4. Optional signing certificate is imported.
-5. `scripts/macos/package.sh` builds DMG, ZIP, PKG, and SHA256 sidecars.
+5. `scripts/macos/package.sh` builds PKG, ZIP, and SHA256 sidecars.
 6. Artifacts are uploaded for validation.
 7. Validation verifies SHA256 sidecars.
-8. `validate-dmg.sh` mounts and validates the DMG.
-9. `smoke-test.sh` install-launch tests DMG and ZIP unless skipped.
+8. `validate-pkg.sh` expands and validates the PKG.
+9. `smoke-test.sh` install-launch tests PKG and ZIP unless skipped.
 10. Platform release `macos-vX.Y.Z` is published as a pre-release.
 11. Resolved CI issues for macOS are auto-closed.
 
@@ -125,7 +125,7 @@ Behavior:
 - waits up to 45 minutes for a sibling platform build for the same commit;
 - finds latest `macos-v*` and `windows-v*` releases;
 - creates a draft combined release;
-- uploads only the DMG and EXE;
+- uploads only the PKG and EXE;
 - publishes by removing draft status;
 - deletes failed draft releases as a safety net.
 
@@ -174,12 +174,10 @@ Canonical script: `scripts/macos/package.sh`
 
 Outputs:
 
-- `LanMessenger-macOS-X.Y.Z.dmg`
-- `LanMessenger-macOS-X.Y.Z.dmg.sha256`
-- `LanMessenger-macOS-X.Y.Z.zip`
-- `LanMessenger-macOS-X.Y.Z.zip.sha256`
 - `LanMessenger-macOS-X.Y.Z.pkg`
 - `LanMessenger-macOS-X.Y.Z.pkg.sha256`
+- `LanMessenger-macOS-X.Y.Z.zip`
+- `LanMessenger-macOS-X.Y.Z.zip.sha256`
 
 Main stages:
 
@@ -188,21 +186,18 @@ Main stages:
 3. Build Release with xcodebuild.
 4. Copy the app from DerivedData.
 5. Code-sign ad-hoc or with Developer ID.
-6. Optionally notarize.
+6. Optionally notarize the app.
 7. Stage `LAN Messenger.app`.
 8. Build update ZIP with `ditto --keepParent`.
-9. Build drag-to-Applications DMG.
-10. Optionally sign/notarize DMG.
-11. Build PKG with preinstall/postinstall scripts.
-12. Write SHA256 sidecars.
+9. Build PKG (distribution package) with preinstall/postinstall scripts.
+10. Optionally sign/notarize PKG with `INSTALLER_SIGNING_IDENTITY`.
+11. Write SHA256 sidecars.
 
 Local wrapper scripts:
 
-- `src/macos/scripts/build_app.sh`
-- `src/macos/scripts/build_dmg.sh`
-
-Both wrappers read `version/macos.json`, default to `SKIP_PKG=1`, and delegate to
-the canonical package script.
+- `src/macos/scripts/build_app.sh` — full PKG + ZIP build, ad-hoc signing by default.
+- `src/macos/scripts/build_pkg.sh` — same as above, explicit PKG alias.
+- `src/macos/scripts/build_dmg.sh` — deprecated; redirects to `build_pkg.sh`.
 
 ## macOS Validation
 
@@ -217,20 +212,20 @@ Checks:
 - icon plist references;
 - code signing display and deep verification.
 
-### validate-dmg.sh
+### validate-pkg.sh
 
 Checks:
 
-- `hdiutil verify`;
-- DMG mounts;
-- root `.app` exists;
-- `/Applications` symlink exists and points correctly;
-- optional volume icon;
-- embedded app passes `validate-bundle.sh`.
+- `pkgutil --expand` succeeds (structural validity);
+- component package is present inside the distribution package;
+- `preinstall` and `postinstall` scripts are present;
+- Bom contains the expected `.app` bundle;
+- `install-location` is `/`;
+- Payload extracts and embedded app passes `validate-bundle.sh`.
 
 ### smoke-test.sh
 
-Supports `.dmg`, `.pkg`, and `.zip`.
+Supports `.pkg` and `.zip`.
 
 It:
 
@@ -442,7 +437,7 @@ Check:
 - app bundle has `Info.plist`, executable, and icon resources;
 - code signing identity is present or ad-hoc mode is expected;
 - `validate-bundle.sh` output;
-- `validate-dmg.sh` output.
+- `validate-pkg.sh` output.
 
 ### Windows Startup Crash After Install
 
@@ -473,7 +468,7 @@ Check:
 2. Confirm platform source changes were committed with version sync.
 3. Run or trigger platform workflows.
 4. Wait for platform pre-releases.
-5. Confirm combined release is created and contains exactly one DMG and one EXE.
+5. Confirm combined release is created and contains exactly one PKG and one EXE.
 6. Confirm platform releases retain update-channel artifacts and SHA256 sidecars.
 7. Install both artifacts on clean machines when feasible.
 8. Test discovery, text, receipts, file transfer, close-to-tray/menu-bar, and

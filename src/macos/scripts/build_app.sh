@@ -2,13 +2,14 @@
 # build_app.sh — Convenience wrapper for local developers.
 #
 # Calls the canonical packaging pipeline at scripts/macos/package.sh, which
-# builds + signs + packages a DMG/ZIP/PKG. By default it skips PKG (faster)
-# and uses ad-hoc signing (no Apple Developer cert required).
+# builds + signs + packages a PKG (primary installer) and ZIP (updater channel).
+# Uses ad-hoc signing by default (no Apple Developer cert required).
 #
 # Usage (from src/macos/):
-#   ./scripts/build_app.sh             # ad-hoc, no PKG
-#   SKIP_PKG=0 ./scripts/build_app.sh  # also build PKG
+#   ./scripts/build_app.sh
 #   SIGNING_IDENTITY="Developer ID Application: …" ./scripts/build_app.sh
+#   SIGNING_IDENTITY="…" NOTARIZE=1 NOTARY_APPLE_ID=… NOTARY_TEAM_ID=… \
+#     NOTARY_PASSWORD=… ./scripts/build_app.sh
 #
 # Artifacts land in <repo-root>/dist/macos/.
 
@@ -23,6 +24,5 @@ if [ -z "${VERSION:-}" ]; then
     VERSION=$(jq -r '.version' "$REPO_ROOT/version/macos.json")
 fi
 export VERSION
-export SKIP_PKG="${SKIP_PKG:-1}"
 
 exec "$REPO_ROOT/scripts/macos/package.sh"

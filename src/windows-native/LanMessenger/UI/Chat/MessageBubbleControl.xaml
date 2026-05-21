@@ -4,8 +4,8 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid x:Name="RootGrid" Padding="0,2">
         <Border x:Name="Bubble"
-                CornerRadius="10"
-                Padding="9,6,9,5"
+                CornerRadius="16"
+                Padding="10,7,10,6"
                 MaxWidth="520"
                 HorizontalAlignment="Left">
             <Border.ContextFlyout>

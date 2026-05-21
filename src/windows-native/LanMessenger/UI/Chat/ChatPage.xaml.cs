@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using Windows.UI;
 
 namespace LanMessenger.UI.Chat;
 
@@ -196,7 +197,10 @@ public sealed partial class ChatPage : Page
         var ip = _model.SelectedPeerIP;
         var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
         var online = peer?.IsOnline ?? false;
-        HeaderOnlineDot.Visibility = online ? Visibility.Visible : Visibility.Collapsed;
+        // Inline dot after the name: green when online, gray when offline (matches macOS header)
+        HeaderNameDot.Fill = new SolidColorBrush(online
+            ? Color.FromArgb(255, 37, 211, 102)   // #25D366
+            : Color.FromArgb(255, 160, 160, 160)); // gray
 
         var typing = _model.TypingStates.TryGetValue(ip, out var t) ? t : default;
         HeaderSubtext.Text = typing.Active

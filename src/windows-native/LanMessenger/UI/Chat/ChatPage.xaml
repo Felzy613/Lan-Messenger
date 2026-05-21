@@ -34,11 +34,18 @@
                          Stroke="White" StrokeThickness="2"
                          HorizontalAlignment="Right" VerticalAlignment="Bottom"
                          Visibility="Collapsed" />
+                <!-- HeaderOnlineDot kept for layout; online state is shown inline after the name -->
             </Grid>
 
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
-                <TextBlock x:Name="HeaderName"
-                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <!-- Name row: name + inline online dot, matching macOS header layout -->
+                <StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+                    <TextBlock x:Name="HeaderName"
+                               Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                    <Ellipse x:Name="HeaderNameDot"
+                             Width="8" Height="8"
+                             VerticalAlignment="Center" />
+                </StackPanel>
                 <TextBlock x:Name="HeaderSubtext"
                            Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
