@@ -84,10 +84,9 @@ step "Pipeline starting — version $VERSION, signing=${SIGNING_IDENTITY:+yes (r
 # ── 2. Generate Xcode project from project.yml ────────────────────────────────
 step "Generating Xcode project (xcodegen)"
 cd "$MAC_DIR"
-# Marketing version is MAJOR.MINOR in project.yml (Apple's MARKETING_VERSION
-# convention) but our packaging pipeline takes a full X.Y.Z. Stamp the X.Y
-# prefix back into project.yml before regeneration so xcodebuild picks it up.
-MARKETING_VERSION="${VERSION%.*}"
+# Stamp the full MAJOR.MINOR.PATCH version into project.yml so xcodegen and
+# xcodebuild both pick it up. CFBundleShortVersionString supports full X.Y.Z.
+MARKETING_VERSION="$VERSION"
 sed -i '' "s/MARKETING_VERSION:.*/MARKETING_VERSION: \"$MARKETING_VERSION\"/" project.yml
 xcodegen generate >/dev/null
 
