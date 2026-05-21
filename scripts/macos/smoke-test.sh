@@ -54,7 +54,7 @@ cleanup_and_exit() {
     fi
 
     if [ "$INSTALLED_NEW" = "1" ] && [ "$KEEP_INSTALLED" = "0" ] && [ -d "$INSTALL_PATH" ]; then
-        rm -rf "$INSTALL_PATH" || true
+        sudo rm -rf "$INSTALL_PATH" 2>/dev/null || rm -rf "$INSTALL_PATH" || true
     fi
 
     # Preserve smoke.log next to the working directory so CI can upload it.
@@ -75,7 +75,7 @@ log "  ($(file -b "$ARTIFACT" | head -c 80))"
 # may not be.)
 if [ -d "$INSTALL_PATH" ]; then
     log "  /Applications already has a copy — removing to test fresh install"
-    rm -rf "$INSTALL_PATH" || fail "Could not remove existing $INSTALL_PATH"
+    sudo rm -rf "$INSTALL_PATH" 2>/dev/null || rm -rf "$INSTALL_PATH" || fail "Could not remove existing $INSTALL_PATH"
 fi
 
 # ── 1. Install the artifact ─────────────────────────────────────────────────

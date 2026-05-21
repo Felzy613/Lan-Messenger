@@ -40,7 +40,7 @@ public class HistoryStoreTests
         var plaintext = Encoding.UTF8.GetBytes("{}");
         var fileJson  = HistoryCrypto.EncryptHistory(plaintext, key1);
 
-        Assert.ThrowsException<System.Security.Cryptography.CryptographicException>(
+        Assert.ThrowsException<System.Security.Cryptography.AuthenticationTagMismatchException>(
             () => HistoryCrypto.DecryptHistory(fileJson, key2));
     }
 

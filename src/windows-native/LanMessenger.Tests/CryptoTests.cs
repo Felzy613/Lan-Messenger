@@ -61,7 +61,7 @@ public class CryptoTests
         var (nonceB64, ctB64) = SessionCrypto.EncryptForPeer(
             alice, bobPubB64, Encoding.UTF8.GetBytes("secret"), Encoding.UTF8.GetBytes("correct-aad"));
 
-        Assert.ThrowsException<System.Security.Cryptography.CryptographicException>(() =>
+        Assert.ThrowsException<System.Security.Cryptography.AuthenticationTagMismatchException>(() =>
             SessionCrypto.DecryptFromPeer(bob, alicePubB64, nonceB64, ctB64,
                 Encoding.UTF8.GetBytes("wrong-aad")));
     }
@@ -82,7 +82,7 @@ public class CryptoTests
         ctBytes[0] ^= 0xFF;
         var tampered = Convert.ToBase64String(ctBytes);
 
-        Assert.ThrowsException<System.Security.Cryptography.CryptographicException>(() =>
+        Assert.ThrowsException<System.Security.Cryptography.AuthenticationTagMismatchException>(() =>
             SessionCrypto.DecryptFromPeer(bob, alicePubB64, nonceB64, tampered, aad));
     }
 
