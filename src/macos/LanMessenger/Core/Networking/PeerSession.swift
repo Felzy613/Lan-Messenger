@@ -51,6 +51,8 @@ final class PeerSession {
     private func connect() {
         guard !stopped else { return }
         teardown()
+        let attemptStartedAt = Date()
+        NetLogger.peer(event: "connect", peer: peerIP)
 
         var readStream: Unmanaged<CFReadStream>?
         var writeStream: Unmanaged<CFWriteStream>?
@@ -80,6 +82,11 @@ final class PeerSession {
             Thread.sleep(forTimeInterval: 0.05)
         }
         guard input.streamStatus == .open, output.streamStatus == .open else {
+            NetLogger.peer(
+                event: "connect_fail", peer: peerIP,
+                durationMs: Int(Date().timeIntervalSince(attemptStartedAt) * 1000),
+                reason: "stream did not reach open state"
+            )
             teardown(); scheduleReconnect(); return
         }
 
@@ -87,6 +94,10 @@ final class PeerSession {
         self.outputStream = output
         connected = true
         backoffIndex = 0
+        NetLogger.peer(
+            event: "connected", peer: peerIP,
+            durationMs: Int(Date().timeIntervalSince(attemptStartedAt) * 1000)
+        )
 
         drainSendQueue()
         receiveLoop(input: input)
@@ -109,6 +120,7 @@ final class PeerSession {
             }
         }
         connected = false
+        NetLogger.peer(event: "disconnect", peer: peerIP, reason: stopped ? "stopped" : "stream closed")
         DispatchQueue.main.async { [weak self] in guard let self else { return }; self.onDisconnect?(self) }
         teardown()
         if !stopped { scheduleReconnect() }

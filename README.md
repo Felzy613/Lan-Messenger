@@ -133,8 +133,25 @@ GitHub release update checks.
 | Private key | Keychain service `com.dave.lanmessenger`, account `privateKey` | DPAPI-protected `%APPDATA%\LanMessenger\private.key.dpapi` |
 | History | `~/Library/Application Support/LanMessenger/history.enc` | `%APPDATA%\LanMessenger\history.enc` |
 | Received files | Configured inbox or `Received/` under app data | Configured inbox or `Received\` under app data |
-| Logs | `~/Library/Application Support/LanMessenger/Logs/` and `~/Library/Logs/LanMessenger/` depending on service | `%APPDATA%\LanMessenger\Logs\` |
+| Logs | `~/Library/Application Support/LanMessenger/Logs/client.log` (5 MiB rolling, gzipped archives) | `%APPDATA%\LanMessenger\Logs\client.log` (5 MiB rolling, gzipped archives) |
 | Update staging | `~/Library/Application Support/LanMessenger/Updates/` | `%APPDATA%\LanMessenger\Updates\` |
+
+## Diagnostics
+
+If something misbehaves, open Settings → Logging:
+
+- "Open Logs Folder" — opens the client log directory in Finder / Explorer.
+- "Export Logs…" — packages the active log and every rotated `.log.gz`
+  archive into a single zip you can attach to a bug report.
+- "Verbose logging" toggle — turn this on before reproducing a transfer
+  or screen-capture problem; it records DEBUG-level events (per-chunk
+  progress, decrypt outcomes) the standard log omits.
+
+Each line carries a millisecond-precision UTC timestamp, a level
+(`DEBUG`/`INFO`/`WARN`/`ERROR`/`CRIT`), and a category. File transfers,
+screenshots, and peer-connection events emit structured `key=value`
+tails (e.g. `event=complete transfer_id=… size=… bps=…`) so they're
+easy to grep without writing a parser.
 
 ## Versioning
 

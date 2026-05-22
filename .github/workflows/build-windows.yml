@@ -327,6 +327,15 @@ jobs:
 
           Copy-Item smoke.log crash-reports\ -ErrorAction SilentlyContinue
 
+          # Collect the structured client logs (active + rotated archives) so
+          # transfer / discovery / screenshot events from the smoke run are
+          # available in the failure artifact bundle.
+          $clientLogs = Join-Path $env:APPDATA "LanMessenger\Logs"
+          if (Test-Path $clientLogs) {
+            New-Item -ItemType Directory -Path crash-reports\client-logs -Force | Out-Null
+            Copy-Item "$clientLogs\*" crash-reports\client-logs\ -ErrorAction SilentlyContinue
+          }
+
       - name: Upload crash diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

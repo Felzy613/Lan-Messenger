@@ -269,23 +269,44 @@ struct SettingsView: View {
     }
 
     private func exportLog() {
-        let src = NetLogger.logURL
-        guard FileManager.default.fileExists(atPath: src.path) else {
+        let sources = NetLogger.archivedLogURLs()
+        guard !sources.isEmpty else {
             logExportMessage = "No log file yet."
             return
         }
         let panel = NSSavePanel()
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd_HHmmss"
-        panel.nameFieldStringValue = "LanMessenger-\(fmt.string(from: Date())).log"
-        panel.allowedContentTypes = [.plainText]
+        // Bundle the active log + every rotated archive into a single zip so
+        // the user can attach one file to a bug report.
+        panel.nameFieldStringValue = "LanMessenger-Logs-\(fmt.string(from: Date())).zip"
+        panel.allowedContentTypes = [.zip]
         guard panel.runModal() == .OK, let dest = panel.url else { return }
+
+        // Stage everything into a temp directory then run `ditto -c -k` to make
+        // a Finder-friendly zip.  Avoids pulling in a third-party zip library.
+        let staging = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("LanMessenger-LogExport-\(UUID().uuidString)", isDirectory: true)
         do {
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: staging) }
+
+            for src in sources {
+                let copy = staging.appendingPathComponent(src.lastPathComponent)
+                try? FileManager.default.removeItem(at: copy)
+                try FileManager.default.copyItem(at: src, to: copy)
+            }
+
             if FileManager.default.fileExists(atPath: dest.path) {
                 try FileManager.default.removeItem(at: dest)
             }
-            try FileManager.default.copyItem(at: src, to: dest)
-            logExportMessage = "Exported ✓"
+
+            let task = Process()
+            task.launchPath = "/usr/bin/ditto"
+            task.arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent", staging.path, dest.path]
+            try task.run()
+            task.waitUntilExit()
+            logExportMessage = task.terminationStatus == 0 ? "Exported ✓" : "Export failed."
         } catch {
             logExportMessage = "Export failed: \(error.localizedDescription)"
         }

@@ -46,6 +46,28 @@
                               Toggled="CloseToTrayToggle_Toggled" />
             </StackPanel>
 
+            <!-- Logging -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Logging"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <ToggleSwitch x:Name="VerboseLoggingToggle"
+                              Header="Verbose logging (file transfers, peer events, screenshots)"
+                              OnContent="On"
+                              OffContent="Off"
+                              Toggled="VerboseLoggingToggle_Toggled" />
+                <TextBlock Text="Useful when reporting a bug — the export contains the active and rotated log files."
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="Open Logs Folder" Click="OpenLogsFolder_Click" />
+                    <Button Content="Export Logs…" Click="ExportLogs_Click" />
+                    <TextBlock x:Name="LogExportStatus"
+                               VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </StackPanel>
+
             <!-- Updates -->
             <StackPanel Spacing="6">
                 <TextBlock Text="Updates"

@@ -332,6 +332,12 @@ jobs:
           log show --process LanMessenger --last 5m --info > crash-reports/console.log 2>/dev/null || true
           cp smoke.log crash-reports/ 2>/dev/null || true
           cp dist/macos/smoke.log crash-reports/pkg-smoke.log 2>/dev/null || true
+          # Collect the structured client logs (active + rotated archives) so
+          # transfer / discovery / screenshot events from the smoke run are
+          # available in the failure artifact bundle.
+          if [ -d "$HOME/Library/Application Support/LanMessenger/Logs" ]; then
+            cp -R "$HOME/Library/Application Support/LanMessenger/Logs" crash-reports/client-logs 2>/dev/null || true
+          fi
 
       - name: Upload diagnostics on failure
         if: failure()

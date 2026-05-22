@@ -113,6 +113,22 @@ if ($proc.HasExited) {
     exit 1
 }
 
+# ── Verify diagnostic logger wrote a session header ─────────────────────────
+# Confirms LanLogger initialised, %APPDATA% is writable, and the first INFO
+# event reached disk.  A missing header during the stability window means
+# logging is broken — exactly the kind of regression a smoke test should catch.
+$clientLog = Join-Path $env:APPDATA "LanMessenger\Logs\client.log"
+if (Test-Path $clientLog) {
+    $firstLine = Get-Content $clientLog -TotalCount 1
+    if ($firstLine -match '^# Session ') {
+        Write-Log "  ✓ Diagnostic log opened with a Session header"
+    } else {
+        Write-Log "::warning::client.log exists but has no # Session header — logger may be misconfigured"
+    }
+} else {
+    Write-Log "::warning::client.log was not created during the stability window — logger may be broken"
+}
+
 # ── Graceful shutdown ───────────────────────────────────────────────────────
 Write-Log "✓ Smoke test passed — app stable for $($StartupWait + $AliveWait)s. Shutting down..."
 $proc.CloseMainWindow() | Out-Null

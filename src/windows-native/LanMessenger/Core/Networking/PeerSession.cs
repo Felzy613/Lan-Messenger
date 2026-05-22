@@ -1,4 +1,5 @@
 using LanMessenger.Core.Protocol;
+using LanMessenger.Core.Services;
 using System.Net.Sockets;
 
 namespace LanMessenger.Core.Networking;
@@ -61,6 +62,8 @@ public sealed class PeerSession : IDisposable
         while (!_stopped)
         {
             Teardown();
+            var attemptStartedAt = DateTime.UtcNow;
+            LanLogger.Peer("connect", peer: PeerIP);
             try
             {
                 _client = new TcpClient();
@@ -68,15 +71,24 @@ public sealed class PeerSession : IDisposable
                 _stream    = _client.GetStream();
                 _connected = true;
                 backoffIdx = 0;
+                LanLogger.Peer("connected", peer: PeerIP,
+                    durationMs: (int)(DateTime.UtcNow - attemptStartedAt).TotalMilliseconds);
 
                 // Run sender and receiver concurrently; either finishing ends the session
                 var recvTask = ReceiveLoop(_stream);
                 var sendTask = SendLoop(_stream);
                 await Task.WhenAny(recvTask, sendTask).ConfigureAwait(false);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LanLogger.Peer("connect_fail", peer: PeerIP,
+                    durationMs: (int)(DateTime.UtcNow - attemptStartedAt).TotalMilliseconds,
+                    reason: $"{ex.GetType().Name}: {ex.Message}");
+            }
 
             _connected = false;
+            LanLogger.Peer("disconnect", peer: PeerIP,
+                reason: _stopped ? "stopped" : "stream closed");
             OnDisconnect?.Invoke(this);
             Teardown();
 

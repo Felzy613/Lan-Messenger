@@ -308,6 +308,46 @@ When changing asset names, tags, packaging formats, or updater behavior, update:
 Keep sidecar hashes attached to platform releases even if the combined release
 only exposes end-user installers.
 
+## Diagnostic Logging
+
+Both clients write a structured log to disk for support and bug-report use.
+Each line is `[yyyy-MM-dd HH:mm:ss.fffZ] LEVEL Category: message`. Levels are
+DEBUG, INFO, WARN, ERROR, CRIT. DEBUG events are gated by the user's
+"Verbose logging" setting and never fire otherwise.
+
+Locations:
+
+- macOS: `~/Library/Application Support/LanMessenger/Logs/client.log`
+- Windows: `%APPDATA%\LanMessenger\Logs\client.log`
+
+Rotation: the active log caps at 5 MiB. On overflow it is gzipped to
+`client.1.log.gz`; prior archives shift up to `client.4.log.gz`. The oldest
+is deleted. Each fresh file begins with a `# Session` line containing the
+OS version, app version, architecture, and hostname.
+
+Structured event helpers exist for the high-value paths:
+
+- `NetLogger.fileTransfer / LanLogger.FileTransfer` — emits
+  `event=...` with `transfer_id`, `peer`, `dir`, `file`, `size`, `mime`,
+  `sent`, `recv`, `ms`, `bps`, `retries`, `reason` when relevant.
+- `NetLogger.screenshot / LanLogger.Screenshot` — emits `event=...` with
+  `display`, `res`, `perm`, `init_ms`, `interrupt`, `path`.
+- `NetLogger.peer / LanLogger.Peer` — emits `event=...` with `peer`,
+  `pubkey` (first 8 chars), `ms`, `reason`.
+
+Always use the structured helpers for new high-value events; free-form
+`info/warn/error` calls are fine for one-off diagnostics that don't need a
+canonical schema.
+
+Users can attach logs to a bug report from Settings → Logging:
+
+- "Open Logs Folder" opens the directory in Finder/Explorer.
+- "Export Logs…" bundles the active log and every rotated archive into a
+  single .zip the user can drop into an email or GitHub issue.
+
+CI uploads `crash-reports/client-logs/` on smoke-test failure for both
+platforms, so a failed build run includes the same structured trail.
+
 ## Local Runtime State
 
 Do not commit local app state. Ignored paths include:

@@ -4,6 +4,8 @@ using LanMessenger.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 
 namespace LanMessenger.UI.Settings;
 
@@ -35,6 +37,7 @@ public sealed partial class SettingsPage : Page
         InboxBox.Text      = ConfigStore.Shared.InboxDirectory;
         UpdateRepoBox.Text = cfg.UpdateRepo;
         CloseToTrayToggle.IsOn = cfg.CloseToTray;
+        VerboseLoggingToggle.IsOn = cfg.VerboseLogging;
         VersionText.Text   = $"LAN Messenger v{UpdateService.Shared.CurrentVersion}";
         RefreshUpdateUI();
     }
@@ -155,5 +158,56 @@ public sealed partial class SettingsPage : Page
     {
         _model?.InstallUpdate();
         RefreshUpdateUI();
+    }
+
+    private void VerboseLoggingToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        ConfigStore.Shared.Config.VerboseLogging = VerboseLoggingToggle.IsOn;
+        ConfigStore.Shared.Save();
+        LanLogger.Info("Settings", $"verbose logging {(VerboseLoggingToggle.IsOn ? "enabled" : "disabled")}");
+    }
+
+    private void OpenLogsFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var dir = LanLogger.LogsDirectory;
+            Directory.CreateDirectory(dir);
+            // Open in Explorer.  UseShellExecute lets us hand off the folder path.
+            Process.Start(new ProcessStartInfo
+            {
+                FileName        = dir,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            LogExportStatus.Text = $"Couldn't open folder: {ex.Message}";
+        }
+    }
+
+    private async void ExportLogs_Click(object sender, RoutedEventArgs e)
+    {
+        LogExportStatus.Text = "";
+        var savePicker = new Windows.Storage.Pickers.FileSavePicker
+        {
+            SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Desktop,
+            SuggestedFileName      = $"LanMessenger-Logs-{DateTime.Now:yyyy-MM-dd_HHmmss}",
+        };
+        savePicker.FileTypeChoices.Add("Zip archive", new List<string> { ".zip" });
+
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
+        WinRT.Interop.InitializeWithWindow.Initialize(savePicker, hwnd);
+
+        var target = await savePicker.PickSaveFileAsync();
+        if (target is null) return;
+
+        // The picker hands back a StorageFile already created at the chosen path —
+        // delete it first so ExportLogBundle can write a fresh zip.
+        var path = target.Path;
+        try { File.Delete(path); } catch { /* may already be deleted */ }
+
+        var ok = LanLogger.ExportLogBundle(path);
+        LogExportStatus.Text = ok ? "Exported ✓" : "Export failed.";
     }
 }
