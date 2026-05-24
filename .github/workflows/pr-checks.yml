@@ -10,9 +10,9 @@ permissions:
   pull-requests: write   # needed to post/update the PR comment
 
 jobs:
-  # ── macOS unit tests ──────────────────────────────────────────────────────────
+  # ── macOS unit + stress + logger tests ───────────────────────────────────────
   test-macos:
-    name: macOS Unit Tests
+    name: macOS Tests (unit + stress + logger)
     runs-on: macos-15
     defaults:
       run:
@@ -27,20 +27,36 @@ jobs:
           key: swift-${{ runner.os }}-${{ hashFiles('src/macos/Package.swift') }}
           restore-keys: swift-${{ runner.os }}-
 
-      - name: Run unit tests
-        run: swift test --parallel 2>&1 | tee ../../test-output-macos.txt; exit ${PIPESTATUS[0]}
+      # Runs the full suite: unit tests + NetLoggerTests (all 8 channels, rotation,
+      # concurrent writes) + StressTests (crypto, codec, status regression).
+      - name: Run full Swift test suite
+        run: |
+          set -o pipefail
+          swift test --parallel 2>&1 | tee ../../test-output-macos.txt
+          exit ${PIPESTATUS[0]}
 
-      - name: Upload test output on failure
+      # Collect any subsystem log files the tests produced (they write to a
+      # per-test temp directory, but the path is surfaced in test output).
+      - name: Collect subsystem logs on failure
+        if: failure()
+        run: |
+          mkdir -p ../../pr-logs/macos
+          LOGDIR="$HOME/Library/Application Support/LanMessenger/Logs"
+          [ -d "$LOGDIR" ] && cp -R "$LOGDIR/." ../../pr-logs/macos/ 2>/dev/null || true
+          cp ../../test-output-macos.txt ../../pr-logs/macos/ 2>/dev/null || true
+
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-output-macos-pr-${{ github.run_id }}
-          path: test-output-macos.txt
+          name: pr-diagnostics-macos-${{ github.run_id }}
+          path: pr-logs/macos/
           retention-days: 14
+          if-no-files-found: ignore
 
-  # ── Windows unit tests ────────────────────────────────────────────────────────
+  # ── Windows unit + stress + logger tests ─────────────────────────────────────
   test-windows:
-    name: Windows Unit Tests
+    name: Windows Tests (unit + stress + logger)
     runs-on: windows-2022
     defaults:
       run:
@@ -66,6 +82,7 @@ jobs:
       - name: Restore dependencies
         run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
 
+      # Builds the full test project including StressTests and LanLoggerTests.
       - name: Build test project
         shell: pwsh
         run: |
@@ -75,24 +92,48 @@ jobs:
             2>&1 | Tee-Object -FilePath ..\..\test-output-windows.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run unit tests
+      - name: Run full test suite
         shell: pwsh
         run: |
           $testDll = Get-ChildItem -Path "LanMessenger.Tests\bin" `
                        -Filter "LanMessenger.Tests.dll" -Recurse |
                      Select-Object -First 1
           if (-not $testDll) { Write-Error "Test DLL not found"; exit 1 }
-          dotnet vstest $testDll.FullName --logger:"console;verbosity=normal" `
+          dotnet vstest $testDll.FullName `
+            --logger:"console;verbosity=normal" `
+            --logger:"trx;LogFileName=PRTestResults.trx" `
             2>&1 | Tee-Object -Append -FilePath ..\..\test-output-windows.txt
           exit $LASTEXITCODE
 
-      - name: Upload test output on failure
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-test-results-windows-${{ github.run_id }}
+          path: src/windows-native/LanMessenger.Tests/TestResults/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # Collect subsystem logs on failure.
+      - name: Collect subsystem logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path ..\..\pr-logs\windows -Force | Out-Null
+          $logDir = Join-Path $env:APPDATA "LanMessenger\Logs"
+          if (Test-Path $logDir) {
+            Copy-Item "$logDir\*" ..\..\pr-logs\windows\ -ErrorAction SilentlyContinue
+          }
+          Copy-Item ..\..\test-output-windows.txt ..\..\pr-logs\windows\ -ErrorAction SilentlyContinue
+
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-output-windows-pr-${{ github.run_id }}
-          path: test-output-windows.txt
+          name: pr-diagnostics-windows-${{ github.run_id }}
+          path: pr-logs/windows/
           retention-days: 14
+          if-no-files-found: ignore
 
   # ── Post / update a single summary comment on the PR ─────────────────────────
   comment:
@@ -116,10 +157,14 @@ jobs:
               '<!-- pr-ci-check -->',
               `## ${header}`,
               '',
-              '| Platform | Unit Tests |',
-              '|----------|------------|',
+              '| Platform | Tests (unit + stress + logger) |',
+              '|----------|---------------------------------|',
               `| 🍎 macOS   | ${icon(mac)} ${mac} |`,
               `| 🪟 Windows | ${icon(win)} ${win} |`,
+              '',
+              '> Tests include: unit tests, NetLogger/LanLogger multi-channel routing,',
+              '> concurrent write stress, rotation budget, crypto round-trips,',
+              '> frame codec boundaries, and message-status regression checks.',
               '',
               `[View workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
             ].join('\n');

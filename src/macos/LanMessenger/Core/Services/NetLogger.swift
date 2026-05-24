@@ -15,14 +15,28 @@ import Darwin
 //   version, app version, architecture, and hostname so a log attached to a
 //   bug report is self-describing without the user adding any context.
 // • Specialised helpers (fileTransfer, screenshot, peer, …) produce key=value
-//   tail strings so logs can be greppe'd by `transfer_id=...`, `bytes=...`,
+//   tail strings so logs can be grepped by `transfer_id=...`, `bytes=...`,
 //   `fps=...` etc. without inventing a parser.
+//
+// Subsystem log files
+// -------------------
+// Each subsystem writes to its own file so operators can tail the subsystem
+// they care about without wading through unrelated events.
+//
+//   client.log     — general application and runtime events (the "primary" log)
+//   transfer.log   — file-transfer lifecycle events
+//   screenshot.log — screen-capture events
+//   discovery.log  — LAN discovery / peer advertisement
+//   peer.log       — peer connection and handshake lifecycle
+//   crypto.log     — encryption key derivation and session handshake events
+//   ui.log         — UI state transitions
+//   retry.log      — retry / failure-recovery events
 //
 // Rotation
 // --------
-// • Active log is `client.log`, capped at `maxBytes` (5 MiB by default).
-// • On overflow, the active log rotates to `client.1.log.gz`, the prior
-//   `client.1.log.gz` shifts to `client.2.log.gz`, etc. up to
+// • Active log is `{channel}.log`, capped at `maxBytes` (5 MiB by default).
+// • On overflow the active log rotates to `{channel}.1.log.gz`, the prior
+//   `{channel}.1.log.gz` shifts to `{channel}.2.log.gz`, etc. up to
 //   `maxArchives` (4) older generations.  The oldest is deleted.
 // • Compression uses the system Compression framework's raw-DEFLATE encoder
 //   plus a manually-constructed gzip wrapper so the resulting files open in
@@ -40,6 +54,24 @@ import Darwin
 // Mirrors to `os_log` so live tail via Console.app works without opening files.
 enum NetLogger {
 
+    // MARK: - Subsystem channels
+
+    // Each case maps to its own log file.  `.app` uses the legacy "client" name
+    // so existing `client.log` files are not orphaned on upgrade.
+    enum LogChannel: String, CaseIterable {
+        case app        = "client"      // general events    → client.log
+        case transfer   = "transfer"    // file transfers    → transfer.log
+        case screenshot = "screenshot"  // screen capture    → screenshot.log
+        case discovery  = "discovery"   // LAN discovery     → discovery.log
+        case peer       = "peer"        // peer connections  → peer.log
+        case crypto     = "crypto"      // crypto/handshakes → crypto.log
+        case ui         = "ui"          // UI state changes  → ui.log
+        case retry      = "retry"       // retries/recovery  → retry.log
+
+        var logName: String    { "\(rawValue).log" }
+        var archivePrefix: String { rawValue }
+    }
+
     private static let log = OSLog(subsystem: "com.dave.lanmessenger", category: "net")
     private static let queue = DispatchQueue(label: "com.dave.lanmessenger.logger", qos: .utility)
 
@@ -48,14 +80,24 @@ enum NetLogger {
     static var maxBytes: Int = 5 * 1024 * 1024     // 5 MiB active log cap
     static var maxArchives: Int = 4                 // 4 older generations + active
 
-    // First-time header (per-file) — written on file creation OR rotation.
-    private static var headerWritten = false
+    // Per-channel header state (access on `queue` only).
+    // Using String keys (rawValue) because Dictionary<LogChannel,Bool> would
+    // require LogChannel: Hashable which is automatic for enums, but this
+    // is explicit and identical to the Windows pattern.
+    private static var headerWritten: [String: Bool] = {
+        Dictionary(uniqueKeysWithValues: LogChannel.allCases.map { ($0.rawValue, false) })
+    }()
 
     // Tests can override the log directory by assigning `_testLogDirectoryOverride`.
     // In production the path resolves to Application Support / LanMessenger / Logs.
     static var _testLogDirectoryOverride: URL?
 
-    static var logURL: URL { logsDirectory.appendingPathComponent("client.log") }
+    // Backward-compat: the primary (app/client) log URL.
+    static var logURL: URL { logURL(for: .app) }
+
+    static func logURL(for channel: LogChannel) -> URL {
+        logsDirectory.appendingPathComponent(channel.logName)
+    }
 
     static var logsDirectory: URL {
         let dir: URL
@@ -72,124 +114,203 @@ enum NetLogger {
         return dir
     }
 
-    // MARK: - Level API
+    // MARK: - Level API (generic → client.log)
 
     // The trailing API takes a category + message for legacy call-sites.
     // New code should prefer the structured helpers below.
     static func debug(_ category: String, _ message: String) {
         guard isVerboseEnabled() else { return }
-        write("DEBUG", category, message)
+        write("DEBUG", category, message, channel: .app)
     }
-    static func info(_ category: String, _ message: String)     { write("INFO",  category, message) }
-    static func warn(_ category: String, _ message: String)     { write("WARN",  category, message) }
-    static func warning(_ category: String, _ message: String)  { write("WARN",  category, message) }
-    static func error(_ category: String, _ message: String)    { write("ERROR", category, message) }
-    static func critical(_ category: String, _ message: String) { write("CRIT",  category, message) }
+    static func info(_ category: String, _ message: String)     { write("INFO",  category, message, channel: .app) }
+    static func warn(_ category: String, _ message: String)     { write("WARN",  category, message, channel: .app) }
+    static func warning(_ category: String, _ message: String)  { write("WARN",  category, message, channel: .app) }
+    static func error(_ category: String, _ message: String)    { write("ERROR", category, message, channel: .app) }
+    static func critical(_ category: String, _ message: String) { write("CRIT",  category, message, channel: .app) }
 
     // Verbose: legacy name kept for callers that haven't migrated to debug().
     static func verbose(_ category: String, _ message: String) {
         guard isVerboseEnabled() else { return }
-        write("DEBUG", category, message)
+        write("DEBUG", category, message, channel: .app)
     }
 
     // MARK: - Structured event helpers
     //
     // Each helper produces the canonical k=v tail the support workflow greps
-    // against.  Values are quoted only when they contain spaces so that the
-    // common case (`bytes=12345`) stays scannable.
+    // against and routes to its own subsystem log file.
 
-    /// Records a file-transfer lifecycle event.
+    /// Records a file-transfer lifecycle event (→ transfer.log).
     /// `event` examples: "queued", "start", "progress", "complete", "failed",
     /// "cancelled", "retry".  Pass any subset of metadata that applies.
     static func fileTransfer(
         event: String,
-        transferId: String?  = nil,
-        peer: String?        = nil,
-        direction: String?   = nil,            // "outgoing" | "incoming"
-        filename: String?    = nil,
-        size: Int64?         = nil,
-        mime: String?        = nil,
-        bytesSent: Int64?    = nil,
+        transferId: String?   = nil,
+        peer: String?         = nil,
+        direction: String?    = nil,           // "outgoing" | "incoming"
+        filename: String?     = nil,
+        size: Int64?          = nil,
+        mime: String?         = nil,
+        bytesSent: Int64?     = nil,
         bytesReceived: Int64? = nil,
-        durationMs: Int?     = nil,
-        bytesPerSec: Double? = nil,
-        retries: Int?        = nil,
-        reason: String?      = nil
+        durationMs: Int?      = nil,
+        bytesPerSec: Double?  = nil,
+        retries: Int?         = nil,
+        reason: String?       = nil
     ) {
         var kv: [(String, String)] = [("event", event)]
-        if let direction = direction { kv.append(("dir", direction)) }
-        if let transferId = transferId { kv.append(("transfer_id", transferId)) }
-        if let peer = peer { kv.append(("peer", peer)) }
-        if let filename = filename { kv.append(("file", quote(filename))) }
-        if let size = size { kv.append(("size", String(size))) }
-        if let mime = mime { kv.append(("mime", mime)) }
-        if let sent = bytesSent { kv.append(("sent", String(sent))) }
-        if let recv = bytesReceived { kv.append(("recv", String(recv))) }
-        if let ms = durationMs { kv.append(("ms", String(ms))) }
-        if let bps = bytesPerSec { kv.append(("bps", String(Int(bps.rounded())))) }
-        if let retries = retries { kv.append(("retries", String(retries))) }
-        if let reason = reason { kv.append(("reason", quote(reason))) }
+        if let direction   = direction   { kv.append(("dir",         direction)) }
+        if let transferId  = transferId  { kv.append(("transfer_id", transferId)) }
+        if let peer        = peer        { kv.append(("peer",        peer)) }
+        if let filename    = filename    { kv.append(("file",        quote(filename))) }
+        if let size        = size        { kv.append(("size",        String(size))) }
+        if let mime        = mime        { kv.append(("mime",        mime)) }
+        if let sent        = bytesSent   { kv.append(("sent",        String(sent))) }
+        if let recv        = bytesReceived { kv.append(("recv",      String(recv))) }
+        if let ms          = durationMs  { kv.append(("ms",          String(ms))) }
+        if let bps         = bytesPerSec { kv.append(("bps",         String(Int(bps.rounded())))) }
+        if let retries     = retries     { kv.append(("retries",     String(retries))) }
+        if let reason      = reason      { kv.append(("reason",      quote(reason))) }
 
         let level = ["failed", "cancelled", "error"].contains(event) ? "ERROR" : "INFO"
-        write(level, "FileTransfer", format(kv))
+        write(level, "FileTransfer", format(kv), channel: .transfer)
     }
 
-    /// Records a screen-capture / screenshot event.
+    /// Records a screen-capture / screenshot event (→ screenshot.log).
     static func screenshot(
         event: String,
-        display: String?       = nil,
-        widthPx: Int?          = nil,
-        heightPx: Int?         = nil,
-        fps: Double?           = nil,
-        permission: String?    = nil,          // "granted" | "denied" | "unknown"
-        initMs: Int?           = nil,          // ms from request → first frame
+        display: String?            = nil,
+        widthPx: Int?               = nil,
+        heightPx: Int?              = nil,
+        fps: Double?                = nil,
+        permission: String?         = nil,     // "granted" | "denied" | "unknown"
+        initMs: Int?                = nil,     // ms from request → first frame
         interruptionReason: String? = nil,
-        path: String?          = nil,
-        reason: String?        = nil
+        path: String?               = nil,
+        reason: String?             = nil
     ) {
         var kv: [(String, String)] = [("event", event)]
-        if let d = display { kv.append(("display", d)) }
+        if let d = display   { kv.append(("display", d)) }
         if let w = widthPx, let h = heightPx { kv.append(("res", "\(w)x\(h)")) }
-        if let f = fps { kv.append(("fps", String(format: "%.1f", f))) }
-        if let p = permission { kv.append(("perm", p)) }
-        if let i = initMs { kv.append(("init_ms", String(i))) }
+        if let f = fps       { kv.append(("fps",      String(format: "%.1f", f))) }
+        if let p = permission { kv.append(("perm",   p)) }
+        if let i = initMs    { kv.append(("init_ms", String(i))) }
         if let r = interruptionReason { kv.append(("interrupt", quote(r))) }
-        if let p = path { kv.append(("path", quote(p))) }
-        if let r = reason { kv.append(("reason", quote(r))) }
+        if let p = path      { kv.append(("path",    quote(p))) }
+        if let r = reason    { kv.append(("reason",  quote(r))) }
 
         let level: String
         switch event {
-        case "permission_denied": level = "WARN"
-        case "failed", "interrupted": level = "ERROR"
-        default: level = "INFO"
+        case "permission_denied":      level = "WARN"
+        case "failed", "interrupted":  level = "ERROR"
+        default:                       level = "INFO"
         }
-        write(level, "Screenshot", format(kv))
+        write(level, "Screenshot", format(kv), channel: .screenshot)
     }
 
-    /// Records a peer-connection lifecycle event.
+    /// Records a peer-connection lifecycle event (→ peer.log).
     /// `event` examples: "discover", "connect", "connected", "disconnect",
     /// "reconnect", "handshake_fail".
     static func peer(
         event: String,
-        peer: String?       = nil,
-        publicKey: String?  = nil,
-        durationMs: Int?    = nil,
-        reason: String?     = nil
+        peer: String?      = nil,
+        publicKey: String? = nil,
+        durationMs: Int?   = nil,
+        reason: String?    = nil
     ) {
         var kv: [(String, String)] = [("event", event)]
-        if let p = peer { kv.append(("peer", p)) }
+        if let p = peer      { kv.append(("peer",   p)) }
         if let k = publicKey { kv.append(("pubkey", shortKey(k))) }
-        if let ms = durationMs { kv.append(("ms", String(ms))) }
-        if let r = reason { kv.append(("reason", quote(r))) }
+        if let ms = durationMs { kv.append(("ms",   String(ms))) }
+        if let r = reason    { kv.append(("reason", quote(r))) }
         let level = ["disconnect", "handshake_fail", "reconnect_fail"].contains(event) ? "WARN" : "INFO"
-        write(level, "Peer", format(kv))
+        write(level, "Peer", format(kv), channel: .peer)
+    }
+
+    /// Records a LAN discovery event (→ discovery.log).
+    /// `event` examples: "started", "stopped", "beacon_sent", "peer_found",
+    /// "reply_sent", "reply_received", "suppressed", "rebuild_sockets".
+    static func discovery(
+        event: String,
+        peer: String?        = nil,
+        publicKey: String?   = nil,
+        ip: String?          = nil,
+        interfaces: Int?     = nil,
+        port: Int?           = nil,
+        reason: String?      = nil
+    ) {
+        var kv: [(String, String)] = [("event", event)]
+        if let p = peer      { kv.append(("peer",       p)) }
+        if let k = publicKey { kv.append(("pubkey",     shortKey(k))) }
+        if let ip = ip       { kv.append(("ip",         ip)) }
+        if let n = interfaces { kv.append(("interfaces", String(n))) }
+        if let p = port      { kv.append(("port",       String(p))) }
+        if let r = reason    { kv.append(("reason",     quote(r))) }
+        let level = ["error", "failed", "socket_error"].contains(event) ? "ERROR" : "INFO"
+        write(level, "Discovery", format(kv), channel: .discovery)
+    }
+
+    /// Records a crypto / key-derivation / handshake event (→ crypto.log).
+    /// `event` examples: "key_generated", "key_loaded", "session_key_derived",
+    /// "encrypt", "decrypt", "decrypt_failed", "invalid_key".
+    static func crypto(
+        event: String,
+        peer: String?      = nil,
+        algorithm: String? = nil,
+        durationMs: Int?   = nil,
+        reason: String?    = nil
+    ) {
+        var kv: [(String, String)] = [("event", event)]
+        if let p = peer      { kv.append(("peer",   p)) }
+        if let a = algorithm { kv.append(("alg",    a)) }
+        if let ms = durationMs { kv.append(("ms",   String(ms))) }
+        if let r = reason    { kv.append(("reason", quote(r))) }
+        let level = ["failed", "error", "invalid_key", "decrypt_failed"].contains(event) ? "ERROR" : "INFO"
+        write(level, "Crypto", format(kv), channel: .crypto)
+    }
+
+    /// Records a UI state-change event (→ ui.log).
+    /// `event` examples: "window_shown", "window_hidden", "conversation_opened",
+    /// "conversation_closed", "settings_opened", "theme_changed".
+    static func ui(
+        event: String,
+        screen: String? = nil,
+        peer: String?   = nil,
+        detail: String? = nil
+    ) {
+        var kv: [(String, String)] = [("event", event)]
+        if let s = screen { kv.append(("screen", s)) }
+        if let p = peer   { kv.append(("peer",   p)) }
+        if let d = detail { kv.append(("detail", quote(d))) }
+        write("INFO", "UI", format(kv), channel: .ui)
+    }
+
+    /// Records a retry / failure-recovery event (→ retry.log).
+    /// `event` examples: "retry", "backoff", "exhausted", "recovered".
+    static func retry(
+        event: String,
+        subsystem: String? = nil,
+        attempt: Int?      = nil,
+        maxAttempts: Int?  = nil,
+        peer: String?      = nil,
+        durationMs: Int?   = nil,
+        reason: String?    = nil
+    ) {
+        var kv: [(String, String)] = [("event", event)]
+        if let s = subsystem   { kv.append(("subsystem", s)) }
+        if let a = attempt     { kv.append(("attempt",   String(a))) }
+        if let m = maxAttempts { kv.append(("max",       String(m))) }
+        if let p = peer        { kv.append(("peer",      p)) }
+        if let ms = durationMs { kv.append(("ms",        String(ms))) }
+        if let r = reason      { kv.append(("reason",    quote(r))) }
+        let level = event == "exhausted" ? "ERROR" : "WARN"
+        write(level, "Retry", format(kv), channel: .retry)
     }
 
     // MARK: - File-bundle export
     //
-    // Returns the list of every log file in `logsDirectory` (active + archives),
-    // newest first.  Used by Settings → Export Logs to bundle all generations
-    // into a single zip the user can attach to a bug report.
+    // Returns all log files across all channels (active + archives), newest first.
+    // Used by Settings → Export Logs to bundle everything into one zip the user
+    // can attach to a bug report.
     static func archivedLogURLs() -> [URL] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(at: logsDirectory,
@@ -197,9 +318,21 @@ enum NetLogger {
                                                         options: [.skipsHiddenFiles]) else {
             return []
         }
-        let logs = entries.filter { $0.lastPathComponent.hasPrefix("client.") &&
-                                     ($0.pathExtension == "log" || $0.pathExtension == "gz") }
-        return logs.sorted { (a, b) in
+
+        // Gather all {channel}.log and {channel}.N.log.gz files for every channel.
+        let knownPrefixes = Set(LogChannel.allCases.map { $0.archivePrefix })
+        let logs = entries.filter { url in
+            let name = url.lastPathComponent
+            let ext  = url.pathExtension          // "log" or "gz"
+            guard ext == "log" || ext == "gz" else { return false }
+            for prefix in knownPrefixes {
+                if name == "\(prefix).log" { return true }
+                if name.hasPrefix("\(prefix).") && name.hasSuffix(".log.gz") { return true }
+            }
+            return false
+        }
+
+        return logs.sorted { a, b in
             let aD = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             let bD = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             return aD > bD
@@ -215,33 +348,36 @@ enum NetLogger {
         return ConfigStore.shared.config.verboseLogging
     }
 
-    private static func write(_ level: String, _ category: String, _ message: String) {
+    private static func write(_ level: String, _ category: String, _ message: String,
+                               channel: LogChannel) {
         let line = "[\(timestamp())] \(level.padding(toLength: 5, withPad: " ", startingAt: 0)) \(category): \(message)\n"
         os_log("%{public}@", log: log, type: levelToOSType(level), line)
 
         queue.async {
-            ensureHeader()
-            rotateIfNeeded()
-            appendLine(line)
+            ensureHeader(channel: channel)
+            rotateIfNeeded(channel: channel)
+            appendLine(line, channel: channel)
         }
     }
 
     // Writes the per-file header exactly once after the active log file is
     // created (either at first launch or immediately after rotation).  The
     // header opens with `# Session` so log aggregators can split files on it.
-    private static func ensureHeader() {
-        let fm = FileManager.default
-        if headerWritten && fm.fileExists(atPath: logURL.path) { return }
+    private static func ensureHeader(channel: LogChannel) {
+        let fm  = FileManager.default
+        let url = logURL(for: channel)
+        let key = channel.rawValue
+
+        if headerWritten[key] == true && fm.fileExists(atPath: url.path) { return }
 
         let header = sessionHeaderLine()
-        if !fm.fileExists(atPath: logURL.path) {
-            try? header.data(using: .utf8)?.write(to: logURL)
-        } else if !headerWritten {
-            // Existing file from a previous run — append a session boundary so
-            // each launch is visually distinct.
-            appendLineToFile(header)
+        if !fm.fileExists(atPath: url.path) {
+            try? header.data(using: .utf8)?.write(to: url)
+        } else if headerWritten[key] != true {
+            // Existing file from a previous run — append a session boundary.
+            appendLineToFile(header, url: url)
         }
-        headerWritten = true
+        headerWritten[key] = true
     }
 
     private static func sessionHeaderLine() -> String {
@@ -249,7 +385,7 @@ enum NetLogger {
         let v = info.operatingSystemVersion
         let osVersion = "macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
-        let appBuild = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "0"
+        let appBuild   = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "0"
         let arch: String = {
             #if arch(arm64)
             return "arm64"
@@ -272,63 +408,68 @@ enum NetLogger {
         return parts.joined(separator: " ") + "\n"
     }
 
-    private static func rotateIfNeeded() {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: logURL.path),
+    private static func rotateIfNeeded(channel: LogChannel) {
+        let url = logURL(for: channel)
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? Int, size > maxBytes else {
             return
         }
 
-        let fm = FileManager.default
-        let dir = logsDirectory
+        let fm     = FileManager.default
+        let dir    = logsDirectory
+        let prefix = channel.archivePrefix
 
-        // Shift archives: client.{n-1}.log.gz → client.n.log.gz
+        // Shift archives: {prefix}.{n-1}.log.gz → {prefix}.n.log.gz
         if maxArchives > 0 {
             for i in stride(from: maxArchives, through: 2, by: -1) {
-                let src = dir.appendingPathComponent("client.\(i - 1).log.gz")
-                let dst = dir.appendingPathComponent("client.\(i).log.gz")
+                let src = dir.appendingPathComponent("\(prefix).\(i - 1).log.gz")
+                let dst = dir.appendingPathComponent("\(prefix).\(i).log.gz")
                 if fm.fileExists(atPath: src.path) {
                     try? fm.removeItem(at: dst)
                     try? fm.moveItem(at: src, to: dst)
                 }
             }
 
-            // Compress current active log into client.1.log.gz.
-            let archive = dir.appendingPathComponent("client.1.log.gz")
+            // Compress current active log into {prefix}.1.log.gz.
+            let archive = dir.appendingPathComponent("\(prefix).1.log.gz")
             try? fm.removeItem(at: archive)
-            if let raw = try? Data(contentsOf: logURL),
-               let gz = gzip(raw) {
+            if let raw = try? Data(contentsOf: url),
+               let gz  = gzip(raw) {
                 try? gz.write(to: archive, options: .atomic)
             }
         }
 
-        // Drop any older-than-maxArchives generations the user may have on disk.
+        // Drop older-than-maxArchives generations.
         if let entries = try? fm.contentsOfDirectory(atPath: dir.path) {
-            for name in entries where name.hasPrefix("client.") && name.hasSuffix(".log.gz") {
-                if let n = Int(name.dropFirst("client.".count).dropLast(".log.gz".count)),
-                   n > maxArchives {
+            for name in entries {
+                let suffix = ".log.gz"
+                let pfxDot = "\(prefix)."
+                guard name.hasPrefix(pfxDot) && name.hasSuffix(suffix) else { continue }
+                let middle = name.dropFirst(pfxDot.count).dropLast(suffix.count)
+                if let n = Int(middle), n > maxArchives {
                     try? fm.removeItem(at: dir.appendingPathComponent(name))
                 }
             }
         }
 
-        try? fm.removeItem(at: logURL)
-        headerWritten = false
-        ensureHeader()
+        try? fm.removeItem(at: url)
+        headerWritten[channel.rawValue] = false
+        ensureHeader(channel: channel)
     }
 
-    private static func appendLine(_ line: String) {
-        appendLineToFile(line)
+    private static func appendLine(_ line: String, channel: LogChannel) {
+        appendLineToFile(line, url: logURL(for: channel))
     }
 
-    private static func appendLineToFile(_ line: String) {
+    private static func appendLineToFile(_ line: String, url: URL) {
         guard let data = line.data(using: .utf8) else { return }
-        if FileManager.default.fileExists(atPath: logURL.path),
-           let h = try? FileHandle(forWritingTo: logURL) {
+        if FileManager.default.fileExists(atPath: url.path),
+           let h = try? FileHandle(forWritingTo: url) {
             defer { try? h.close() }
             try? h.seekToEnd()
             try? h.write(contentsOf: data)
         } else {
-            try? data.write(to: logURL)
+            try? data.write(to: url)
         }
     }
 
@@ -418,7 +559,7 @@ enum NetLogger {
         // xfl=0, os=255 (unknown).
         out.append(contentsOf: [0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF])
         out.append(deflate)
-        var crcLE = crc.littleEndian
+        var crcLE  = crc.littleEndian
         var sizeLE = isize.littleEndian
         withUnsafeBytes(of: &crcLE)  { out.append(contentsOf: $0) }
         withUnsafeBytes(of: &sizeLE) { out.append(contentsOf: $0) }
@@ -444,9 +585,18 @@ enum NetLogger {
     // user's real Application Support directory.  Always compiled — SPM does
     // not define DEBUG and we don't want to gate them on Xcode configuration.
 
-    /// Resets the in-memory state used by `ensureHeader()`.  Tests call this
+    /// Resets the in-memory header flag for ALL channels.  Tests call this
     /// after manipulating the log directory directly.
-    static func _testResetHeaderFlag() { headerWritten = false }
+    static func _testResetHeaderFlag() {
+        for channel in LogChannel.allCases {
+            headerWritten[channel.rawValue] = false
+        }
+    }
+
+    /// Returns the log URL for a specific channel (for test assertions).
+    static func _testLogURL(for channel: LogChannel) -> URL {
+        logURL(for: channel)
+    }
 
     /// Synchronously drains pending log writes — waits for the serial queue.
     /// Returns when every enqueued line has hit disk.
