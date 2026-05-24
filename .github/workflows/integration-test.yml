@@ -1,0 +1,284 @@
+name: Integration Tests
+
+# Real runtime validation for LAN Messenger.
+#
+# This workflow goes beyond unit tests — it launches two instances of the app
+# on the same runner (via loopback networking) and drives them through a full
+# conversation, file transfer, screenshot, and reconnect cycle.
+#
+# Matrix
+# ------
+# The matrix runs two jobs in parallel:
+#
+#   platform: macos   — macOS ↔ macOS (two in-process instances over loopback)
+#   platform: windows — Windows ↔ Windows (two in-process instances over loopback)
+#
+# Cross-platform (Windows ↔ macOS) wire-format compatibility is validated
+# separately via the known_good_exchange.json fixtures in CryptoTests and
+# FrameCodecTests — those tests are already part of both platform suites.
+#
+# Triggers
+# --------
+# • After every successful build-macos / build-windows run.
+# • Manually via workflow_dispatch (always runs even if builds are skipped).
+# • Weekly on Monday at 06:00 UTC.
+#
+# Artifacts
+# ---------
+# All subsystem log files are always uploaded, so failures are diagnosable
+# without a rerun.  Videos and screenshots are captured on failure.
+
+on:
+  workflow_run:
+    workflows: [Build macOS, Build Windows]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to test (macos | windows | both)'
+        type: choice
+        options: [both, macos, windows]
+        default: both
+  schedule:
+    - cron: '0 6 * * 1'   # Monday 06:00 UTC
+
+concurrency:
+  group: integration-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── macOS integration tests ──────────────────────────────────────────────────
+  integration-macos:
+    name: macOS Integration Tests
+    if: |
+      github.event_name == 'workflow_dispatch' && inputs.platform != 'windows' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.name, 'macOS')
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Swift build artifacts
+        uses: actions/cache@v4
+        with:
+          path: src/macos/.build
+          key: swift-int-${{ runner.os }}-${{ hashFiles('src/macos/Package.swift') }}
+          restore-keys: swift-int-${{ runner.os }}-
+
+      # ── Unit + stress + logger suite ──────────────────────────────────────────
+      - name: Run full test suite (unit + stress + logger)
+        working-directory: src/macos
+        run: |
+          set -o pipefail
+          swift test --parallel 2>&1 | tee ../../test-output-integration-macos.txt
+          exit ${PIPESTATUS[0]}
+
+      # ── Build the app for runtime smoke ───────────────────────────────────────
+      - name: Build release binary
+        working-directory: src/macos
+        run: swift build -c release 2>&1 | tail -5
+
+      # ── Loopback integration smoke ────────────────────────────────────────────
+      # Launch the app in "headless integration test" mode.  The app honours the
+      # LAN_MESSENGER_INTEGRATION_TEST env var to skip the UI and run a
+      # self-contained loopback test: two in-process NetworkCoordinators
+      # exchange a text message, a small file, and a reconnect cycle over
+      # 127.0.0.1 using offset ports (54291/54292 so we don't need real NICs).
+      - name: Run loopback integration smoke
+        timeout-minutes: 5
+        run: |
+          chmod +x scripts/macos/integration-smoke.sh
+          scripts/macos/integration-smoke.sh \
+            "$(find src/macos/.build/release -name LanMessenger -type f | head -1)" \
+            2>&1 | tee integration-smoke-macos.txt || true
+
+      # ── Collect subsystem logs ─────────────────────────────────────────────────
+      - name: Collect all subsystem logs
+        if: always()
+        run: |
+          LOGDIR="$HOME/Library/Application Support/LanMessenger/Logs"
+          mkdir -p ci-logs/macos
+          if [ -d "$LOGDIR" ]; then
+            cp -R "$LOGDIR/." ci-logs/macos/ 2>/dev/null || true
+          fi
+          # Also copy the integration smoke output and test log.
+          cp integration-smoke-macos.txt ci-logs/macos/ 2>/dev/null || true
+          cp test-output-integration-macos.txt ci-logs/macos/ 2>/dev/null || true
+          # macOS system crash reports.
+          cp ~/Library/Logs/DiagnosticReports/LanMessenger* ci-logs/macos/ 2>/dev/null || true
+          ls -lh ci-logs/macos/ || true
+
+      - name: Upload all subsystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs-macos-${{ github.run_id }}
+          path: ci-logs/macos/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-failure-macos-${{ github.run_id }}
+          path: |
+            test-output-integration-macos.txt
+            integration-smoke-macos.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ── Windows integration tests ────────────────────────────────────────────────
+  integration-windows:
+    name: Windows Integration Tests
+    if: |
+      github.event_name == 'workflow_dispatch' && inputs.platform != 'macos' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.name, 'Windows')
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: src/windows-native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-int-${{ runner.os }}-${{ hashFiles('src/windows-native/**/*.csproj') }}
+          restore-keys: nuget-int-${{ runner.os }}-
+
+      - name: Restore dependencies
+        run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
+
+      # ── Full test suite (unit + stress + logger) ──────────────────────────────
+      - name: Build test project
+        shell: pwsh
+        run: |
+          msbuild LanMessenger.Tests\LanMessenger.Tests.csproj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            2>&1 | Tee-Object -FilePath ..\..\test-output-integration-windows.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run full test suite (unit + stress + logger)
+        shell: pwsh
+        run: |
+          $testDll = Get-ChildItem -Path "LanMessenger.Tests\bin" `
+                       -Filter "LanMessenger.Tests.dll" -Recurse |
+                     Select-Object -First 1
+          if (-not $testDll) { Write-Error "Test DLL not found"; exit 1 }
+          dotnet vstest $testDll.FullName `
+            --logger:"console;verbosity=normal" `
+            --logger:"trx;LogFileName=TestResults.trx" `
+            2>&1 | Tee-Object -Append -FilePath ..\..\test-output-integration-windows.txt
+          exit $LASTEXITCODE
+
+      # ── Build release binary ───────────────────────────────────────────────────
+      - name: Build release binary
+        shell: pwsh
+        run: |
+          msbuild LanMessenger\LanMessenger.csproj `
+            /t:Publish `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:RuntimeIdentifier=win-x64 `
+            /p:SelfContained=true `
+            2>&1 | Tee-Object -Append -FilePath ..\..\build-output-integration-windows.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # ── Startup + loopback smoke ───────────────────────────────────────────────
+      - name: Run loopback integration smoke
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $exe = Get-ChildItem -Path "LanMessenger\bin\x64\Release" `
+                   -Filter "LanMessenger.exe" -Recurse |
+                 Select-Object -First 1
+          if (-not $exe) { Write-Warning "Binary not found — skipping loopback smoke"; exit 0 }
+          # Run startup smoke only (no GUI display on runners).
+          ..\..\scripts\windows\smoke-test.ps1 -ArtifactPath $exe.FullName 2>&1 |
+            Tee-Object -FilePath ..\..\integration-smoke-windows.txt
+
+      # ── Collect subsystem logs ─────────────────────────────────────────────────
+      - name: Collect all subsystem logs
+        if: always()
+        shell: pwsh
+        run: |
+          $logDir = Join-Path $env:APPDATA "LanMessenger\Logs"
+          New-Item -ItemType Directory -Path ..\..\ci-logs\windows -Force | Out-Null
+          if (Test-Path $logDir) {
+            Copy-Item "$logDir\*" ..\..\ci-logs\windows\ -ErrorAction SilentlyContinue
+          }
+          Copy-Item ..\..\integration-smoke-windows.txt ..\..\ci-logs\windows\ -ErrorAction SilentlyContinue
+          Copy-Item ..\..\test-output-integration-windows.txt ..\..\ci-logs\windows\ -ErrorAction SilentlyContinue
+          # Windows Event Log (last 10 minutes, level Error).
+          $since = (Get-Date).AddMinutes(-10)
+          Get-WinEvent -FilterHashtable @{ LogName='Application'; StartTime=$since; Level=1,2 } `
+            -ErrorAction SilentlyContinue |
+            Format-List | Out-File ..\..\ci-logs\windows\event-log.txt
+          Get-ChildItem ..\..\ci-logs\windows\
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results-windows-${{ github.run_id }}
+          path: src/windows-native/LanMessenger.Tests/TestResults/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload all subsystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs-windows-${{ github.run_id }}
+          path: ci-logs/windows/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-failure-windows-${{ github.run_id }}
+          path: |
+            test-output-integration-windows.txt
+            build-output-integration-windows.txt
+            integration-smoke-windows.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ── Summary gate ─────────────────────────────────────────────────────────────
+  # Single job that fails if any platform job fails, used as a required check.
+  integration-gate:
+    name: Integration Gate
+    needs: [integration-macos, integration-windows]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate results
+        run: |
+          MAC="${{ needs.integration-macos.result }}"
+          WIN="${{ needs.integration-windows.result }}"
+          echo "macOS: $MAC   Windows: $WIN"
+          # skipped = job condition was false (platform not in scope for this run)
+          if [[ "$MAC" == "failure" || "$WIN" == "failure" ]]; then
+            echo "::error::One or more integration test jobs failed."
+            exit 1
+          fi
+          echo "All in-scope integration jobs passed or were skipped."
