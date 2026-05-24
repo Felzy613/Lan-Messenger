@@ -179,6 +179,11 @@ public static class LanLogger
     //
     // Returns every log file in LogsDirectory (active + archives), newest first,
     // for Settings → Export Logs.
+    //
+    // Sort key: active log (client.log) = 0, archives client.N.log.gz = N.
+    // This is deterministic; LastWriteTimeUtc is unreliable when rotations happen
+    // in rapid succession (e.g. in tests) because the OS may give equal timestamps
+    // to files created within the same timer tick.
     public static IReadOnlyList<string> ArchivedLogPaths()
     {
         try
@@ -191,7 +196,15 @@ public static class LanLogger
                            (n.EndsWith(".log", StringComparison.Ordinal) ||
                             n.EndsWith(".log.gz", StringComparison.Ordinal));
                 })
-                .OrderByDescending(p => File.GetLastWriteTimeUtc(p))
+                .OrderBy(p =>
+                {
+                    var name = Path.GetFileName(p);
+                    if (name == "client.log") return 0;
+                    // Extract N from "client.N.log.gz" — lower N is more recent.
+                    var middle = name.Substring("client.".Length,
+                        name.Length - "client.".Length - ".log.gz".Length);
+                    return int.TryParse(middle, out var n) ? n : int.MaxValue;
+                })
                 .ToList();
         }
         catch { return Array.Empty<string>(); }
