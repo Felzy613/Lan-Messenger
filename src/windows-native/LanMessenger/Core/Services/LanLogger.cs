@@ -1,5 +1,4 @@
 using LanMessenger.Core.Persistence;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO.Compression;
 using System.Reflection;
@@ -233,7 +232,9 @@ public static class LanLogger
             .Append(Environment.NewLine)
             .ToString();
 
-        Debug.Write(line);
+        // Fully qualified — the new `LanLogger.Debug(category, message)` method
+        // shadows the unqualified `Debug` symbol inside this class.
+        System.Diagnostics.Debug.Write(line);
 
         lock (_lock)
         {
