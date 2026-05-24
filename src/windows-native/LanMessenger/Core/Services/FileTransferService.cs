@@ -46,6 +46,10 @@ public sealed class FileTransferService
     private readonly Dictionary<TransferKey, DateTime> _lastIncomingReportAt = [];
     private static readonly TimeSpan ProgressInterval = TimeSpan.FromMilliseconds(80);
 
+    // Wall-clock start time per active incoming transfer.  Used to compute
+    // duration_ms and bytes_per_sec for the "complete" structured log event.
+    private readonly Dictionary<TransferKey, DateTime> _incomingStartTimes = [];
+
     private FileTransferService() { }
 
     public void SetDispatcherQueue(DispatcherQueue dq) => _dq = dq;
@@ -67,15 +71,26 @@ public sealed class FileTransferService
         var key  = new TransferKey(ip, pkt.TransferId);
         var safe = PacketValidator.SanitizeFilename(pkt.Filename);
 
+        LanLogger.FileTransfer(
+            "start", transferId: pkt.TransferId, peer: ip,
+            direction: "incoming", filename: safe, size: pkt.Size,
+            mime: MimeFromFilename(safe));
+
         var transfer = FileTransferStore.Shared.BeginIncoming(
             pkt.TransferId, pkt.Filename, pkt.Size, ip, pkt.SenderPublicKeyB64,
             ConfigStore.Shared.InboxDirectory);
 
         if (transfer is null)
         {
+            LanLogger.FileTransfer(
+                "failed", transferId: pkt.TransferId, peer: ip,
+                direction: "incoming", filename: safe, size: pkt.Size,
+                reason: "cannot create temp file — disk full or permission denied");
             Dispatch(() => OnError?.Invoke(ip, "Cannot save incoming file — check disk space and inbox permissions"));
             return;
         }
+
+        _incomingStartTimes[key] = DateTime.UtcNow;
 
         // Create an unbounded channel (single reader) for ordered chunk processing.
         var ch = Channel.CreateUnbounded<Func<Task>>(new UnboundedChannelOptions { SingleReader = true });
@@ -113,7 +128,14 @@ public sealed class FileTransferService
                 plaintext = SessionCrypto.DecryptFromPeer(
                     KeyManager.Shared.PrivateKey, senderKey, nonce, ciphertext, aad);
             }
-            catch { return; }
+            catch (Exception ex)
+            {
+                LanLogger.FileTransfer(
+                    "failed", transferId: transferId, peer: ip,
+                    direction: "incoming", filename: filename,
+                    reason: $"chunk decrypt failed: {ex.GetType().Name}");
+                return;
+            }
 
             FileTransferStore.Shared.AppendChunk(plaintext, key);
             var received = FileTransferStore.Shared.Incoming.TryGetValue(key, out var t2)
@@ -151,13 +173,35 @@ public sealed class FileTransferService
         // runs after every preceding chunk write has completed.
         ch.Writer.TryWrite(async () =>
         {
+            var size = transfer.TotalSize;
             var finalPath = FileTransferStore.Shared.FinalizeIncoming(
                 key, ConfigStore.Shared.InboxDirectory);
-            if (finalPath is null) return;
+            if (finalPath is null)
+            {
+                LanLogger.FileTransfer(
+                    "failed", transferId: pkt.TransferId, peer: ip,
+                    direction: "incoming", filename: filename, size: size,
+                    reason: "finalize failed (missing transfer record)");
+                return;
+            }
 
             Dispatch(() =>
             {
                 _lastIncomingReportAt.Remove(key);
+                int? durationMs = null;
+                double? bps = null;
+                if (_incomingStartTimes.TryGetValue(key, out var startedAt))
+                {
+                    _incomingStartTimes.Remove(key);
+                    durationMs = (int)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                    if (durationMs > 0 && size > 0)
+                        bps = (double)size * 1000.0 / durationMs.Value;
+                }
+                LanLogger.FileTransfer(
+                    "complete", transferId: pkt.TransferId, peer: ip,
+                    direction: "incoming", filename: filename, size: size,
+                    mime: MimeFromFilename(filename),
+                    durationMs: durationMs, bytesPerSec: bps);
                 OnComplete?.Invoke(ip, $"Receiving {filename}", null);
                 OnIncomingFile?.Invoke(ip, sender, finalPath);
             });
@@ -182,7 +226,13 @@ public sealed class FileTransferService
 
     public void Enqueue(string filePath, string peerIP, string peerPublicKeyB64)
     {
-        FileTransferStore.Shared.Enqueue(filePath, Path.GetFileName(filePath), peerIP);
+        var name = Path.GetFileName(filePath);
+        long? size = null;
+        try { size = new FileInfo(filePath).Length; } catch { /* file may have been deleted */ }
+        LanLogger.FileTransfer(
+            "queued", peer: peerIP, direction: "outgoing",
+            filename: name, size: size, mime: MimeFromFilename(name));
+        FileTransferStore.Shared.Enqueue(filePath, name, peerIP);
         StartNextIfIdle(peerIP, peerPublicKeyB64);
     }
 
@@ -198,6 +248,14 @@ public sealed class FileTransferService
         var item = q.Peek();
 
         FileTransferStore.Shared.MarkTransferStarted(peerIP);
+        long? outgoingSize = null;
+        try { outgoingSize = new FileInfo(item.Path).Length; } catch { /* deleted between enqueue and send */ }
+        LanLogger.FileTransfer(
+            "start", peer: peerIP, direction: "outgoing",
+            filename: item.Filename, size: outgoingSize,
+            mime: MimeFromFilename(item.Filename));
+
+        var startedAt = DateTime.UtcNow;
         _ = Task.Run(async () =>
         {
             var success = await SendFileAsync(item.Path, peerIP, peerPublicKeyB64, item.Filename)
@@ -205,13 +263,28 @@ public sealed class FileTransferService
             Dispatch(() =>
             {
                 FileTransferStore.Shared.MarkTransferFinished(peerIP, success);
+                var durationMs = (int)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                double? bps = (durationMs > 0 && outgoingSize > 0)
+                    ? (double)outgoingSize.Value * 1000.0 / durationMs
+                    : null;
                 if (success)
                 {
+                    LanLogger.FileTransfer(
+                        "complete", peer: peerIP, direction: "outgoing",
+                        filename: item.Filename, size: outgoingSize,
+                        mime: MimeFromFilename(item.Filename),
+                        bytesSent: outgoingSize,
+                        durationMs: durationMs, bytesPerSec: bps);
                     // Advance to the next queued file.
                     StartNextIfIdle(peerIP, peerPublicKeyB64);
                 }
                 else
                 {
+                    LanLogger.FileTransfer(
+                        "failed", peer: peerIP, direction: "outgoing",
+                        filename: item.Filename, size: outgoingSize,
+                        durationMs: durationMs,
+                        reason: "will retry on reconnect");
                     // Do NOT retry immediately — the item stays queued and will be
                     // retried when RetryQueue() is called (e.g., on peer reconnect).
                     OnError?.Invoke(peerIP, $"Failed to send {item.Filename} — will retry when peer reconnects");
@@ -220,10 +293,50 @@ public sealed class FileTransferService
         });
     }
 
+    // Lightweight MIME inference for log enrichment.  Not exhaustive — only
+    // returns the common categories the support workflow cares about so the
+    // log line stays readable.
+    internal static string? MimeFromFilename(string filename)
+    {
+        var dot = filename.LastIndexOf('.');
+        if (dot < 0 || dot == filename.Length - 1) return null;
+        return filename.Substring(dot + 1).ToLowerInvariant() switch
+        {
+            "png"  => "image/png",
+            "jpg" or "jpeg" => "image/jpeg",
+            "gif"  => "image/gif",
+            "heic" => "image/heic",
+            "webp" => "image/webp",
+            "mp4"  => "video/mp4",
+            "mov"  => "video/quicktime",
+            "mkv"  => "video/x-matroska",
+            "webm" => "video/webm",
+            "pdf"  => "application/pdf",
+            "zip"  => "application/zip",
+            "txt"  => "text/plain",
+            "md"   => "text/markdown",
+            "json" => "application/json",
+            "csv"  => "text/csv",
+            "doc" or "docx" => "application/msword",
+            "xls" or "xlsx" => "application/vnd.ms-excel",
+            "ppt" or "pptx" => "application/vnd.ms-powerpoint",
+            "mp3"  => "audio/mpeg",
+            "wav"  => "audio/wav",
+            "m4a"  => "audio/mp4",
+            _ => null,
+        };
+    }
+
     private async Task<bool> SendFileAsync(
         string path, string peerIP, string peerPublicKeyB64, string filename)
     {
-        if (!File.Exists(path)) return false;
+        if (!File.Exists(path))
+        {
+            LanLogger.FileTransfer(
+                "failed", peer: peerIP, direction: "outgoing",
+                filename: filename, reason: "source file missing");
+            return false;
+        }
         var totalSize = new FileInfo(path).Length;
 
         try
@@ -303,7 +416,14 @@ public sealed class FileTransferService
             });
             return true;
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            LanLogger.FileTransfer(
+                "failed", peer: peerIP, direction: "outgoing",
+                filename: filename, size: totalSize,
+                reason: $"{ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
     }
 
     private void Dispatch(Action action) => _dq?.TryEnqueue(() => action());

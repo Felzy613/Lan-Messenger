@@ -41,6 +41,9 @@ public static class ScreenshotService
     /// </summary>
     public static async Task<string> CapturePrimaryDisplayAsync()
     {
+        var startedAt = DateTime.UtcNow;
+        LanLogger.Screenshot("request", permission: "granted");
+
         return await Task.Run(() =>
         {
             try
@@ -54,7 +57,10 @@ public static class ScreenshotService
                 int width  = GetSystemMetrics(SM_CXSCREEN);
                 int height = GetSystemMetrics(SM_CYSCREEN);
                 if (width <= 0 || height <= 0)
+                {
+                    LanLogger.Screenshot("failed", reason: "could not determine screen size");
                     throw new ScreenshotException("Could not determine screen size.");
+                }
                 var bounds = new Rectangle(0, 0, width, height);
 
                 using var bitmap   = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
@@ -68,13 +74,17 @@ public static class ScreenshotService
                 var path = Path.Combine(dir, name);
                 bitmap.Save(path, ImageFormat.Png);
 
-                LanLogger.Info("Screenshot", $"captured {bounds.Width}x{bounds.Height} -> {path}");
+                var elapsedMs = (int)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+                LanLogger.Screenshot(
+                    "captured", display: "primary",
+                    widthPx: bounds.Width, heightPx: bounds.Height,
+                    permission: "granted", initMs: elapsedMs, path: path);
                 return path;
             }
             catch (ScreenshotException) { throw; }
             catch (Exception ex)
             {
-                LanLogger.Error("Screenshot", "capture failed", ex);
+                LanLogger.Screenshot("failed", reason: $"{ex.GetType().Name}: {ex.Message}");
                 throw new ScreenshotException($"Screenshot capture failed: {ex.Message}", ex);
             }
         }).ConfigureAwait(false);

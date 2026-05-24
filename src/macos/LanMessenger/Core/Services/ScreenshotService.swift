@@ -86,11 +86,14 @@ enum ScreenshotService {
     /// directory.  Returns the absolute file path on success.
     /// All ScreenCaptureKit work runs off the main actor.
     static func capturePrimaryDisplay() async throws -> String {
+        let startedAt = Date()
+        NetLogger.screenshot(event: "request", permission: hasPermission() ? "granted" : "unknown")
+
         // Permission gate.
         if !hasPermission() {
             let granted = requestPermission()
             if !granted {
-                NetLogger.warn("Screenshot", "screen-recording permission denied")
+                NetLogger.screenshot(event: "permission_denied", permission: "denied")
                 throw ScreenshotError.permissionDenied
             }
         }
@@ -109,10 +112,10 @@ enum ScreenshotService {
                 // surfaces as captureFailed with the underlying message.
                 let msg = (error as NSError).localizedDescription
                 if msg.lowercased().contains("permission") || msg.lowercased().contains("not authorized") {
-                    NetLogger.warn("Screenshot", "permission revoked during capture: \(msg)")
+                    NetLogger.screenshot(event: "permission_denied", permission: "denied", reason: msg)
                     throw ScreenshotError.permissionDenied
                 }
-                NetLogger.error("Screenshot", "SCK capture failed: \(msg)")
+                NetLogger.screenshot(event: "failed", reason: msg)
                 throw ScreenshotError.captureFailed(msg)
             }
 
@@ -134,7 +137,12 @@ enum ScreenshotService {
                 throw ScreenshotError.writeFailed(error.localizedDescription)
             }
 
-            NetLogger.info("Screenshot", "captured \(cgImage.width)×\(cgImage.height) → \(url.path)")
+            let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            NetLogger.screenshot(
+                event: "captured", display: "primary",
+                widthPx: cgImage.width, heightPx: cgImage.height,
+                permission: "granted", initMs: elapsedMs, path: url.path
+            )
             return url.path
         }.value
     }
@@ -304,7 +312,7 @@ private final class FrameCollector: NSObject, SCStreamOutput, SCStreamDelegate, 
     // MARK: SCStreamDelegate
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        NetLogger.error("Screenshot", "SCStream stopped with error: \(error.localizedDescription)")
+        NetLogger.screenshot(event: "interrupted", interruptionReason: error.localizedDescription)
         resume(with: .failure(ScreenshotError.captureFailed(error.localizedDescription)))
     }
 }

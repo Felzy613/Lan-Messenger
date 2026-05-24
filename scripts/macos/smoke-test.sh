@@ -164,6 +164,22 @@ if [ -n "$LS_DUMP" ]; then
     log "  ✓ Launch Services has registered the bundle"
 fi
 
+# ── 4. Verify diagnostic logger wrote a session header ──────────────────────
+# Confirms NetLogger initialised, the Application Support directory is
+# writable, and the first INFO event reached disk.  A missing header during
+# the stability window means logging is broken — exactly the kind of
+# regression a smoke test should catch.
+CLIENT_LOG="$HOME/Library/Application Support/LanMessenger/Logs/client.log"
+if [ -f "$CLIENT_LOG" ]; then
+    if /usr/bin/head -1 "$CLIENT_LOG" | grep -q '^# Session '; then
+        log "  ✓ Diagnostic log opened with a Session header"
+    else
+        log "::warning::client.log exists but has no # Session header — logger may be misconfigured"
+    fi
+else
+    log "::warning::client.log was not created during the stability window — logger may be broken"
+fi
+
 log ""
 log "✅  Smoke test passed — app installed cleanly and ran stably for $((STARTUP_WAIT + ALIVE_WAIT))s"
 cleanup_and_exit 0

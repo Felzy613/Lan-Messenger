@@ -37,6 +37,11 @@ final class FileTransferService {
     private let chunkState = ChunkQueueState()
     private let progressInterval: TimeInterval = 0.08
 
+    // Wall-clock start time per active incoming/outgoing transfer.  Used solely
+    // to compute duration_ms and bytes_per_sec for the structured "complete"
+    // log event.  Cleared on completion / failure.
+    private var incomingStartTimes: [FileTransferStore.TransferKey: Date] = [:]
+
     // Serial queue: preserves TCP chunk ordering during decrypt + write.
     // handleFileEnd is routed through here too so finalization always
     // happens after the last chunk write completes.
@@ -63,7 +68,11 @@ final class FileTransferService {
         let inboxDir = ConfigStore.shared.inboxDirectory
         let safe     = PacketValidator.sanitizeFilename(pkt.filename)
 
-        NetLogger.info("FileTransfer", "[\(pkt.transferId)] incoming start: \"\(safe)\" \(pkt.size) bytes from \(ip)")
+        NetLogger.fileTransfer(
+            event: "start", transferId: pkt.transferId, peer: ip,
+            direction: "incoming", filename: safe, size: pkt.size,
+            mime: Self.mimeFromFilename(safe)
+        )
 
         guard FileTransferStore.shared.beginIncoming(
             transferId:         pkt.transferId,
@@ -73,10 +82,15 @@ final class FileTransferService {
             senderPublicKeyB64: pkt.senderPublicKeyB64,
             inboxDir:           inboxDir
         ) != nil else {
-            NetLogger.error("FileTransfer", "[\(pkt.transferId)] cannot create temp file — disk full or permission denied")
+            NetLogger.fileTransfer(
+                event: "failed", transferId: pkt.transferId, peer: ip,
+                direction: "incoming", filename: safe, size: pkt.size,
+                reason: "cannot create temp file — disk full or permission denied"
+            )
             onError?(ip, "Cannot save incoming file — check disk space and inbox permissions")
             return
         }
+        incomingStartTimes[FileTransferStore.TransferKey(ip: ip, transferId: pkt.transferId)] = Date()
         onProgress?(ip, "Receiving \(safe)", 0, pkt.size)
     }
 
@@ -111,7 +125,11 @@ final class FileTransferService {
                 ciphertextB64:      ciphertext,
                 aad:                aad
             ) else {
-                NetLogger.error("FileTransfer", "[\(transferId)] chunk decrypt failed")
+                NetLogger.fileTransfer(
+                    event: "failed", transferId: transferId, peer: ip,
+                    direction: "incoming", filename: filename,
+                    reason: "chunk decrypt failed"
+                )
                 return
             }
 
@@ -131,7 +149,8 @@ final class FileTransferService {
 
             guard shouldReport else { return }
             let bytes = received  // copy for main-thread capture
-            NetLogger.verbose("FileTransfer", "[\(transferId)] progress \(bytes)/\(totalSize)")
+            NetLogger.debug("FileTransfer",
+                "progress dir=incoming transfer_id=\(transferId) recv=\(bytes) size=\(totalSize)")
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 FileTransferStore.shared.setBytesReceived(bytes, forKey: key)
@@ -152,17 +171,34 @@ final class FileTransferService {
         chunkQueue.async { [weak self] in
             guard let self else { return }
             self.chunkState.remove(key)  // clean up tracker before main hop
-            NetLogger.info("FileTransfer", "[\(transferId)] all chunks received, finalizing")
+            NetLogger.debug("FileTransfer",
+                "all chunks received transfer_id=\(transferId) — finalizing")
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                let startedAt = self.incomingStartTimes.removeValue(forKey: key)
+                let totalSize = FileTransferStore.shared.incoming[key]?.totalSize
                 guard let finalURL = FileTransferStore.shared.finalizeIncoming(
                     key:      key,
                     inboxDir: ConfigStore.shared.inboxDirectory
                 ) else {
-                    NetLogger.error("FileTransfer", "[\(transferId)] finalize failed (missing transfer record)")
+                    NetLogger.fileTransfer(
+                        event: "failed", transferId: transferId, peer: ip,
+                        direction: "incoming", filename: filename,
+                        reason: "finalize failed (missing transfer record)"
+                    )
                     return
                 }
-                NetLogger.info("FileTransfer", "[\(transferId)] saved to \(finalURL.path)")
+                let durationMs = startedAt.map { Int(Date().timeIntervalSince($0) * 1000) }
+                let bps: Double? = {
+                    guard let ms = durationMs, ms > 0, let sz = totalSize else { return nil }
+                    return Double(sz) * 1000.0 / Double(ms)
+                }()
+                NetLogger.fileTransfer(
+                    event: "complete", transferId: transferId, peer: ip,
+                    direction: "incoming", filename: filename, size: totalSize,
+                    mime: Self.mimeFromFilename(filename),
+                    durationMs: durationMs, bytesPerSec: bps
+                )
                 self.onComplete?(ip, "Receiving \(filename)", nil)
                 self.onIncomingFile?(ip, sender, finalURL)
             }
@@ -173,9 +209,21 @@ final class FileTransferService {
 
     func enqueue(filePath: String, toPeerIP ip: String, peerPublicKeyB64: String) {
         let url = URL(fileURLWithPath: filePath)
-        NetLogger.verbose("FileTransfer", "queued \"\(url.lastPathComponent)\" for \(ip)")
+        NetLogger.fileTransfer(
+            event: "queued", peer: ip, direction: "outgoing",
+            filename: url.lastPathComponent, size: Self.fileSize(atPath: filePath),
+            mime: Self.mimeFromFilename(url.lastPathComponent)
+        )
         FileTransferStore.shared.enqueue(path: filePath, filename: url.lastPathComponent, forPeerIP: ip)
         startNextIfIdle(peerIP: ip, peerPublicKeyB64: peerPublicKeyB64)
+    }
+
+    // Best-effort file size lookup for log enrichment.  Returns nil when the
+    // file has been deleted between enqueue and send.
+    nonisolated static func fileSize(atPath path: String) -> Int64? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attrs[.size] as? Int64 else { return nil }
+        return size
     }
 
     // Re-trigger the queue for a peer that has just come back online — covers
@@ -202,7 +250,13 @@ final class FileTransferService {
         let myPublicKeyB64 = KeyManager.shared.publicKeyB64
         let myName         = ConfigStore.shared.config.username
 
-        NetLogger.info("FileTransfer", "starting outgoing \"\(filename)\" to \(peerIP)")
+        let outgoingStartedAt = Date()
+        let outgoingSize = Self.fileSize(atPath: path)
+        NetLogger.fileTransfer(
+            event: "start", peer: peerIP, direction: "outgoing",
+            filename: filename, size: outgoingSize,
+            mime: Self.mimeFromFilename(filename)
+        )
 
         // Dispatch blocking I/O to sendQueue so Swift's cooperative thread pool stays
         // free for other async work. Progress and completion callbacks are delivered
@@ -233,14 +287,63 @@ final class FileTransferService {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 FileTransferStore.shared.markTransferFinished(peerIP: peerIP, success: success)
+                let durationMs = Int(Date().timeIntervalSince(outgoingStartedAt) * 1000)
+                let bps: Double? = {
+                    guard durationMs > 0, let sz = outgoingSize else { return nil }
+                    return Double(sz) * 1000.0 / Double(durationMs)
+                }()
                 if success {
-                    NetLogger.info("FileTransfer", "outgoing \"\(filename)\" to \(peerIP) complete")
+                    NetLogger.fileTransfer(
+                        event: "complete", peer: peerIP, direction: "outgoing",
+                        filename: filename, size: outgoingSize,
+                        mime: Self.mimeFromFilename(filename),
+                        bytesSent: outgoingSize,
+                        durationMs: durationMs, bytesPerSec: bps
+                    )
                     self.startNextIfIdle(peerIP: peerIP, peerPublicKeyB64: peerPublicKeyB64)
                 } else {
-                    NetLogger.error("FileTransfer", "outgoing \"\(filename)\" to \(peerIP) failed — will retry on reconnect")
+                    NetLogger.fileTransfer(
+                        event: "failed", peer: peerIP, direction: "outgoing",
+                        filename: filename, size: outgoingSize,
+                        durationMs: durationMs,
+                        reason: "will retry on reconnect"
+                    )
                     self.onError?(peerIP, "Failed to send \(filename) — will retry when peer reconnects")
                 }
             }
+        }
+    }
+
+    // Lightweight MIME inference for log enrichment.  Not exhaustive — only
+    // returns the common categories the support workflow cares about so the
+    // log line stays readable.  Returns nil for unknown extensions.
+    nonisolated static func mimeFromFilename(_ filename: String) -> String? {
+        let lower = filename.lowercased()
+        guard let dot = lower.lastIndex(of: ".") else { return nil }
+        let ext = String(lower[lower.index(after: dot)...])
+        switch ext {
+        case "png":  return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif":  return "image/gif"
+        case "heic": return "image/heic"
+        case "webp": return "image/webp"
+        case "mp4":  return "video/mp4"
+        case "mov":  return "video/quicktime"
+        case "mkv":  return "video/x-matroska"
+        case "webm": return "video/webm"
+        case "pdf":  return "application/pdf"
+        case "zip":  return "application/zip"
+        case "txt":  return "text/plain"
+        case "md":   return "text/markdown"
+        case "json": return "application/json"
+        case "csv":  return "text/csv"
+        case "doc", "docx": return "application/msword"
+        case "xls", "xlsx": return "application/vnd.ms-excel"
+        case "ppt", "pptx": return "application/vnd.ms-powerpoint"
+        case "mp3":  return "audio/mpeg"
+        case "wav":  return "audio/wav"
+        case "m4a":  return "audio/mp4"
+        default:     return nil
         }
     }
 

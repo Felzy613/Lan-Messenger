@@ -44,6 +44,7 @@ public sealed class AppConfig
     [JsonPropertyName("last_update_check")]     public double LastUpdateCheck    { get; set; }
     [JsonPropertyName("start_in_tray")]         public bool   StartInTray        { get; set; } = false;
     [JsonPropertyName("close_to_tray")]         public bool   CloseToTray        { get; set; } = true;
+    [JsonPropertyName("verbose_logging")]       public bool   VerboseLogging     { get; set; } = false;
 }
 
 // Manages reading/writing config.json in %APPDATA%\LanMessenger\.
