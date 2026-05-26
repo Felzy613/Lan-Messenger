@@ -47,7 +47,7 @@
                 Padding="0"
                 CornerRadius="16"
                 BorderThickness="0"
-                ToolTipService.ToolTip="Capture screen and send"
+                ToolTipService.ToolTip="Capture a window screenshot"
                 Click="ScreenshotBtn_Click">
             <Button.Resources>
                 <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>

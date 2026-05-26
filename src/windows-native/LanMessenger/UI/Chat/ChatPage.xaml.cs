@@ -349,22 +349,23 @@ public sealed partial class ChatPage : Page
         _model.SendTyping(active, _model.SelectedPeerIP);
     }
 
-    private async void OnAttachRequested()
+    // Synchronous Win32 file picker — replaces the WinRT FileOpenPicker that
+    // threw COMException 0x80004005 in some unpackaged-app configurations.
+    // GetOpenFileNameW bypasses the shell-broker COM surrogate entirely and is
+    // reliable regardless of package identity or window activation state.
+    // GetOpenFileName pumps its own inner message loop while the dialog is
+    // open, so the UI thread stays responsive even though this is synchronous.
+    private void OnAttachRequested()
     {
         if (_model is null || _model.SelectedPeerIP is null) return;
-
         var targetPeerIP = _model.SelectedPeerIP;
+
         Composer.IsAttachmentPickerOpen = true;
         try
         {
-            if (Application.Current is not global::LanMessenger.App app)
+            if (Application.Current is not global::LanMessenger.App app || app.MainWindow is null)
             {
-                LanLogger.Error("Attachment", "Application.Current is not App — cannot open file picker.");
-                return;
-            }
-            if (app.MainWindow is null)
-            {
-                LanLogger.Error("Attachment", "MainWindow is null — cannot open file picker.");
+                LanLogger.Error("Attachment", "MainWindow unavailable — cannot open file picker.");
                 return;
             }
 
@@ -375,48 +376,19 @@ public sealed partial class ChatPage : Page
                 return;
             }
 
-            // Ensure the window is in the foreground so the picker appears on
-            // top of the app and isn't hidden behind other windows.
+            // Bring the window to the foreground so the dialog appears on top.
             app.MainWindow.ShowWindowFromTray();
 
-            var picker = new Windows.Storage.Pickers.FileOpenPicker();
-            WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
-            picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Downloads;
-            picker.FileTypeFilter.Add("*");
-
-            var files = await picker.PickMultipleFilesAsync();
-            if (files is null || files.Count == 0) return;
-
-            foreach (var file in files)
+            var files = Core.Services.Win32FileDialog.PickMultipleFiles(hwnd);
+            foreach (var path in files)
             {
-                if (!string.IsNullOrWhiteSpace(file.Path))
-                {
-                    _model.SendFile(file.Path, targetPeerIP);
-                }
-                else
-                {
-                    LanLogger.Warn("Attachment", $"Skipped picked file without a filesystem path: {file.Name}");
-                }
+                if (!string.IsNullOrWhiteSpace(path))
+                    _model.SendFile(path, targetPeerIP);
             }
         }
         catch (Exception ex)
         {
-            LanLogger.Error("Attachment", $"File picker failed: {ex.GetType().Name}: {ex.Message}", ex);
-            // Show a user-visible error — previously the button would silently
-            // do nothing if the picker threw (e.g. COM apartment issues on
-            // some Windows configurations).
-            try
-            {
-                var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
-                {
-                    Title           = "Could not open file picker",
-                    Content         = $"The file picker failed to open.\n\n{ex.Message}",
-                    CloseButtonText = "OK",
-                    XamlRoot        = XamlRoot,
-                };
-                await dialog.ShowAsync();
-            }
-            catch { /* if even the error dialog fails, the LanLogger entry is the fallback */ }
+            LanLogger.Error("Attachment", $"File picker error: {ex.GetType().Name}: {ex.Message}", ex);
         }
         finally
         {
@@ -432,9 +404,12 @@ public sealed partial class ChatPage : Page
     }
 
     /// <summary>
-    /// User pressed the screenshot button in the composer.  We capture the
-    /// primary display off the UI thread, then route the resulting PNG path
-    /// through SendFile() — exactly as if the user had drag-dropped the file.
+    /// Screenshot flow:
+    ///   1. Show a window picker so the user selects which window (or full
+    ///      screen) to capture.
+    ///   2. Capture off the UI thread.
+    ///   3. Show a preview dialog — the user must click "Send" explicitly.
+    ///      If they cancel, the temp file is deleted.
     /// </summary>
     private async void OnScreenshotRequested()
     {
@@ -442,10 +417,31 @@ public sealed partial class ChatPage : Page
         var targetPeerIP = _model.SelectedPeerIP;
 
         Composer.IsScreenshotBusy = true;
+        string? capturedPath = null;
         try
         {
-            var path = await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync();
-            _model.SendFile(path, targetPeerIP);
+            // Step 1 — window picker.
+            var picker = new ScreenshotWindowPickerDialog { XamlRoot = XamlRoot };
+            var pickerResult = await picker.ShowAsync();
+            if (pickerResult != ContentDialogResult.Primary)
+                return;   // user cancelled the picker
+
+            // Step 2 — capture (off UI thread).
+            var hwnd = picker.SelectedHwnd;
+            capturedPath = hwnd == IntPtr.Zero
+                ? await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync()
+                : await Core.Services.ScreenshotService.CaptureWindowAsync(hwnd);
+
+            // Step 3 — preview: user must explicitly click Send.
+            var preview = new ScreenshotPreviewDialog(capturedPath) { XamlRoot = XamlRoot };
+            var previewResult = await preview.ShowAsync();
+
+            if (previewResult == ContentDialogResult.Primary)
+            {
+                _model.SendFile(capturedPath, targetPeerIP);
+                capturedPath = null;   // ownership transferred; don't delete
+            }
+            // else: user cancelled — fall through to finally which deletes the file
         }
         catch (Core.Services.ScreenshotService.ScreenshotException ex)
         {
@@ -460,6 +456,11 @@ public sealed partial class ChatPage : Page
         finally
         {
             Composer.IsScreenshotBusy = false;
+            // Delete the temp file if it was captured but not sent (user cancelled preview).
+            if (capturedPath is not null)
+            {
+                try { File.Delete(capturedPath); } catch { }
+            }
         }
     }
 

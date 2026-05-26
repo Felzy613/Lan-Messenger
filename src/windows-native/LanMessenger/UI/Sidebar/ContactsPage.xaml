@@ -9,14 +9,12 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <!-- Search bar -->
         <Border Grid.Row="0"
-                Padding="12,10">
+                Padding="12,10,12,6">
             <Grid ColumnSpacing="8"
                   Padding="10,6"
                   Background="{ThemeResource ControlFillColorDefaultBrush}"
@@ -33,7 +31,7 @@
                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <TextBox x:Name="SearchBox"
                          Grid.Column="1"
-                         PlaceholderText="Search contacts"
+                         PlaceholderText="Search by name or IP"
                          BorderThickness="0"
                          Background="Transparent"
                          TextChanged="SearchBox_TextChanged">
@@ -61,121 +59,67 @@
             </Grid>
         </Border>
 
-        <!-- "New contact" / Search LAN row, WhatsApp-style -->
-        <Button Grid.Row="1"
-                HorizontalAlignment="Stretch"
-                HorizontalContentAlignment="Stretch"
-                Background="Transparent"
-                BorderThickness="0"
-                Padding="16,10"
-                Click="AddFromPeers_Click">
-            <Grid ColumnSpacing="14">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <Border Grid.Column="0"
-                        Width="44" Height="44"
-                        CornerRadius="22"
-                        Background="#25D366">
+        <!-- Summary bar: "N contacts · M online" on the left, green "New contact" on the right -->
+        <Grid Grid.Row="1"
+              Padding="16,4,12,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="SummaryText"
+                       Grid.Column="0"
+                       Style="{ThemeResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       VerticalAlignment="Center" />
+
+            <Button Grid.Column="1"
+                    x:Name="NewContactBtn"
+                    Padding="10,5"
+                    CornerRadius="6"
+                    BorderThickness="0"
+                    Click="AddFromPeers_Click"
+                    ToolTipService.ToolTip="Find peers on your network and add them as contacts">
+                <Button.Resources>
+                    <SolidColorBrush x:Key="ButtonBackground"             Color="#25D366"/>
+                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#1EBE5D"/>
+                    <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#1AAD54"/>
+                    <SolidColorBrush x:Key="ButtonForeground"             Color="White"/>
+                    <SolidColorBrush x:Key="ButtonForegroundPointerOver"  Color="White"/>
+                    <SolidColorBrush x:Key="ButtonForegroundPressed"      Color="White"/>
+                    <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
+                    <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                    <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
+                </Button.Resources>
+                <StackPanel Orientation="Horizontal" Spacing="5">
                     <FontIcon FontFamily="Segoe MDL2 Assets"
                               Glyph="&#xE8FA;"
-                              FontSize="18"
+                              FontSize="11"
                               Foreground="White" />
-                </Border>
-                <TextBlock Grid.Column="1"
-                           Text="New contact"
-                           Style="{ThemeResource BodyStrongTextBlockStyle}"
-                           VerticalAlignment="Center" />
-            </Grid>
-        </Button>
+                    <TextBlock Text="New contact"
+                               FontSize="12"
+                               Foreground="White" />
+                </StackPanel>
+            </Button>
+        </Grid>
 
-        <Rectangle Grid.Row="2"
-                   Height="1"
-                   Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
-                   Margin="16,0" />
-
-        <!-- "Contacts" section header -->
-        <TextBlock Grid.Row="3"
-                   Text="Contacts"
-                   Style="{ThemeResource CaptionTextBlockStyle}"
-                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                   Margin="16,8,16,4" />
-
-        <!-- Contact list -->
+        <!-- Contact list — items are built programmatically so we can insert
+             section headers (Online / Offline) without a CollectionViewSource. -->
         <ListView x:Name="ContactsList"
-                  Grid.Row="4"
+                  Grid.Row="2"
                   SelectionMode="None">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                    <Setter Property="Padding" Value="16,6" />
+                    <Setter Property="Padding"                    Value="0" />
+                    <Setter Property="MinHeight"                  Value="0" />
                 </Style>
             </ListView.ItemContainerStyle>
-            <ListView.ItemTemplate>
-                <DataTemplate x:DataType="local:ContactRowViewModel">
-                    <Grid ColumnSpacing="12" Padding="0,2">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-
-                        <!-- Avatar with online dot -->
-                        <Grid Grid.Column="0">
-                            <ui:AvatarControl Width="44" Height="44"
-                                              NameText="{x:Bind Username, Mode=OneWay}"
-                                              PhotoB64="{x:Bind PhotoB64, Mode=OneWay}" />
-                            <Ellipse Width="11" Height="11"
-                                     Fill="#25D366"
-                                     Stroke="White" StrokeThickness="2"
-                                     HorizontalAlignment="Right"
-                                     VerticalAlignment="Bottom"
-                                     Visibility="{x:Bind IsOnlineVisibility, Mode=OneWay}" />
-                        </Grid>
-
-                        <StackPanel Grid.Column="1"
-                                    VerticalAlignment="Center"
-                                    Spacing="2">
-                            <TextBlock Text="{x:Bind Username, Mode=OneWay}"
-                                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
-                            <TextBlock Text="{x:Bind StatusText, Mode=OneWay}"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Foreground="{x:Bind StatusBrush, Mode=OneWay}" />
-                        </StackPanel>
-
-                        <Button Grid.Column="2"
-                                Background="Transparent"
-                                BorderBrush="Transparent"
-                                Tag="{x:Bind PublicKeyB64}"
-                                ToolTipService.ToolTip="Contact options">
-                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE712;" FontSize="14" />
-                            <Button.Flyout>
-                                <MenuFlyout>
-                                    <MenuFlyoutItem Text="Edit…"
-                                                    Tag="{x:Bind PublicKeyB64}"
-                                                    Click="EditBtn_Click">
-                                        <MenuFlyoutItem.Icon>
-                                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE70F;" />
-                                        </MenuFlyoutItem.Icon>
-                                    </MenuFlyoutItem>
-                                    <MenuFlyoutItem Text="Remove"
-                                                    Tag="{x:Bind PublicKeyB64}"
-                                                    Click="DeleteBtn_Click">
-                                        <MenuFlyoutItem.Icon>
-                                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE74D;" />
-                                        </MenuFlyoutItem.Icon>
-                                    </MenuFlyoutItem>
-                                </MenuFlyout>
-                            </Button.Flyout>
-                        </Button>
-                    </Grid>
-                </DataTemplate>
-            </ListView.ItemTemplate>
         </ListView>
 
+        <!-- Empty state: no contacts, or no search matches -->
         <StackPanel x:Name="EmptyState"
-                    Grid.Row="4"
+                    Grid.Row="2"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
                     Spacing="10"
@@ -190,7 +134,7 @@
                        HorizontalAlignment="Center"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <TextBlock x:Name="EmptySubtitle"
-                       Text="Tap &quot;New contact&quot; to find peers on your network."
+                       Text="Click &quot;New contact&quot; to find peers on your network."
                        HorizontalAlignment="Center"
                        TextAlignment="Center"
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />

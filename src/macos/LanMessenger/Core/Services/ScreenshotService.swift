@@ -3,6 +3,7 @@ import AppKit
 import CoreGraphics
 import CoreImage
 import CoreMedia
+import ImageIO
 import ScreenCaptureKit
 
 // Captures the user's main display via ScreenCaptureKit, writes a PNG to a temp
@@ -13,23 +14,37 @@ import ScreenCaptureKit
 // only produces a file on disk.  The composer then calls AppModel.sendFile()
 // with the returned path, exactly as if the user had dragged the screenshot in.
 //
-// Why ScreenCaptureKit
-// --------------------
-// The earlier implementation used `CGDisplayCreateImage`, which is deprecated
-// in macOS 14.  ScreenCaptureKit is the supported replacement and works back
-// to macOS 12.3, well below this project's 13.0 deployment target.  We use an
-// `SCStream` with one frame and tear it down immediately so the API surface
-// matches the one-shot semantics of the deprecated call.
+// Capture strategy (macOS 14+ vs macOS 13)
+// -----------------------------------------
+// macOS 14+ uses SCScreenshotManager.captureImage(), a purpose-built single-
+// frame API introduced in macOS 14.  It has no stream lifecycle to manage,
+// so there is nothing to start or stop — the system just returns one CGImage
+// and is done.  This avoids the SCStream start/stop/teardown sequence that
+// caused a main-thread freeze on macOS 14+ (see detailed note below).
+//
+// macOS 13.x falls back to an SCStream that is started, used for exactly one
+// frame, and then stopped via the completion-handler form of stopCapture()
+// (NOT the async/await form) to avoid any actor-hop.
+//
+// Why the SCStream approach caused a beachball on macOS 14+
+// ----------------------------------------------------------
+// The original code called stream.stopCapture() (async/await) from two
+// concurrent places: once inside FrameCollector.resume() via Task.detached,
+// and once in captureOneFrame() after firstImage() returns.  On macOS 14+,
+// the Swift async wrapper for stopCapture() may hop to the main actor for
+// its XPC teardown callbacks.  Having two concurrent calls serialised on the
+// main thread — where each can take 2-4 s on macOS 15/26 while the capture
+// session is torn down — blocked the main run loop long enough to show the
+// spinning beachball and, on slower completion, required a force-quit.
 //
 // Threading
 // ---------
-//  • SCShareableContent.current and SCStream.startCapture are async APIs and
-//    must run off the main actor.  The public capturePrimaryDisplay() is
-//    declared on the main actor for safe call from SwiftUI, but its body
-//    hops to a detached Task for all heavy work.
-//  • The frame-delivery callback runs on a dedicated dispatch queue. We
-//    convert the buffer once, hand the CGImage back via a continuation, and
-//    immediately stop the stream so we never accumulate frames.
+//  • SCShareableContent.excludingDesktopWindows and SCScreenshotManager
+//    are async APIs and must run off the main actor.  capturePrimaryDisplay()
+//    is @MainActor for safe SwiftUI call-sites, but all heavy work runs in
+//    a detached Task.
+//  • PNG encoding uses CGImageDestination (Core Graphics), which is
+//    explicitly documented as thread-safe, instead of NSBitmapImageRep.
 //
 // Permissions
 // -----------
@@ -119,22 +134,17 @@ enum ScreenshotService {
                 throw ScreenshotError.captureFailed(msg)
             }
 
-            // Encode as PNG via NSBitmapImageRep.  Avoid NSImage so we don't
-            // accumulate representation-scale ambiguities for callers that
-            // later re-render the file.
-            let rep = NSBitmapImageRep(cgImage: cgImage)
-            rep.size = NSSize(width: cgImage.width, height: cgImage.height)
-            guard let data = rep.representation(using: .png, properties: [:]) else {
-                throw ScreenshotError.writeFailed("PNG encoding failed")
-            }
-
+            // Encode as PNG using CGImageDestination — the Core Graphics API
+            // is explicitly thread-safe (unlike NSBitmapImageRep).
             let dir = try tempScreenshotDirectory()
             let filename = "Screenshot \(filenameTimestamp()).png"
             let url = dir.appendingPathComponent(filename)
-            do {
-                try data.write(to: url, options: .atomic)
-            } catch {
-                throw ScreenshotError.writeFailed(error.localizedDescription)
+            guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+                throw ScreenshotError.writeFailed("CGImageDestinationCreateWithURL failed")
+            }
+            CGImageDestinationAddImage(dest, cgImage, nil)
+            guard CGImageDestinationFinalize(dest) else {
+                throw ScreenshotError.writeFailed("CGImageDestinationFinalize failed")
             }
 
             let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
@@ -147,9 +157,10 @@ enum ScreenshotService {
         }.value
     }
 
-    /// Drives an SCStream just long enough to grab one frame.
-    /// `nonisolated` because this is called from a detached Task and must not
-    /// be funnelled back through the main actor.
+    /// Returns one CGImage from the primary display.
+    /// On macOS 14+ uses SCScreenshotManager (single-frame, no stream lifecycle).
+    /// On macOS 13.x falls back to SCStream with a one-frame collector.
+    /// Declared `nonisolated` so it runs entirely off the main actor.
     nonisolated private static func captureOneFrame() async throws -> CGImage {
         // Enumerate displays. `SCShareableContent.current` throws if Screen
         // Recording permission is missing — we map that case in the caller.
@@ -162,18 +173,34 @@ enum ScreenshotService {
 
         let config = SCStreamConfiguration()
         // Capture at the display's pixel dimensions so the PNG matches what
-        // CGDisplayCreateImage used to return.  SCK widths/heights are in
-        // pixels.
+        // CGDisplayCreateImage used to return.  SCK widths/heights are in pixels.
         config.width = display.width
         config.height = display.height
         config.pixelFormat = kCVPixelFormatType_32BGRA
-        // Color-accurate, no audio, and we don't care about the cursor for a
-        // one-shot — leaving showsCursor at its default keeps behavioural
-        // parity with the previous implementation.
         config.queueDepth = 3
-        // Capture quickly — we only need one frame, no point waiting 1/60s.
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
 
+        if #available(macOS 14.0, *) {
+            // SCScreenshotManager.captureImage() is a purpose-built single-frame
+            // capture API.  It has no stream to start or stop, so there is no
+            // teardown race and no risk of the main actor being blocked by
+            // concurrent stopCapture() calls.
+            return try await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: config
+            )
+        }
+
+        // ── macOS 13.x fallback: use SCStream for exactly one frame ──────────
+        return try await captureOneFrameWithStream(filter: filter, config: config)
+    }
+
+    /// SCStream-based one-frame capture for macOS 13.x.
+    /// On macOS 14+, captureOneFrame() uses SCScreenshotManager instead.
+    nonisolated private static func captureOneFrameWithStream(
+        filter: SCContentFilter,
+        config: SCStreamConfiguration
+    ) async throws -> CGImage {
         let collector = FrameCollector()
         let stream = SCStream(filter: filter, configuration: config, delegate: collector)
         let outputQueue = DispatchQueue(label: "com.dave.lanmessenger.screenshot",
@@ -184,19 +211,16 @@ enum ScreenshotService {
             throw ScreenshotError.captureFailed("addStreamOutput failed: \(error.localizedDescription)")
         }
 
-        // Hand the stream to the collector so it can stop itself the moment a
-        // frame arrives, instead of letting the stream keep delivering frames
-        // we have no use for.
-        collector.stream = stream
-
         try await stream.startCapture()
 
         // Wait for the first usable frame (or an error).  Time-bound so we
         // don't hang the UI forever if the GPU pipeline is wedged.
         let image = try await collector.firstImage(timeout: 5.0)
 
-        // stopCapture is idempotent; collector may already have called it.
-        do { try await stream.stopCapture() } catch { /* swallow — best effort */ }
+        // Stop the stream using the ObjC completion-handler form (not async/await)
+        // so we never hop to the main actor.  Fire-and-forget: we already have
+        // the image, so we don't need to await teardown completion.
+        stream.stopCapture(completionHandler: nil)
 
         return image
     }
@@ -227,12 +251,15 @@ enum ScreenshotService {
 ///
 /// SCK delivers frames on a background queue.  The first valid sample buffer
 /// is converted to a CGImage and handed back through the awaiting continuation;
-/// any frames after that are ignored and the stream is stopped.  If a delegate
-/// error or a timeout fires, the continuation is resumed with an error
-/// instead.  All mutable state is protected by a single lock so concurrent
-/// callbacks cannot double-resume the continuation.
+/// any frames after that are silently ignored.  If a delegate error or a
+/// timeout fires, the continuation is resumed with an error instead.
+/// All mutable state is protected by a single lock so concurrent callbacks
+/// cannot double-resume the continuation.
+///
+/// Note: this class is only used on macOS 13.x (the SCStream fallback path).
+/// On macOS 14+ the SCScreenshotManager path is taken instead and this class
+/// is never instantiated.
 private final class FrameCollector: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    weak var stream: SCStream?
 
     private let lock = NSLock()
     private var continuation: CheckedContinuation<CGImage, Error>?
@@ -274,11 +301,11 @@ private final class FrameCollector: NSObject, SCStreamOutput, SCStreamDelegate, 
         case .success(let img): cont.resume(returning: img)
         case .failure(let err): cont.resume(throwing: err)
         }
-        // Stop the stream now that we have what we needed.  Errors here are
-        // not actionable; the next capture creates a fresh stream.
-        if let stream = self.stream {
-            Task.detached { try? await stream.stopCapture() }
-        }
+        // Stream teardown is handled by captureOneFrameWithStream() after
+        // firstImage() returns, using the ObjC completion-handler stopCapture()
+        // to avoid any main-actor hop.  We intentionally do NOT call
+        // stopCapture() here — that was the source of the concurrent double-stop
+        // that caused the spinning beachball on macOS 14+.
     }
 
     // MARK: SCStreamOutput

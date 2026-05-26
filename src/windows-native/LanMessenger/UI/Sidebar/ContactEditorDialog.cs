@@ -148,8 +148,11 @@ public sealed class ContactEditorDialog : ContentDialog
 public sealed class PeerPickerDialog : ContentDialog
 {
     private readonly AppModel _model;
+    private readonly TextBox _searchBox;
+    private readonly TextBlock _summaryText;
     private readonly ListView _list;
     private readonly HashSet<string> _selectedKeys = [];
+    private int _visiblePeerCount;
 
     // Populated when the user confirms; read by the caller after ShowAsync returns.
     public IReadOnlyList<PeerInfo> SelectedPeers { get; private set; } = [];
@@ -163,12 +166,38 @@ public sealed class PeerPickerDialog : ContentDialog
         DefaultButton     = ContentDialogButton.Primary;
         IsPrimaryButtonEnabled = false;
 
-        _list = new ListView { SelectionMode = ListViewSelectionMode.None, MinWidth = 360, MinHeight = 280 };
+        _searchBox = new TextBox
+        {
+            PlaceholderText = "Search nearby devices",
+            MinWidth = 420,
+        };
+        _searchBox.TextChanged += (_, _) => Refresh();
+
+        _summaryText = new TextBlock
+        {
+            FontSize = 12,
+            Opacity = 0.7,
+            Margin = new Thickness(2, 0, 0, 0),
+        };
+
+        _list = new ListView
+        {
+            SelectionMode = ListViewSelectionMode.None,
+            MinWidth = 420,
+            MinHeight = 300,
+            MaxHeight = 420,
+        };
+
+        var root = new StackPanel { Spacing = 10, Width = 440 };
+        root.Children.Add(_searchBox);
+        root.Children.Add(_summaryText);
+        root.Children.Add(_list);
+
         Refresh();
         _model.PropertyChanged += OnModelChanged;
         Closed += (_, _) => _model.PropertyChanged -= OnModelChanged;
 
-        Content = _list;
+        Content = root;
         // Snapshot selection before the dialog closes; the naming flow runs in the
         // caller after ShowAsync() fully completes so no two dialogs overlap.
         PrimaryButtonClick += (_, _) =>
@@ -187,19 +216,27 @@ public sealed class PeerPickerDialog : ContentDialog
     private void Refresh()
     {
         var savedKeys = ConfigStore.Shared.Config.Contacts.Select(c => c.PublicKeyB64).ToHashSet();
+        var query = _searchBox.Text.Trim();
         var rows = _model.Peers.Values
             .Where(p => !savedKeys.Contains(p.PublicKeyB64))
+            .Where(p => string.IsNullOrEmpty(query) ||
+                p.Username.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                p.IP.Contains(query, StringComparison.OrdinalIgnoreCase))
             .OrderBy(p => p.Username)
             .ToList();
 
         _list.Items.Clear();
+        _visiblePeerCount = rows.Count;
+        UpdateSaveEnabled();
+
         if (rows.Count == 0)
         {
-            IsPrimaryButtonEnabled = false;
             _list.Items.Add(new TextBlock
             {
-                Text = "No peers found. Make sure other devices are running LAN Messenger on the same network.",
-                Margin = new Thickness(8),
+                Text = string.IsNullOrEmpty(query)
+                    ? "No nearby devices found. Make sure LAN Messenger is open on the other computer."
+                    : "No nearby devices match that search.",
+                Margin = new Thickness(12),
                 Opacity = 0.7,
                 TextWrapping = TextWrapping.Wrap,
             });
@@ -214,17 +251,18 @@ public sealed class PeerPickerDialog : ContentDialog
                 IsChecked = _selectedKeys.Contains(peer.PublicKeyB64),
                 VerticalAlignment = VerticalAlignment.Center,
             };
+            check.Tapped += (_, e) => e.Handled = true;
             check.Checked   += (_, _) => { _selectedKeys.Add(capturedPeer.PublicKeyB64); UpdateSaveEnabled(); };
             check.Unchecked += (_, _) => { _selectedKeys.Remove(capturedPeer.PublicKeyB64); UpdateSaveEnabled(); };
 
             var avatar = new AvatarControl { Width = 36, Height = 36, NameText = peer.Username };
             var name   = new TextBlock { Text = peer.Username, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
-            var ip     = new TextBlock { Text = peer.IP, Opacity = 0.6, FontSize = 11 };
+            var status = new TextBlock { Text = "Available on your LAN", Opacity = 0.6, FontSize = 11 };
             var info   = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
             info.Children.Add(name);
-            info.Children.Add(ip);
+            info.Children.Add(status);
 
-            var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(4) };
+            var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 6, 8, 6) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -246,8 +284,16 @@ public sealed class PeerPickerDialog : ContentDialog
         UpdateSaveEnabled();
     }
 
-    private void UpdateSaveEnabled() =>
+    private void UpdateSaveEnabled()
+    {
         IsPrimaryButtonEnabled = _selectedKeys.Count > 0;
+        var foundText = _visiblePeerCount == 0
+            ? "No devices found"
+            : $"{_visiblePeerCount} device{(_visiblePeerCount == 1 ? "" : "s")} found";
+        _summaryText.Text = _selectedKeys.Count > 0
+            ? $"{foundText} · {_selectedKeys.Count} selected"
+            : foundText;
+    }
 
 }
 
@@ -277,7 +323,7 @@ public sealed class NameContactDialog : ContentDialog
 
         var info = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
         info.Children.Add(new TextBlock { Text = peer.Username, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] });
-        info.Children.Add(new TextBlock { Text = peer.IP, Opacity = 0.6, FontSize = 11 });
+        info.Children.Add(new TextBlock { Text = "Detected nearby", Opacity = 0.6, FontSize = 11 });
 
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14 };
         header.Children.Add(avatar);
@@ -372,7 +418,7 @@ public sealed class NewMessageDialog : ContentDialog
             var name   = new TextBlock { Text = contact.Username, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
             var status = new TextBlock
             {
-                Text = isOnline ? "Online" : (string.IsNullOrEmpty(contact.LastIP) ? "—" : contact.LastIP),
+                Text = isOnline ? "Online" : "Offline",
                 Opacity = 0.7,
                 FontSize = 11,
             };
