@@ -1,10 +1,17 @@
 #Requires -Version 5.1
 # Startup smoke test for LAN Messenger Windows
-# Usage: smoke-test.ps1 -ArtifactPath <path-to-exe-installer>
+# Usage:
+#   smoke-test.ps1 -ArtifactPath <path-to-inno-installer>            # full install + launch
+#   smoke-test.ps1 -ArtifactPath <path-to-app.exe> -SkipInstall      # launch binary directly
 # Exit 0: app launched and remained alive; Exit 1: crash or no-show
 param(
     [Parameter(Mandatory = $true)]
-    [string]$ArtifactPath
+    [string]$ArtifactPath,
+
+    # Skip the Inno Setup install phase and treat ArtifactPath as the app
+    # binary to launch directly.  Use this when the artifact is the raw
+    # published self-contained exe rather than an Inno Setup installer.
+    [switch]$SkipInstall
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,59 +26,64 @@ function Write-Log {
     Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
 }
 
-# ── Install silently ────────────────────────────────────────────────────────
 if (-not (Test-Path $ArtifactPath)) {
     Write-Log "::error::Artifact not found: $ArtifactPath"
     exit 1
 }
 
-Write-Log "Installing $ArtifactPath silently..."
-$InstallLog = "$env:TEMP\LanMessenger-install.log"
-$install = Start-Process -FilePath $ArtifactPath `
-    -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$InstallLog" `
-    -PassThru
+# ── Install silently (skipped when -SkipInstall is set) ─────────────────────
+if ($SkipInstall) {
+    Write-Log "Skipping installer phase — using binary directly: $ArtifactPath"
+    $ExePath = $ArtifactPath
+} else {
+    Write-Log "Installing $ArtifactPath silently..."
+    $InstallLog = "$env:TEMP\LanMessenger-install.log"
+    $install = Start-Process -FilePath $ArtifactPath `
+        -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$InstallLog" `
+        -PassThru
 
-# Wait up to 3 minutes for the installer to finish; kill it if it stalls
-$InstallTimeoutMs = 180000
-Write-Log "Waiting up to 3 minutes for installer to complete..."
-if (-not $install.WaitForExit($InstallTimeoutMs)) {
-    $install.Kill()
-    Write-Log "::error::Installer did not complete within 3 minutes — killed"
-    if (Test-Path $InstallLog) {
-        Write-Log "--- Inno Setup install log (last 40 lines) ---"
-        Get-Content $InstallLog -Tail 40 | Tee-Object -Append -FilePath $LogFile
+    # Wait up to 3 minutes for the installer to finish; kill it if it stalls
+    $InstallTimeoutMs = 180000
+    Write-Log "Waiting up to 3 minutes for installer to complete..."
+    if (-not $install.WaitForExit($InstallTimeoutMs)) {
+        $install.Kill()
+        Write-Log "::error::Installer did not complete within 3 minutes — killed"
+        if (Test-Path $InstallLog) {
+            Write-Log "--- Inno Setup install log (last 40 lines) ---"
+            Get-Content $InstallLog -Tail 40 | Tee-Object -Append -FilePath $LogFile
+        }
+        exit 1
     }
-    exit 1
-}
 
-if ($install.ExitCode -ne 0) {
-    Write-Log "::error::Installer exited with code $($install.ExitCode)"
-    if (Test-Path $InstallLog) {
-        Write-Log "--- Inno Setup install log (last 40 lines) ---"
-        Get-Content $InstallLog -Tail 40 | Tee-Object -Append -FilePath $LogFile
+    if ($install.ExitCode -ne 0) {
+        Write-Log "::error::Installer exited with code $($install.ExitCode)"
+        if (Test-Path $InstallLog) {
+            Write-Log "--- Inno Setup install log (last 40 lines) ---"
+            Get-Content $InstallLog -Tail 40 | Tee-Object -Append -FilePath $LogFile
+        }
+        exit 1
     }
-    exit 1
-}
-Write-Log "Installer completed (exit code 0)"
+    Write-Log "Installer completed (exit code 0)"
 
-# ── Locate the installed executable ─────────────────────────────────────────
-$SearchPaths = @(
-    "$env:LOCALAPPDATA\Programs\LanMessenger\LanMessenger.exe",
-    "$env:ProgramFiles\LanMessenger\LanMessenger.exe",
-    "${env:ProgramFiles(x86)}\LanMessenger\LanMessenger.exe"
-)
-$ExePath = $SearchPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    # ── Locate the installed executable ───────────────────────────────────────
+    $SearchPaths = @(
+        "$env:LOCALAPPDATA\Programs\LanMessenger\LanMessenger.exe",
+        "$env:ProgramFiles\LanMessenger\LanMessenger.exe",
+        "${env:ProgramFiles(x86)}\LanMessenger\LanMessenger.exe"
+    )
+    $ExePath = $SearchPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if (-not $ExePath) {
-    Write-Log "Searching recursively in LOCALAPPDATA\Programs..."
-    $ExePath = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Filter "LanMessenger.exe" `
-        -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1 -ExpandProperty FullName
-}
+    if (-not $ExePath) {
+        Write-Log "Searching recursively in LOCALAPPDATA\Programs..."
+        $ExePath = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Filter "LanMessenger.exe" `
+            -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
 
-if (-not $ExePath) {
-    Write-Log "::error::LanMessenger.exe not found after installation"
-    exit 1
+    if (-not $ExePath) {
+        Write-Log "::error::LanMessenger.exe not found after installation"
+        exit 1
+    }
 }
 Write-Log "Launching $ExePath..."
 

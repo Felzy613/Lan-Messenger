@@ -210,8 +210,10 @@ jobs:
                    -Filter "LanMessenger.exe" -Recurse |
                  Select-Object -First 1
           if (-not $exe) { Write-Warning "Binary not found — skipping loopback smoke"; exit 0 }
-          # Run startup smoke only (no GUI display on runners).
-          ..\..\scripts\windows\smoke-test.ps1 -ArtifactPath $exe.FullName 2>&1 |
+          # Pass -SkipInstall because $exe is the raw published binary, not an
+          # Inno Setup installer.  The installer path is only available in the
+          # Build Windows workflow after Inno compiles the full package.
+          ..\..\scripts\windows\smoke-test.ps1 -ArtifactPath $exe.FullName -SkipInstall 2>&1 |
             Tee-Object -FilePath ..\..\integration-smoke-windows.txt
 
       # ── Collect subsystem logs ─────────────────────────────────────────────────
