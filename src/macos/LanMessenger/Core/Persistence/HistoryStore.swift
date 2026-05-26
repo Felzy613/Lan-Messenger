@@ -68,7 +68,15 @@ final class HistoryStore {
     static let maxEntriesPerPeer = 200
 
     private let fileURL: URL
-    private let lock = NSLock()
+
+    // Serial queue that owns all encrypt-and-write work. Keeping saves serial
+    // means rapid back-to-back calls (receive file + mark read, etc.) never
+    // interleave on disk — the last-dispatched snapshot always wins. Background
+    // QoS so the OS can defer the write during heavy UI activity.
+    private let saveQueue = DispatchQueue(
+        label: "com.dave.lanmessenger.history-save",
+        qos: .background
+    )
 
     // All loaded conversations, keyed by peer IP.
     private(set) var history: [String: [MessageEntry]] = [:]
@@ -98,20 +106,35 @@ final class HistoryStore {
 
     // MARK: - Save
 
+    // Non-blocking save: JSON-encode on the calling thread (always main, fast —
+    // typically < 5 ms for the full 200-message-per-peer cap), then hand the
+    // opaque Data blob to a serial background queue for AES-GCM encryption and
+    // the atomic file write.  Both of those operations can take 50–300 ms on a
+    // loaded system; keeping them off the main thread prevents the spinning
+    // beachball that previously appeared whenever a file transfer completed or
+    // a message was received.
+    //
+    // The encode step stays on the calling thread so `history` (a value type
+    // dict) is never accessed from multiple threads.  The resulting Data object
+    // is an independent heap allocation safe to pass across the thread boundary.
     func save() {
-        lock.lock()
-        defer { lock.unlock() }
-
         let trimmed = history.mapValues { Array($0.suffix(Self.maxEntriesPerPeer)) }
         guard let plaintext = try? JSONEncoder().encode(trimmed) else { return }
 
-        do {
-            let fileJSON = try HistoryCrypto.encryptHistory(
-                plaintext: plaintext,
-                privateKey: KeyManager.shared.privateKey
-            )
-            try fileJSON.write(to: fileURL, atomically: true, encoding: .utf8)
-        } catch {}
+        // Capture values that must be read on the main actor before we leave it.
+        // KeyManager.shared.privateKey is a CryptoKit value type — safe to copy.
+        let url = fileURL
+        let key = KeyManager.shared.privateKey
+
+        saveQueue.async {
+            do {
+                let fileJSON = try HistoryCrypto.encryptHistory(
+                    plaintext: plaintext,
+                    privateKey: key
+                )
+                try fileJSON.write(to: url, atomically: true, encoding: .utf8)
+            } catch {}
+        }
     }
 
     // MARK: - Mutations

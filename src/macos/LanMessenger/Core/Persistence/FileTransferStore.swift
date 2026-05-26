@@ -77,15 +77,25 @@ final class FileTransferStore {
     }
 
     // Finalizes the transfer: closes the handle, moves temp to final name (deduped).
-    // Returns the final URL on success.
+    // Returns the URL where the file now lives (final path on success, temp path
+    // as a fallback when the move fails so the caller always gets a real file).
     func finalizeIncoming(key: TransferKey, inboxDir: URL) -> URL? {
-        guard var transfer = incoming.removeValue(forKey: key) else { return nil }
+        guard let transfer = incoming.removeValue(forKey: key) else { return nil }
         transfer.fileHandle?.closeFile()
-        transfer.fileHandle = nil
 
         let finalURL = uniqueURL(inboxDir: inboxDir, filename: transfer.filename)
-        try? FileManager.default.moveItem(at: transfer.tempURL, to: finalURL)
-        return finalURL
+        do {
+            try FileManager.default.moveItem(at: transfer.tempURL, to: finalURL)
+            return finalURL
+        } catch {
+            // The received data is intact at the temp path. Return it so the
+            // message bubble at least points to a real file instead of a
+            // missing one. Log the failure so it can be diagnosed.
+            NetLogger.error("FileTransfer",
+                "finalizeIncoming: move '\(transfer.tempURL.lastPathComponent)'" +
+                " → '\(finalURL.lastPathComponent)' failed: \(error.localizedDescription)")
+            return transfer.tempURL
+        }
     }
 
     func cancelIncoming(key: TransferKey) {

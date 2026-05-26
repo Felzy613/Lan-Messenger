@@ -510,10 +510,36 @@ final class FileTransferService {
         return true
     }
 
-    // Blocking byte-exact send loop.  Returns false if the socket errors or times out.
-    nonisolated private static func rawSend(fd: Int32, data: Data) -> Bool {
+    // Blocking byte-exact send loop with a per-write poll timeout.
+    // Returns false if the socket errors, the peer disconnects, or the
+    // writability poll times out.
+    //
+    // Why poll() instead of SO_SNDTIMEO
+    // ------------------------------------
+    // SO_SNDTIMEO is unreliable on macOS/Darwin for blocking TCP send() when
+    // the remote receive window reaches zero (TCP flow-control / zero-window).
+    // In that state the kernel's TCP persist timer keeps the connection alive
+    // indefinitely and the socket-level SO_SNDTIMEO is silently ignored,
+    // causing Darwin.send() to block forever.  poll() is not subject to that
+    // limitation: it measures wall-clock time and returns 0 (timeout) whenever
+    // the socket has not become writable within `timeoutMs`, regardless of TCP
+    // layer state.  This guarantees that a stalled or slow-draining peer can
+    // never freeze the send queue indefinitely.
+    nonisolated private static func rawSend(fd: Int32, data: Data, timeoutMs: Int32 = 10_000) -> Bool {
         var offset = 0
         while offset < data.count {
+            // Wait for writability before attempting send().  On timeout (0)
+            // or error (< 0) bail out immediately so sendQueue is unblocked.
+            var pfd = pollfd()
+            pfd.fd     = fd
+            pfd.events = Int16(POLLOUT)
+            let ready  = Darwin.poll(&pfd, 1, timeoutMs)
+            guard ready > 0 else { return false }   // 0 = timeout, < 0 = error
+
+            // Bail if the peer closed or reset the connection.
+            let errMask = Int16(bitPattern: UInt16(POLLERR) | UInt16(POLLHUP) | UInt16(POLLNVAL))
+            guard pfd.revents & errMask == 0 else { return false }
+
             let n = data.withUnsafeBytes { ptr in
                 Darwin.send(fd, ptr.baseAddress!.advanced(by: offset), data.count - offset, 0)
             }

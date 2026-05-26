@@ -3,7 +3,9 @@ using LanMessenger.Core.Persistence;
 using LanMessenger.Core.Protocol;
 using LanMessenger.Core.Services;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using NSec.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace LanMessenger.Tests;
 
@@ -52,7 +54,7 @@ public sealed class StressTests
 
     // ── Logger stress ─────────────────────────────────────────────────────────────
 
-    /// 16 threads × 200 writes across all 8 channels = 3 200 total writes.
+    /// 16 threads × 200 writes across all logging methods = 3 200 total writes.
     /// Verifies thread-safety: no crashes, no corrupted lines.
     [TestMethod]
     [Timeout(30_000)]
@@ -68,34 +70,33 @@ public sealed class StressTests
         {
             for (int i = 0; i < writes; i++)
             {
+                // LanLogger has Info/Warn/Error/FileTransfer/Screenshot/Peer.
+                // Structured-event helpers that don't exist (Discovery, Crypto,
+                // UI, Retry) are expressed as plain Info calls.
                 switch (t % 8)
                 {
-                    case 0: LanLogger.Info("Stress", $"t{t} i{i}");                                   break;
+                    case 0: LanLogger.Info("Stress", $"t{t} i{i}");                                    break;
                     case 1: LanLogger.FileTransfer("chunk", transferId: $"t{t}", bytesSent: i * 1024L); break;
-                    case 2: LanLogger.Screenshot("frame", widthPx: 1920, heightPx: 1080);              break;
-                    case 3: LanLogger.Peer("ping", peer: $"10.0.{t}.1");                               break;
-                    case 4: LanLogger.Discovery("beacon_sent", interfaces: t);                          break;
-                    case 5: LanLogger.Crypto("derive", algorithm: "X25519");                           break;
-                    case 6: LanLogger.UI("frame_update", screen: "chat");                              break;
-                    default: LanLogger.Retry("retry", subsystem: "Transfer", attempt: i);              break;
+                    case 2: LanLogger.Screenshot("frame", widthPx: 1920, heightPx: 1080);               break;
+                    case 3: LanLogger.Peer("ping", peer: $"10.0.{t}.1");                                break;
+                    case 4: LanLogger.Info("Discovery", $"beacon_sent interfaces={t}");                  break;
+                    case 5: LanLogger.Info("Crypto", "derive algorithm=X25519");                         break;
+                    case 6: LanLogger.Info("UI", "frame_update screen=chat");                            break;
+                    default: LanLogger.Info("Retry", $"retry subsystem=Transfer attempt={i}");           break;
                 }
             }
         })).ToArray();
 
         Task.WaitAll(tasks);
 
-        // Every channel that received writes should have produced a non-empty file.
-        foreach (var ch in (LanLogger.LogChannel[])Enum.GetValues(typeof(LanLogger.LogChannel)))
-        {
-            var path = LanLogger._TestLogPathFor(ch);
-            if (File.Exists(path))
-                Assert.IsTrue(new FileInfo(path).Length > 0,
-                    $"{Path.GetFileName(path)} should not be empty");
-        }
+        // The single active log must exist and be non-empty after the writes.
+        if (File.Exists(LanLogger.LogPath))
+            Assert.IsTrue(new FileInfo(LanLogger.LogPath).Length > 0,
+                "active log should not be empty after concurrent writes");
     }
 
-    /// Continuously rotates a single channel; verifies archive count stays
-    /// within MaxArchives and the active log is bounded.
+    /// Continuously rotates the log; verifies archive count stays within
+    /// MaxArchives and the active log is bounded.
     [TestMethod]
     public void RotationBudgetMaintainedUnderLoad()
     {
@@ -106,14 +107,14 @@ public sealed class StressTests
             LanLogger.FileTransfer("chunk", transferId: "rot",
                 filename: $"file_{i}.bin", size: (long)i * 64);
 
-        var archives = Directory.GetFiles(_tempDir, "transfer.*.log.gz");
+        // LanLogger rotates the single client.log into client.N.log.gz archives.
+        var archives = Directory.GetFiles(_tempDir, "client.*.log.gz");
         Assert.IsTrue(archives.Length <= LanLogger.MaxArchives,
             $"should not exceed MaxArchives, got {archives.Length}");
 
-        var activePath = LanLogger._TestLogPathFor(LanLogger.LogChannel.Transfer);
-        if (File.Exists(activePath))
+        if (File.Exists(LanLogger.LogPath))
         {
-            var size = new FileInfo(activePath).Length;
+            var size = new FileInfo(LanLogger.LogPath).Length;
             Assert.IsTrue(size <= LanLogger.MaxBytes * 2,
                 $"active log should be near the rotation cap, got {size} bytes");
         }
@@ -132,77 +133,76 @@ public sealed class StressTests
         LanLogger.FileTransfer("start", transferId: "x", filename: "f.bin");
         LanLogger.Screenshot("captured", widthPx: 100, heightPx: 100);
         LanLogger.Peer("connect", peer: "127.0.0.1");
-        LanLogger.Discovery("started", interfaces: 1);
-        LanLogger.Crypto("key_generated", algorithm: "X25519");
-        LanLogger.UI("window_shown");
-        LanLogger.Retry("retry", subsystem: "Net", attempt: 1);
+        LanLogger.Info("Discovery", "started interfaces=1");
+        LanLogger.Info("Crypto", "key_generated algorithm=X25519");
+        LanLogger.Info("UI", "window_shown");
+        LanLogger.Info("Retry", "retry subsystem=Net attempt=1");
         // Pass = did not throw.
     }
 
     // ── Frame codec stress ────────────────────────────────────────────────────────
 
-    /// Round-trips random payloads at every boundary size through the frame
-    /// encoder/decoder including 0-byte and 1 MiB payloads.
+    /// Round-trips JSON frames at a range of content sizes through EncodeDict →
+    /// MemoryStream → ReadFrame, including small and large (1 MiB) payloads.
+    ///
+    /// Note: FrameCodec encodes typed objects/dicts as JSON, not raw byte
+    /// arrays. Size=0-byte JSON bodies are rejected by BuildFrame, so the
+    /// smallest meaningful unit is a dict with a 1-char string value.
     [TestMethod]
     public void FrameCodecRoundTripAtBoundaries()
     {
-        int[] sizes = [0, 1, 2, 127, 128, 255, 256, 1_024, 65_535, 65_536, 1_048_576];
+        // String-value lengths to embed in the JSON frame body.
+        int[] contentSizes = [1, 2, 127, 128, 255, 256, 1_024, 65_535, 65_536, 1_048_576];
 
-        foreach (var size in sizes)
+        foreach (var size in contentSizes)
         {
-            var payload = new byte[size];
-            for (int i = 0; i < size; i++)
-                payload[i] = (byte)((i * 6364136223846793005L + 1442695040888963407L) & 0xFF);
+            var content = new string('x', size);
+            var dict    = new Dictionary<string, object?> { ["data"] = content };
+            var encoded = FrameCodec.EncodeDict(dict);
 
-            var encoded  = FrameCodec.Encode(payload);
-            var decoder  = new FrameCodec.Decoder();
-            byte[]? received = null;
+            using var ms   = new MemoryStream(encoded);
+            var       body = FrameCodec.ReadFrame(ms);
 
-            // Feed byte-by-byte to exercise streaming boundary conditions.
-            foreach (var b in encoded)
-            {
-                received = decoder.Feed(new[] { b });
-                if (received is not null) break;
-            }
+            Assert.IsNotNull(body,
+                $"ReadFrame returned null for content size={size}");
 
-            CollectionAssert.AreEqual(payload, received,
-                $"round-trip failed for size={size}: received {received?.Length ?? -1} bytes");
+            using var doc       = FrameCodec.ParseJson(body!);
+            var       recovered = doc.RootElement.GetProperty("data").GetString();
+            Assert.AreEqual(content, recovered,
+                $"round-trip failed for content size={size}");
         }
     }
 
-    /// Feeds 5 000 back-to-back frames in a single call; verifies no corruption.
+    /// Concatenates 5 000 back-to-back frames into one buffer and reads them
+    /// all back via ReadFrame; verifies no frame is dropped or corrupted.
     [TestMethod]
     public void FrameCodecHighVolumeBackToBack()
     {
         const int frameCount = 5_000;
-        var allFrames = new List<byte>();
-        var expected  = new List<byte[]>();
+        var allBytes = new List<byte>();
+        var expected = new List<string>();
 
         for (int i = 0; i < frameCount; i++)
         {
-            var payload = Encoding.UTF8.GetBytes($"message {i} with some padding padding");
-            allFrames.AddRange(FrameCodec.Encode(payload));
-            expected.Add(payload);
+            var text = $"message {i} with some padding padding";
+            allBytes.AddRange(FrameCodec.EncodeDict(
+                new Dictionary<string, object?> { ["msg"] = text }));
+            expected.Add(text);
         }
 
-        var received = new List<byte[]>();
-        var decoder  = new FrameCodec.Decoder();
-
-        // Feed in 4 KiB chunks.
-        var data   = allFrames.ToArray();
-        var cursor = 0;
-        while (cursor < data.Length)
+        var received = new List<string>();
+        using var ms = new MemoryStream(allBytes.ToArray());
+        byte[]? body;
+        while ((body = FrameCodec.ReadFrame(ms)) is not null)
         {
-            var end   = Math.Min(cursor + 4096, data.Length);
-            var chunk = data[cursor..end];
-            var frame = decoder.Feed(chunk);
-            if (frame is not null)
-                received.Add(frame);
-            cursor = end;
+            using var doc = FrameCodec.ParseJson(body);
+            received.Add(doc.RootElement.GetProperty("msg").GetString()!);
         }
 
+        Assert.AreEqual(frameCount, received.Count,
+            "all frames must be received without loss");
         for (int i = 0; i < received.Count; i++)
-            CollectionAssert.AreEqual(expected[i], received[i], $"frame {i} corrupted");
+            Assert.AreEqual(expected[i], received[i], $"frame {i} corrupted");
     }
 
     /// Verifies that frames whose declared length exceeds 50 MiB are rejected.
@@ -218,25 +218,31 @@ public sealed class StressTests
             (byte)(tooBig      ),
         };
 
-        var decoder = new FrameCodec.Decoder();
+        using var ms = new MemoryStream(header);
         Assert.ThrowsException<InvalidDataException>(
-            () => decoder.Feed(header),
-            "decoder must reject frames whose declared size exceeds 50 MiB");
+            () => FrameCodec.ReadFrame(ms),
+            "ReadFrame must reject frames whose declared size exceeds 50 MiB");
     }
 
     // ── Crypto stress ─────────────────────────────────────────────────────────────
 
-    /// Encrypts and decrypts 200 messages of varying sizes between a fixed key pair.
+    // Creates a fresh X25519 key with plaintext-export allowed (for test use only).
+    private static Key MakeTempKey() => Key.Create(
+        KeyAgreementAlgorithm.X25519,
+        new KeyCreationParameters { ExportPolicy = KeyExportPolicies.AllowPlaintextExport });
+
+    /// Encrypts and decrypts messages of varying sizes between a fixed key pair.
     [TestMethod]
     public void CryptoRoundTripHighVolume()
     {
-        var privA = KeyManager.GeneratePrivateKey();
-        var privB = KeyManager.GeneratePrivateKey();
-        var pubAB64 = Convert.ToBase64String(privA.PublicKey.Export(NSec.Cryptography.KeyBlobFormat.RawPublicKey));
-        var pubBB64 = Convert.ToBase64String(privB.PublicKey.Export(NSec.Cryptography.KeyBlobFormat.RawPublicKey));
+        using var privA = MakeTempKey();
+        using var privB = MakeTempKey();
+        var pubAB64 = Convert.ToBase64String(privA.PublicKey.Export(KeyBlobFormat.RawPublicKey));
+        var pubBB64 = Convert.ToBase64String(privB.PublicKey.Export(KeyBlobFormat.RawPublicKey));
 
-        var keyA = SessionCrypto.DeriveSymmetricKey(privA, pubBB64);
-        var keyB = SessionCrypto.DeriveSymmetricKey(privB, pubAB64);
+        // SymmetricKey is the actual method name (not DeriveSymmetricKey).
+        var keyA = SessionCrypto.SymmetricKey(privA, pubBB64);
+        var keyB = SessionCrypto.SymmetricKey(privB, pubAB64);
 
         int[] sizes = [0, 1, 63, 64, 65, 1_024, 65_536, 500_000];
 
@@ -258,35 +264,35 @@ public sealed class StressTests
     [TestMethod]
     public void CryptoRejectsTamperedCiphertext()
     {
-        var priv  = KeyManager.GeneratePrivateKey();
-        var pubB64 = Convert.ToBase64String(priv.PublicKey.Export(NSec.Cryptography.KeyBlobFormat.RawPublicKey));
-        var key   = SessionCrypto.DeriveSymmetricKey(priv, pubB64);
-        var aad   = Encoding.UTF8.GetBytes("aad");
+        using var priv = MakeTempKey();
+        var pubB64 = Convert.ToBase64String(priv.PublicKey.Export(KeyBlobFormat.RawPublicKey));
+        var key    = SessionCrypto.SymmetricKey(priv, pubB64);
+        var aad    = Encoding.UTF8.GetBytes("aad");
 
         var (nonceB64, ctB64) = SessionCrypto.Encrypt(key, Encoding.UTF8.GetBytes("hello"), aad);
 
-        // Flip the last byte of the ciphertext.
+        // Flip the last byte of the ciphertext (which is part of the GCM tag).
         var ctBytes = Convert.FromBase64String(ctB64);
         ctBytes[^1] ^= 0xFF;
         var tampered = Convert.ToBase64String(ctBytes);
 
-        Assert.ThrowsException<Exception>(
+        Assert.ThrowsException<System.Security.Cryptography.AuthenticationTagMismatchException>(
             () => SessionCrypto.Decrypt(key, nonceB64, tampered, aad),
-            "tampered ciphertext must throw");
+            "tampered ciphertext must throw AuthenticationTagMismatchException");
     }
 
     /// Verifies that a wrong AAD is rejected.
     [TestMethod]
     public void CryptoRejectsWrongAAD()
     {
-        var priv   = KeyManager.GeneratePrivateKey();
-        var pubB64 = Convert.ToBase64String(priv.PublicKey.Export(NSec.Cryptography.KeyBlobFormat.RawPublicKey));
-        var key    = SessionCrypto.DeriveSymmetricKey(priv, pubB64);
+        using var priv = MakeTempKey();
+        var pubB64 = Convert.ToBase64String(priv.PublicKey.Export(KeyBlobFormat.RawPublicKey));
+        var key    = SessionCrypto.SymmetricKey(priv, pubB64);
 
         var (nonceB64, ctB64) = SessionCrypto.Encrypt(
             key, Encoding.UTF8.GetBytes("secret"), Encoding.UTF8.GetBytes("correct-aad"));
 
-        Assert.ThrowsException<Exception>(
+        Assert.ThrowsException<System.Security.Cryptography.AuthenticationTagMismatchException>(
             () => SessionCrypto.Decrypt(key, nonceB64, ctB64, Encoding.UTF8.GetBytes("wrong-aad")),
             "wrong AAD must be rejected by AES-GCM");
     }
@@ -294,39 +300,54 @@ public sealed class StressTests
     // ── Message-status regression ─────────────────────────────────────────────────
 
     /// Verifies that a late "Sent" notification cannot downgrade "Delivered" or "Read".
+    ///
+    /// MessageStatus constants are strings, not enum values. The comparison API is
+    /// MessageStatus.Rank(s) and MessageStatus.ShouldApply(next, current) — there
+    /// is no static Upgrade() helper.
     [TestMethod]
     public void MessageStatusNeverDowngrades()
     {
-        var upgrades = new[] { MessageStatus.Sent, MessageStatus.Delivered, MessageStatus.Read };
+        var statuses = new[] { MessageStatus.Sent, MessageStatus.Delivered, MessageStatus.Read };
 
-        foreach (var target in upgrades)
+        foreach (var target in statuses)
         {
-            var status = target;
-            foreach (var lower in upgrades.Where(s => (int)s < (int)target))
+            foreach (var lower in statuses.Where(s => MessageStatus.Rank(s) < MessageStatus.Rank(target)))
             {
-                status = MessageStatus.Upgrade(status, lower);
-                Assert.AreEqual(target, status,
+                // A lower-ranked status must not be allowed to overwrite a higher one.
+                Assert.IsFalse(
+                    MessageStatus.ShouldApply(lower, target),
                     $"status {target} must not downgrade to {lower}");
             }
         }
     }
 
-    /// Verifies the upgrade path: Sent → Delivered → Read.
+    /// Verifies the upgrade path Sent → Delivered → Read is accepted,
+    /// the reverse direction is rejected, and Read is idempotent.
     [TestMethod]
     public void MessageStatusUpgradeSequence()
     {
-        var status = MessageStatus.Upgrade(MessageStatus.Sent, MessageStatus.Delivered);
-        Assert.AreEqual(MessageStatus.Delivered, status);
-        status = MessageStatus.Upgrade(status, MessageStatus.Read);
-        Assert.AreEqual(MessageStatus.Read, status);
+        // Forward (upgrade) transitions must be accepted.
+        Assert.IsTrue(MessageStatus.ShouldApply(MessageStatus.Delivered, MessageStatus.Sent),
+            "Delivered should apply over Sent");
+        Assert.IsTrue(MessageStatus.ShouldApply(MessageStatus.Read, MessageStatus.Delivered),
+            "Read should apply over Delivered");
+
         // Idempotent at the top.
-        status = MessageStatus.Upgrade(status, MessageStatus.Read);
-        Assert.AreEqual(MessageStatus.Read, status);
+        Assert.IsTrue(MessageStatus.ShouldApply(MessageStatus.Read, MessageStatus.Read),
+            "Read → Read is idempotent and must be accepted");
+
+        // Reverse (downgrade) transition must be rejected.
+        Assert.IsFalse(MessageStatus.ShouldApply(MessageStatus.Sent, MessageStatus.Read),
+            "Sent must not downgrade Read");
     }
 
     // ── Packet validator regression ───────────────────────────────────────────────
 
     /// Feeds malformed JSON blobs — validator must never crash.
+    ///
+    /// ValidateDiscovery and Validate (TCP) both take byte[], not string, and
+    /// require senderIP / ownPublicKeyB64 / ownIPs parameters. There is no
+    /// ValidateText method; the TCP validator is PacketValidator.Validate().
     [TestMethod]
     public void PacketValidatorHandlesMalformedInputWithoutCrash()
     {
@@ -343,12 +364,17 @@ public sealed class StressTests
             new string('{', 500),
         };
 
+        // Dummy sender / own-key values that won't trigger self-suppression.
+        const string ownKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        var          ownIPs = new HashSet<string>();
+
         for (int rep = 0; rep < 500; rep++)
         {
             foreach (var input in inputs)
             {
-                _ = PacketValidator.ValidateDiscovery(input);
-                _ = PacketValidator.ValidateText(input);
+                var bytes = Encoding.UTF8.GetBytes(input);
+                _ = PacketValidator.ValidateDiscovery(bytes, "1.2.3.4", ownKey, ownIPs);
+                _ = PacketValidator.Validate(bytes, "1.2.3.4", ownKey);
             }
         }
         // Pass = no crash.
@@ -357,45 +383,50 @@ public sealed class StressTests
     // ── History store regression ──────────────────────────────────────────────────
 
     /// Verifies that the history store caps at exactly 200 entries per peer.
+    ///
+    /// HistoryStore is a singleton (HistoryStore.Shared) with no public
+    /// parameterised constructor and no per-call encryption key. The in-memory
+    /// entry type is MessageEntry (not HistoryEntry), which uses Incoming:bool
+    /// rather than a Direction enum and Timestamp:double (Unix seconds).
+    /// The query method is Entries(peerIP), not Load(peer, key).
     [TestMethod]
     public void HistoryStoreCapsAt200Entries()
     {
-        var dir = Path.Combine(Path.GetTempPath(), $"HistoryStress-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
+        // Use a peer IP unlikely to collide with real or other-test data.
+        var peer = $"10.99.{(Environment.TickCount & 0xFF)}.1";
+
+        // Pre-clean any leftover state from a previous interrupted run.
+        HistoryStore.Shared.Delete(peer);
+
         try
         {
-            var store      = new HistoryStore(dir);
-            var peer       = "10.0.0.1";
-            var historyKey = new byte[32];
-            Array.Fill(historyKey, (byte)0x42);
-
             for (int i = 0; i < 250; i++)
             {
-                var msg = new HistoryEntry
+                var msg = new MessageEntry
                 {
                     MessageId = i.ToString("x32"),
                     Sender    = "me",
                     Text      = $"message {i}",
-                    Timestamp = DateTimeOffset.UtcNow.AddSeconds(i),
+                    Timestamp = DateTimeOffset.UtcNow.AddSeconds(i).ToUnixTimeSeconds(),
                     Status    = MessageStatus.Sent,
-                    Direction = MessageDirection.Outgoing,
+                    Incoming  = false,
                 };
-                store.Append(msg, peer, historyKey);
+                HistoryStore.Shared.Append(msg, peer);
             }
 
-            var entries = store.Load(peer, historyKey);
+            var entries = HistoryStore.Shared.Entries(peer);
             Assert.IsTrue(entries.Count <= 200,
                 $"history must be capped at 200 entries, got {entries.Count}");
             Assert.IsTrue(entries.Count >= 190,
                 $"history should keep at least 190 entries, got {entries.Count}");
 
-            // Newest entry (249) must survive.
+            // Newest entry (249) must survive truncation.
             Assert.IsTrue(entries.Any(e => e.MessageId == (249).ToString("x32")),
                 "newest entry must survive truncation");
         }
         finally
         {
-            try { Directory.Delete(dir, recursive: true); } catch { }
+            HistoryStore.Shared.Delete(peer);
         }
     }
 }
