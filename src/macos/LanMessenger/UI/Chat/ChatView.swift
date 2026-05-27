@@ -84,7 +84,14 @@ struct ChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 2) {
+                // Use VStack (not LazyVStack) because history is capped at 200 messages.
+                // LazyVStack + proxy.scrollTo() forces SwiftUI to materialise and measure
+                // every cell to compute the scroll destination, defeating lazy loading and
+                // causing the main-thread hang observed in the hang reports.  A plain VStack
+                // renders all rows once up-front, which is cheap for ≤200 messages and
+                // eliminates the DynamicContainerInfo layout-cycle that LazyVStack triggers
+                // when many MediaBubbleView tasks complete concurrently.
+                VStack(spacing: 2) {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
                         let prevIncoming = idx > 0 ? entries[idx - 1].incoming : !entry.incoming
                         MessageBubbleView(

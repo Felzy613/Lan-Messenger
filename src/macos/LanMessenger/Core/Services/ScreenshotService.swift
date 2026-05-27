@@ -228,11 +228,19 @@ enum ScreenshotService {
     // Marked `nonisolated` because they are called from a detached Task above
     // and never touch UI state.  The @MainActor on the enclosing enum applies
     // to the public API surface only.
+    //
+    // Screenshots are saved to ~/Downloads/LAN Messenger Screenshots/ rather than
+    // NSTemporaryDirectory().  The temp directory is cleaned by macOS between
+    // reboots and periodic maintenance, so absolute paths stored in chat history
+    // would become invalid after a restart, showing "File no longer available".
+    // The Downloads folder is permanent for the lifetime of the user's account.
     nonisolated private static func tempScreenshotDirectory() throws -> URL {
-        let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("LanMessenger-Screenshots", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: base.path) {
-            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        let downloads = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let base = downloads.appendingPathComponent("LAN Messenger Screenshots", isDirectory: true)
+        if !fm.fileExists(atPath: base.path) {
+            try fm.createDirectory(at: base, withIntermediateDirectories: true)
         }
         return base
     }

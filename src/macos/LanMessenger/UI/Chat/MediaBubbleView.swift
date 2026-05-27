@@ -29,6 +29,10 @@ struct MediaBubbleView: View {
     @Environment(\.colorScheme) var colorScheme
 
     @State private var thumbnail: NSImage? = nil
+    /// Pre-computed display frame for the loaded thumbnail (pt), used to give
+    /// SwiftUI a fixed layout size so it never needs to solve aspect-ratio
+    /// equations during a LazyVStack/VStack layout pass.
+    @State private var thumbnailDisplaySize: CGSize = CGSize(width: 220, height: 160)
     @State private var loadFailed = false
     @State private var fileExists = false
     @State private var showPreview = false
@@ -137,8 +141,12 @@ struct MediaBubbleView: View {
             showPreview = true
         } label: {
             ZStack(alignment: .bottomTrailing) {
+                // tileContent already carries an explicit fixed frame (either the
+                // pre-computed thumbnailDisplaySize for loaded images, or the
+                // 220×160 fixed frame from placeholderTile).  No max-width/height
+                // constraint needed here — removing it eliminates the layout
+                // ambiguity that caused the hang-report AG cycle.
                 tileContent
-                    .frame(maxWidth: maxBubbleWidth, maxHeight: maxBubbleHeight)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 if kind == .video {
                     Image(systemName: "play.circle.fill")
@@ -157,9 +165,13 @@ struct MediaBubbleView: View {
     @ViewBuilder
     private var tileContent: some View {
         if let img = thumbnail {
+            // Use a fixed frame derived from the pre-scaled thumbnail dimensions.
+            // This gives SwiftUI a concrete size during layout so it never needs
+            // to solve an aspect-ratio equation for an unconstrained Image — the
+            // pattern that caused the main-thread hang (AG layout cycle).
             Image(nsImage: img)
                 .resizable()
-                .aspectRatio(contentMode: .fit)
+                .frame(width: thumbnailDisplaySize.width, height: thumbnailDisplaySize.height)
         } else if loadFailed {
             // Thumbnail decode failed but file exists — render a neutral tile
             // rather than a crash-prone empty image.
@@ -289,31 +301,75 @@ struct MediaBubbleView: View {
     private func refreshFileState() async {
         let pathCopy = path
         let kindCopy = kind
-        let (exists, image) = await Task.detached(priority: .utility) { () -> (Bool, NSImage?) in
+        let maxW = maxBubbleWidth
+        let maxH = maxBubbleHeight
+        let (exists, image, displaySize) = await Task.detached(priority: .utility) {
+            () -> (Bool, NSImage?, CGSize) in
             let exists = FileManager.default.fileExists(atPath: pathCopy)
-            guard exists else { return (false, nil) }
+            guard exists else { return (false, nil, .zero) }
             // Try the cache first.
             if let cached = ThumbnailCache.shared.thumbnail(for: pathCopy) {
-                return (true, cached)
+                let sz = Self.fitSize(natural: cached.size, maxWidth: maxW, maxHeight: maxH)
+                return (true, cached, sz)
             }
-            let img: NSImage?
+            let raw: NSImage?
             switch kindCopy {
             case .image:
-                img = NSImage(contentsOfFile: pathCopy)
+                raw = NSImage(contentsOfFile: pathCopy)
             case .video:
-                img = Self.makeVideoThumbnail(path: pathCopy)
+                raw = Self.makeVideoThumbnail(path: pathCopy)
             case .other:
-                img = nil
+                raw = nil
             }
-            if let img { ThumbnailCache.shared.store(img, for: pathCopy) }
-            return (true, img)
+            guard let raw else { return (true, nil, .zero) }
+            // Scale down to the maximum bubble display dimensions (pt) before
+            // caching and returning.  Storing a down-sampled image means SwiftUI
+            // always gets a small, fixed-dimension NSImage — preventing the
+            // aspect-ratio layout ambiguity that caused the main-thread hang.
+            let displaySz = Self.fitSize(natural: raw.size, maxWidth: maxW, maxHeight: maxH)
+            let scaled = Self.scale(image: raw, to: displaySz)
+            ThumbnailCache.shared.store(scaled, for: pathCopy)
+            return (true, scaled, displaySz)
         }.value
 
         await MainActor.run {
             self.fileExists = exists
             self.thumbnail = image
+            self.thumbnailDisplaySize = (image != nil) ? displaySize : CGSize(width: 220, height: 160)
             self.loadFailed = exists && image == nil
         }
+    }
+
+    /// Compute the largest size that fits `natural` within `maxWidth × maxHeight`
+    /// while preserving the aspect ratio.  Returns the placeholder size when
+    /// the natural size is zero.
+    nonisolated private static func fitSize(natural: CGSize,
+                                            maxWidth: CGFloat,
+                                            maxHeight: CGFloat) -> CGSize {
+        guard natural.width > 0, natural.height > 0 else {
+            return CGSize(width: 220, height: 160)
+        }
+        let widthRatio  = maxWidth  / natural.width
+        let heightRatio = maxHeight / natural.height
+        let scale       = min(widthRatio, heightRatio, 1.0)   // never upscale
+        return CGSize(width: (natural.width  * scale).rounded(),
+                      height: (natural.height * scale).rounded())
+    }
+
+    /// Redraw `image` at exactly `targetSize` using Core Graphics.
+    nonisolated private static func scale(image: NSImage, to targetSize: CGSize) -> NSImage {
+        guard targetSize.width > 0, targetSize.height > 0 else { return image }
+        // If the image is already at or below the target resolution, skip redraw.
+        if image.size.width <= targetSize.width && image.size.height <= targetSize.height {
+            return image
+        }
+        let result = NSImage(size: targetSize)
+        result.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: NSRect(origin: .zero, size: targetSize),
+                   from: .zero, operation: .copy, fraction: 1.0)
+        result.unlockFocus()
+        return result
     }
 
     /// Generate a representative still for a video file. Runs on a background queue.
