@@ -347,7 +347,8 @@ final class DiscoveryService {
                     username: replyPayload.username,
                     port: replyPayload.port,
                     publicKeyB64: replyPayload.publicKeyB64,
-                    ips: replyPayload.ips
+                    ips: replyPayload.ips,
+                    relayIdHash: replyPayload.relayIdHash
                 )
             ) {
                 sendUDP(data: replyData, toIP: fromIP, port: discoveryPort)

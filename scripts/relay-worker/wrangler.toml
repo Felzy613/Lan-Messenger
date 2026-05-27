@@ -1,0 +1,7 @@
+name = "lan-messenger-relay"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[[kv_namespaces]]
+binding = "RELAY_STORE"
+id = "f108072bded444fea761db9a1641bc58"

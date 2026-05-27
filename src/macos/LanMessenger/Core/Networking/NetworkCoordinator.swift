@@ -61,13 +61,16 @@ final class NetworkCoordinator: NSObject {
         discovery.delegate = self
         // Read the username fresh on every beacon so changes in Settings
         // propagate without restarting the network stack.
+        // relay_id_hash is included so peers know where to address cloud-relay
+        // messages destined for us; it is SHA256(relay_id) and safe to publish.
         discovery.buildPayload = { [weak self] in
             DiscoveryPacket(
                 type: "discovery",
                 username: ConfigStore.shared.config.username,
                 port: 54232,
                 publicKeyB64: self?.ownPublicKeyB64 ?? "",
-                ips: self?.network.localIPs.map { $0 } ?? []
+                ips: self?.network.localIPs.map { $0 } ?? [],
+                relayIdHash: RelayClient.shared.relayIdHash()
             )
         }
         discovery.extraTargets = { [weak self] in

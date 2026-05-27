@@ -5,11 +5,14 @@ namespace LanMessenger.Core.Protocol;
 // UDP discovery (no frame prefix)
 public sealed class DiscoveryPacket
 {
-    [JsonPropertyName("type")]        public string Type           { get; set; } = "";
-    [JsonPropertyName("username")]    public string Username       { get; set; } = "";
-    [JsonPropertyName("port")]        public int    Port           { get; set; }
-    [JsonPropertyName("public_key_b64")] public string PublicKeyB64 { get; set; } = "";
-    [JsonPropertyName("ips")]         public List<string> Ips      { get; set; } = [];
+    [JsonPropertyName("type")]           public string       Type         { get; set; } = "";
+    [JsonPropertyName("username")]       public string       Username     { get; set; } = "";
+    [JsonPropertyName("port")]           public int          Port         { get; set; }
+    [JsonPropertyName("public_key_b64")] public string       PublicKeyB64 { get; set; } = "";
+    [JsonPropertyName("ips")]            public List<string> Ips          { get; set; } = [];
+    // SHA256(relay_id) hex — the sender's cloud relay mailbox address.
+    // Optional: older clients that omit this field are silently handled.
+    [JsonPropertyName("relay_id_hash")]  public string?      RelayIdHash  { get; set; }
 }
 
 // TCP framed packets

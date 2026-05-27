@@ -411,6 +411,7 @@ public sealed class DiscoveryService : IDisposable
                     Port         = src.Port,
                     PublicKeyB64 = src.PublicKeyB64,
                     Ips          = src.Ips,
+                    RelayIdHash  = src.RelayIdHash,
                 };
                 SendUdp(JsonSerializer.SerializeToUtf8Bytes(reply), fromIP, DiscoveryPort);
             }

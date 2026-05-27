@@ -56,6 +56,13 @@ import ScreenCaptureKit
 //    revoked between our gate and the capture; we translate that into the
 //    same `permissionDenied` error so the UI message stays consistent.
 
+/// Represents one capturable on-screen application window.
+struct WindowInfo: Identifiable, Sendable {
+    let id: Int          // CGWindowID stored as Int for Sendable conformance
+    let appName: String  // owning application display name
+    let title: String    // window title (falls back to appName when empty)
+}
+
 enum ScreenshotError: LocalizedError {
     case permissionDenied
     case noDisplay
@@ -157,6 +164,94 @@ enum ScreenshotService {
         }.value
     }
 
+    // MARK: - Window enumeration and targeted capture
+
+    /// Returns the list of on-screen windows that can be individually captured.
+    /// Windows smaller than 100×100 points, windows with no identifying info, and
+    /// windows belonging to this process are excluded.  Result is sorted by app
+    /// name then window title.
+    static func getShareableWindows() async throws -> [WindowInfo] {
+        if !hasPermission() {
+            let granted = requestPermission()
+            if !granted {
+                NetLogger.screenshot(event: "permission_denied", permission: "denied")
+                throw ScreenshotError.permissionDenied
+            }
+        }
+
+        let myPID = Int32(ProcessInfo.processInfo.processIdentifier)
+        return try await Task.detached(priority: .userInitiated) {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: true)
+            return content.windows.compactMap { w -> WindowInfo? in
+                guard w.frame.width >= 100, w.frame.height >= 100 else { return nil }
+                // Skip our own process windows (partially hidden by the picker sheet).
+                guard w.owningApplication?.processID != myPID else { return nil }
+                let appName = w.owningApplication?.applicationName ?? ""
+                let rawTitle = w.title ?? ""
+                guard !appName.isEmpty || !rawTitle.isEmpty else { return nil }
+                let title = rawTitle.isEmpty ? appName : rawTitle
+                return WindowInfo(id: Int(w.windowID), appName: appName, title: title)
+            }
+            .sorted { ($0.appName, $0.title) < ($1.appName, $1.title) }
+        }.value
+    }
+
+    /// Captures a single on-screen window by CGWindowID and writes a PNG to the
+    /// LAN Messenger Screenshots folder.  Returns the absolute file path.
+    /// The window is re-enumerated at capture time so stale IDs produce a clear
+    /// error rather than silently capturing the wrong content.
+    static func captureWindow(id windowID: Int) async throws -> String {
+        let startedAt = Date()
+        NetLogger.screenshot(event: "window_request", permission: hasPermission() ? "granted" : "unknown")
+
+        if !hasPermission() {
+            let granted = requestPermission()
+            if !granted {
+                NetLogger.screenshot(event: "permission_denied", permission: "denied")
+                throw ScreenshotError.permissionDenied
+            }
+        }
+
+        return try await Task.detached(priority: .userInitiated) { () -> String in
+            let cgImage: CGImage
+            do {
+                cgImage = try await Self.captureWindowFrame(id: windowID)
+            } catch let error as ScreenshotError {
+                throw error
+            } catch {
+                let msg = (error as NSError).localizedDescription
+                if msg.lowercased().contains("permission") || msg.lowercased().contains("not authorized") {
+                    NetLogger.screenshot(event: "permission_denied", permission: "denied", reason: msg)
+                    throw ScreenshotError.permissionDenied
+                }
+                NetLogger.screenshot(event: "failed", reason: msg)
+                throw ScreenshotError.captureFailed(msg)
+            }
+
+            let dir = try Self.tempScreenshotDirectory()
+            let filename = "Screenshot \(Self.filenameTimestamp()).png"
+            let url = dir.appendingPathComponent(filename)
+            guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+                throw ScreenshotError.writeFailed("CGImageDestinationCreateWithURL failed")
+            }
+            CGImageDestinationAddImage(dest, cgImage, nil)
+            guard CGImageDestinationFinalize(dest) else {
+                throw ScreenshotError.writeFailed("CGImageDestinationFinalize failed")
+            }
+
+            let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            NetLogger.screenshot(
+                event: "window_captured", display: "window",
+                widthPx: cgImage.width, heightPx: cgImage.height,
+                permission: "granted", initMs: elapsedMs, path: url.path
+            )
+            return url.path
+        }.value
+    }
+
+    // MARK: - Single-frame helpers
+
     /// Returns one CGImage from the primary display.
     /// On macOS 14+ uses SCScreenshotManager (single-frame, no stream lifecycle).
     /// On macOS 13.x falls back to SCStream with a one-frame collector.
@@ -192,6 +287,35 @@ enum ScreenshotService {
         }
 
         // ── macOS 13.x fallback: use SCStream for exactly one frame ──────────
+        return try await captureOneFrameWithStream(filter: filter, config: config)
+    }
+
+    /// Returns one CGImage of a specific window identified by CGWindowID.
+    /// The window is re-enumerated here so stale IDs from the picker produce a
+    /// clear error message rather than capturing the wrong window.
+    /// window.frame is in logical points; SCStreamConfiguration takes pixels.
+    /// We use logical dimensions (1× output) which is sufficient for chat use.
+    nonisolated private static func captureWindowFrame(id windowID: Int) async throws -> CGImage {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: true)
+        guard let window = content.windows.first(where: { Int($0.windowID) == windowID }) else {
+            throw ScreenshotError.captureFailed(
+                "The selected window is no longer available. Please try again.")
+        }
+
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+
+        let config = SCStreamConfiguration()
+        config.width  = max(1, Int(window.frame.width))
+        config.height = max(1, Int(window.frame.height))
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.queueDepth = 3
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+
+        if #available(macOS 14.0, *) {
+            return try await SCScreenshotManager.captureImage(
+                contentFilter: filter, configuration: config)
+        }
         return try await captureOneFrameWithStream(filter: filter, config: config)
     }
 

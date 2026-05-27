@@ -45,6 +45,9 @@ public sealed class AppConfig
     [JsonPropertyName("start_in_tray")]         public bool   StartInTray        { get; set; } = false;
     [JsonPropertyName("close_to_tray")]         public bool   CloseToTray        { get; set; } = true;
     [JsonPropertyName("verbose_logging")]       public bool   VerboseLogging     { get; set; } = false;
+    // Cloud relay Worker URL. When non-empty, undeliverable messages are posted
+    // here so they can be retrieved even if this device goes offline.
+    [JsonPropertyName("relay_worker_url")]      public string RelayWorkerUrl     { get; set; } = "https://lan-messenger-relay.davefelzy20.workers.dev";
 }
 
 // Manages reading/writing config.json in %APPDATA%\LanMessenger\.

@@ -67,6 +67,10 @@ public sealed partial class AppModel : ObservableObject
     private DispatcherTimer? _peerTimeoutTimer;
     private DispatcherTimer? _updateCheckTimer;
 
+    // SHA256(relay_id) for each peer, populated from discovery packets.
+    // Used to upload queued messages to the cloud relay mailbox of offline peers.
+    private readonly Dictionary<string, string> _peerRelayIdHashes = [];   // keyed by peerPublicKeyB64
+
     // Bursts of incoming packets (a chatty room, an active file transfer, a peer
     // typing fast) can produce many RefreshConversations calls per frame. Each
     // one rebuilds the entire Conversations list and re-binds every sidebar row.
@@ -121,6 +125,7 @@ public sealed partial class AppModel : ObservableObject
         StartPeerTimeoutTimer();
         CheckMigration();
         ScheduleAutoUpdateCheck();
+        _ = FetchRelayMessagesAsync();
     }
 
     // MARK: - Migration
@@ -150,7 +155,7 @@ public sealed partial class AppModel : ObservableObject
 
     // MARK: - Peers
 
-    private void UpsertPeer(string ip, string username, int port, string publicKeyB64)
+    private void UpsertPeer(string ip, string username, int port, string publicKeyB64, string? relayIdHash = null)
     {
         // Last-resort self-suppression — defends against stale OwnIPs in the
         // discovery service when the machine's network interfaces change.
@@ -226,6 +231,8 @@ public sealed partial class AppModel : ObservableObject
             PublicKeyB64 = publicKeyB64, LastSeen = DateTime.UtcNow,
         };
         Peers = updated;
+        if (!string.IsNullOrEmpty(relayIdHash))
+            _peerRelayIdHashes[publicKeyB64] = relayIdHash;
         RefreshConversations();
         MessagingService.Shared.DeliverPending(ip, publicKeyB64);
         DeliverPendingFiles(ip, publicKeyB64);
@@ -372,7 +379,8 @@ public sealed partial class AppModel : ObservableObject
         var publicKey = PeerByIP(peerIP)?.PublicKeyB64
             ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64;
         if (publicKey is null) return;
-        MessagingService.Shared.SendText(text, peerIP, publicKey, replyTo);
+        _peerRelayIdHashes.TryGetValue(publicKey, out var relayIdHash);
+        MessagingService.Shared.SendText(text, peerIP, publicKey, relayIdHash, replyTo);
     }
 
     public void SendTyping(bool active, string peerIP)
@@ -487,6 +495,30 @@ public sealed partial class AppModel : ObservableObject
 
         ConfigStore.Shared.Config.PendingFiles.RemoveAll(f => f.PeerPublicKeyB64 == peerPublicKeyB64);
         ConfigStore.Shared.Save();
+    }
+
+    // MARK: - Cloud relay
+
+    /// Fetches messages waiting in the cloud relay Worker mailbox and dispatches
+    /// them through MessagingService. Called once at startup; silently no-ops
+    /// when the relay URL is empty or the network is unavailable.
+    private async Task FetchRelayMessagesAsync()
+    {
+        var msgs = await RelayClient.Shared.FetchPendingAsync();
+        if (msgs.Count == 0) return;
+        _dq.TryEnqueue(() =>
+        {
+            foreach (var msg in msgs)
+            {
+                // Map sender public key → best known peer IP
+                var ip = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == msg.SenderPublicKeyB64)?.IP
+                      ?? ConfigStore.Shared.Config.Contacts
+                             .FirstOrDefault(c => c.PublicKeyB64 == msg.SenderPublicKeyB64)?.LastIP
+                      ?? $"relay-{msg.SenderPublicKeyB64[..Math.Min(8, msg.SenderPublicKeyB64.Length)]}";
+                MessagingService.Shared.HandleRelayMessage(msg, ip);
+            }
+            RefreshConversations();
+        });
     }
 
     // MARK: - Conversation / contact actions
@@ -630,13 +662,14 @@ public sealed partial class AppModel : ObservableObject
                 case ValidatedFileStart or ValidatedFileChunk or ValidatedFileEnd:
                     FileTransferService.Shared.HandlePacket(pkt); break;
                 case ValidatedDiscovery vd:
-                    UpsertPeer(vd.SenderIP, vd.Packet.Username, vd.Packet.Port, vd.Packet.PublicKeyB64);
+                    UpsertPeer(vd.SenderIP, vd.Packet.Username, vd.Packet.Port,
+                               vd.Packet.PublicKeyB64, vd.Packet.RelayIdHash);
                     break;
             }
         };
 
         Coordinator.PeerDiscovered += (pkt, ip) =>
-            UpsertPeer(ip, pkt.Username, pkt.Port, pkt.PublicKeyB64);
+            UpsertPeer(ip, pkt.Username, pkt.Port, pkt.PublicKeyB64, pkt.RelayIdHash);
 
         MessagingService.Shared.OnMessageReceived = (ip, entry) =>
         {

@@ -44,7 +44,7 @@ public sealed class MessagingService
     // MARK: - Send text
 
     public void SendText(string text, string peerIP, string peerPublicKeyB64,
-                         MessageEntry? replyTo = null)
+                         string? peerRelayIdHash = null, MessageEntry? replyTo = null)
     {
         var messageId = Guid.NewGuid().ToString("N").ToLowerInvariant();
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
@@ -101,13 +101,16 @@ public sealed class MessagingService
             if (replyTo.Sender is not null) packet["reply_to_sender"] = replyTo.Sender;
         }
 
+        var capturedNonce = encrypted.Value.nonceB64;
+        var capturedCt    = encrypted.Value.ctB64;
         Task.Run(async () =>
         {
             var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"text msgId={messageId}");
             Dispatch(() =>
             {
                 var status = success ? MessageStatus.Sent : MessageStatus.Queued;
-                if (!success) QueuePending(messageId, text, peerPublicKeyB64, timestamp);
+                if (!success) QueuePending(messageId, text, peerPublicKeyB64, peerRelayIdHash,
+                                           capturedCt, capturedNonce, timestamp);
                 // ApplyStatus persists when the rank check passes; nothing else
                 // to save here. Crucially, if a "Delivered" receipt already
                 // arrived between the WriteAsync and this dispatch, the rank
@@ -291,7 +294,14 @@ public sealed class MessagingService
         LanLogger.Info("Status", $"msgId={messageId} peer={peerIP} -> {status}");
     }
 
-    private void QueuePending(string messageId, string text, string peerPublicKeyB64, double timestamp)
+    private void QueuePending(
+        string messageId,
+        string text,
+        string peerPublicKeyB64,
+        string? peerRelayIdHash,
+        string ciphertextB64,
+        string nonceB64,
+        double timestamp)
     {
         var username = ConfigStore.Shared.Config.Contacts
             .FirstOrDefault(c => c.PublicKeyB64 == peerPublicKeyB64)?.Username ?? "Unknown";
@@ -304,6 +314,58 @@ public sealed class MessagingService
             Timestamp        = timestamp,
         });
         ConfigStore.Shared.Save();
+
+        // Also upload to cloud relay so delivery can proceed even if this
+        // device goes offline before the recipient comes back to the LAN.
+        if (!string.IsNullOrEmpty(peerRelayIdHash))
+        {
+            _ = RelayClient.Shared.StoreAsync(
+                peerRelayIdHash, messageId, ciphertextB64, nonceB64, timestamp);
+        }
+    }
+
+    // MARK: - Handle relay-delivered messages (from cloud Worker)
+
+    /// Decrypts and processes a message that arrived via the cloud relay.
+    /// Call from AppModel after FetchPendingAsync().
+    public void HandleRelayMessage(RelayPendingMessage msg, string fromStoredIP)
+    {
+        var aad = Encoding.UTF8.GetBytes(msg.MessageId);
+        byte[] plaintext;
+        try
+        {
+            plaintext = SessionCrypto.DecryptFromPeer(
+                KeyManager.Shared.PrivateKey, msg.SenderPublicKeyB64,
+                msg.NonceB64, msg.CiphertextB64, aad);
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Relay", $"failed to decrypt relay message {msg.MessageId}: {ex.Message}");
+            return;
+        }
+
+        var text = Encoding.UTF8.GetString(plaintext);
+
+        // Deduplicate: skip if we already have this message in history.
+        if (HistoryStore.Shared.Entries(fromStoredIP).Any(e => e.MessageId == msg.MessageId))
+            return;
+
+        var entry = new MessageEntry
+        {
+            Sender          = msg.SenderUsername,
+            Text            = text,
+            Incoming        = true,
+            Timestamp       = msg.Timestamp,
+            MessageId       = msg.MessageId,
+            Status          = "",
+            ReadReceiptSent = false,
+        };
+        HistoryStore.Shared.Append(entry, fromStoredIP);
+        HistoryStore.Shared.Save();
+        Dispatch(() => OnMessageReceived?.Invoke(fromStoredIP, entry));
+
+        // Delete from relay now that we've processed it (best-effort)
+        _ = RelayClient.Shared.DeleteAsync(msg.MessageId);
     }
 
     private static async Task<bool> FireTcpAsync(byte[] frame, string ip, int port, string description)

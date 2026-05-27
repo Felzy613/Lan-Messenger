@@ -57,6 +57,10 @@ final class AppModel: ObservableObject {
     private var peerTimeoutTimer: Timer?
     private var updateCheckTimer: Timer?
 
+    // SHA256(relay_id) for each peer, populated from discovery packets.
+    // Used to upload queued messages to the cloud relay mailbox of offline peers.
+    private var peerRelayIdHashes: [String: String] = [:]   // keyed by peerPublicKeyB64
+
     // MARK: - Init
 
     init() {
@@ -86,6 +90,7 @@ final class AppModel: ObservableObject {
         applyDockPolicy()
         reconcileLoginItem()
         scheduleAutoUpdateCheck()
+        fetchRelayMessages()
     }
 
     // If the user previously asked for launch-at-login but the system's
@@ -149,7 +154,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - Peers
 
-    private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String) {
+    private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String, relayIdHash: String? = nil) {
         // Last-resort self-suppression — defends against stale `ownIPs` in
         // the discovery service when the machine's network interfaces change.
         if publicKeyB64.isEmpty || publicKeyB64 == KeyManager.shared.publicKeyB64 { return }
@@ -191,6 +196,9 @@ final class AppModel: ObservableObject {
         let info = PeerInfo(ip: ip, username: username, port: port, publicKeyB64: publicKeyB64, lastSeen: Date())
         peers[publicKeyB64] = info
         knownPeerKeys[ip] = publicKeyB64
+        if let hash = relayIdHash, !hash.isEmpty {
+            peerRelayIdHashes[publicKeyB64] = hash
+        }
         refreshConversations()
         // Deliver any queued messages and files for this peer.
         MessagingService.shared.deliverPending(toPeerIP: ip, peerPublicKeyB64: publicKeyB64)
@@ -305,7 +313,14 @@ final class AppModel: ObservableObject {
             ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == ip })?.publicKeyB64
             ?? knownPeerKeys[ip]
         guard let key = publicKey else { return }
-        MessagingService.shared.sendText(text, toPeerIP: ip, peerPublicKeyB64: key, replyTo: replyTo)
+        let relayHash = peerRelayIdHashes[key]
+        MessagingService.shared.sendText(
+            text,
+            toPeerIP: ip,
+            peerPublicKeyB64: key,
+            peerRelayIdHash: relayHash,
+            replyTo: replyTo
+        )
     }
 
     func sendTyping(_ active: Bool, toPeerIP ip: String) {
@@ -335,6 +350,33 @@ final class AppModel: ObservableObject {
         // Kept for compatibility — delegates to markConversationRead.
         guard entry.incoming, !entry.readReceiptSent else { return }
         markConversationRead(peerIP: peerIP)
+    }
+
+    // MARK: - Cloud relay
+
+    /// Fetches messages waiting in the cloud relay Worker mailbox and dispatches
+    /// them through MessagingService. Called once at startup; silently no-ops
+    /// when the relay URL is empty or the network is unavailable.
+    private func fetchRelayMessages() {
+        Task { [weak self] in
+            guard let self else { return }
+            let msgs = await RelayClient.shared.fetchPending()
+            guard !msgs.isEmpty else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for msg in msgs {
+                    // Map sender public key → best known peer IP
+                    let ip: String = self.peers.values
+                        .first(where: { $0.publicKeyB64 == msg.senderPublicKeyB64 })?.ip
+                        ?? ConfigStore.shared.config.contacts
+                            .first(where: { $0.publicKeyB64 == msg.senderPublicKeyB64 })?.lastIP
+                        ?? self.knownPeerKeys.first(where: { $0.value == msg.senderPublicKeyB64 })?.key
+                        ?? "relay-\(msg.senderPublicKeyB64.prefix(8))"
+                    MessagingService.shared.handleRelayMessage(msg, fromStoredIP: ip)
+                }
+                self.refreshConversations()
+            }
+        }
     }
 
     // Queue or send a file. If the peer is offline, the file path is persisted
@@ -659,7 +701,13 @@ extension AppModel: NetworkCoordinatorDelegate {
     }
 
     func coordinator(_ c: NetworkCoordinator, didDiscoverPeer packet: DiscoveryPacket, fromIP ip: String) {
-        upsertPeer(ip: ip, username: packet.username, port: packet.port, publicKeyB64: packet.publicKeyB64)
+        upsertPeer(
+            ip: ip,
+            username: packet.username,
+            port: packet.port,
+            publicKeyB64: packet.publicKeyB64,
+            relayIdHash: packet.relayIdHash
+        )
     }
 
     func coordinatorNetworkAvailabilityChanged(_ c: NetworkCoordinator) {

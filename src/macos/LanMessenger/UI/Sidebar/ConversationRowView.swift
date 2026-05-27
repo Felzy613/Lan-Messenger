@@ -61,9 +61,13 @@ struct ConversationRowView: View {
                             confirmDelete = true
                         } label: { Label("Delete conversation", systemImage: "trash") }
                     } label: {
+                        // Use Color.primary.opacity() instead of .secondary (a hierarchical
+                        // ShapeStyle) so the dots always render with correct contrast in dark
+                        // mode — .secondary can resolve to near-invisible inside sidebar List
+                        // cells on macOS 14+.
                         Image(systemName: "ellipsis")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.primary.opacity(0.55))
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }

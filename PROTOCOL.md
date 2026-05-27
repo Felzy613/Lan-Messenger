@@ -104,6 +104,7 @@ or other virtual adapters.
 | `port` | integer | yes | Sender TCP port, normally `54232` |
 | `public_key_b64` | string | yes | Standard base64 of raw 32-byte X25519 public key |
 | `ips` | array of strings | yes | Sender's local IPv4 addresses |
+| `relay_id_hash` | string | no | SHA-256 hex of the sender's private `relay_id`; used as the cloud-relay mailbox address. Older clients omit this field and must be tolerated by receivers. |
 
 ### Discovery Reply
 
@@ -517,6 +518,45 @@ UI -> AppModel -> MessagingService
 
 If write fails, the message is stored in `pending_messages`. When the peer is
 discovered again, the pending message is re-encrypted and retried.
+
+#### Cloud Relay Fallback
+
+If the sender knows the peer's `relay_id_hash` (received in a prior discovery
+packet) the encrypted ciphertext is **also posted** to the cloud relay Worker
+immediately after being placed in the local queue.
+
+When any client starts up, it fetches its own pending messages from the Worker:
+
+```
+App start -> RelayClient.fetchPending(relay_id)
+  -> Worker verifies SHA256(relay_id) == relay_id_hash
+  -> returns stored ciphertext blobs
+  -> MessagingService decrypts each (same AES-GCM path as LAN delivery)
+  -> RelayClient.delete(message_id) to clean up
+```
+
+This allows Bob to receive messages from Alice even if Alice's machine was
+off-network at the time Bob came back online.
+
+**relay_id derivation:**
+
+```
+relay_id      = SHA256(private_key_bytes || "relay-v1")   [private, never transmitted]
+relay_id_hash = SHA256(relay_id)                           [published in discovery]
+```
+
+**Cloud Relay REST API** (Cloudflare Worker at `https://lan-messenger-relay.davefelzy20.workers.dev`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/store` | Store encrypted message for a peer (body: `relay_id_hash`, `message_id`, `ciphertext_b64`, `nonce_b64`, `sender_username`, `sender_public_key_b64`, `timestamp`, `ttl_s`) |
+| `GET` | `/pending?relay_id=<hex>` | Retrieve pending messages; Worker verifies `SHA256(relay_id)` matches stored hash |
+| `DELETE` | `/message/:id?relay_id=<hex>` | Delete a delivered message; same ownership check |
+
+Messages expire automatically after 72 hours (KV TTL). The relay cannot read
+message contents — it only stores ciphertext already encrypted to the recipient's
+X25519 key. The relay is entirely optional: clients that omit `relay_id_hash` from
+discovery packets gracefully degrade to LAN-only delivery.
 
 ### Text Receive
 

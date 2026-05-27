@@ -300,7 +300,8 @@ deduplicated final path.
 
 ## Messaging Service
 
-`MessagingService` handles text, typing, receipts, and pending message retry.
+`MessagingService` handles text, typing, receipts, pending message retry, and
+cloud relay dispatch.
 
 Send flow:
 
@@ -310,6 +311,9 @@ Send flow:
 4. Build `text` packet with optional reply metadata.
 5. Send a one-shot TCP frame.
 6. Mark `Sent` or queue pending and mark `Queued`.
+7. If the peer's `relay_id_hash` is known and the send failed, **also POST the
+   ciphertext to the cloud relay Worker** so delivery can proceed even if this
+   device goes offline before the peer reconnects.
 
 Receive flow:
 
@@ -323,6 +327,40 @@ Read flow:
 1. `AppModel.markConversationRead` sends `read_receipt` for incoming unread
    messages.
 2. It marks `read_receipt_sent` in memory and history.
+
+## Cloud Relay
+
+`RelayClient` (singleton, one per platform) provides an HTTP fallback delivery
+path using a Cloudflare Workers endpoint backed by KV storage.
+
+**Why:** The existing LAN queue (in `config.json`) re-delivers messages only when
+the sender's app is running and online. If Alice's machine is off when Bob
+reconnects, Bob never receives Alice's queued messages. The cloud relay closes
+this gap.
+
+**How:**
+
+1. Each device derives `relay_id = SHA256(private_key || "relay-v1")` at startup.
+2. `relay_id_hash = SHA256(relay_id)` is published in every discovery packet so
+   peers know where to address cloud-relay messages.
+3. When a message send fails, `RelayClient.store()` POSTs the ciphertext to the
+   Worker under the recipient's `relay_id_hash`.
+4. On every app startup, `RelayClient.fetchPending()` retrieves any waiting
+   ciphertext blobs from the Worker (authenticated by presenting `relay_id` and
+   letting the Worker verify `SHA256(relay_id) == relay_id_hash`).
+5. Retrieved messages are decrypted in `MessagingService.handleRelayMessage()` and
+   removed from the Worker via `RelayClient.delete()`.
+
+**Privacy:** The Worker stores only ciphertext already encrypted to the
+recipient's X25519 key. Cloudflare cannot read message content. Metadata
+(ciphertext size, hashed mailbox address, timing) is visible to Cloudflare.
+
+**Graceful degradation:** If `relayWorkerURL` is empty in config, or any HTTP
+call times out (6-second connect / 10-second total), the relay path is silently
+skipped and the app behaves identically to before this feature was added.
+
+**Worker endpoint:** `https://lan-messenger-relay.davefelzy20.workers.dev`
+**KV namespace:** `lan-messenger-relay` (TTL 72 h per message)
 
 ## File Transfer Service
 

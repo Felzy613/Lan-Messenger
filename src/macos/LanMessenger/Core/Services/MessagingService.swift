@@ -39,6 +39,7 @@ final class MessagingService {
         _ text: String,
         toPeerIP ip: String,
         peerPublicKeyB64: String,
+        peerRelayIdHash: String? = nil,
         replyTo: MessageEntry? = nil
     ) {
         let messageId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -91,11 +92,21 @@ final class MessagingService {
             if let s = replySender { packet["reply_to_sender"] = s }
         }
 
+        let capturedNonce = nonceB64
+        let capturedCt    = ctB64
         sendJSON(packet, toIP: ip, port: tcpPort) { [weak self] success in
             guard let self else { return }
             let status = success ? "Sent" : "Queued"
             if !success {
-                self.queuePendingMessage(messageId: messageId, text: text, peerPublicKeyB64: peerPublicKeyB64, timestamp: timestamp)
+                self.queuePendingMessage(
+                    messageId: messageId,
+                    text: text,
+                    peerPublicKeyB64: peerPublicKeyB64,
+                    peerRelayIdHash: peerRelayIdHash,
+                    ciphertextB64: capturedCt,
+                    nonceB64: capturedNonce,
+                    timestamp: timestamp
+                )
             }
             self.updateStatus(status, forMessageId: messageId, peerIP: ip)
             HistoryStore.shared.save()
@@ -253,7 +264,15 @@ final class MessagingService {
         onStatusUpdate?(peerIP, id, status)
     }
 
-    private func queuePendingMessage(messageId: String, text: String, peerPublicKeyB64: String, timestamp: Double) {
+    private func queuePendingMessage(
+        messageId: String,
+        text: String,
+        peerPublicKeyB64: String,
+        peerRelayIdHash: String?,
+        ciphertextB64: String,
+        nonceB64: String,
+        timestamp: Double
+    ) {
         let username = ConfigStore.shared.config.contacts.first { $0.publicKeyB64 == peerPublicKeyB64 }?.username ?? "Unknown"
         let pending = PendingMessageConfig(
             messageId: messageId,
@@ -264,6 +283,63 @@ final class MessagingService {
         )
         ConfigStore.shared.config.pendingMessages.append(pending)
         ConfigStore.shared.save()
+
+        // Also upload to cloud relay so delivery can proceed even if this
+        // device goes offline before the recipient comes back to the LAN.
+        if let hash = peerRelayIdHash, !hash.isEmpty {
+            Task {
+                await RelayClient.shared.store(
+                    peerRelayIdHash: hash,
+                    messageId: messageId,
+                    ciphertextB64: ciphertextB64,
+                    nonceB64: nonceB64,
+                    timestamp: timestamp
+                )
+            }
+        }
+    }
+
+    // MARK: - Handle relay-delivered messages (from cloud Worker)
+
+    /// Decrypts and processes a message that arrived via the cloud relay.
+    /// The ciphertext was produced by the sender and is decoded here exactly
+    /// like a normal LAN text packet. Call from AppModel after fetchPending().
+    func handleRelayMessage(_ msg: RelayPendingMessage, fromStoredIP ip: String) {
+        let aad = Data(msg.messageId.utf8)
+        guard let plaintext = try? SessionCrypto.decryptFromPeer(
+            myPrivate: KeyManager.shared.privateKey,
+            peerPublicKeyB64: msg.senderPublicKeyB64,
+            nonceB64: msg.nonceB64,
+            ciphertextB64: msg.ciphertextB64,
+            aad: aad
+        ) else {
+            NetLogger.warn("Relay", "failed to decrypt relay message \(msg.messageId)")
+            return
+        }
+        let text = String(data: plaintext, encoding: .utf8) ?? ""
+
+        // Deduplicate: don't re-add if we already have this message in history.
+        if HistoryStore.shared.entries(forPeerIP: ip).contains(where: { $0.messageId == msg.messageId }) {
+            return
+        }
+
+        let entry = MessageEntry(
+            sender: msg.senderUsername,
+            text: text,
+            incoming: true,
+            timestamp: msg.timestamp,
+            messageId: msg.messageId,
+            status: "",
+            readReceiptSent: false
+        )
+        HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+        HistoryStore.shared.save()
+        onMessageReceived?(ip, entry)
+
+        // Delete from relay now that we've processed it (best-effort)
+        Task {
+            await RelayClient.shared.delete(messageId: msg.messageId)
+        }
     }
 
     private func sendJSON(_ dict: [String: Any], toIP ip: String, port: Int, completion: ((Bool) -> Void)?) {

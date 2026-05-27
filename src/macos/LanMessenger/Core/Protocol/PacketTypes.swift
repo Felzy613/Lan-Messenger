@@ -22,11 +22,36 @@ struct DiscoveryPacket: Codable {
     let port: Int
     let publicKeyB64: String
     let ips: [String]
+    // SHA256(relay_id) hex — the sender's cloud relay mailbox address.
+    // Optional: older clients that don't include this field are silently ignored.
+    let relayIdHash: String?
 
     enum CodingKeys: String, CodingKey {
         case type, username, port
         case publicKeyB64 = "public_key_b64"
         case ips
+        case relayIdHash = "relay_id_hash"
+    }
+
+    // Custom decoding: relay_id_hash is optional (old clients omit it).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type          = try c.decode(String.self, forKey: .type)
+        username      = try c.decode(String.self, forKey: .username)
+        port          = try c.decode(Int.self,    forKey: .port)
+        publicKeyB64  = try c.decode(String.self, forKey: .publicKeyB64)
+        ips           = try c.decode([String].self, forKey: .ips)
+        relayIdHash   = try c.decodeIfPresent(String.self, forKey: .relayIdHash)
+    }
+
+    init(type: String, username: String, port: Int, publicKeyB64: String,
+         ips: [String], relayIdHash: String? = nil) {
+        self.type         = type
+        self.username     = username
+        self.port         = port
+        self.publicKeyB64 = publicKeyB64
+        self.ips          = ips
+        self.relayIdHash  = relayIdHash
     }
 }
 

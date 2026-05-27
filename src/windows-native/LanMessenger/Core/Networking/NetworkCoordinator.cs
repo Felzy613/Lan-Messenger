@@ -60,6 +60,9 @@ public sealed class NetworkCoordinator : IDisposable
             Port         = TcpPort,
             PublicKeyB64 = OwnPublicKeyB64,
             Ips          = [.. Network.LocalIPs],
+            // relay_id_hash lets peers know where to send cloud-relay messages
+            // destined for us. It is SHA256(relay_id) and safe to publish.
+            RelayIdHash  = LanMessenger.Core.Services.RelayClient.Shared.RelayIdHash(),
         };
         Discovery.ExtraTargets = () => _sessions.Keys;
         Discovery.PeerDiscovered += (pkt, ip) =>

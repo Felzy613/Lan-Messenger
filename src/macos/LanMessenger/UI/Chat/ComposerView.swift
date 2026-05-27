@@ -11,8 +11,17 @@ struct ComposerView: View {
     @State private var isDragTargeted = false
     @State private var measuredHeight: CGFloat = 36
     @State private var typingTimer: Task<Void, Never>?
-    @State private var screenshotBusy = false
-    @State private var screenshotError: String? = nil
+
+    // Screenshot flow ─────────────────────────────────────────────────────────
+    // Step 1 → camera button tapped → fetch window list → show picker sheet
+    // Step 2 → user picks a window → capture → show preview sheet
+    // Step 3 → user clicks Send in preview → sendFile() → dismiss
+    @State private var screenshotBusy = false          // spinner on camera button
+    @State private var screenshotError: String? = nil  // surfaced in alert
+    @State private var showWindowPicker = false
+    @State private var windowPickerItems: [ScreenshotWindowItem] = []
+    @State private var showScreenshotPreview = false
+    @State private var capturedScreenshotPath: String? = nil
 
     private let minHeight: CGFloat = 36
     private let maxHeight: CGFloat = 120
@@ -35,7 +44,7 @@ struct ComposerView: View {
 
             // Screenshot capture button.  Disabled while a capture is in
             // progress so a double-tap can't enqueue two PNGs in a row.
-            Button { sendScreenshot() } label: {
+            Button { startScreenshotFlow() } label: {
                 ZStack {
                     if screenshotBusy {
                         ProgressView().controlSize(.small)
@@ -50,7 +59,7 @@ struct ComposerView: View {
             .foregroundStyle(.secondary)
             .padding(.bottom, 4)
             .disabled(screenshotBusy)
-            .help("Capture screen and send")
+            .help("Capture and send a screenshot")
 
             ZStack(alignment: .topLeading) {
                 // Hidden, off-screen text used to measure ideal height for the draft string.
@@ -121,6 +130,7 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        // Screenshot error alert
         .alert("Screenshot failed",
                isPresented: Binding(get: { screenshotError != nil },
                                     set: { if !$0 { screenshotError = nil } })) {
@@ -128,28 +138,98 @@ struct ComposerView: View {
         } message: {
             Text(screenshotError ?? "")
         }
+        // Step 1 – window picker
+        .sheet(isPresented: $showWindowPicker) {
+            WindowPickerView(items: windowPickerItems, onSelect: { item in
+                handleWindowSelected(item)
+            }, onCancel: {
+                showWindowPicker = false
+            })
+        }
+        // Step 2 – preview before sending
+        .sheet(isPresented: $showScreenshotPreview) {
+            if let path = capturedScreenshotPath {
+                ScreenshotPreviewView(
+                    imagePath: path,
+                    onSend: { handleSendScreenshot() },
+                    onCancel: {
+                        // Clean up the file – user chose not to send it.
+                        if let p = capturedScreenshotPath {
+                            try? FileManager.default.removeItem(atPath: p)
+                        }
+                        capturedScreenshotPath = nil
+                        showScreenshotPreview = false
+                    }
+                )
+            }
+        }
     }
 
-    /// Captures the main display and sends it through the existing file-transfer
-    /// pipeline.  The capture and write happen off the main thread inside
-    /// ScreenshotService.  Errors (permission denied, capture failure) surface
-    /// as a SwiftUI alert.
-    private func sendScreenshot() {
+    // MARK: - Screenshot flow
+
+    /// Step 1: fetch the list of capturable windows, then show the picker.
+    private func startScreenshotFlow() {
         guard !screenshotBusy else { return }
         screenshotBusy = true
         Task {
-            defer { screenshotBusy = false }
             do {
-                let path = try await ScreenshotService.capturePrimaryDisplay()
-                // Hand off to the same path drag-drop and the file picker use.
-                model.sendFile(path: path, toPeerIP: peerIP)
-            } catch let error as ScreenshotError {
-                screenshotError = error.errorDescription
+                let windows = try await ScreenshotService.getShareableWindows()
+                var items: [ScreenshotWindowItem] = [.fullScreen]
+                items += windows.map { .window($0) }
+                windowPickerItems = items
+                screenshotBusy = false
+                showWindowPicker = true
+            } catch let err as ScreenshotError {
+                screenshotBusy = false
+                screenshotError = err.errorDescription
             } catch {
+                screenshotBusy = false
                 screenshotError = error.localizedDescription
             }
         }
     }
+
+    /// Step 2: user chose a window (or Full Screen) from the picker.
+    /// Dismiss the picker, wait for its animation to finish, then capture.
+    private func handleWindowSelected(_ item: ScreenshotWindowItem) {
+        showWindowPicker = false
+        screenshotBusy = true
+        Task {
+            // Allow the picker sheet to finish its dismiss animation before
+            // capturing.  For Full Screen this also ensures the picker is gone
+            // from the screenshot.
+            try? await Task.sleep(nanoseconds: 380_000_000)
+            do {
+                let path: String
+                switch item {
+                case .fullScreen:
+                    path = try await ScreenshotService.capturePrimaryDisplay()
+                case .window(let info):
+                    path = try await ScreenshotService.captureWindow(id: info.id)
+                }
+                capturedScreenshotPath = path
+                screenshotBusy = false
+                showScreenshotPreview = true
+            } catch let err as ScreenshotError {
+                screenshotBusy = false
+                screenshotError = err.errorDescription
+            } catch {
+                screenshotBusy = false
+                screenshotError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Step 3: user clicked Send in the preview sheet.
+    private func handleSendScreenshot() {
+        guard let path = capturedScreenshotPath else { return }
+        showScreenshotPreview = false
+        capturedScreenshotPath = nil
+        // Hand off through the same path drag-drop and the file picker use.
+        model.sendFile(path: path, toPeerIP: peerIP)
+    }
+
+    // MARK: - Text message
 
     private func send() {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -233,5 +313,161 @@ private struct ComposerHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 36
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+// MARK: - Screenshot flow: window item model
+
+enum ScreenshotWindowItem: Identifiable {
+    case fullScreen
+    case window(WindowInfo)
+
+    var id: String {
+        switch self {
+        case .fullScreen:          return "__fullscreen__"
+        case .window(let w):       return String(w.id)
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .fullScreen: return "display"
+        case .window:     return "macwindow"
+        }
+    }
+
+    var displayTitle: String {
+        switch self {
+        case .fullScreen:    return "Full Screen"
+        case .window(let w): return w.title
+        }
+    }
+
+    /// Secondary label shown below the title.  Nil when the subtitle would
+    /// duplicate the title (e.g. when the window had no title so title == appName).
+    var subtitle: String? {
+        switch self {
+        case .fullScreen:
+            return "Capture the entire display"
+        case .window(let w):
+            guard !w.appName.isEmpty, w.appName != w.title else { return nil }
+            return w.appName
+        }
+    }
+}
+
+// MARK: - Screenshot flow: window picker sheet
+
+struct WindowPickerView: View {
+    let items: [ScreenshotWindowItem]
+    let onSelect: (ScreenshotWindowItem) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if items.count <= 1 {
+                    // Only Full Screen is available (no other windows found).
+                    VStack(spacing: 12) {
+                        Image(systemName: "macwindow.badge.plus")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.secondary)
+                        Text("No other windows found")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                        Text("Open another app's window and try again, or capture the full screen.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 280)
+                        Button("Capture Full Screen") { onSelect(.fullScreen) }
+                            .buttonStyle(.borderedProminent)
+                            .padding(.top, 4)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(items) { item in
+                        Button { onSelect(item) } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: item.iconName)
+                                    .font(.system(size: 18))
+                                    .frame(width: 28)
+                                    .foregroundStyle(Theme.accent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.displayTitle)
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(.primary)
+                                    if let sub = item.subtitle {
+                                        Text(sub)
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .listStyle(.inset)
+                }
+            }
+            .navigationTitle("Select Window")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                }
+            }
+        }
+        .frame(minWidth: 380, minHeight: 300)
+    }
+}
+
+// MARK: - Screenshot flow: preview sheet
+
+struct ScreenshotPreviewView: View {
+    let imagePath: String
+    let onSend: () -> Void
+    let onCancel: () -> Void
+
+    private var image: NSImage? { NSImage(contentsOfFile: imagePath) }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
+                    .ignoresSafeArea()
+                if let img = image {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .padding(20)
+                        .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 2)
+                } else {
+                    VStack(spacing: 12) {
+                        Image(systemName: "photo.slash")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.secondary)
+                        Text("Could not load screenshot")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Screenshot Preview")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Send") { onSend() }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .frame(minWidth: 520, minHeight: 400)
     }
 }

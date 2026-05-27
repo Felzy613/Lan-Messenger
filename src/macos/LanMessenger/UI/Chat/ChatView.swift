@@ -51,7 +51,7 @@ struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            AvatarView(name: conv?.peerName ?? "?", size: 36)
+            AvatarView(name: conv?.peerName ?? "?", size: 36, photoB64: conv?.photoB64)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(conv?.peerName ?? peerIP)
