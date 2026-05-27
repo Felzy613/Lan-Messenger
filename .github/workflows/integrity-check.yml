@@ -1,7 +1,11 @@
 name: Integrity Check
 
-# Weekly audit: verifies that both per-platform releases exist and have assets.
-# Also runnable manually for on-demand verification.
+# Weekly audit: verifies that both per-platform releases exist and have assets,
+# and that version files contain valid semver. Also runs on manual dispatch.
+#
+# Failures are surfaced via the workflow step summary and as a workflow failure
+# in the Actions tab — no GitHub Issues are created automatically.
+
 on:
   schedule:
     - cron: '0 8 * * 1'   # Every Monday at 08:00 UTC
@@ -13,7 +17,6 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   integrity:
@@ -21,7 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -31,8 +33,9 @@ jobs:
         id: audit
         run: |
           FAILURES=""
+          SUMMARY=""
 
-          # ── Check version files ──────────────────────────────────────────
+          # ── Version files ─────────────────────────────────────────────────
           for PLATFORM in macos windows; do
             FILE="version/${PLATFORM}.json"
             if [ ! -f "$FILE" ]; then
@@ -42,12 +45,13 @@ jobs:
               if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
                 FAILURES="$FAILURES\n- Invalid semver in \`$FILE\`: \`$VERSION\`"
               else
+                SUMMARY="$SUMMARY\n✓ $FILE: $VERSION"
                 echo "✓ $FILE: $VERSION"
               fi
             fi
           done
 
-          # ── Check platform releases exist and have assets ─────────────────
+          # ── Platform releases ─────────────────────────────────────────────
           RELEASES=$(gh release list --limit 100 --json tagName,createdAt \
             --jq 'sort_by(.createdAt) | reverse')
 
@@ -56,104 +60,71 @@ jobs:
           WIN_TAG=$(echo "$RELEASES" | \
             jq -r '[.[] | select(.tagName | startswith("windows-v"))] | first | .tagName // empty')
 
-          echo "Latest macOS release:   ${MAC_TAG:-(none)}"
-          echo "Latest Windows release: ${WIN_TAG:-(none)}"
+          echo "Latest macOS:   ${MAC_TAG:-(none)}"
+          echo "Latest Windows: ${WIN_TAG:-(none)}"
 
-          if [ -z "$MAC_TAG" ]; then
-            FAILURES="$FAILURES\n- No \`macos-v*\` platform release found"
-          else
-            MAC_ASSETS=$(gh release view "$MAC_TAG" --json assets -q '.assets | length')
-            if [ "$MAC_ASSETS" -eq 0 ]; then
-              FAILURES="$FAILURES\n- macOS release \`$MAC_TAG\` exists but has no assets"
+          for TAG_VAR in MAC_TAG WIN_TAG; do
+            TAG="${!TAG_VAR}"
+            LABEL=$([ "$TAG_VAR" = "MAC_TAG" ] && echo "macOS" || echo "Windows")
+            PREFIX=$([ "$TAG_VAR" = "MAC_TAG" ] && echo "macos-v" || echo "windows-v")
+            if [ -z "$TAG" ]; then
+              FAILURES="$FAILURES\n- No \`${PREFIX}*\` platform release found"
             else
-              echo "✓ $MAC_TAG: $MAC_ASSETS asset(s)"
+              ASSET_COUNT=$(gh release view "$TAG" --json assets -q '.assets | length')
+              if [ "$ASSET_COUNT" -eq 0 ]; then
+                FAILURES="$FAILURES\n- $LABEL release \`$TAG\` has no assets"
+              else
+                SUMMARY="$SUMMARY\n✓ $TAG: $ASSET_COUNT asset(s)"
+                echo "✓ $TAG: $ASSET_COUNT asset(s)"
+              fi
             fi
-          fi
+          done
 
-          if [ -z "$WIN_TAG" ]; then
-            FAILURES="$FAILURES\n- No \`windows-v*\` platform release found"
-          else
-            WIN_ASSETS=$(gh release view "$WIN_TAG" --json assets -q '.assets | length')
-            if [ "$WIN_ASSETS" -eq 0 ]; then
-              FAILURES="$FAILURES\n- Windows release \`$WIN_TAG\` exists but has no assets"
-            else
-              echo "✓ $WIN_TAG: $WIN_ASSETS asset(s)"
-            fi
-          fi
-
-          # ── Check that a combined release exists ──────────────────────────
+          # ── Combined release ──────────────────────────────────────────────
           COMBINED=$(echo "$RELEASES" | \
             jq -r '[.[] | select(.tagName | startswith("release-"))] | first | .tagName // empty')
           if [ -z "$COMBINED" ]; then
             FAILURES="$FAILURES\n- No combined \`release-*\` release found"
           else
-            echo "✓ Latest combined release: $COMBINED"
+            SUMMARY="$SUMMARY\n✓ Latest combined: $COMBINED"
+            echo "✓ Latest combined: $COMBINED"
           fi
 
-          # ── Emit results ─────────────────────────────────────────────────
+          # ── Result ────────────────────────────────────────────────────────
           if [ -n "$FAILURES" ]; then
             echo "has_failures=true" >> $GITHUB_OUTPUT
-            # Store multi-line value safely
             {
               echo "failures<<EOF"
               printf "$FAILURES"
               echo ""
               echo "EOF"
             } >> $GITHUB_OUTPUT
-            echo "::error::Integrity check detected failures — see job summary"
+            echo "::error::Integrity check failed — see step summary"
           else
             echo "has_failures=false" >> $GITHUB_OUTPUT
-            echo "::notice::All integrity checks passed"
+            echo "All integrity checks passed"
           fi
 
-      - name: Write job summary
+      - name: Write step summary
         if: always()
         run: |
           if [ "${{ steps.audit.outputs.has_failures }}" = "true" ]; then
-            echo "## ❌ Integrity Check Failed" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            printf "${{ steps.audit.outputs.failures }}" >> $GITHUB_STEP_SUMMARY
+            {
+              echo "## ❌ Integrity Check Failed"
+              echo ""
+              printf "${{ steps.audit.outputs.failures }}"
+              echo ""
+              echo ""
+              echo "Review the [releases page](../../releases) and re-run a build if any platform is missing."
+            } >> $GITHUB_STEP_SUMMARY
           else
-            echo "## ✅ Integrity Check Passed" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "All platform releases and version files are healthy." >> $GITHUB_STEP_SUMMARY
+            {
+              echo "## ✅ Integrity Check Passed"
+              echo ""
+              echo "All platform releases and version files are healthy."
+            } >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Create or update integrity failure issue
+      - name: Fail workflow on integrity issues
         if: steps.audit.outputs.has_failures == 'true'
-        run: |
-          EXISTING=$(gh issue list \
-            --label "ci-failure" \
-            --label "type:integrity" \
-            --state open \
-            --limit 10 \
-            --json number \
-            --jq '.[0].number' 2>/dev/null || true)
-
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          printf '%s\n' \
-            "CI Artifact Integrity Failure" \
-            "" \
-            "The weekly integrity check detected problems with releases or version files." \
-            "" \
-            "Detected: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "Workflow:  ${RUN_URL}" \
-            "" \
-            "Issues Found:" \
-            "${{ steps.audit.outputs.failures }}" \
-            > /tmp/integrity-body.md
-
-          if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --body "$(cat /tmp/integrity-body.md)"
-            echo "::notice::Updated existing integrity issue #$EXISTING"
-          else
-            gh label create "ci-failure"     --color "d73a4a" --description "CI pipeline failure"     2>/dev/null || true
-            gh label create "type:integrity" --color "e4e669" --description "Integrity check failure" 2>/dev/null || true
-
-            gh issue create \
-              --title "[CI] Weekly artifact integrity check failed — $(date -u +%Y-%m-%d)" \
-              --label "ci-failure" \
-              --label "type:integrity" \
-              --body "$(cat /tmp/integrity-body.md)"
-          fi
+        run: exit 1

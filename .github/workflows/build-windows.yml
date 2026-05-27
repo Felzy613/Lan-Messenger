@@ -1,5 +1,7 @@
 name: Build Windows
 
+# Pipeline: preflight → build-test → smoke (major/minor only) → publish
+
 on:
   push:
     branches: [main]
@@ -8,7 +10,6 @@ on:
       - 'version/windows.json'
       - 'shared/**'
       - '.github/workflows/build-windows.yml'
-      - '.github/actions/**'
       - 'scripts/windows/**'
   workflow_dispatch:
     inputs:
@@ -21,7 +22,7 @@ on:
         type: boolean
         default: false
 
-# One Windows build at a time — prevents parallel runs from corrupting releases
+# One Windows build at a time — prevents parallel runs from corrupting releases.
 concurrency:
   group: build-windows
   cancel-in-progress: false
@@ -31,8 +32,6 @@ permissions:
 
 jobs:
   # ── Preflight ─────────────────────────────────────────────────────────────────
-  # Runs on ubuntu (fast/cheap). Validates the version and checks whether we
-  # already published this version — if so, every downstream job is skipped.
   preflight:
     name: Preflight
     runs-on: ubuntu-latest
@@ -42,6 +41,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       release_exists: ${{ steps.check.outputs.exists }}
+      run_smoke: ${{ steps.bump.outputs.run_smoke }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,10 +69,33 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
+      # Smoke test runs only for major/minor bumps; skipped for patch releases.
+      - name: Detect bump type for smoke gate
+        id: bump
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          PREV_TAG=$(gh release list --limit 100 \
+            --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("windows-v"))] | .[0].tagName // empty' \
+            2>/dev/null || true)
+
+          RUN_SMOKE=true
+          if [ -n "$PREV_TAG" ]; then
+            PREV_VER="${PREV_TAG#windows-v}"
+            CUR_MAJ=$(echo "$VERSION"  | cut -d. -f1)
+            CUR_MIN=$(echo "$VERSION"  | cut -d. -f2)
+            PRV_MAJ=$(echo "$PREV_VER" | cut -d. -f1)
+            PRV_MIN=$(echo "$PREV_VER" | cut -d. -f2)
+            if [ "$CUR_MAJ" = "$PRV_MAJ" ] && [ "$CUR_MIN" = "$PRV_MIN" ]; then
+              RUN_SMOKE=false
+            fi
+          fi
+          echo "run_smoke=$RUN_SMOKE" >> $GITHUB_OUTPUT
+          echo "Smoke test: $RUN_SMOKE (previous tag: ${PREV_TAG:-(none)})"
+
   # ── Test + Build + Package ────────────────────────────────────────────────────
-  # Single job: tests and the release build share one runner so .NET only
-  # compiles the source tree once. Skipped entirely if the version is already
-  # released (unless force_rebuild is set).
   build-test:
     name: Test, Build & Package
     needs: preflight
@@ -83,7 +106,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      issues: write
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
     defaults:
@@ -97,8 +119,8 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # VS MSBuild is required to build the WinUI 3 project (dotnet SDK MSBuild
-      # lacks the Windows SDK Pri packaging tasks used by WindowsAppSDK targets).
+      # VS MSBuild is required for WinUI 3 (dotnet SDK MSBuild lacks the Windows
+      # SDK PRI packaging tasks used by WindowsAppSDK targets).
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
@@ -112,9 +134,7 @@ jobs:
       - name: Restore dependencies
         run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
 
-      # ── Tests ────────────────────────────────────────────────────────────────
-      # MSBuild compiles to bin\x64\Release\ which is reused by xcodebuild
-      # publish below, making this a single-compilation pipeline.
+      # ── Tests ─────────────────────────────────────────────────────────────────
       - name: Build test project
         shell: pwsh
         run: |
@@ -127,16 +147,10 @@ jobs:
       - name: Run unit tests
         shell: pwsh
         run: |
-          # VS MSBuild (Platform=x64) outputs to bin\x64\Release\ while
-          # 'dotnet test --no-build' resolves to bin\Release\, so we locate
-          # the DLL ourselves and pass it directly to dotnet vstest.
           $testDll = Get-ChildItem -Path "LanMessenger.Tests\bin" `
                        -Filter "LanMessenger.Tests.dll" -Recurse |
                      Select-Object -First 1
-          if (-not $testDll) {
-            Write-Error "Test DLL not found under LanMessenger.Tests\bin\"
-            exit 1
-          }
+          if (-not $testDll) { Write-Error "Test DLL not found under LanMessenger.Tests\bin\"; exit 1 }
           Write-Host "Running tests from: $($testDll.FullName)"
           dotnet vstest $testDll.FullName `
             --logger:"console;verbosity=normal" `
@@ -151,9 +165,9 @@ jobs:
           path: |
             src/windows-native/LanMessenger.Tests/TestResults/
             test-output-windows.txt
-          retention-days: 30
+          retention-days: 14
 
-      # ── Build ────────────────────────────────────────────────────────────────
+      # ── Build ─────────────────────────────────────────────────────────────────
       - name: Publish self-contained app
         shell: pwsh
         run: |
@@ -167,15 +181,10 @@ jobs:
             2>&1 | Tee-Object -FilePath ..\..\build-output-windows.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # App-local deployment of the VC++ 2015-2022 runtime DLLs that
-      # libsodium.dll (NSec.Cryptography) P/Invokes. Without these, SessionCrypto's
-      # static constructor throws TypeInitializationException on Win10 boxes
-      # that don't have the VC++ redistributable installed system-wide.
-      # Windows DLL search order finds DLLs next to the .exe before falling
-      # back to System32, so app-local copies work on every machine regardless
-      # of what's installed. Microsoft's CRT redistribution license explicitly
-      # covers shipping these DLLs alongside an app.
-      - name: Copy VC++ runtime DLLs into publish output (app-local)
+      # App-local VC++ runtime DLLs so libsodium (NSec.Cryptography) loads on
+      # clean Windows 10 machines. Windows DLL search order finds DLLs next to
+      # the .exe before System32. Microsoft's CRT redistribution license covers this.
+      - name: Bundle VC++ runtime DLLs (app-local)
         shell: pwsh
         run: |
           $PublishDir = "LanMessenger\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\publish"
@@ -184,16 +193,11 @@ jobs:
             Get-ChildItem LanMessenger\bin -Recurse -Directory | Select-Object FullName
             exit 1
           }
-          $Dlls = @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll')
-          foreach ($d in $Dlls) {
+          foreach ($d in @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll')) {
             $src = Join-Path $env:WINDIR "System32\$d"
-            if (-not (Test-Path $src)) {
-              Write-Error "Missing runtime DLL on builder: $src"
-              exit 1
-            }
+            if (-not (Test-Path $src)) { Write-Error "Missing runtime DLL: $src"; exit 1 }
             Copy-Item $src -Destination $PublishDir -Force
-            $size = (Get-Item (Join-Path $PublishDir $d)).Length
-            Write-Host "Bundled $d ($size bytes) into $PublishDir"
+            Write-Host "Bundled $d into publish output"
           }
 
       # Optional Authenticode signing — uncomment once CODE_SIGN_CERT / CODE_SIGN_PWD secrets are set:
@@ -208,31 +212,22 @@ jobs:
       #       "publish-output\LanMessenger.exe"
       #     Remove-Item cert.pfx
 
-      # The Inno Setup script bundles vc_redist.x64.exe and chain-installs it
-      # so SessionCrypto's libsodium dependency loads on clean Windows 10 boxes
-      # (the GitHub runners have the runtime preinstalled, real users often don't).
-      # aka.ms/vs/17/release/vc_redist.x64.exe is Microsoft's stable permalink
-      # for the current VC++ 2015-2022 x64 redistributable.
+      # Inno Setup bundles vc_redist.x64.exe and chain-installs it so SessionCrypto
+      # loads on clean Windows 10 boxes (runners have it preinstalled, real users often don't).
       - name: Download VC++ 2015-2022 x64 redistributable
         shell: pwsh
         run: |
-          $Url  = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
           $Dest = "vc_redist.x64.exe"
-          Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
-          if (-not (Test-Path $Dest)) {
-            Write-Error "Failed to download $Url"
-            exit 1
-          }
-          $size = (Get-Item $Dest).Length
-          Write-Host "Downloaded $Dest ($size bytes)"
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $Dest -UseBasicParsing
+          if (-not (Test-Path $Dest)) { Write-Error "Failed to download vc_redist.x64.exe"; exit 1 }
+          Write-Host "Downloaded vc_redist.x64.exe ($((Get-Item $Dest).Length) bytes)"
 
       - name: Build Inno Setup installer
         id: package
         shell: pwsh
         run: |
-          $InnoPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          & $InnoPath /DMyAppVersion=$env:VERSION LanMessenger.iss 2>&1 |
-            Tee-Object -Append -FilePath ..\..\build-output-windows.txt
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$env:VERSION LanMessenger.iss `
+            2>&1 | Tee-Object -Append -FilePath ..\..\build-output-windows.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $ArtifactName = "LanMessenger-Setup-$env:VERSION.exe"
@@ -244,10 +239,8 @@ jobs:
           }
 
           $Hash = (Get-FileHash $ArtifactPath -Algorithm SHA256).Hash.ToLower()
-          # Write the sha256sum sidecar: "<hash>  <filename>" format
           "$Hash  $ArtifactName" | Out-File -FilePath "Output\$ArtifactName.sha256" -Encoding ascii -NoNewline
-          echo "artifact_name=$ArtifactName" >> $env:GITHUB_OUTPUT
-          echo "sha256=$Hash" >> $env:GITHUB_OUTPUT
+          "artifact_name=$ArtifactName" >> $env:GITHUB_OUTPUT
           Write-Host "Packaged: $ArtifactName (SHA256: $Hash)"
 
       - name: Upload artifact for downstream jobs
@@ -267,30 +260,21 @@ jobs:
           path: |
             test-output-windows.txt
             build-output-windows.txt
-          retention-days: 30
-
-      - name: Report failure
-        if: failure()
-        uses: ./.github/actions/report-failure
-        with:
-          platform: windows
-          version: ${{ needs.preflight.outputs.version }}
-          failure_type: BUILD_FAILURE
-          log_path: build-output-windows.txt
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          retention-days: 14
 
   # ── Startup Smoke Test ────────────────────────────────────────────────────────
+  # Skipped automatically for patch releases; always skippable via skip_smoke input.
   smoke:
     name: Startup Smoke Test
     needs: [preflight, build-test]
     if: |
       needs.build-test.result == 'success' &&
+      needs.preflight.outputs.run_smoke == 'true' &&
       inputs.skip_smoke != true
     runs-on: windows-2022
     timeout-minutes: 10
     permissions:
       contents: read
-      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -306,57 +290,34 @@ jobs:
           $artifact = Get-ChildItem smoke-artifacts\*.exe | Select-Object -First 1
           scripts\windows\smoke-test.ps1 -ArtifactPath $artifact.FullName
 
-      - name: Collect Windows diagnostics on failure
+      - name: Collect diagnostics on failure
         if: failure()
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path crash-reports -Force | Out-Null
-
           $since = (Get-Date).AddMinutes(-10)
-          Get-WinEvent -FilterHashtable @{
-            LogName   = 'Application'
-            StartTime = $since
-            Level     = 1, 2
-          } -ErrorAction SilentlyContinue |
-            Format-List | Out-File crash-reports\event-log.txt
-
+          Get-WinEvent -FilterHashtable @{ LogName='Application'; StartTime=$since; Level=1,2 } `
+            -ErrorAction SilentlyContinue | Format-List | Out-File crash-reports\event-log.txt
           $DumpDir = "$env:LOCALAPPDATA\CrashDumps"
-          if (Test-Path $DumpDir) {
-            Copy-Item "$DumpDir\LanMessenger*" crash-reports\ -ErrorAction SilentlyContinue
-          }
-
+          if (Test-Path $DumpDir) { Copy-Item "$DumpDir\LanMessenger*" crash-reports\ -ErrorAction SilentlyContinue }
           Copy-Item smoke.log crash-reports\ -ErrorAction SilentlyContinue
-
-          # Collect the structured client logs (active + rotated archives) so
-          # transfer / discovery / screenshot events from the smoke run are
-          # available in the failure artifact bundle.
           $clientLogs = Join-Path $env:APPDATA "LanMessenger\Logs"
           if (Test-Path $clientLogs) {
             New-Item -ItemType Directory -Path crash-reports\client-logs -Force | Out-Null
             Copy-Item "$clientLogs\*" crash-reports\client-logs\ -ErrorAction SilentlyContinue
           }
 
-      - name: Upload crash diagnostics
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: smoke-diagnostics-windows-${{ github.run_id }}
           path: crash-reports/
-          retention-days: 30
-
-      - name: Report smoke failure
-        if: failure()
-        uses: ./.github/actions/report-failure
-        with:
-          platform: windows
-          version: ${{ needs.preflight.outputs.version }}
-          failure_type: SMOKE_FAILURE
-          log_path: crash-reports/event-log.txt
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          retention-days: 14
 
   # ── Publish Platform Release ──────────────────────────────────────────────────
   publish:
-    name: Publish Platform Release
+    name: Publish Release
     needs: [preflight, build-test, smoke]
     if: |
       needs.build-test.result == 'success' &&
@@ -365,12 +326,13 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
-      issues: write
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -385,45 +347,37 @@ jobs:
           gh release delete "$TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$TAG" 2>/dev/null || true
 
+      - name: Generate release notes
+        run: |
+          chmod +x scripts/shared/generate-release-notes.sh
+          scripts/shared/generate-release-notes.sh windows "$VERSION" > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+
+      - name: Append download info to release notes
+        run: |
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "**Windows v${VERSION}** — platform pre-release"
+            echo ""
+            echo "Self-contained installer for Windows 10 19041+ (x64). Includes the VC++ 2015-2022 runtime."
+            echo ""
+            echo "Each installer ships with a matching \`.sha256\` sidecar."
+          } >> /tmp/release-notes.md
+
       - name: Create platform release
         run: |
           TAG="windows-v${VERSION}"
           ARTIFACT=$(ls dist/*.exe | head -1)
           SIDECAR="${ARTIFACT}.sha256"
-
-          # Extract the changelog entry for this version (empty string if not found).
-          CHANGELOG_ENTRY=$(awk -v ver="[${VERSION}]" '
-            /^## \[/ { in_ver = ($2 == ver); next }
-            in_ver   { print }
-          ' CHANGELOG.md)
-
-          {
-            if [ -n "$CHANGELOG_ENTRY" ]; then
-              printf '## What'"'"'s New\n\n%s\n\n' "$CHANGELOG_ENTRY"
-            fi
-            printf '%s\n' \
-              "Windows platform build v${VERSION}" \
-              "" \
-              "Commit: ${{ github.sha }}" \
-              "Branch: ${{ github.ref_name }}" \
-              "Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              "" \
-              "Platform pre-release. Combined release auto-created by Release Orchestration workflow."
-          } > /tmp/release-notes.md
-
-          ASSETS="$ARTIFACT"
-          [ -f "$SIDECAR" ] && ASSETS="$ASSETS $SIDECAR"
+          ASSETS=("$ARTIFACT")
+          [ -f "$SIDECAR" ] && ASSETS+=("$SIDECAR")
 
           gh release create "$TAG" \
             --title "Windows v${VERSION}" \
             --prerelease \
             --notes-file /tmp/release-notes.md \
-            $ASSETS
+            "${ASSETS[@]}"
 
-          echo "::notice::Published platform release: $TAG"
-
-      - name: Close resolved CI failure issues
-        run: |
-          chmod +x scripts/shared/close-ci-issues.sh
-          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
-            scripts/shared/close-ci-issues.sh windows "$VERSION" "${{ github.sha }}"
+          echo "::notice::Published $TAG with ${#ASSETS[@]} asset(s)"

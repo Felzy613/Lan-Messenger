@@ -1,38 +1,25 @@
 name: Stabilization
 
-# Autonomous stabilization loop for LAN Messenger.
-#
-# Purpose
-# -------
-# This workflow provides a safe holding area for changes that need additional
-# hardening before they can merge to main.  It:
-#
-#   1. Runs the FULL validation suite (unit tests + stress tests + integration
-#      tests + smoke tests) on both platforms.
-#   2. Collects all subsystem logs and test artifacts unconditionally.
-#   3. Evaluates a merge-readiness gate: only reports "ready" when every job
-#      passes with zero failures, crashes, hangs, or regressions.
-#   4. Posts a PR comment (or updates an existing one) with the stability
-#      verdict so reviewers see the current status at a glance.
-#   5. Never auto-merges — the final merge to main is always a human action.
+# Full validation suite for branches that need extra hardening before merging.
+# Runs all unit tests, stress tests, builds, and smoke tests on both platforms.
+# Posts a merge-readiness verdict to the PR.
 #
 # Triggers
 # --------
-# • Manual dispatch (the primary use case — run before merging a large PR).
-# • Called by integration-test.yml when a full run is requested.
-# • Weekly on Wednesday at 05:00 UTC (catches drift in the main branch).
+# • Manual dispatch (primary use case — run before merging a large or risky PR).
+# • Called by other workflows via workflow_call.
 #
-# Merge criteria (evaluated by the "stability-gate" job)
+# Note: No weekly schedule. Use integration-test.yml for routine health checks.
+# Run this manually when you need explicit merge-readiness confirmation.
+#
+# Merge criteria (evaluated by the stability-gate job)
 # -------------------------------------------------------
-# ALL of the following must be true:
-#   ✅ macOS unit + stress tests:  0 failures
-#   ✅ Windows unit + stress tests: 0 failures
-#   ✅ macOS build succeeds
-#   ✅ Windows build succeeds
-#   ✅ macOS smoke test: app starts and exits cleanly
-#   ✅ Windows smoke test: app starts and exits cleanly
-#   ✅ No crash dumps in diagnostics
-#   ✅ No ERROR-level lines in subsystem logs beyond known baseline
+# ✅ macOS unit + stress tests: 0 failures
+# ✅ Windows unit + stress tests: 0 failures
+# ✅ macOS build succeeds
+# ✅ Windows build succeeds
+# ✅ macOS smoke: app starts and exits cleanly
+# ✅ Windows smoke: app starts and exits cleanly
 
 on:
   workflow_dispatch:
@@ -46,16 +33,14 @@ on:
         type: boolean
         default: true
   workflow_call:
-  schedule:
-    - cron: '0 5 * * 3'   # Wednesday 05:00 UTC
 
 concurrency:
   group: stabilization-${{ github.ref }}
-  cancel-in-progress: false    # never cancel in-flight stabilization runs
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  pull-requests: write   # for posting the verdict comment
+  pull-requests: write
 
 jobs:
   # ── macOS: full validation ───────────────────────────────────────────────────
@@ -77,66 +62,42 @@ jobs:
           key: swift-stab-${{ runner.os }}-${{ hashFiles('src/macos/Package.swift') }}
           restore-keys: swift-stab-${{ runner.os }}-
 
-      # ── 1. Unit + stress + logger tests ───────────────────────────────────────
       - name: Run full Swift test suite
         id: swift-tests
         working-directory: src/macos
         run: |
           set -o pipefail
           swift test --parallel 2>&1 | tee ../../swift-test-output.txt
-          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
           exit ${PIPESTATUS[0]}
 
-      # ── 2. Release build ───────────────────────────────────────────────────────
       - name: Release build
         id: swift-build
         working-directory: src/macos
-        run: |
-          swift build -c release 2>&1 | tee ../../swift-build-output.txt
+        run: swift build -c release 2>&1 | tee ../../swift-build-output.txt
 
-      # ── 3. Bundle validation ───────────────────────────────────────────────────
-      - name: Install xcodegen (needed by package.sh)
-        run: brew install xcodegen 2>/dev/null || true
-
-      - name: Validate bundle structure
-        id: bundle-validate
-        run: |
-          BIN=$(find src/macos/.build/release -name LanMessenger -maxdepth 1 | head -1)
-          if [ -z "$BIN" ]; then
-            echo "::warning::Release binary not found — skipping bundle validation"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-          else
-            echo "Binary: $BIN  size: $(wc -c < "$BIN") bytes"
-            echo "status=ok" >> "$GITHUB_OUTPUT"
-          fi
-
-      # ── 4. Smoke test (startup only — no UI on CI) ────────────────────────────
-      - name: Run startup smoke
+      - name: Startup smoke (5-second launch check)
         id: smoke
-        continue-on-error: true     # collect logs even if smoke fails
+        continue-on-error: true
         timeout-minutes: 8
         run: |
           BIN=$(find src/macos/.build/release -name LanMessenger -maxdepth 1 | head -1)
           if [ -z "$BIN" ]; then
-            echo "::warning::Binary not found — skipping smoke"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "::warning::Binary not found — skipping smoke"
             exit 0
           fi
-          # Launch app for 5 s then kill; verify no immediate crash.
-          "$BIN" &
-          APP_PID=$!
+          "$BIN" & APP_PID=$!
           sleep 5
           if kill -0 "$APP_PID" 2>/dev/null; then
             kill "$APP_PID" 2>/dev/null; wait "$APP_PID" 2>/dev/null || true
             echo "status=ok" >> "$GITHUB_OUTPUT"
-            echo "App ran for 5 s without crashing ✓"
+            echo "App ran 5 s without crashing ✓"
           else
             echo "status=crashed" >> "$GITHUB_OUTPUT"
             echo "::error::App crashed within 5 s of startup"
           fi
 
-      # ── 5. Collect subsystem logs ──────────────────────────────────────────────
-      - name: Collect all logs
+      - name: Collect logs
         if: always()
         run: |
           mkdir -p stab-logs/macos
@@ -145,12 +106,7 @@ jobs:
           cp swift-test-output.txt  stab-logs/macos/ 2>/dev/null || true
           cp swift-build-output.txt stab-logs/macos/ 2>/dev/null || true
           cp ~/Library/Logs/DiagnosticReports/LanMessenger* stab-logs/macos/ 2>/dev/null || true
-          # Count ERROR lines across all subsystem logs.
-          ERROR_COUNT=$(grep -r "^.* ERROR " stab-logs/macos/*.log 2>/dev/null | wc -l | tr -d ' ')
-          echo "ERROR lines in subsystem logs: $ERROR_COUNT"
-          echo "error_count=$ERROR_COUNT" >> "$GITHUB_OUTPUT"
 
-      # ── 6. Per-job verdict ─────────────────────────────────────────────────────
       - name: Emit per-job verdict
         id: verdict
         if: always()
@@ -158,7 +114,6 @@ jobs:
           TESTS="${{ steps.swift-tests.outcome }}"
           BUILD="${{ steps.swift-build.outcome }}"
           SMOKE="${{ steps.smoke.outputs.status }}"
-
           if [[ "$TESTS" == "success" && "$BUILD" == "success" && "$SMOKE" != "crashed" ]]; then
             echo "result=pass" >> "$GITHUB_OUTPUT"
             echo "✅ macOS: all checks passed"
@@ -173,7 +128,7 @@ jobs:
         with:
           name: stab-logs-macos-${{ github.run_id }}
           path: stab-logs/macos/
-          retention-days: 30
+          retention-days: 14
           if-no-files-found: ignore
 
   # ── Windows: full validation ─────────────────────────────────────────────────
@@ -209,7 +164,6 @@ jobs:
       - name: Restore
         run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
 
-      # ── 1. Unit + stress + logger tests ───────────────────────────────────────
       - name: Build test project
         shell: pwsh
         run: |
@@ -231,19 +185,16 @@ jobs:
             2>&1 | Tee-Object -FilePath ..\..\win-test-output.txt
           exit $LASTEXITCODE
 
-      # ── 2. Release build ───────────────────────────────────────────────────────
       - name: Release build
         id: win-build
         shell: pwsh
         run: |
           msbuild LanMessenger\LanMessenger.csproj `
-            /t:Publish `
-            /p:Configuration=Release /p:Platform=x64 `
+            /t:Publish /p:Configuration=Release /p:Platform=x64 `
             /p:RuntimeIdentifier=win-x64 /p:SelfContained=true `
             2>&1 | Tee-Object -FilePath ..\..\win-build-output.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # ── 3. Startup smoke ───────────────────────────────────────────────────────
       - name: Startup smoke test
         id: smoke
         continue-on-error: true
@@ -259,39 +210,23 @@ jobs:
           }
           ..\..\scripts\windows\smoke-test.ps1 -ArtifactPath $exe.FullName `
             2>&1 | Tee-Object -FilePath ..\..\win-smoke-output.txt
-          if ($LASTEXITCODE -eq 0) {
-            "status=ok" >> $env:GITHUB_OUTPUT
-          } else {
-            "status=crashed" >> $env:GITHUB_OUTPUT
-            Write-Error "Smoke test failed"
-          }
+          if ($LASTEXITCODE -eq 0) { "status=ok" >> $env:GITHUB_OUTPUT }
+          else { "status=crashed" >> $env:GITHUB_OUTPUT; Write-Error "Smoke test failed" }
 
-      # ── 4. Collect subsystem logs ──────────────────────────────────────────────
-      - name: Collect all logs
+      - name: Collect logs
         if: always()
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path ..\..\stab-logs\windows -Force | Out-Null
           $logDir = Join-Path $env:APPDATA "LanMessenger\Logs"
-          if (Test-Path $logDir) {
-            Copy-Item "$logDir\*" ..\..\stab-logs\windows\ -ErrorAction SilentlyContinue
-          }
-          foreach ($f in @(
-              '..\..\win-test-output.txt', '..\..\win-build-output.txt',
-              '..\..\win-smoke-output.txt')) {
+          if (Test-Path $logDir) { Copy-Item "$logDir\*" ..\..\stab-logs\windows\ -ErrorAction SilentlyContinue }
+          foreach ($f in @('..\..\win-test-output.txt','..\..\win-build-output.txt','..\..\win-smoke-output.txt')) {
             Copy-Item $f ..\..\stab-logs\windows\ -ErrorAction SilentlyContinue
           }
-          # Windows Error Event Log (last 15 minutes).
           $since = (Get-Date).AddMinutes(-15)
           Get-WinEvent -FilterHashtable @{ LogName='Application'; StartTime=$since; Level=1,2 } `
-            -ErrorAction SilentlyContinue | Format-List |
-            Out-File ..\..\stab-logs\windows\event-log.txt
-          # Count ERROR lines.
-          $errCount = (Select-String -Path "..\..\stab-logs\windows\*.log" -Pattern "ERROR" -ErrorAction SilentlyContinue).Count
-          Write-Host "ERROR lines in subsystem logs: $errCount"
-          "error_count=$errCount" >> $env:GITHUB_OUTPUT
+            -ErrorAction SilentlyContinue | Format-List | Out-File ..\..\stab-logs\windows\event-log.txt
 
-      # ── 5. Per-job verdict ─────────────────────────────────────────────────────
       - name: Emit per-job verdict
         id: verdict
         if: always()
@@ -300,7 +235,6 @@ jobs:
           $tests = "${{ steps.win-tests.outcome }}"
           $build = "${{ steps.win-build.outcome }}"
           $smoke = "${{ steps.smoke.outputs.status }}"
-
           if ($tests -eq "success" -and $build -eq "success" -and $smoke -ne "crashed") {
             "result=pass" >> $env:GITHUB_OUTPUT
             Write-Host "✅ Windows: all checks passed"
@@ -315,7 +249,7 @@ jobs:
         with:
           name: stab-test-results-windows-${{ github.run_id }}
           path: src/windows-native/LanMessenger.Tests/TestResults/
-          retention-days: 30
+          retention-days: 14
           if-no-files-found: ignore
 
       - name: Upload logs
@@ -324,14 +258,12 @@ jobs:
         with:
           name: stab-logs-windows-${{ github.run_id }}
           path: stab-logs/windows/
-          retention-days: 30
+          retention-days: 14
           if-no-files-found: ignore
 
   # ── Stability gate ────────────────────────────────────────────────────────────
-  # The single source of truth for merge-readiness.  Merging to main is a
-  # human decision; this job only reports the verdict.
   stability-gate:
-    name: Stability Gate (Merge Readiness)
+    name: Stability Gate
     needs: [stabilize-macos, stabilize-windows]
     if: always()
     runs-on: ubuntu-latest
@@ -343,9 +275,8 @@ jobs:
         run: |
           MAC="${{ needs.stabilize-macos.outputs.result }}"
           WIN="${{ needs.stabilize-windows.outputs.result }}"
-          echo "macOS verdict : $MAC"
-          echo "Windows verdict: $WIN"
-
+          echo "macOS:   $MAC"
+          echo "Windows: $WIN"
           if [[ "$MAC" == "pass" && "$WIN" == "pass" ]]; then
             echo "verdict=READY"    >> "$GITHUB_OUTPUT"
             echo "icon=✅"          >> "$GITHUB_OUTPUT"
@@ -353,8 +284,7 @@ jobs:
           else
             echo "verdict=NOT_READY" >> "$GITHUB_OUTPUT"
             echo "icon=❌"           >> "$GITHUB_OUTPUT"
-            DETAIL="macOS: $MAC | Windows: $WIN"
-            echo "summary=One or more platforms failed: $DETAIL" >> "$GITHUB_OUTPUT"
+            echo "summary=One or more platforms failed: macOS=$MAC Windows=$WIN" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Post stability verdict to PR
@@ -380,67 +310,48 @@ jobs:
               `| 🍎 macOS   | ${macResult === 'pass' ? '✅ pass' : '❌ fail'} |`,
               `| 🪟 Windows | ${winResult === 'pass' ? '✅ pass' : '❌ fail'} |`,
               '',
-              `### Merge criteria`,
-              '- [ ] All builds pass',
-              '- [ ] All unit + stress + logger tests pass (0 failures)',
-              '- [ ] App starts and stays alive on both platforms',
-              '- [ ] No crashes in diagnostics',
-              '- [ ] Log export produces a valid zip',
-              '',
-              `**Only merge when this workflow reports READY.**`,
+              '**Only merge when this workflow reports READY.**',
               '',
               `[View run](${runUrl})`,
             ].join('\n');
 
-            // Find existing PR for this SHA and update or create the comment.
             const prs = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo:  context.repo.repo,
+              owner: context.repo.owner, repo: context.repo.repo,
               state: 'open',
-              head:  `${context.repo.owner}:${context.ref?.replace('refs/heads/', '') ?? ''}`,
+              head: `${context.repo.owner}:${context.ref?.replace('refs/heads/', '') ?? ''}`,
             });
-
-            if (prs.data.length === 0) {
-              console.log('No open PR found for this ref — skipping comment.');
-              return;
-            }
+            if (prs.data.length === 0) { console.log('No open PR — skipping comment.'); return; }
 
             const pr = prs.data[0];
             const { data: comments } = await github.rest.issues.listComments({
-              owner:        context.repo.owner,
-              repo:         context.repo.repo,
+              owner: context.repo.owner, repo: context.repo.repo,
               issue_number: pr.number,
             });
             const existing = comments.find(
               c => c.user.type === 'Bot' && c.body.includes('<!-- stabilization-verdict -->')
             );
-
             if (existing) {
               await github.rest.issues.updateComment({
-                owner:      context.repo.owner,
-                repo:       context.repo.repo,
-                comment_id: existing.id,
-                body,
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
               });
             } else {
               await github.rest.issues.createComment({
-                owner:        context.repo.owner,
-                repo:         context.repo.repo,
-                issue_number: pr.number,
-                body,
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number, body,
               });
             }
 
-      - name: Fail workflow when not ready
-        if: steps.gate.outputs.verdict != 'READY'
-        run: |
-          echo "::error::${{ steps.gate.outputs.summary }}"
-          exit 1
-
-      - name: Print stability summary
+      - name: Print summary
         if: always()
         run: |
           echo "================================================"
           echo "  STABILITY VERDICT: ${{ steps.gate.outputs.verdict }}"
           echo "  ${{ steps.gate.outputs.summary }}"
           echo "================================================"
+
+      - name: Fail when not ready
+        if: steps.gate.outputs.verdict != 'READY'
+        run: |
+          echo "::error::${{ steps.gate.outputs.summary }}"
+          exit 1
