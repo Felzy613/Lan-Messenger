@@ -163,17 +163,12 @@ public sealed partial class MessageBubbleControl : UserControl
     private void UpdateStatusGlyph()
     {
         if (Row is null || Row.Incoming) { StatusText.Text = ""; return; }
+        // Modern-messenger style: every pre-delivery state (Sending/Queued/Sent
+        // and any unset value) collapses to a single grey check — no clocks, no
+        // "queued" indicator. Delivered = double grey, Read = double blue,
+        // Failed = red ✗.
         switch (Row.Status)
         {
-            case "Sending":
-            case "Queued":
-                StatusText.Text       = "⏱";
-                StatusText.Foreground = Theme.CheckGreyBrush;
-                break;
-            case "Sent":
-                StatusText.Text       = "✓";
-                StatusText.Foreground = Theme.CheckGreyBrush;
-                break;
             case "Delivered":
                 StatusText.Text       = "✓✓";
                 StatusText.Foreground = Theme.CheckGreyBrush;
@@ -187,7 +182,8 @@ public sealed partial class MessageBubbleControl : UserControl
                 StatusText.Foreground = Theme.BubbleFailedBrush;
                 break;
             default:
-                StatusText.Text = "";
+                StatusText.Text       = "✓";
+                StatusText.Foreground = Theme.CheckGreyBrush;
                 break;
         }
     }

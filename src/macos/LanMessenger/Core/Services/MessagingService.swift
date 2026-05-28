@@ -97,7 +97,10 @@ final class MessagingService {
         sendJSON(packet, toIP: ip, port: tcpPort) { [weak self] success in
             guard let self else { return }
             let status = success ? "Sent" : "Queued"
-            if !success {
+            if success {
+                NetLogger.info("Send", "TCP delivered msgId=\(messageId) peer=\(ip)")
+            } else {
+                NetLogger.info("Send", "TCP failed msgId=\(messageId) peer=\(ip) — queueing locally and falling back to relay")
                 self.queuePendingMessage(
                     messageId: messageId,
                     text: text,
@@ -287,6 +290,7 @@ final class MessagingService {
         // Also upload to cloud relay so delivery can proceed even if this
         // device goes offline before the recipient comes back to the LAN.
         if let hash = peerRelayIdHash, !hash.isEmpty {
+            NetLogger.info("Relay", "store msgId=\(messageId) peer=\(peerPublicKeyB64.prefix(8)) — uploading to cloud relay mailbox")
             Task {
                 await RelayClient.shared.store(
                     peerRelayIdHash: hash,
@@ -296,6 +300,8 @@ final class MessagingService {
                     timestamp: timestamp
                 )
             }
+        } else {
+            NetLogger.warn("Relay", "skip store msgId=\(messageId) peer=\(peerPublicKeyB64.prefix(8)) — peer has no relay_id_hash (older client or never discovered)")
         }
     }
 

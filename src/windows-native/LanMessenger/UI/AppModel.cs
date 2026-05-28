@@ -66,6 +66,12 @@ public sealed partial class AppModel : ObservableObject
     private DispatcherQueue _dq;
     private DispatcherTimer? _peerTimeoutTimer;
     private DispatcherTimer? _updateCheckTimer;
+    private DispatcherTimer? _relayPollTimer;
+    // Suppresses overlapping relay polls when a previous fetch is still inflight.
+    private bool _relayFetchInFlight;
+    // Interval between routine relay polls. Short enough to feel responsive when
+    // a peer just left the LAN; long enough not to thrash the Worker.
+    private static readonly TimeSpan RelayPollInterval = TimeSpan.FromSeconds(30);
 
     // SHA256(relay_id) for each peer, populated from discovery packets.
     // Used to upload queued messages to the cloud relay mailbox of offline peers.
@@ -118,14 +124,23 @@ public sealed partial class AppModel : ObservableObject
         Coordinator.NetworkAvailabilityChanged += () =>
         {
             var available = Coordinator.IsLocalNetworkAvailable;
+            var wasAvailable = IsLocalNetworkAvailable;
             if (IsLocalNetworkAvailable != available) IsLocalNetworkAvailable = available;
+            // When the LAN comes back after being unavailable, drain the relay
+            // mailbox immediately — pending messages may have piled up on the
+            // Worker while we were unreachable.
+            if (available && !wasAvailable)
+            {
+                LanLogger.Info("Relay", "network became available — triggering immediate relay fetch");
+                _ = FetchRelayMessagesAsync("network-up");
+            }
         };
         NotificationService.Shared.Register();
         LoadHistory();
         StartPeerTimeoutTimer();
         CheckMigration();
         ScheduleAutoUpdateCheck();
-        _ = FetchRelayMessagesAsync();
+        StartRelayPolling();
     }
 
     // MARK: - Migration
@@ -499,26 +514,56 @@ public sealed partial class AppModel : ObservableObject
 
     // MARK: - Cloud relay
 
-    /// Fetches messages waiting in the cloud relay Worker mailbox and dispatches
-    /// them through MessagingService. Called once at startup; silently no-ops
-    /// when the relay URL is empty or the network is unavailable.
-    private async Task FetchRelayMessagesAsync()
+    /// Starts both an immediate relay fetch and a recurring poll. The poll keeps
+    /// the inbox drained while the app is foregrounded so messages stored on the
+    /// Worker while a peer was unreachable deliver promptly without a restart.
+    private void StartRelayPolling()
     {
-        var msgs = await RelayClient.Shared.FetchPendingAsync();
-        if (msgs.Count == 0) return;
-        _dq.TryEnqueue(() =>
+        _ = FetchRelayMessagesAsync("startup");
+        _relayPollTimer = new DispatcherTimer { Interval = RelayPollInterval };
+        _relayPollTimer.Tick += (_, _) => _ = FetchRelayMessagesAsync("poll");
+        _relayPollTimer.Start();
+    }
+
+    /// Fetches messages waiting in the cloud relay Worker mailbox and dispatches
+    /// them through MessagingService. Silent no-op when the relay URL is empty.
+    /// Logs reason + outcome so the relay flow is auditable from client.log.
+    private async Task FetchRelayMessagesAsync(string reason)
+    {
+        if (_relayFetchInFlight)
         {
-            foreach (var msg in msgs)
+            LanLogger.Info("Relay", $"fetch skipped ({reason}) — previous request still in flight");
+            return;
+        }
+        _relayFetchInFlight = true;
+        try
+        {
+            LanLogger.Info("Relay", $"fetch start reason={reason}");
+            var msgs = await RelayClient.Shared.FetchPendingAsync();
+            if (msgs.Count == 0)
             {
-                // Map sender public key → best known peer IP
-                var ip = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == msg.SenderPublicKeyB64)?.IP
-                      ?? ConfigStore.Shared.Config.Contacts
-                             .FirstOrDefault(c => c.PublicKeyB64 == msg.SenderPublicKeyB64)?.LastIP
-                      ?? $"relay-{msg.SenderPublicKeyB64[..Math.Min(8, msg.SenderPublicKeyB64.Length)]}";
-                MessagingService.Shared.HandleRelayMessage(msg, ip);
+                LanLogger.Info("Relay", $"fetch done reason={reason} — no pending messages");
+                return;
             }
-            RefreshConversations();
-        });
+            LanLogger.Info("Relay", $"fetch done reason={reason} — delivering {msgs.Count} message(s)");
+            _dq.TryEnqueue(() =>
+            {
+                foreach (var msg in msgs)
+                {
+                    // Map sender public key → best known peer IP
+                    var ip = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == msg.SenderPublicKeyB64)?.IP
+                          ?? ConfigStore.Shared.Config.Contacts
+                                 .FirstOrDefault(c => c.PublicKeyB64 == msg.SenderPublicKeyB64)?.LastIP
+                          ?? $"relay-{msg.SenderPublicKeyB64[..Math.Min(8, msg.SenderPublicKeyB64.Length)]}";
+                    MessagingService.Shared.HandleRelayMessage(msg, ip);
+                }
+                RefreshConversations();
+            });
+        }
+        finally
+        {
+            _relayFetchInFlight = false;
+        }
     }
 
     // MARK: - Conversation / contact actions
