@@ -4,7 +4,19 @@ import CryptoKit
 // One history entry — mirrors the Python MessageEntry dataclass.
 // Reply metadata is local-only and decoded with defaults so older files load fine.
 struct MessageEntry: Codable, Identifiable {
-    var id: String { messageId ?? UUID().uuidString }
+    // Stable per-session identity for entries that have no messageId (file
+    // transfers, migrated Python history). Generated once at init/decode time;
+    // intentionally NOT persisted — on reload a fresh stable UUID is assigned
+    // so SwiftUI ForEach identity is consistent within a session.
+    //
+    // The previous implementation used `var id: String { messageId ?? UUID().uuidString }`,
+    // which called UUID() on every property access. Because ForEach reads `.id` on
+    // every layout pass, file entries (messageId == nil) got a new identity each
+    // frame, causing MediaBubbleView to be destroyed and recreated at ~20 Hz:
+    //   new UUID → ForEach recreates view → .task fires → @State update → re-render → repeat.
+    private var _stableId: String
+    var id: String { messageId ?? _stableId }
+
     var sender: String
     var text: String
     var incoming: Bool
@@ -23,6 +35,7 @@ struct MessageEntry: Codable, Identifiable {
         case replyToMessageId = "reply_to_message_id"
         case replyToPreview = "reply_to_preview"
         case replyToSender = "reply_to_sender"
+        // _stableId is intentionally excluded — it is a session-only value, never persisted.
     }
 
     init(sender: String, text: String, incoming: Bool, timestamp: Double,
@@ -39,6 +52,7 @@ struct MessageEntry: Codable, Identifiable {
         self.replyToMessageId = replyToMessageId
         self.replyToPreview = replyToPreview
         self.replyToSender = replyToSender
+        self._stableId = UUID().uuidString  // generated once; stable for lifetime of this instance
     }
 
     init(from decoder: Decoder) throws {
@@ -53,6 +67,7 @@ struct MessageEntry: Codable, Identifiable {
         replyToMessageId = try c.decodeIfPresent(String.self, forKey: .replyToMessageId)
         replyToPreview = try c.decodeIfPresent(String.self, forKey: .replyToPreview)
         replyToSender = try c.decodeIfPresent(String.self, forKey: .replyToSender)
+        _stableId = UUID().uuidString  // generated once at decode time; stable for the session
     }
 }
 
