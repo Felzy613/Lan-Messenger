@@ -269,21 +269,19 @@ struct MediaBubbleView: View {
     private var statusIcon: some View {
         // Re-use the same status icons defined in MessageBubbleView. Keep them
         // visually consistent so file/media/text bubbles all read the same way.
+        // Every pre-delivery state (Sent / Sending / Queued / unset) collapses
+        // to a single grey check — no clocks or extra queued glyphs.
         switch entry.status {
         case "Read":
             doubleCheck(color: Color(red: 0.31, green: 0.62, blue: 0.97))
         case "Delivered":
             doubleCheck(color: .secondary)
-        case "Sent":
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
-        case "Queued", "Sending":
-            Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(.secondary)
         case "Failed":
             Image(systemName: "exclamationmark.circle").font(.system(size: 10)).foregroundStyle(.red)
         default:
-            EmptyView()
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -433,12 +431,11 @@ struct MediaPreviewSheet: View {
                 switch kind {
                 case .image:
                     if let img = image {
-                        ScrollView([.horizontal, .vertical]) {
-                            Image(nsImage: img)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
+                        // ZoomableImageView fits the image to the viewer while
+                        // preserving aspect ratio (no scrollbars for normal-sized
+                        // images), supports scroll/pinch zoom for large images,
+                        // and resizes with the window.
+                        ZoomableImageView(image: img)
                     } else {
                         ProgressView().controlSize(.large)
                     }
@@ -454,10 +451,10 @@ struct MediaPreviewSheet: View {
                     Text("Cannot preview file").foregroundStyle(.secondary)
                 }
             }
-            .frame(minWidth: 480, minHeight: 360)
-            .background(Color.black.opacity(0.9))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black.opacity(0.95))
         }
-        .frame(minWidth: 600, minHeight: 460)
+        .frame(minWidth: 600, minHeight: 460, idealWidth: 1000, idealHeight: 720)
         .task(id: url.path) {
             switch kind {
             case .image:
@@ -472,6 +469,52 @@ struct MediaPreviewSheet: View {
                 break
             }
         }
+    }
+}
+
+// MARK: - Zoomable image view (full-screen preview)
+
+/// Full-resolution image viewer for the preview sheet.
+///
+/// Backed by AppKit's `NSScrollView` + `NSImageView` (wrapped in
+/// `NSViewRepresentable`, the same pattern as `ComposerTextEditor`) rather than
+/// pure-SwiftUI gestures. AppKit already implements the entire fit / zoom / pan
+/// story:
+///   • `NSImageView.imageScaling = .scaleProportionallyUpOrDown` + `.alignCenter`
+///     letter-boxes the image to fit the viewer while preserving aspect ratio —
+///     no scrollbars appear for normal-sized images.
+///   • `NSScrollView.allowsMagnification` gives smooth scroll/pinch zoom for
+///     images larger than the window (1×–8×).
+///   • The image view auto-resizes with the clip view, so the picture reflows
+///     whenever the window is resized.
+struct ZoomableImageView: NSViewRepresentable {
+    let image: NSImage
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = false
+        scroll.hasHorizontalScroller = false
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.allowsMagnification = true
+        scroll.minMagnification = 1.0
+        scroll.maxMagnification = 8.0
+        scroll.autohidesScrollers = true
+
+        let imageView = NSImageView()
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.imageAlignment = .alignCenter
+        imageView.image = image
+        imageView.frame = scroll.bounds
+        imageView.autoresizingMask = [.width, .height]
+
+        scroll.documentView = imageView
+        return scroll
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let imageView = nsView.documentView as? NSImageView else { return }
+        imageView.image = image
     }
 }
 
