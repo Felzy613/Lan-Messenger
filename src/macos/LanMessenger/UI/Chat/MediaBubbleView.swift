@@ -274,13 +274,16 @@ struct MediaBubbleView: View {
             doubleCheck(color: Color(red: 0.31, green: 0.62, blue: 0.97))
         case "Delivered":
             doubleCheck(color: .secondary)
-        case "Failed":
-            Image(systemName: "exclamationmark.circle").font(.system(size: 10)).foregroundStyle(.red)
-        default:
-            // Sent / Sending / Queued / unset all collapse to a single grey check.
+        case "Sent":
             Image(systemName: "checkmark")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.secondary)
+        case "Queued", "Sending":
+            Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(.secondary)
+        case "Failed":
+            Image(systemName: "exclamationmark.circle").font(.system(size: 10)).foregroundStyle(.red)
+        default:
+            EmptyView()
         }
     }
 
@@ -430,7 +433,12 @@ struct MediaPreviewSheet: View {
                 switch kind {
                 case .image:
                     if let img = image {
-                        ZoomableImageView(image: img)
+                        ScrollView([.horizontal, .vertical]) {
+                            Image(nsImage: img)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
                     } else {
                         ProgressView().controlSize(.large)
                     }
@@ -446,10 +454,10 @@ struct MediaPreviewSheet: View {
                     Text("Cannot preview file").foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.black.opacity(0.95))
+            .frame(minWidth: 480, minHeight: 360)
+            .background(Color.black.opacity(0.9))
         }
-        .frame(minWidth: 600, minHeight: 460, idealWidth: 1000, idealHeight: 720)
+        .frame(minWidth: 600, minHeight: 460)
         .task(id: url.path) {
             switch kind {
             case .image:
@@ -463,46 +471,6 @@ struct MediaPreviewSheet: View {
             case .other:
                 break
             }
-        }
-    }
-}
-
-// MARK: - Zoomable image view (full-screen preview)
-
-/// Image viewer that fits the available area while preserving aspect ratio,
-/// supports pinch / scroll-wheel zoom and pan via AppKit's NSScrollView +
-/// NSImageView (which already implement the full zoom/pan story natively).
-/// Wrapped in NSViewRepresentable so SwiftUI gets the same resize-with-window
-/// behavior without us reimplementing gestures in pure SwiftUI.
-struct ZoomableImageView: NSViewRepresentable {
-    let image: NSImage
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = false
-        scroll.hasHorizontalScroller = false
-        scroll.borderType = .noBorder
-        scroll.drawsBackground = false
-        scroll.allowsMagnification = true
-        scroll.minMagnification = 1.0
-        scroll.maxMagnification = 8.0
-        scroll.autohidesScrollers = true
-
-        let imageView = NSImageView()
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        imageView.imageAlignment = .alignCenter
-        imageView.image = image
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-
-        scroll.documentView = imageView
-        return scroll
-    }
-
-    func updateNSView(_ nsView: NSScrollView, context: Context) {
-        if let iv = nsView.documentView as? NSImageView {
-            iv.image = image
-            iv.frame = nsView.contentView.bounds
-            iv.autoresizingMask = [.width, .height]
         }
     }
 }
