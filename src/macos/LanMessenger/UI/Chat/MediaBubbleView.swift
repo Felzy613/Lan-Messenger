@@ -274,16 +274,14 @@ struct MediaBubbleView: View {
             doubleCheck(color: Color(red: 0.31, green: 0.62, blue: 0.97))
         case "Delivered":
             doubleCheck(color: .secondary)
-        case "Sent":
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
-        case "Queued", "Sending":
-            Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(.secondary)
         case "Failed":
             Image(systemName: "exclamationmark.circle").font(.system(size: 10)).foregroundStyle(.red)
         default:
-            EmptyView()
+            // Sent, Sending, Queued, and unknown in-flight states all share
+            // the single grey check — no transient clock glyph.
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -433,12 +431,12 @@ struct MediaPreviewSheet: View {
                 switch kind {
                 case .image:
                     if let img = image {
-                        ScrollView([.horizontal, .vertical]) {
-                            Image(nsImage: img)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
+                        // ZoomableImageView (an NSScrollView wrapper) auto-fits
+                        // the image to the viewer bounds and supports trackpad
+                        // pinch + scroll-wheel + double-click magnification.
+                        // Scrollbars only appear once the user zooms past the
+                        // fit-to-window scale.
+                        ZoomableImageView(image: img)
                     } else {
                         ProgressView().controlSize(.large)
                     }
@@ -470,6 +468,121 @@ struct MediaPreviewSheet: View {
                 self.player = AVPlayer(url: url)
             case .other:
                 break
+            }
+        }
+    }
+}
+
+// MARK: - Zoomable image view (NSScrollView wrapper)
+
+/// SwiftUI wrapper around an `NSScrollView` + `NSImageView` that:
+///   • starts at fit-to-window scale (no scrollbars for normal-size images),
+///   • supports trackpad pinch, scroll-wheel zoom, and double-click magnify,
+///   • re-fits when the hosting window resizes,
+///   • clamps zoom between fit-scale and 8× the natural resolution.
+///
+/// Uses the native AppKit magnification so panning, momentum, and elastic
+/// bounce all behave the way users expect from Preview / Quick Look.
+struct ZoomableImageView: NSViewRepresentable {
+    let image: NSImage
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasHorizontalScroller = true
+        scroll.hasVerticalScroller   = true
+        scroll.autohidesScrollers    = true            // hide bars when not needed
+        scroll.borderType            = .noBorder
+        scroll.backgroundColor       = .clear
+        scroll.drawsBackground       = false
+        scroll.allowsMagnification   = true
+        scroll.minMagnification      = 0.05            // fit-scale set in updateNSView
+        scroll.maxMagnification      = 8.0
+        scroll.contentView.postsBoundsChangedNotifications = true
+
+        let imageView = NSImageView()
+        imageView.image            = image
+        imageView.imageScaling     = .scaleProportionallyUpOrDown
+        imageView.imageAlignment   = .alignCenter
+        imageView.frame            = NSRect(origin: .zero, size: image.size)
+        imageView.translatesAutoresizingMaskIntoConstraints = true
+        scroll.documentView = imageView
+
+        // Double-click toggles between fit and 1:1 (actual pixel) magnification.
+        let click = NSClickGestureRecognizer(target: context.coordinator,
+                                             action: #selector(Coordinator.handleDoubleClick(_:)))
+        click.numberOfClicksRequired = 2
+        scroll.addGestureRecognizer(click)
+        context.coordinator.scrollView = scroll
+
+        // Initial fit happens once the scroll view has a non-zero bounds.
+        DispatchQueue.main.async { context.coordinator.fitToWindow() }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let imageView = scroll.documentView as? NSImageView else { return }
+        if imageView.image !== image {
+            imageView.image = image
+            imageView.frame = NSRect(origin: .zero, size: image.size)
+            DispatchQueue.main.async { context.coordinator.fitToWindow() }
+        }
+        // Re-fit after a SwiftUI-driven layout pass (e.g. window resize).
+        DispatchQueue.main.async { context.coordinator.refitIfAtFitScale() }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(image: image) }
+
+    final class Coordinator: NSObject {
+        let image: NSImage
+        weak var scrollView: NSScrollView?
+        // The magnification that exactly fits the image inside the scroll view.
+        // Updated in fitToWindow(); used to decide whether the user is currently
+        // viewing at fit-scale so resizes re-fit instead of staying zoomed.
+        private(set) var fitMagnification: CGFloat = 1.0
+
+        init(image: NSImage) { self.image = image }
+
+        func fitToWindow() {
+            guard let scroll = scrollView,
+                  let imageView = scroll.documentView as? NSImageView else { return }
+            let bounds = scroll.bounds.size
+            let natural = image.size
+            guard bounds.width > 0, bounds.height > 0,
+                  natural.width > 0, natural.height > 0 else { return }
+            let scaleW = bounds.width  / natural.width
+            let scaleH = bounds.height / natural.height
+            let fit = min(scaleW, scaleH, 1.0)         // never upscale past 1:1 at fit
+            fitMagnification = max(fit, 0.01)
+            scroll.minMagnification = fitMagnification
+            scroll.magnification    = fitMagnification
+            // Center the image inside the visible region.
+            let docSize = imageView.frame.size
+            let visible = scroll.contentView.bounds.size
+            let origin = NSPoint(
+                x: max(0, (docSize.width  - visible.width)  / 2),
+                y: max(0, (docSize.height - visible.height) / 2)
+            )
+            scroll.contentView.scroll(to: origin)
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+
+        func refitIfAtFitScale() {
+            guard let scroll = scrollView else { return }
+            // If the user hasn't zoomed in, keep the image fitted to the window
+            // as the SwiftUI sheet resizes. A small tolerance avoids float drift.
+            if abs(scroll.magnification - fitMagnification) < 0.01 {
+                fitToWindow()
+            }
+        }
+
+        @objc func handleDoubleClick(_ recognizer: NSClickGestureRecognizer) {
+            guard let scroll = scrollView else { return }
+            let atFit = abs(scroll.magnification - fitMagnification) < 0.01
+            let location = recognizer.location(in: scroll.documentView)
+            let target: CGFloat = atFit ? 1.0 : fitMagnification
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                scroll.animator().setMagnification(target, centeredAt: location)
             }
         }
     }

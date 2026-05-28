@@ -121,9 +121,13 @@ actor RelayClient {
         do {
             let (_, resp) = try await session.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            NetLogger.info("Relay", "store msgId=\(messageId) → HTTP \(code)")
+            if (200..<300).contains(code) {
+                NetLogger.info("Relay", "store msgId=\(messageId) → HTTP \(code) (stored on Worker)")
+            } else {
+                NetLogger.warn("Relay", "store msgId=\(messageId) → HTTP \(code) (Worker rejected upload)")
+            }
         } catch {
-            NetLogger.info("Relay", "store msgId=\(messageId) failed: \(error.localizedDescription)")
+            NetLogger.warn("Relay", "store msgId=\(messageId) failed: \(error.localizedDescription)")
         }
     }
 
@@ -145,14 +149,18 @@ actor RelayClient {
             let (data, resp) = try await session.data(from: url)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             guard code == 200 else {
-                NetLogger.info("Relay", "fetchPending → HTTP \(code)")
+                NetLogger.warn("Relay", "fetchPending → HTTP \(code) (Worker error)")
                 return []
             }
             let msgs = try JSONDecoder().decode([RelayPendingMessage].self, from: data)
-            NetLogger.info("Relay", "fetchPending → \(msgs.count) message(s)")
+            if msgs.isEmpty {
+                NetLogger.verbose("Relay", "fetchPending → inbox empty")
+            } else {
+                NetLogger.info("Relay", "fetchPending → \(msgs.count) message(s) waiting on relay")
+            }
             return msgs
         } catch {
-            NetLogger.info("Relay", "fetchPending failed: \(error.localizedDescription)")
+            NetLogger.warn("Relay", "fetchPending failed: \(error.localizedDescription)")
             return []
         }
     }

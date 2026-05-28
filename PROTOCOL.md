@@ -525,10 +525,14 @@ If the sender knows the peer's `relay_id_hash` (received in a prior discovery
 packet) the encrypted ciphertext is **also posted** to the cloud relay Worker
 immediately after being placed in the local queue.
 
-When any client starts up, it fetches its own pending messages from the Worker:
+Clients poll the Worker mailbox on three triggers:
+
+- once at startup,
+- every 30 seconds while the app is running, and
+- whenever the local network transitions from unavailable to available.
 
 ```
-App start -> RelayClient.fetchPending(relay_id)
+RelayClient.fetchPending(relay_id)
   -> Worker verifies SHA256(relay_id) == relay_id_hash
   -> returns stored ciphertext blobs
   -> MessagingService decrypts each (same AES-GCM path as LAN delivery)
@@ -536,7 +540,8 @@ App start -> RelayClient.fetchPending(relay_id)
 ```
 
 This allows Bob to receive messages from Alice even if Alice's machine was
-off-network at the time Bob came back online.
+off-network at the time Bob came back online, and ensures messages relayed
+while Bob is already running are delivered without a restart.
 
 **relay_id derivation:**
 

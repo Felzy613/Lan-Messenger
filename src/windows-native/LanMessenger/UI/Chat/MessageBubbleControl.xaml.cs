@@ -163,17 +163,15 @@ public sealed partial class MessageBubbleControl : UserControl
     private void UpdateStatusGlyph()
     {
         if (Row is null || Row.Incoming) { StatusText.Text = ""; return; }
+        // WhatsApp-style:
+        //   Sending / Queued / Sent → single grey check
+        //   Delivered               → double grey check
+        //   Read                    → double blue check
+        //   Failed                  → red ✗
+        // Transient "Sending" / "Queued" deliberately share the single grey
+        // check so the user never sees a clock or extra in-flight glyph.
         switch (Row.Status)
         {
-            case "Sending":
-            case "Queued":
-                StatusText.Text       = "⏱";
-                StatusText.Foreground = Theme.CheckGreyBrush;
-                break;
-            case "Sent":
-                StatusText.Text       = "✓";
-                StatusText.Foreground = Theme.CheckGreyBrush;
-                break;
             case "Delivered":
                 StatusText.Text       = "✓✓";
                 StatusText.Foreground = Theme.CheckGreyBrush;
@@ -187,7 +185,9 @@ public sealed partial class MessageBubbleControl : UserControl
                 StatusText.Foreground = Theme.BubbleFailedBrush;
                 break;
             default:
-                StatusText.Text = "";
+                // Sent, Sending, Queued, and any unknown in-flight value.
+                StatusText.Text       = "✓";
+                StatusText.Foreground = Theme.CheckGreyBrush;
                 break;
         }
     }

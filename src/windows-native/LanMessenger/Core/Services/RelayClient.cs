@@ -113,11 +113,14 @@ public sealed class RelayClient
             };
             using var resp = await _http.PostAsJsonAsync(
                 new Uri(WorkerBaseUri, "store"), body);
-            LanLogger.Info("Relay", $"store msgId={messageId} → HTTP {(int)resp.StatusCode}");
+            if (resp.IsSuccessStatusCode)
+                LanLogger.Info("Relay", $"store msgId={messageId} → HTTP {(int)resp.StatusCode} (stored on Worker)");
+            else
+                LanLogger.Warn("Relay", $"store msgId={messageId} → HTTP {(int)resp.StatusCode} (Worker rejected upload)");
         }
         catch (Exception ex)
         {
-            LanLogger.Info("Relay", $"store msgId={messageId} failed: {ex.Message}");
+            LanLogger.Warn("Relay", $"store msgId={messageId} failed: {ex.Message}");
         }
     }
 
@@ -135,17 +138,18 @@ public sealed class RelayClient
             using var resp = await _http.GetAsync(url);
             if (!resp.IsSuccessStatusCode)
             {
-                LanLogger.Info("Relay", $"fetchPending → HTTP {(int)resp.StatusCode}");
+                LanLogger.Warn("Relay", $"fetchPending → HTTP {(int)resp.StatusCode} (Worker error)");
                 return [];
             }
             var msgs = await resp.Content.ReadFromJsonAsync<List<RelayPendingMessage>>()
                        ?? [];
-            LanLogger.Info("Relay", $"fetchPending → {msgs.Count} message(s)");
+            if (msgs.Count > 0)
+                LanLogger.Info("Relay", $"fetchPending → {msgs.Count} message(s) waiting on relay");
             return msgs;
         }
         catch (Exception ex)
         {
-            LanLogger.Info("Relay", $"fetchPending failed: {ex.Message}");
+            LanLogger.Warn("Relay", $"fetchPending failed: {ex.Message}");
             return [];
         }
     }

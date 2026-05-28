@@ -345,9 +345,11 @@ this gap.
    peers know where to address cloud-relay messages.
 3. When a message send fails, `RelayClient.store()` POSTs the ciphertext to the
    Worker under the recipient's `relay_id_hash`.
-4. On every app startup, `RelayClient.fetchPending()` retrieves any waiting
-   ciphertext blobs from the Worker (authenticated by presenting `relay_id` and
-   letting the Worker verify `SHA256(relay_id) == relay_id_hash`).
+4. The receiving client polls the Worker for new ciphertext on three triggers:
+   once at startup, every 30 seconds while the app is running, and whenever the
+   local network transitions from unavailable to available. `RelayClient
+   .fetchPending()` is authenticated by presenting `relay_id` and letting the
+   Worker verify `SHA256(relay_id) == relay_id_hash`.
 5. Retrieved messages are decrypted in `MessagingService.handleRelayMessage()` and
    removed from the Worker via `RelayClient.delete()`.
 

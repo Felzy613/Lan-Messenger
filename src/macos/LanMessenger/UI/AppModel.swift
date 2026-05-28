@@ -56,6 +56,7 @@ final class AppModel: ObservableObject {
 
     private var peerTimeoutTimer: Timer?
     private var updateCheckTimer: Timer?
+    private var relayPollTimer: Timer?
 
     // SHA256(relay_id) for each peer, populated from discovery packets.
     // Used to upload queued messages to the cloud relay mailbox of offline peers.
@@ -91,6 +92,7 @@ final class AppModel: ObservableObject {
         reconcileLoginItem()
         scheduleAutoUpdateCheck()
         fetchRelayMessages()
+        startRelayPollTimer()
     }
 
     // If the user previously asked for launch-at-login but the system's
@@ -355,13 +357,16 @@ final class AppModel: ObservableObject {
     // MARK: - Cloud relay
 
     /// Fetches messages waiting in the cloud relay Worker mailbox and dispatches
-    /// them through MessagingService. Called once at startup; silently no-ops
-    /// when the relay URL is empty or the network is unavailable.
+    /// them through MessagingService. Called at startup and every 30 s while
+    /// the app is open so messages sent while we're already running are picked
+    /// up without a restart. Silently no-ops when the relay URL is empty or
+    /// the network is unavailable.
     private func fetchRelayMessages() {
         Task { [weak self] in
             guard let self else { return }
             let msgs = await RelayClient.shared.fetchPending()
             guard !msgs.isEmpty else { return }
+            NetLogger.info("Relay", "delivering \(msgs.count) relay message(s) to UI")
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 for msg in msgs {
@@ -375,6 +380,21 @@ final class AppModel: ObservableObject {
                     MessagingService.shared.handleRelayMessage(msg, fromStoredIP: ip)
                 }
                 self.refreshConversations()
+            }
+        }
+    }
+
+    /// Starts the recurring relay-inbox poll. The interval is intentionally
+    /// modest (30 s) so the chat feels live without hammering the Worker —
+    /// real-time delivery still happens via direct LAN TCP whenever both
+    /// peers are reachable. Also re-polls on network-available transitions.
+    private func startRelayPollTimer() {
+        relayPollTimer?.invalidate()
+        relayPollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.isLocalNetworkAvailable else { return }
+                self.fetchRelayMessages()
             }
         }
     }
@@ -712,6 +732,15 @@ extension AppModel: NetworkCoordinatorDelegate {
 
     func coordinatorNetworkAvailabilityChanged(_ c: NetworkCoordinator) {
         let available = c.isLocalNetworkAvailable
-        if isLocalNetworkAvailable != available { isLocalNetworkAvailable = available }
+        guard isLocalNetworkAvailable != available else { return }
+        let wasOffline = !isLocalNetworkAvailable
+        isLocalNetworkAvailable = available
+        // When the network comes back online, immediately drain any relay
+        // messages that piled up while we were offline. The recurring
+        // 30 s poll continues in the background.
+        if available, wasOffline {
+            NetLogger.info("Relay", "network came back online — triggering relay fetch")
+            fetchRelayMessages()
+        }
     }
 }

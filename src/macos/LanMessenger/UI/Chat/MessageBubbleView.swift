@@ -124,9 +124,22 @@ struct MessageBubbleView: View {
                 }
                 Spacer(minLength: 0)
                 if fileExists {
-                    // "Show" reveals the file in Finder. FinderReveal performs
-                    // the FileManager + NSWorkspace work off the main thread so
-                    // launching Finder cannot stutter the chat list.
+                    // "Open" hands the file to its default app via
+                    // NSWorkspace.open (async, non-blocking). "Show" reveals
+                    // it in Finder. Both work off the main thread so launching
+                    // an external app can't stutter the chat list.
+                    Button {
+                        NSWorkspace.shared.open(url)
+                    } label: {
+                        Text("Open")
+                            .font(.system(size: 11, weight: .semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Theme.accent.opacity(0.2), in: Capsule())
+                            .foregroundStyle(Theme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open \(name) with the default app")
                     Button {
                         FinderReveal.reveal(path: path) { msg in revealError = msg }
                     } label: {
@@ -134,7 +147,7 @@ struct MessageBubbleView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(Theme.accent.opacity(0.2), in: Capsule())
+                            .background(Theme.accent.opacity(0.12), in: Capsule())
                             .foregroundStyle(Theme.accent)
                     }
                     .buttonStyle(.plain)
@@ -283,11 +296,14 @@ struct MessageBubbleView: View {
     }
 
     // WhatsApp-style checkmarks:
-    // - Sending/Queued → clock
-    // - Sent          → single grey check
-    // - Delivered     → double grey check
-    // - Read          → double blue check
-    // - Failed        → red exclamation
+    // - Sending/Queued/Sent → single grey check
+    // - Delivered           → double grey check
+    // - Read                → double blue check
+    // - Failed              → red exclamation
+    //
+    // In-flight states (Sending, Queued) deliberately render the same single
+    // grey check as Sent — the user never sees a clock or other transient
+    // glyph, so the lifecycle reads cleanly as ✓ → ✓✓ grey → ✓✓ blue.
     @ViewBuilder
     private var statusIcon: some View {
         switch entry.status {
@@ -295,20 +311,16 @@ struct MessageBubbleView: View {
             doubleCheck(color: Color(red: 0.31, green: 0.62, blue: 0.97))   // WhatsApp-ish blue
         case "Delivered":
             doubleCheck(color: .secondary)
-        case "Sent":
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
-        case "Queued", "Sending":
-            Image(systemName: "clock")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
         case "Failed":
             Image(systemName: "exclamationmark.circle")
                 .font(.system(size: 10))
                 .foregroundStyle(.red)
         default:
-            EmptyView()
+            // Sent, Sending, Queued, and unknown in-flight states all share
+            // the single grey check.
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
         }
     }
 

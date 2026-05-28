@@ -106,6 +106,15 @@ public sealed class MessagingService
         Task.Run(async () =>
         {
             var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"text msgId={messageId}");
+            if (success)
+            {
+                LanLogger.Info("Send", $"text msgId={messageId} peer={peerIP} — direct LAN delivery");
+            }
+            else
+            {
+                LanLogger.Info("Send",
+                    $"text msgId={messageId} peer={peerIP} — direct LAN delivery failed, falling back to relay");
+            }
             Dispatch(() =>
             {
                 var status = success ? MessageStatus.Sent : MessageStatus.Queued;
@@ -319,8 +328,15 @@ public sealed class MessagingService
         // device goes offline before the recipient comes back to the LAN.
         if (!string.IsNullOrEmpty(peerRelayIdHash))
         {
+            LanLogger.Info("Relay",
+                $"uploading queued msgId={messageId} to relay (peer hash={peerRelayIdHash[..Math.Min(8, peerRelayIdHash.Length)]}…)");
             _ = RelayClient.Shared.StoreAsync(
                 peerRelayIdHash, messageId, ciphertextB64, nonceB64, timestamp);
+        }
+        else
+        {
+            LanLogger.Warn("Relay",
+                $"cannot relay msgId={messageId}: peer relay_id_hash unknown — relay only works for peers that have been discovered at least once");
         }
     }
 

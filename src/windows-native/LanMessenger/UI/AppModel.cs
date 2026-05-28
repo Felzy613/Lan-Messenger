@@ -66,6 +66,7 @@ public sealed partial class AppModel : ObservableObject
     private DispatcherQueue _dq;
     private DispatcherTimer? _peerTimeoutTimer;
     private DispatcherTimer? _updateCheckTimer;
+    private DispatcherTimer? _relayPollTimer;
 
     // SHA256(relay_id) for each peer, populated from discovery packets.
     // Used to upload queued messages to the cloud relay mailbox of offline peers.
@@ -118,7 +119,16 @@ public sealed partial class AppModel : ObservableObject
         Coordinator.NetworkAvailabilityChanged += () =>
         {
             var available = Coordinator.IsLocalNetworkAvailable;
-            if (IsLocalNetworkAvailable != available) IsLocalNetworkAvailable = available;
+            if (IsLocalNetworkAvailable == available) return;
+            var wasOffline = !IsLocalNetworkAvailable;
+            IsLocalNetworkAvailable = available;
+            // When the network comes back online, immediately drain any
+            // relay messages that piled up while we were offline.
+            if (available && wasOffline)
+            {
+                LanLogger.Info("Relay", "network came back online — triggering relay fetch");
+                _ = FetchRelayMessagesAsync();
+            }
         };
         NotificationService.Shared.Register();
         LoadHistory();
@@ -126,6 +136,7 @@ public sealed partial class AppModel : ObservableObject
         CheckMigration();
         ScheduleAutoUpdateCheck();
         _ = FetchRelayMessagesAsync();
+        StartRelayPollTimer();
     }
 
     // MARK: - Migration
@@ -500,12 +511,15 @@ public sealed partial class AppModel : ObservableObject
     // MARK: - Cloud relay
 
     /// Fetches messages waiting in the cloud relay Worker mailbox and dispatches
-    /// them through MessagingService. Called once at startup; silently no-ops
-    /// when the relay URL is empty or the network is unavailable.
+    /// them through MessagingService. Called at startup and every 30 s while
+    /// the app is open so messages sent while we're already running are
+    /// delivered without a restart. Silently no-ops when the relay URL is
+    /// empty or the network is unavailable.
     private async Task FetchRelayMessagesAsync()
     {
         var msgs = await RelayClient.Shared.FetchPendingAsync();
         if (msgs.Count == 0) return;
+        LanLogger.Info("Relay", $"delivering {msgs.Count} relay message(s) to UI");
         _dq.TryEnqueue(() =>
         {
             foreach (var msg in msgs)
@@ -519,6 +533,22 @@ public sealed partial class AppModel : ObservableObject
             }
             RefreshConversations();
         });
+    }
+
+    /// Starts the recurring relay-inbox poll. 30 s matches the macOS cadence
+    /// — real-time delivery still happens through direct LAN TCP whenever the
+    /// peer is reachable; this only catches messages that were stored on the
+    /// Worker while we were offline or on a different network.
+    private void StartRelayPollTimer()
+    {
+        _relayPollTimer?.Stop();
+        _relayPollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _relayPollTimer.Tick += (_, _) =>
+        {
+            if (!IsLocalNetworkAvailable) return;
+            _ = FetchRelayMessagesAsync();
+        };
+        _relayPollTimer.Start();
     }
 
     // MARK: - Conversation / contact actions
