@@ -119,13 +119,72 @@ public sealed partial class MessageBubbleControl : UserControl
             ReplySender.Text  = Row.ReplyToSender ?? "Reply";
             ReplyPreview.Text = Row.ReplyToPreview ?? "";
             ReplyChip.Visibility = Visibility.Visible;
+            SetupReplyChipThumbnail(Row.ReplyFilePath);
         }
         else
         {
             ReplyChip.Visibility = Visibility.Collapsed;
+            ReplyChipThumbnailBorder.Visibility = Visibility.Collapsed;
         }
 
         UpdateStatusGlyph();
+    }
+
+    // Segoe MDL2 glyphs used for reply chip icons.
+    private const string GlyphPhoto    = ""; // Photo
+    private const string GlyphVideo    = ""; // Play (video poster)
+    private const string GlyphDocument = ""; // Page/document
+
+    /// <summary>
+    /// Populates the reply chip thumbnail slot with a small image for image replies,
+    /// a media/doc icon for video and file replies, or hides it for text replies.
+    /// Falls back silently if the file is missing or the image fails to decode.
+    /// </summary>
+    private void SetupReplyChipThumbnail(string? path)
+    {
+        // Reset all thumbnail/icon state.
+        ReplyChipThumbnailBorder.Visibility = Visibility.Collapsed;
+        ReplyChipImage.Source               = null;
+        ReplyChipImage.Visibility           = Visibility.Collapsed;
+        ReplyChipIcon.Visibility            = Visibility.Collapsed;
+
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
+
+        var kind = MediaTypes.Classify(path);
+        ReplyChipThumbnailBorder.Visibility = Visibility.Visible;
+
+        switch (kind)
+        {
+            case MediaKind.Image:
+                try
+                {
+                    var bmp = new BitmapImage
+                    {
+                        DecodePixelWidth  = 72,
+                        DecodePixelType   = DecodePixelType.Logical,
+                    };
+                    bmp.UriSource       = new Uri(path);
+                    ReplyChipImage.Source    = bmp;
+                    ReplyChipImage.Visibility = Visibility.Visible;
+                }
+                catch (Exception ex)
+                {
+                    LanLogger.Warn("MessageBubble", $"reply chip image load failed for {path}: {ex.Message}");
+                    ReplyChipIcon.Glyph      = GlyphPhoto;
+                    ReplyChipIcon.Visibility = Visibility.Visible;
+                }
+                break;
+
+            case MediaKind.Video:
+                ReplyChipIcon.Glyph      = GlyphVideo;
+                ReplyChipIcon.Visibility = Visibility.Visible;
+                break;
+
+            default:
+                ReplyChipIcon.Glyph      = GlyphDocument;
+                ReplyChipIcon.Visibility = Visibility.Visible;
+                break;
+        }
     }
 
     /// <summary>

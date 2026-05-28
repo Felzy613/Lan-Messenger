@@ -20,7 +20,8 @@
             </Border.ContextFlyout>
             <StackPanel Spacing="2">
 
-                <!-- Reply chip -->
+                <!-- Reply chip — shows a thumbnail for image/video replies, a doc
+                     icon for file replies, and plain text for text replies. -->
                 <Border x:Name="ReplyChip"
                         Background="#11000000"
                         CornerRadius="4"
@@ -31,10 +32,31 @@
                     <Grid ColumnSpacing="6">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="3" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <Rectangle Grid.Column="0" Fill="#128C4E" />
-                        <StackPanel Grid.Column="1" Spacing="0">
+                        <!-- Optional thumbnail / icon for media and file replies -->
+                        <Border x:Name="ReplyChipThumbnailBorder"
+                                Grid.Column="1"
+                                Width="36" Height="36"
+                                CornerRadius="4"
+                                Background="#22000000"
+                                Visibility="Collapsed">
+                            <Grid>
+                                <Image x:Name="ReplyChipImage"
+                                       Stretch="UniformToFill"
+                                       Visibility="Collapsed" />
+                                <FontIcon x:Name="ReplyChipIcon"
+                                          FontFamily="Segoe MDL2 Assets"
+                                          FontSize="18"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Foreground="White"
+                                          Visibility="Collapsed" />
+                            </Grid>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="0" VerticalAlignment="Center">
                             <TextBlock x:Name="ReplySender"
                                        FontSize="11" FontWeight="SemiBold"
                                        Foreground="#128C4E" />

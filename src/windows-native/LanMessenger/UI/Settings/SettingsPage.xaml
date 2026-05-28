@@ -102,10 +102,25 @@
                                     Style="{ThemeResource AccentButtonStyle}"
                                     Click="InstallNow_Click" />
                         </StackPanel>
-                        <TextBlock x:Name="UpdateNotesText"
-                                   TextWrapping="Wrap"
-                                   MaxHeight="180"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <!-- Release notes rendered as Markdown (headings, lists, bold,
+                             inline code, links).  Collapsed to ~5 lines initially;
+                             "Show more" expands into a scrollable area. -->
+                        <ScrollViewer x:Name="UpdateNotesScroll"
+                                      MaxHeight="120"
+                                      VerticalScrollBarVisibility="Hidden">
+                            <RichTextBlock x:Name="UpdateNotesBlock"
+                                           TextWrapping="Wrap"
+                                           IsTextSelectionEnabled="True"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </ScrollViewer>
+                        <Button x:Name="NotesToggleBtn"
+                                Content="Show more"
+                                Padding="0"
+                                BorderThickness="0"
+                                Background="Transparent"
+                                Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                Visibility="Collapsed"
+                                Click="NotesToggleBtn_Click" />
                         <ProgressBar x:Name="UpdateProgressBar"
                                      Value="0"
                                      Minimum="0"

@@ -639,7 +639,20 @@ final class AppModel: ObservableObject {
         MessagingService.shared.onStatusUpdate = { [weak self] ip, msgId, status in
             guard let self else { return }
             if var entries = self.messages[ip] {
-                for i in entries.indices where entries[i].messageId == msgId { entries[i].status = status }
+                // Update the specific text message by ID.
+                for i in entries.indices where entries[i].messageId == msgId {
+                    entries[i].status = status
+                }
+                // File-transfer entries have no messageId so they never receive
+                // individual receipts. Upgrade any outgoing file entry in this
+                // conversation when the peer's acknowledged status is higher —
+                // if they read any text here, they've seen the files too.
+                let newRank = Self.statusRank(status)
+                for i in entries.indices where entries[i].messageId == nil && !entries[i].incoming {
+                    if newRank > Self.statusRank(entries[i].status) {
+                        entries[i].status = status
+                    }
+                }
                 self.messages[ip] = entries
             }
         }
@@ -700,6 +713,18 @@ final class AppModel: ObservableObject {
 
     private func peerByIP(_ ip: String) -> PeerInfo? {
         peers.values.first { $0.ip == ip }
+    }
+
+    // Rank used to ensure status only moves forward (Queued → Sending → Sent → Delivered → Read).
+    private static func statusRank(_ status: String) -> Int {
+        switch status {
+        case "Queued":    return 0
+        case "Sending":   return 1
+        case "Sent":      return 2
+        case "Delivered": return 3
+        case "Read":      return 4
+        default:          return -1
+        }
     }
 }
 

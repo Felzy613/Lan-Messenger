@@ -44,7 +44,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dave.lanmessenger
-        MARKETING_VERSION: "1.6.9"
+        MARKETING_VERSION: "1.6.10"
         CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_FILE: LanMessenger/Info.plist
         CODE_SIGN_ENTITLEMENTS: LanMessenger/LanMessenger.entitlements

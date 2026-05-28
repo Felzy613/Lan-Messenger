@@ -48,6 +48,8 @@ public sealed partial class SettingsPage : Page
             DispatcherQueue.TryEnqueue(RefreshUpdateUI);
     }
 
+    private bool _notesExpanded;
+
     private void RefreshUpdateUI()
     {
         if (_model is null) return;
@@ -60,7 +62,25 @@ public sealed partial class SettingsPage : Page
 
         UpdatePanel.Visibility    = Visibility.Visible;
         UpdateAvailableText.Text  = $"Version {info.Version} available";
-        UpdateNotesText.Text      = string.IsNullOrWhiteSpace(info.Notes) ? "" : info.Notes;
+
+        // Populate the RichTextBlock with Markdown-rendered release notes.
+        if (!string.IsNullOrWhiteSpace(info.Notes))
+        {
+            MarkdownHelper.PopulateBlocks(UpdateNotesBlock, info.Notes);
+            UpdateNotesScroll.Visibility = Visibility.Visible;
+            _notesExpanded = false;
+            UpdateNotesScroll.MaxHeight = 120;
+
+            var isLong = info.Notes.Length > 200 || info.Notes.Split('\n').Length > 5;
+            NotesToggleBtn.Visibility = isLong ? Visibility.Visible : Visibility.Collapsed;
+            NotesToggleBtn.Content    = "Show more";
+        }
+        else
+        {
+            UpdateNotesBlock.Blocks.Clear();
+            UpdateNotesScroll.Visibility = Visibility.Collapsed;
+            NotesToggleBtn.Visibility    = Visibility.Collapsed;
+        }
 
         var progress = _model.UpdateProgress;
         switch (progress.State)
@@ -98,6 +118,17 @@ public sealed partial class SettingsPage : Page
                 UpdateProgressText.Text = $"Failed: {progress.Message}";
                 break;
         }
+    }
+
+    private void NotesToggleBtn_Click(object sender, RoutedEventArgs e)
+    {
+        _notesExpanded = !_notesExpanded;
+        UpdateNotesScroll.MaxHeight    = _notesExpanded ? 360 : 120;
+        // Reveal scrollbar in expanded state so the user can scroll long notes.
+        UpdateNotesScroll.VerticalScrollBarVisibility = _notesExpanded
+            ? ScrollBarVisibility.Auto
+            : ScrollBarVisibility.Hidden;
+        NotesToggleBtn.Content = _notesExpanded ? "Show less" : "Show more";
     }
 
     private void UsernameBox_LostFocus(object sender, RoutedEventArgs e)

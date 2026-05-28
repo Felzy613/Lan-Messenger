@@ -103,7 +103,8 @@ struct ChatView: View {
                                       let match = entries.first(where: { $0.messageId == targetId }) else { return }
                                 withAnimation { proxy.scrollTo(match.id, anchor: .center) }
                                 scrollHighlightID = match.id
-                            }
+                            },
+                            replyFilePath: resolvedReplyFilePath(for: entry)
                         )
                         .id(entry.id)
                         .background(
@@ -162,6 +163,19 @@ struct ChatView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
         .background(.bar)
+    }
+
+    // MARK: - Reply file path lookup
+
+    // Returns the local file path for the message that `entry` is replying to,
+    // or nil if the original message is not a file or cannot be found in history.
+    // Used by ReplyChipView to show a thumbnail instead of plain text.
+    private func resolvedReplyFilePath(for entry: MessageEntry) -> String? {
+        guard let id = entry.replyToMessageId else { return nil }
+        guard let orig = entries.first(where: { $0.messageId == id }) else { return nil }
+        let text = orig.text
+        guard text.hasPrefix("__FILE__:") else { return nil }
+        return String(text.dropFirst("__FILE__:".count))
     }
 
     // MARK: - Read receipts

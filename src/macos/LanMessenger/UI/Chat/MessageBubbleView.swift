@@ -6,6 +6,10 @@ struct MessageBubbleView: View {
     let isFirstInRun: Bool
     var onReply: (() -> Void)? = nil
     var onTapReplyTarget: (() -> Void)? = nil
+    /// Local file path of the replied-to message (if it was a media/file message),
+    /// resolved by ChatView from conversation history. Nil for text replies or when
+    /// the original message is not found.
+    var replyFilePath: String? = nil
     @Environment(\.colorScheme) var colorScheme
     // Tracks whether the received file still exists on disk (checked asynchronously).
     @State private var fileExists = false
@@ -54,7 +58,8 @@ struct MessageBubbleView: View {
                     isFirstInRun: isFirstInRun,
                     kind: mediaKind,
                     onReply: onReply,
-                    onTapReplyTarget: onTapReplyTarget
+                    onTapReplyTarget: onTapReplyTarget,
+                    replyFilePath: replyFilePath
                 )
             case .other:
                 fileBubble(path: path)
@@ -71,30 +76,12 @@ struct MessageBubbleView: View {
     @ViewBuilder
     private var replyChip: some View {
         if let preview = entry.replyToPreview, !preview.isEmpty {
-            let label = entry.replyToSender?.isEmpty == false ? entry.replyToSender! : "Reply"
-            Button {
-                onTapReplyTarget?()
-            } label: {
-                HStack(spacing: 6) {
-                    Rectangle()
-                        .fill(Theme.accent)
-                        .frame(width: 3)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(label)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Theme.accent)
-                        Text(preview)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-            }
-            .buttonStyle(.plain)
+            ReplyChipView(
+                preview: preview,
+                sender: entry.replyToSender,
+                filePath: replyFilePath,
+                onTap: onTapReplyTarget
+            )
         }
     }
 
@@ -296,43 +283,7 @@ struct MessageBubbleView: View {
         Date(timeIntervalSince1970: entry.timestamp).formatted(.dateTime.hour().minute())
     }
 
-    // WhatsApp-style checkmarks (no clocks, no extra queued glyphs — every
-    // pre-delivery state collapses to a single grey check so the UI never flips
-    // between visually different "in flight" icons):
-    // - Sending/Queued/Sent → single grey check
-    // - Delivered           → double grey check
-    // - Read                → double blue check
-    // - Failed              → red exclamation (only terminal pre-wire error)
-    @ViewBuilder
     private var statusIcon: some View {
-        switch entry.status {
-        case "Read":
-            doubleCheck(color: Color(red: 0.31, green: 0.62, blue: 0.97))   // WhatsApp-ish blue
-        case "Delivered":
-            doubleCheck(color: .secondary)
-        case "Failed":
-            Image(systemName: "exclamationmark.circle")
-                .font(.system(size: 10))
-                .foregroundStyle(.red)
-        default:
-            // Sent / Sending / Queued / unset all collapse to a single grey check.
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func doubleCheck(color: Color) -> some View {
-        // Two overlapping checkmarks for the "delivered" look.
-        ZStack(alignment: .leading) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .offset(x: 0)
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .offset(x: 4)
-        }
-        .frame(width: 14, height: 10, alignment: .leading)
-        .foregroundStyle(color)
+        BubbleStatusView(status: entry.status)
     }
 }

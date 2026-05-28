@@ -24,6 +24,9 @@ public sealed class MessageRowViewModel : INotifyPropertyChanged
     public string? ReplyToMessageId { get; init; }
     public string? ReplyToPreview   { get; init; }
     public string? ReplyToSender    { get; init; }
+    /// Local file path of the replied-to media/file message, if any. Resolved
+    /// from conversation history at map time; null for text replies.
+    public string? ReplyFilePath    { get; init; }
 
     // Status is the one mutable field — checkmarks update without rebuilding the row.
     private string _status = "";
@@ -79,15 +82,33 @@ public sealed partial class ChatPage : Page
     private void OnMessageStatusUpdated(string peerIP, string msgId, string status)
     {
         if (peerIP != _boundPeerIP) return;
+        var newRank = StatusRank(status);
         for (var i = 0; i < _rows.Count; i++)
         {
-            if (_rows[i].MessageId == msgId)
+            var row = _rows[i];
+            if (row.MessageId == msgId)
             {
-                _rows[i].Status = status;
-                return;
+                row.Status = status;
+            }
+            else if (row.MessageId is null && !row.Incoming && newRank > StatusRank(row.Status))
+            {
+                // File-transfer rows have no MessageId and never receive individual
+                // receipts. Upgrade them alongside text receipts — if the peer read
+                // any text in this conversation, they've also seen the files.
+                row.Status = status;
             }
         }
     }
+
+    private static int StatusRank(string? status) => status switch
+    {
+        "Queued"    => 0,
+        "Sending"   => 1,
+        "Sent"      => 2,
+        "Delivered" => 3,
+        "Read"      => 4,
+        _           => -1,
+    };
 
     public MessageEntry? ReplyTarget { get; private set; }
 
@@ -253,7 +274,7 @@ public sealed partial class ChatPage : Page
             // Append new ones.
             var wasAtBottom = IsScrolledToBottom();
             for (var i = _rows.Count; i < entries.Count; i++)
-                _rows.Add(MapEntry(entries[i]));
+                _rows.Add(MapEntry(entries[i], entries));
 
             if (wasAtBottom)
                 DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
@@ -267,7 +288,7 @@ public sealed partial class ChatPage : Page
         // Fallback — rebuild but try to preserve scroll position.
         var verticalOffset = _scroll?.VerticalOffset ?? 0;
         _rows.Clear();
-        foreach (var e in entries) _rows.Add(MapEntry(e));
+        foreach (var e in entries) _rows.Add(MapEntry(e, entries));
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             _scroll?.ChangeView(null, verticalOffset, null, disableAnimation: true));
     }
@@ -307,10 +328,21 @@ public sealed partial class ChatPage : Page
 
     private static string MapStatus(string raw) => raw;  // pass through; bubble interprets it
 
-    private static MessageRowViewModel MapEntry(MessageEntry e)
+    private static MessageRowViewModel MapEntry(MessageEntry e, IReadOnlyList<MessageEntry>? allEntries = null)
     {
         var isFile = e.Text.StartsWith("__FILE__:");
         var path   = isFile ? e.Text["__FILE__:".Length..] : "";
+
+        // Resolve the file path of the replied-to message so the bubble can
+        // show a thumbnail instead of plain text in the reply chip.
+        string? replyFilePath = null;
+        if (e.ReplyToMessageId is { Length: > 0 } replyId && allEntries is not null)
+        {
+            var orig = allEntries.FirstOrDefault(x => x.MessageId == replyId);
+            if (orig is not null && orig.Text.StartsWith("__FILE__:"))
+                replyFilePath = orig.Text["__FILE__:".Length..];
+        }
+
         return new MessageRowViewModel
         {
             Sender    = e.Sender,
@@ -324,6 +356,7 @@ public sealed partial class ChatPage : Page
             ReplyToMessageId = e.ReplyToMessageId,
             ReplyToPreview   = e.ReplyToPreview,
             ReplyToSender    = e.ReplyToSender,
+            ReplyFilePath    = replyFilePath,
         };
     }
 

@@ -26,6 +26,8 @@ struct MediaBubbleView: View {
     let kind: MediaKind                          // .image or .video — caller must filter
     var onReply: (() -> Void)? = nil
     var onTapReplyTarget: (() -> Void)? = nil
+    /// Local file path of the replied-to message (if it was a media/file message).
+    var replyFilePath: String? = nil
     @Environment(\.colorScheme) var colorScheme
 
     @State private var thumbnail: NSImage? = nil
@@ -115,22 +117,12 @@ struct MediaBubbleView: View {
     @ViewBuilder
     private var replyChipIfNeeded: some View {
         if let preview = entry.replyToPreview, !preview.isEmpty {
-            HStack(spacing: 6) {
-                Rectangle().fill(Theme.accent).frame(width: 3)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(entry.replyToSender?.isEmpty == false ? entry.replyToSender! : "Reply")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
-                    Text(preview)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            ReplyChipView(
+                preview: preview,
+                sender: entry.replyToSender,
+                filePath: replyFilePath,
+                onTap: onTapReplyTarget
+            )
             .padding(.bottom, 4)
         }
     }
@@ -265,33 +257,8 @@ struct MediaBubbleView: View {
         Date(timeIntervalSince1970: entry.timestamp).formatted(.dateTime.hour().minute())
     }
 
-    @ViewBuilder
     private var statusIcon: some View {
-        // Re-use the same status icons defined in MessageBubbleView. Keep them
-        // visually consistent so file/media/text bubbles all read the same way.
-        // Every pre-delivery state (Sent / Sending / Queued / unset) collapses
-        // to a single grey check — no clocks or extra queued glyphs.
-        switch entry.status {
-        case "Read":
-            doubleCheck(color: Color(red: 0.31, green: 0.62, blue: 0.97))
-        case "Delivered":
-            doubleCheck(color: .secondary)
-        case "Failed":
-            Image(systemName: "exclamationmark.circle").font(.system(size: 10)).foregroundStyle(.red)
-        default:
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func doubleCheck(color: Color) -> some View {
-        ZStack(alignment: .leading) {
-            Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).offset(x: 0)
-            Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).offset(x: 4)
-        }
-        .frame(width: 14, height: 10, alignment: .leading)
-        .foregroundStyle(color)
+        BubbleStatusView(status: entry.status)
     }
 
     // MARK: - Async work

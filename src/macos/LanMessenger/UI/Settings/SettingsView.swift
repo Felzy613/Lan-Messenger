@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var updateStatus = ""
     @State private var isCheckingUpdates = false
     @State private var logExportMessage = ""
+    @State private var notesExpanded = false
 
     var body: some View {
         NavigationStack {
@@ -129,15 +130,13 @@ struct SettingsView: View {
                                 installButton(info: info)
                             }
                             if !info.notes.isEmpty {
-                                Text(info.notes)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(8)
+                                releaseNotesView(notes: info.notes)
                             }
                             progressView()
                         }
                         .padding(8)
                         .background(Theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+                        .onChange(of: model.availableUpdate) { _ in notesExpanded = false }
                     }
                 }
 
@@ -204,6 +203,51 @@ struct SettingsView: View {
     }
 
     // MARK: - Update UI helpers
+
+    // Renders release notes as Markdown. Collapsed at 6 lines; a "Show more"
+    // toggle reveals the full text in a scrollable area when notes are long.
+    @ViewBuilder
+    private func releaseNotesView(notes: String) -> some View {
+        let attrNotes = (try? AttributedString(
+            markdown: notes,
+            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
+        )) ?? AttributedString(notes)
+        let isLong = notes.count > 200 || notes.components(separatedBy: "\n").count > 5
+
+        VStack(alignment: .leading, spacing: 4) {
+            if notesExpanded {
+                ScrollView {
+                    Text(attrNotes)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .environment(\.openURL, OpenURLAction { url in
+                            NSWorkspace.shared.open(url)
+                            return .handled
+                        })
+                }
+                .frame(maxHeight: 280)
+            } else {
+                Text(attrNotes)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(6)
+                    .environment(\.openURL, OpenURLAction { url in
+                        NSWorkspace.shared.open(url)
+                        return .handled
+                    })
+            }
+            if isLong {
+                Button(notesExpanded ? "Show less" : "Show more") {
+                    withAnimation(.easeInOut(duration: 0.15)) { notesExpanded.toggle() }
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .buttonStyle(.plain)
+            }
+        }
+    }
 
     private func installButton(info: UpdateInfo) -> some View {
         Group {
