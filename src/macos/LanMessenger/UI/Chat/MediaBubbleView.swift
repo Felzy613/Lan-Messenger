@@ -469,74 +469,41 @@ struct MediaPreviewSheet: View {
 
 // MARK: - Zoomable image view (full-screen preview)
 
-/// Image viewer that automatically fits to the available area while preserving
-/// aspect ratio, supports pinch / two-finger / scroll-wheel zoom, double-click
-/// to toggle between fit and 2× zoom, and drag-to-pan when zoomed in.
-/// Resizes naturally with the enclosing window because layout is driven by
-/// GeometryReader rather than the image's intrinsic size.
-struct ZoomableImageView: View {
+/// Image viewer that fits the available area while preserving aspect ratio,
+/// supports pinch / scroll-wheel zoom and pan via AppKit's NSScrollView +
+/// NSImageView (which already implement the full zoom/pan story natively).
+/// Wrapped in NSViewRepresentable so SwiftUI gets the same resize-with-window
+/// behavior without us reimplementing gestures in pure SwiftUI.
+struct ZoomableImageView: NSViewRepresentable {
     let image: NSImage
 
-    @State private var scale: CGFloat = 1.0
-    @State private var lastScale: CGFloat = 1.0
-    @State private var offset: CGSize = .zero
-    @State private var lastOffset: CGSize = .zero
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = false
+        scroll.hasHorizontalScroller = false
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.allowsMagnification = true
+        scroll.minMagnification = 1.0
+        scroll.maxMagnification = 8.0
+        scroll.autohidesScrollers = true
 
-    private let minScale: CGFloat = 1.0
-    private let maxScale: CGFloat = 8.0
+        let imageView = NSImageView()
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.imageAlignment = .alignCenter
+        imageView.image = image
+        imageView.translatesAutoresizingMaskIntoConstraints = false
 
-    var body: some View {
-        GeometryReader { geo in
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: geo.size.width, height: geo.size.height)
-                .scaleEffect(scale)
-                .offset(offset)
-                .gesture(zoomAndPanGesture)
-                .clipped()
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) {
-                    if scale > minScale {
-                        scale = minScale
-                        lastScale = minScale
-                        offset = .zero
-                        lastOffset = .zero
-                    } else {
-                        scale = 2.0
-                        lastScale = 2.0
-                    }
-                }
-        }
+        scroll.documentView = imageView
+        return scroll
     }
 
-    // Combined pinch-zoom + drag-to-pan. SimultaneousGesture lets both fire on
-    // the same view without the ordering quirks of chained .gesture modifiers.
-    private var zoomAndPanGesture: some Gesture {
-        SimultaneousGesture(
-            MagnificationGesture()
-                .onChanged { value in
-                    scale = min(max(lastScale * value, minScale), maxScale)
-                }
-                .onEnded { _ in
-                    if scale <= minScale {
-                        scale = minScale
-                        offset = .zero
-                        lastOffset = .zero
-                    }
-                    lastScale = scale
-                },
-            DragGesture(minimumDistance: 1)
-                .onChanged { value in
-                    guard scale > minScale else { return }
-                    offset = CGSize(
-                        width:  lastOffset.width  + value.translation.width,
-                        height: lastOffset.height + value.translation.height)
-                }
-                .onEnded { _ in
-                    lastOffset = offset
-                }
-        )
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        if let iv = nsView.documentView as? NSImageView {
+            iv.image = image
+            iv.frame = nsView.contentView.bounds
+            iv.autoresizingMask = [.width, .height]
+        }
     }
 }
 
