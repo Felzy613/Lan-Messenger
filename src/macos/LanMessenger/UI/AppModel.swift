@@ -56,6 +56,13 @@ final class AppModel: ObservableObject {
 
     private var peerTimeoutTimer: Timer?
     private var updateCheckTimer: Timer?
+    private var relayPollTimer: Timer?
+    // Suppresses overlapping relay polls when the previous fetch is still inflight
+    // (e.g. on slow networks). Cleared at end of fetchRelayMessages.
+    private var relayFetchInFlight: Bool = false
+    // Interval between routine relay polls. Short enough to feel snappy for
+    // peers that left the LAN momentarily; long enough not to thrash the Worker.
+    private let relayPollInterval: TimeInterval = 30
 
     // SHA256(relay_id) for each peer, populated from discovery packets.
     // Used to upload queued messages to the cloud relay mailbox of offline peers.
@@ -90,7 +97,7 @@ final class AppModel: ObservableObject {
         applyDockPolicy()
         reconcileLoginItem()
         scheduleAutoUpdateCheck()
-        fetchRelayMessages()
+        startRelayPolling()
     }
 
     // If the user previously asked for launch-at-login but the system's
@@ -354,16 +361,41 @@ final class AppModel: ObservableObject {
 
     // MARK: - Cloud relay
 
+    /// Starts both an immediate relay fetch and a recurring poll. The poll keeps
+    /// the inbox drained while the app is foregrounded so that peers who came
+    /// back online (and uploaded queued messages to the Worker after we missed
+    /// the LAN window) deliver promptly without requiring a restart.
+    private func startRelayPolling() {
+        fetchRelayMessages(reason: "startup")
+        relayPollTimer?.invalidate()
+        relayPollTimer = Timer.scheduledTimer(withTimeInterval: relayPollInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.fetchRelayMessages(reason: "poll")
+            }
+        }
+    }
+
     /// Fetches messages waiting in the cloud relay Worker mailbox and dispatches
-    /// them through MessagingService. Called once at startup; silently no-ops
-    /// when the relay URL is empty or the network is unavailable.
-    private func fetchRelayMessages() {
+    /// them through MessagingService. Silent no-op when the relay URL is empty.
+    /// Logs the reason so the relay flow is auditable from client.log.
+    private func fetchRelayMessages(reason: String) {
+        guard !relayFetchInFlight else {
+            NetLogger.info("Relay", "fetch skipped (\(reason)) — previous request still in flight")
+            return
+        }
+        relayFetchInFlight = true
+        NetLogger.info("Relay", "fetch start reason=\(reason)")
         Task { [weak self] in
             guard let self else { return }
             let msgs = await RelayClient.shared.fetchPending()
-            guard !msgs.isEmpty else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
+                defer { self.relayFetchInFlight = false }
+                guard !msgs.isEmpty else {
+                    NetLogger.info("Relay", "fetch done reason=\(reason) — no pending messages")
+                    return
+                }
+                NetLogger.info("Relay", "fetch done reason=\(reason) — delivering \(msgs.count) message(s)")
                 for msg in msgs {
                     // Map sender public key → best known peer IP
                     let ip: String = self.peers.values
@@ -712,6 +744,14 @@ extension AppModel: NetworkCoordinatorDelegate {
 
     func coordinatorNetworkAvailabilityChanged(_ c: NetworkCoordinator) {
         let available = c.isLocalNetworkAvailable
+        let wasAvailable = isLocalNetworkAvailable
         if isLocalNetworkAvailable != available { isLocalNetworkAvailable = available }
+        // When the LAN comes back after being offline, drain the relay mailbox
+        // immediately — the recipient may have been unreachable while messages
+        // piled up on the Worker.
+        if available, !wasAvailable {
+            NetLogger.info("Relay", "network became available — triggering immediate relay fetch")
+            fetchRelayMessages(reason: "network-up")
+        }
     }
 }

@@ -106,6 +106,14 @@ public sealed class MessagingService
         Task.Run(async () =>
         {
             var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"text msgId={messageId}");
+            if (success)
+            {
+                LanLogger.Info("Send", $"TCP delivered msgId={messageId} peer={peerIP}");
+            }
+            else
+            {
+                LanLogger.Info("Send", $"TCP failed msgId={messageId} peer={peerIP} — queueing locally and falling back to relay");
+            }
             Dispatch(() =>
             {
                 var status = success ? MessageStatus.Sent : MessageStatus.Queued;
@@ -319,8 +327,13 @@ public sealed class MessagingService
         // device goes offline before the recipient comes back to the LAN.
         if (!string.IsNullOrEmpty(peerRelayIdHash))
         {
+            LanLogger.Info("Relay", $"store msgId={messageId} peer={peerPublicKeyB64[..Math.Min(8, peerPublicKeyB64.Length)]} — uploading to cloud relay mailbox");
             _ = RelayClient.Shared.StoreAsync(
                 peerRelayIdHash, messageId, ciphertextB64, nonceB64, timestamp);
+        }
+        else
+        {
+            LanLogger.Warn("Relay", $"skip store msgId={messageId} peer={peerPublicKeyB64[..Math.Min(8, peerPublicKeyB64.Length)]} — peer has no relay_id_hash (older client or never discovered)");
         }
     }
 

@@ -274,16 +274,13 @@ struct MediaBubbleView: View {
             doubleCheck(color: Color(red: 0.31, green: 0.62, blue: 0.97))
         case "Delivered":
             doubleCheck(color: .secondary)
-        case "Sent":
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
-        case "Queued", "Sending":
-            Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(.secondary)
         case "Failed":
             Image(systemName: "exclamationmark.circle").font(.system(size: 10)).foregroundStyle(.red)
         default:
-            EmptyView()
+            // Sent / Sending / Queued / unset all collapse to a single grey check.
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -433,12 +430,7 @@ struct MediaPreviewSheet: View {
                 switch kind {
                 case .image:
                     if let img = image {
-                        ScrollView([.horizontal, .vertical]) {
-                            Image(nsImage: img)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
+                        ZoomableImageView(image: img)
                     } else {
                         ProgressView().controlSize(.large)
                     }
@@ -454,10 +446,10 @@ struct MediaPreviewSheet: View {
                     Text("Cannot preview file").foregroundStyle(.secondary)
                 }
             }
-            .frame(minWidth: 480, minHeight: 360)
-            .background(Color.black.opacity(0.9))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black.opacity(0.95))
         }
-        .frame(minWidth: 600, minHeight: 460)
+        .frame(minWidth: 600, minHeight: 460, idealWidth: 1000, idealHeight: 720)
         .task(id: url.path) {
             switch kind {
             case .image:
@@ -472,6 +464,88 @@ struct MediaPreviewSheet: View {
                 break
             }
         }
+    }
+}
+
+// MARK: - Zoomable image view (full-screen preview)
+
+/// Image viewer that automatically fits to the available area while preserving
+/// aspect ratio, supports pinch / two-finger / scroll-wheel zoom, double-click
+/// to toggle between fit and 2× zoom, and drag-to-pan when zoomed in.
+/// Resizes naturally with the enclosing window because layout is driven by
+/// GeometryReader rather than the image's intrinsic size.
+struct ZoomableImageView: View {
+    let image: NSImage
+
+    @State private var scale: CGFloat = 1.0
+    @State private var lastScale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    private let minScale: CGFloat = 1.0
+    private let maxScale: CGFloat = 8.0
+
+    var body: some View {
+        GeometryReader { geo in
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .frame(width: geo.size.width, height: geo.size.height)
+                .scaleEffect(scale)
+                .offset(offset)
+                .gesture(magnificationGesture)
+                .simultaneousGesture(panGesture)
+                .gesture(doubleTapGesture)
+                .clipped()
+                .contentShape(Rectangle())
+                .animation(.interactiveSpring(response: 0.25, dampingFraction: 0.85), value: scale)
+                .animation(.interactiveSpring(response: 0.25, dampingFraction: 0.85), value: offset)
+        }
+    }
+
+    private var magnificationGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                let next = min(max(lastScale * value, minScale), maxScale)
+                scale = next
+            }
+            .onEnded { _ in
+                if scale <= minScale {
+                    scale = minScale
+                    offset = .zero
+                    lastOffset = .zero
+                }
+                lastScale = scale
+            }
+    }
+
+    private var panGesture: some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                guard scale > minScale else { return }
+                offset = CGSize(
+                    width:  lastOffset.width  + value.translation.width,
+                    height: lastOffset.height + value.translation.height)
+            }
+            .onEnded { _ in
+                lastOffset = offset
+            }
+    }
+
+    private var doubleTapGesture: some Gesture {
+        TapGesture(count: 2)
+            .onEnded {
+                if scale > minScale {
+                    scale = minScale
+                    lastScale = minScale
+                    offset = .zero
+                    lastOffset = .zero
+                } else {
+                    scale = 2.0
+                    lastScale = 2.0
+                }
+            }
     }
 }
 

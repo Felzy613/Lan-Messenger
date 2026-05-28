@@ -287,6 +287,15 @@ new IP.
 The message status update path is rank-aware. This prevents race conditions where
 a late local "Sent" update overwrites a remote `sent_receipt` or `read_receipt`.
 
+UI rendering of the status field is intentionally lossy: every pre-delivery
+state (`Sending`, `Queued`, `Sent`, or unset) collapses to a single grey
+checkmark in both apps. `Delivered` renders as a double grey check, `Read` as
+double blue, and `Failed` as a red `✗`/`!`. There are no clock or pending
+glyphs — modern messengers (WhatsApp, iMessage, Signal) all use this
+collapsed convention, and keeping the icon set small avoids confusing flips
+between "in flight" representations. The underlying model still stores the
+distinct states so the rank-aware logic can reason about them.
+
 ### FileTransferStore
 
 The store tracks:
@@ -344,10 +353,17 @@ this gap.
 2. `relay_id_hash = SHA256(relay_id)` is published in every discovery packet so
    peers know where to address cloud-relay messages.
 3. When a message send fails, `RelayClient.store()` POSTs the ciphertext to the
-   Worker under the recipient's `relay_id_hash`.
-4. On every app startup, `RelayClient.fetchPending()` retrieves any waiting
-   ciphertext blobs from the Worker (authenticated by presenting `relay_id` and
-   letting the Worker verify `SHA256(relay_id) == relay_id_hash`).
+   Worker under the recipient's `relay_id_hash`. A `Send/TCP failed … falling
+   back to relay` log line is emitted to make the fallback visible in
+   `client.log`.
+4. `RelayClient.fetchPending()` retrieves any waiting ciphertext blobs from the
+   Worker (authenticated by presenting `relay_id` and letting the Worker verify
+   `SHA256(relay_id) == relay_id_hash`). Polls run on three triggers:
+   - immediately at app startup;
+   - every 30 s on a foreground timer;
+   - whenever the LAN transitions from unavailable to available.
+   Each fetch logs `Relay fetch start reason=<startup|poll|network-up>` and the
+   outcome (count of pending messages or empty).
 5. Retrieved messages are decrypted in `MessagingService.handleRelayMessage()` and
    removed from the Worker via `RelayClient.delete()`.
 
