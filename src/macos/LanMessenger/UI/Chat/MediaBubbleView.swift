@@ -454,12 +454,12 @@ struct MediaPreviewSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black.opacity(0.95))
         }
-        .frame(minWidth: 600, minHeight: 460, idealWidth: 1000, idealHeight: 720)
+        .frame(minWidth: 600, idealWidth: 1000, minHeight: 460, idealHeight: 720)
         .task(id: url.path) {
             switch kind {
             case .image:
                 let p = url.path
-                let img = await Task.detached(priority: .userInitiated) {
+                let img: NSImage? = await Task.detached(priority: .userInitiated) {
                     NSImage(contentsOfFile: p)
                 }.value
                 self.image = img
