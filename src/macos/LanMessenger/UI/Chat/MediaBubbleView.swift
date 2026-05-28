@@ -489,63 +489,54 @@ struct ZoomableImageView: View {
         GeometryReader { geo in
             Image(nsImage: image)
                 .resizable()
-                .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
                 .frame(width: geo.size.width, height: geo.size.height)
                 .scaleEffect(scale)
                 .offset(offset)
-                .gesture(magnificationGesture)
-                .simultaneousGesture(panGesture)
-                .gesture(doubleTapGesture)
+                .gesture(zoomAndPanGesture)
                 .clipped()
                 .contentShape(Rectangle())
-                .animation(.interactiveSpring(response: 0.25, dampingFraction: 0.85), value: scale)
-                .animation(.interactiveSpring(response: 0.25, dampingFraction: 0.85), value: offset)
+                .onTapGesture(count: 2) {
+                    if scale > minScale {
+                        scale = minScale
+                        lastScale = minScale
+                        offset = .zero
+                        lastOffset = .zero
+                    } else {
+                        scale = 2.0
+                        lastScale = 2.0
+                    }
+                }
         }
     }
 
-    private var magnificationGesture: some Gesture {
-        MagnificationGesture()
-            .onChanged { value in
-                let next = min(max(lastScale * value, minScale), maxScale)
-                scale = next
-            }
-            .onEnded { _ in
-                if scale <= minScale {
-                    scale = minScale
-                    offset = .zero
-                    lastOffset = .zero
+    // Combined pinch-zoom + drag-to-pan. SimultaneousGesture lets both fire on
+    // the same view without the ordering quirks of chained .gesture modifiers.
+    private var zoomAndPanGesture: some Gesture {
+        SimultaneousGesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    scale = min(max(lastScale * value, minScale), maxScale)
                 }
-                lastScale = scale
-            }
-    }
-
-    private var panGesture: some Gesture {
-        DragGesture(minimumDistance: 1)
-            .onChanged { value in
-                guard scale > minScale else { return }
-                offset = CGSize(
-                    width:  lastOffset.width  + value.translation.width,
-                    height: lastOffset.height + value.translation.height)
-            }
-            .onEnded { _ in
-                lastOffset = offset
-            }
-    }
-
-    private var doubleTapGesture: some Gesture {
-        TapGesture(count: 2)
-            .onEnded {
-                if scale > minScale {
-                    scale = minScale
-                    lastScale = minScale
-                    offset = .zero
-                    lastOffset = .zero
-                } else {
-                    scale = 2.0
-                    lastScale = 2.0
+                .onEnded { _ in
+                    if scale <= minScale {
+                        scale = minScale
+                        offset = .zero
+                        lastOffset = .zero
+                    }
+                    lastScale = scale
+                },
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    guard scale > minScale else { return }
+                    offset = CGSize(
+                        width:  lastOffset.width  + value.translation.width,
+                        height: lastOffset.height + value.translation.height)
                 }
-            }
+                .onEnded { _ in
+                    lastOffset = offset
+                }
+        )
     }
 }
 

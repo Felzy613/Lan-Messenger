@@ -390,7 +390,7 @@ final class AppModel: ObservableObject {
             let msgs = await RelayClient.shared.fetchPending()
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                defer { self.relayFetchInFlight = false }
+                self.relayFetchInFlight = false
                 guard !msgs.isEmpty else {
                     NetLogger.info("Relay", "fetch done reason=\(reason) — no pending messages")
                     return
