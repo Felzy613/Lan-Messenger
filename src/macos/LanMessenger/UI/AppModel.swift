@@ -339,15 +339,19 @@ final class AppModel: ObservableObject {
         guard var entries = messages[peerIP] else { return }
         var changed = false
         for i in entries.indices where entries[i].incoming && !entries[i].readReceiptSent {
+            // Send read_receipt for any entry that has a stable ID (text messages
+            // and file entries that carry a transfer_id as their messageId).
             if let id = entries[i].messageId {
                 MessagingService.shared.sendReceipt(type: "read_receipt", messageId: id, toPeerIP: peerIP)
-                HistoryStore.shared.markReadReceiptSent(messageId: id, peerIP: peerIP)
             }
             entries[i].readReceiptSent = true
             changed = true
         }
         if changed {
             messages[peerIP] = entries
+            // Persist readReceiptSent for all entry types, including file entries
+            // that have no messageId — markReadReceiptSent alone misses those.
+            HistoryStore.shared.markAllIncomingRead(forPeerIP: peerIP)
             HistoryStore.shared.save()
             refreshConversations()
         }
@@ -553,14 +557,7 @@ final class AppModel: ObservableObject {
 
     // Show the main window (used by the menu-bar tray).
     func showMainWindow() {
-        if !ConfigStore.shared.config.hideFromDock {
-            NSApp.setActivationPolicy(.regular)
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
-            w.makeKeyAndOrderFront(nil)
-            return
-        }
+        WindowController.showMainWindow()
     }
 
     // MARK: - Updates
@@ -669,7 +666,7 @@ final class AppModel: ObservableObject {
             // Clear the in-progress banner so the UI doesn't stay stuck at 0%.
             self?.activeTransfers.removeValue(forKey: ip)
         }
-        FileTransferService.shared.onComplete = { [weak self] ip, _, localURL in
+        FileTransferService.shared.onComplete = { [weak self] ip, _, transferId, localURL in
             guard let self else { return }
             self.activeTransfers.removeValue(forKey: ip)
             guard let url = localURL else { return }   // receiver side — no outgoing bubble needed
@@ -678,7 +675,7 @@ final class AppModel: ObservableObject {
                 text: "__FILE__:\(url.path)",
                 incoming: false,
                 timestamp: Date().timeIntervalSince1970,
-                messageId: nil,
+                messageId: transferId,   // stable ID enables receipt matching
                 status: "Sent",
                 readReceiptSent: false
             )
@@ -689,7 +686,7 @@ final class AppModel: ObservableObject {
             self.messages[ip] = list
             self.refreshConversations()
         }
-        FileTransferService.shared.onIncomingFile = { [weak self] ip, sender, url in
+        FileTransferService.shared.onIncomingFile = { [weak self] ip, sender, transferId, url in
             guard let self else { return }
             NotificationService.shared.showFileReceived(from: sender, filename: url.lastPathComponent)
             // Prefix "__FILE__:" so MessageBubbleView can render a file bubble with an Open button.
@@ -698,7 +695,7 @@ final class AppModel: ObservableObject {
                 text: "__FILE__:\(url.path)",
                 incoming: true,
                 timestamp: Date().timeIntervalSince1970,
-                messageId: nil,
+                messageId: transferId,   // stable ID enables read-receipt matching
                 status: "",
                 readReceiptSent: false
             )
@@ -708,6 +705,8 @@ final class AppModel: ObservableObject {
             list.append(entry)
             self.messages[ip] = list
             self.refreshConversations()
+            // Notify the sender that the file was delivered (→ two grey checks).
+            MessagingService.shared.sendReceipt(type: "sent_receipt", messageId: transferId, toPeerIP: ip)
         }
     }
 

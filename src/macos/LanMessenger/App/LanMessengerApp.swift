@@ -48,16 +48,38 @@ enum WindowController {
         }
         NSApp.activate(ignoringOtherApps: true)
 
-        // First try the captured SwiftUI action — that gives us a freshly-created window
-        // if the previous one was destroyed.
+        // Bring any existing main window to the front right away.
+        var foundExisting = false
+        for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
+            w.makeKeyAndOrderFront(nil)
+            foundExisting = true
+            break
+        }
+
+        // Also ask SwiftUI to open/resurface the window scene so a fresh window
+        // is created if the previous one was destroyed via the red-X button.
         if let open = openWindow {
             open("main")
-            return
         }
-        // Fallback: bring any existing window forward.
-        for w in NSApp.windows where w.canBecomeMain {
-            w.makeKeyAndOrderFront(nil)
-            return
+
+        // When no window existed, SwiftUI creates one asynchronously.  Poll for
+        // it over the next ~400 ms and raise it once it appears so it lands on
+        // top rather than behind the previously-active app.
+        if !foundExisting {
+            bringNewWindowToFront(retries: 8)
+        }
+    }
+
+    // Polls NSApp.windows until a main-eligible window appears, then raises it.
+    private static func bringNewWindowToFront(retries: Int) {
+        guard retries > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
+                w.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return
+            }
+            bringNewWindowToFront(retries: retries - 1)
         }
     }
 }

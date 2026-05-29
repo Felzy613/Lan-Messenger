@@ -95,6 +95,16 @@ public sealed class HistoryStore
             e.ReadReceiptSent = true;
     }
 
+    // Marks every incoming entry as read regardless of whether it has a MessageId.
+    // File-transfer entries (MessageId == null) are not handled by MarkReadReceiptSent
+    // and would otherwise remain unread after an app restart.
+    public void MarkAllIncomingRead(string peerIP)
+    {
+        if (!_history.TryGetValue(peerIP, out var list)) return;
+        foreach (var e in list.Where(e => e.Incoming && !e.ReadReceiptSent))
+            e.ReadReceiptSent = true;
+    }
+
     // Rank-aware status update — never downgrades a delivered/read message back
     // to "Sent". Without this guard, the late "Sent" dispatch from the sender's
     // TCP-write completion would frequently overwrite the "Delivered" status

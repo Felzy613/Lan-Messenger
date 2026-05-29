@@ -24,10 +24,10 @@ final class FileTransferService {
 
     static let shared = FileTransferService()
 
-    var onProgress:     ((String, String, Int64, Int64) -> Void)?   // peerIP, label, bytes, total
-    var onComplete:     ((String, String, URL?) -> Void)?           // peerIP, label, localURL (non-nil on sender)
-    var onError:        ((String, String) -> Void)?                 // peerIP, message
-    var onIncomingFile: ((String, String, URL) -> Void)?            // peerIP, sender, finalURL
+    var onProgress:     ((String, String, Int64, Int64) -> Void)?          // peerIP, label, bytes, total
+    var onComplete:     ((String, String, String, URL?) -> Void)?          // peerIP, label, transferId, localURL (non-nil on sender)
+    var onError:        ((String, String) -> Void)?                        // peerIP, message
+    var onIncomingFile: ((String, String, String, URL) -> Void)?           // peerIP, sender, transferId, finalURL
 
     private let chunkSize = 64 * 1024   // 64 KiB per chunk
     private let tcpPort   = 54232
@@ -199,8 +199,8 @@ final class FileTransferService {
                     mime: Self.mimeFromFilename(filename),
                     durationMs: durationMs, bytesPerSec: bps
                 )
-                self.onComplete?(ip, "Receiving \(filename)", nil)
-                self.onIncomingFile?(ip, sender, finalURL)
+                self.onComplete?(ip, "Receiving \(filename)", transferId, nil)
+                self.onIncomingFile?(ip, sender, transferId, finalURL)
             }
         }
     }
@@ -277,9 +277,9 @@ final class FileTransferService {
                         self?.onProgress?(peerIP, "Sending \(filename)", bytes, total)
                     }
                 },
-                onComplete: { url in
+                onComplete: { url, transferId in
                     DispatchQueue.main.async { [weak self] in
-                        self?.onComplete?(peerIP, "Sending \(filename)", url)
+                        self?.onComplete?(peerIP, "Sending \(filename)", transferId, url)
                     }
                 }
             )
@@ -366,7 +366,7 @@ final class FileTransferService {
         chunkSize:        Int,
         tcpPort:          Int,
         onProgress:       @escaping (Int64, Int64) -> Void,
-        onComplete:       @escaping (URL) -> Void
+        onComplete:       @escaping (URL, String) -> Void   // url, transferId
     ) -> Bool {
         let url = URL(fileURLWithPath: path)
         guard let attrs     = try? FileManager.default.attributesOfItem(atPath: path),
@@ -506,7 +506,7 @@ final class FileTransferService {
         }
 
         onProgress(totalSize, totalSize)
-        onComplete(url)
+        onComplete(url, transferId)
         return true
     }
 

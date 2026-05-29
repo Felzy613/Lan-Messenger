@@ -27,10 +27,10 @@ public sealed class FileTransferService
 {
     public static FileTransferService Shared { get; } = new();
 
-    public Action<string, string, long, long>?  OnProgress     { get; set; }  // peerIP, label, bytes, total
-    public Action<string, string, string?>?     OnComplete     { get; set; }  // peerIP, label, localPath (sender only)
-    public Action<string, string>?              OnError        { get; set; }  // peerIP, message
-    public Action<string, string, string>?      OnIncomingFile { get; set; }  // peerIP, sender, finalPath
+    public Action<string, string, long, long>?       OnProgress     { get; set; }  // peerIP, label, bytes, total
+    public Action<string, string, string, string?>?  OnComplete     { get; set; }  // peerIP, label, transferId, localPath (sender only)
+    public Action<string, string>?                   OnError        { get; set; }  // peerIP, message
+    public Action<string, string, string, string>?   OnIncomingFile { get; set; }  // peerIP, sender, transferId, finalPath
 
     private DispatcherQueue? _dq;
     private const int ChunkSize = 64 * 1024; // 64 KiB
@@ -166,8 +166,9 @@ public sealed class FileTransferService
         // Remove the channel entry now (on UI thread) before handing off finalization.
         _transferChannels.Remove(key);
 
-        var filename = transfer.Filename;
-        var sender   = pkt.Sender;
+        var filename   = transfer.Filename;
+        var sender     = pkt.Sender;
+        var transferId = pkt.TransferId;
 
         // Enqueue the finalization work — the channel consumer guarantees it only
         // runs after every preceding chunk write has completed.
@@ -179,7 +180,7 @@ public sealed class FileTransferService
             if (finalPath is null)
             {
                 LanLogger.FileTransfer(
-                    "failed", transferId: pkt.TransferId, peer: ip,
+                    "failed", transferId: transferId, peer: ip,
                     direction: "incoming", filename: filename, size: size,
                     reason: "finalize failed (missing transfer record)");
                 return;
@@ -198,12 +199,12 @@ public sealed class FileTransferService
                         bps = (double)size * 1000.0 / durationMs.Value;
                 }
                 LanLogger.FileTransfer(
-                    "complete", transferId: pkt.TransferId, peer: ip,
+                    "complete", transferId: transferId, peer: ip,
                     direction: "incoming", filename: filename, size: size,
                     mime: MimeFromFilename(filename),
                     durationMs: durationMs, bytesPerSec: bps);
-                OnComplete?.Invoke(ip, $"Receiving {filename}", null);
-                OnIncomingFile?.Invoke(ip, sender, finalPath);
+                OnComplete?.Invoke(ip, $"Receiving {filename}", transferId, null);
+                OnIncomingFile?.Invoke(ip, sender, transferId, finalPath);
             });
             await Task.CompletedTask; // satisfies Func<Task> signature
         });
@@ -412,7 +413,7 @@ public sealed class FileTransferService
             Dispatch(() =>
             {
                 OnProgress?.Invoke(peerIP, $"Sending {filename}", totalSize, totalSize);
-                OnComplete?.Invoke(peerIP, $"Sending {filename}", path);
+                OnComplete?.Invoke(peerIP, $"Sending {filename}", transferId, path);
             });
             return true;
         }

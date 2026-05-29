@@ -420,16 +420,18 @@ public sealed partial class AppModel : ObservableObject
         foreach (var e in list)
         {
             if (!e.Incoming || e.ReadReceiptSent) continue;
+            // Send read_receipt for any entry that has a stable ID (text messages
+            // and file entries that carry a transfer_id as their MessageId).
             if (e.MessageId is { } id)
-            {
                 MessagingService.Shared.SendReceipt("read_receipt", id, peerIP);
-                HistoryStore.Shared.MarkReadReceiptSent(id, peerIP);
-            }
             e.ReadReceiptSent = true;
             anyChanged = true;
         }
         if (anyChanged)
         {
+            // Persist readReceiptSent for all entry types, including file entries
+            // that have no MessageId — MarkReadReceiptSent alone misses those.
+            HistoryStore.Shared.MarkAllIncomingRead(peerIP);
             HistoryStore.Shared.Save();
             OnPropertyChanged(nameof(Messages));
             RefreshConversations();
@@ -761,7 +763,7 @@ public sealed partial class AppModel : ObservableObject
             ActiveTransfers = updated;
         };
 
-        FileTransferService.Shared.OnComplete = (ip, label, localPath) =>
+        FileTransferService.Shared.OnComplete = (ip, label, transferId, localPath) =>
         {
             var updated = new Dictionary<string, (string, long, long)>(ActiveTransfers);
             updated.Remove(ip);
@@ -775,7 +777,8 @@ public sealed partial class AppModel : ObservableObject
                 Text = $"__FILE__:{localPath}",
                 Incoming = false,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
-                MessageId = null, Status = "Sent", ReadReceiptSent = false,
+                MessageId = transferId,   // stable ID enables receipt matching
+                Status = "Sent", ReadReceiptSent = false,
             };
             HistoryStore.Shared.Append(entry, ip);
             HistoryStore.Shared.Save();
@@ -786,14 +789,15 @@ public sealed partial class AppModel : ObservableObject
             RefreshConversations();
         };
 
-        FileTransferService.Shared.OnIncomingFile = (ip, sender, path) =>
+        FileTransferService.Shared.OnIncomingFile = (ip, sender, transferId, path) =>
         {
             NotificationService.Shared.ShowFileReceived(sender, Path.GetFileName(path));
             var entry = new MessageEntry
             {
                 Sender = sender, Text = $"__FILE__:{path}", Incoming = true,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
-                MessageId = null, Status = "", ReadReceiptSent = false,
+                MessageId = transferId,   // stable ID enables read-receipt matching
+                Status = "", ReadReceiptSent = false,
             };
             HistoryStore.Shared.Append(entry, ip);
             HistoryStore.Shared.Save();
@@ -802,6 +806,8 @@ public sealed partial class AppModel : ObservableObject
             list.Add(entry);
             Messages = updated;
             RefreshConversations();
+            // Notify the sender that the file was delivered (→ two grey checks).
+            MessagingService.Shared.SendReceipt("sent_receipt", transferId, ip);
         };
     }
 

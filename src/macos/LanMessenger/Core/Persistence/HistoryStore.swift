@@ -168,6 +168,19 @@ final class HistoryStore {
         history[peerIP] = entries
     }
 
+    // Marks every incoming entry for a peer as read, regardless of whether it has
+    // a messageId.  File-transfer entries (messageId == nil) are not handled by
+    // markReadReceiptSent and would otherwise remain unread after an app restart.
+    func markAllIncomingRead(forPeerIP ip: String) {
+        guard var entries = history[ip] else { return }
+        var changed = false
+        for i in entries.indices where entries[i].incoming && !entries[i].readReceiptSent {
+            entries[i].readReceiptSent = true
+            changed = true
+        }
+        if changed { history[ip] = entries }
+    }
+
     // Rank-aware status update — never downgrades a delivered/read message back
     // to "Sent". Without this guard, the late "Sent" dispatch from the sender's
     // TCP-write completion would frequently overwrite the "Delivered" status

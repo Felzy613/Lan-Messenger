@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
 using System.Runtime.InteropServices;
@@ -42,6 +43,12 @@ public sealed class NotificationService
         if (_registered) return;
         try
         {
+            // Step 0: ensure the AUMID is recorded in the registry so the toast
+            // platform can resolve a display name for this unpackaged app. Without
+            // this entry both AppNotificationManager and the classic
+            // ToastNotificationManager silently drop notifications.
+            EnsureAumidRegistered();
+
             // Step 1: claim an AUMID so every subsequent notification API call
             // (both AppNotificationManager and ToastNotificationManager) can
             // associate toasts with this process.
@@ -102,6 +109,24 @@ public sealed class NotificationService
             LanLogger.Warn("Notifications", $"ShowFileReceived via AppNotificationManager failed: {ex.Message}");
             _useClassicToast = true;
             ShowClassic(from, body);
+        }
+    }
+
+    // Writes the AUMID registry key that both the classic and AppNotification
+    // managers need to resolve a display name for unpackaged apps. Idempotent —
+    // skipped when the key already exists with a DisplayName value.
+    private static void EnsureAumidRegistered()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.CreateSubKey(
+                @"Software\Classes\AppUserModelId\" + AumId);
+            if (key.GetValue("DisplayName") is null)
+                key.SetValue("DisplayName", "LAN Messenger");
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Notifications", $"AUMID registry write failed: {ex.Message}");
         }
     }
 
