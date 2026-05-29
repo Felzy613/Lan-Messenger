@@ -636,16 +636,21 @@ final class AppModel: ObservableObject {
         MessagingService.shared.onStatusUpdate = { [weak self] ip, msgId, status in
             guard let self else { return }
             if var entries = self.messages[ip] {
-                // Update the specific text message by ID.
+                // Update the specific message by its ID.
                 for i in entries.indices where entries[i].messageId == msgId {
                     entries[i].status = status
                 }
-                // File-transfer entries have no messageId so they never receive
-                // individual receipts. Upgrade any outgoing file entry in this
-                // conversation when the peer's acknowledged status is higher —
-                // if they read any text here, they've seen the files too.
+                // Heuristic: promote all outgoing file entries when any message in
+                // this conversation gets a higher-ranked acknowledgement. This covers
+                // both legacy entries (messageId == nil) and new entries where the
+                // receiver hasn't yet sent an individual file receipt (e.g., still
+                // running an older version of the app). The rank check ensures we
+                // never downgrade a status that was already set by a direct receipt.
                 let newRank = Self.statusRank(status)
-                for i in entries.indices where entries[i].messageId == nil && !entries[i].incoming {
+                for i in entries.indices
+                    where entries[i].text.hasPrefix("__FILE__:")
+                    && !entries[i].incoming
+                    && entries[i].messageId != msgId {
                     if newRank > Self.statusRank(entries[i].status) {
                         entries[i].status = status
                     }

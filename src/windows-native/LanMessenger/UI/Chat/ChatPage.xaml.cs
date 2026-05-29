@@ -90,11 +90,12 @@ public sealed partial class ChatPage : Page
             {
                 row.Status = status;
             }
-            else if (row.MessageId is null && !row.Incoming && newRank > StatusRank(row.Status))
+            else if (row.IsFile && !row.Incoming && row.MessageId != msgId && newRank > StatusRank(row.Status))
             {
-                // File-transfer rows have no MessageId and never receive individual
-                // receipts. Upgrade them alongside text receipts — if the peer read
-                // any text in this conversation, they've also seen the files.
+                // Heuristic: promote all outgoing file rows when any message in this
+                // conversation gets a higher-ranked acknowledgement. Covers both legacy
+                // rows (MessageId == null) and new rows where the receiver hasn't yet
+                // sent an individual file receipt (e.g., running an older version).
                 row.Status = status;
             }
         }
