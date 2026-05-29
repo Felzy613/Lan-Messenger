@@ -101,18 +101,14 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     if relayEnabled {
-                        LabeledContent("Worker URL") {
-                            TextField("https://your-worker.workers.dev", text: $relayWorkerURL)
-                                .textFieldStyle(.roundedBorder)
-                        }
+                        TextField("Worker URL", text: $relayWorkerURL,
+                                  prompt: Text("https://your-worker.workers.dev"))
                     }
                 }
 
                 Section("Updates") {
-                    LabeledContent("Source") {
-                        TextField("GitHub repo (owner/repo)", text: $updateRepo)
-                            .textFieldStyle(.roundedBorder)
-                    }
+                    TextField("Source", text: $updateRepo,
+                              prompt: Text("owner/repo"))
                     HStack {
                         Button {
                             checkForUpdates()

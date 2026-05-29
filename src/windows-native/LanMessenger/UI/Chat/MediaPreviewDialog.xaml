@@ -36,7 +36,7 @@
 
         MinWidth / MinHeight are expanded to the hosting window bounds in OnOpened.
     -->
-    <Grid x:Name="ContentHost" MinWidth="760" MinHeight="520">
+    <Grid x:Name="ContentHost" MinWidth="400" MinHeight="332">
         <Grid.RowDefinitions>
             <RowDefinition Height="72"/>
             <RowDefinition Height="*"/>

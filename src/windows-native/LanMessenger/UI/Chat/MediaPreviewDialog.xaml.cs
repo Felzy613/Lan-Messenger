@@ -27,6 +27,7 @@ public sealed partial class MediaPreviewDialog : ContentDialog
 {
     private readonly string    _path;
     private readonly MediaKind _kind;
+    private BitmapImage?       _bitmapImage;
 
     public MediaPreviewDialog(string path, MediaKind kind, string filename)
     {
@@ -44,9 +45,13 @@ public sealed partial class MediaPreviewDialog : ContentDialog
             {
                 // BitmapImage with no DecodePixelWidth → full-resolution decode;
                 // Stretch="Uniform" in the XAML letter-boxes it within the viewer.
+                // ImageOpened fires when decoding finishes; we use the pixel
+                // dimensions to size the dialog to the image's natural size.
                 var uri = new Uri(path);
-                PreviewImage.Source     = new BitmapImage(uri);
-                PreviewImage.Visibility = Visibility.Visible;
+                _bitmapImage              = new BitmapImage(uri);
+                _bitmapImage.ImageOpened += OnBitmapImageOpened;
+                PreviewImage.Source       = _bitmapImage;
+                PreviewImage.Visibility   = Visibility.Visible;
             }
             else if (kind == MediaKind.Video)
             {
@@ -71,14 +76,43 @@ public sealed partial class MediaPreviewDialog : ContentDialog
 
     private void OnOpened(ContentDialog sender, ContentDialogOpenedEventArgs args)
     {
-        // Expand the content grid to fill the hosting window.  The dialog's
-        // MaxWidth/MaxHeight are set to 9999 in XAML so MinWidth/MinHeight
-        // here drives the actual card size without clipping.
-        if (XamlRoot is { Size: var size } && size.Width > 0)
+        if (XamlRoot is not { Size: var size } || size.Width == 0) return;
+
+        if (_kind == MediaKind.Image)
         {
+            // Image may have already finished decoding before the dialog opened.
+            if (_bitmapImage is { PixelWidth: > 0, PixelHeight: > 0 } bmp)
+                ApplySizeForImage(bmp.PixelWidth, bmp.PixelHeight, size);
+            // else: OnBitmapImageOpened will call ApplySizeForImage once decoding finishes.
+        }
+        else
+        {
+            // Videos and other types: fill the hosting window as before.
             ContentHost.MinWidth  = size.Width;
             ContentHost.MinHeight = size.Height;
         }
+    }
+
+    private void OnBitmapImageOpened(object sender, RoutedEventArgs e)
+    {
+        if (_bitmapImage is { PixelWidth: > 0, PixelHeight: > 0 } bmp &&
+            XamlRoot is { Size: var size } && size.Width > 0)
+        {
+            ApplySizeForImage(bmp.PixelWidth, bmp.PixelHeight, size);
+        }
+    }
+
+    private void ApplySizeForImage(int pixW, int pixH, Windows.Foundation.Size hostSize)
+    {
+        const double TopBarH    = 72;
+        const double BottomBarH = 60;
+        const double BarsH      = TopBarH + BottomBarH;
+        double scale = Math.Min(1.0, Math.Min(hostSize.Width / pixW,
+                                              (hostSize.Height - BarsH) / pixH));
+        double w = Math.Max(400, Math.Round(pixW * scale));
+        double h = Math.Max(200 + BarsH, Math.Round(pixH * scale) + BarsH);
+        ContentHost.Width  = w;
+        ContentHost.Height = h;
     }
 
     // ── Toolbar actions ──────────────────────────────────────────────────────
@@ -101,6 +135,11 @@ public sealed partial class MediaPreviewDialog : ContentDialog
     {
         try
         {
+            if (_bitmapImage is not null)
+            {
+                _bitmapImage.ImageOpened -= OnBitmapImageOpened;
+                _bitmapImage              = null;
+            }
             if (PreviewPlayer.MediaPlayer is not null)
                 PreviewPlayer.MediaPlayer.Pause();
             PreviewPlayer.Source = null;

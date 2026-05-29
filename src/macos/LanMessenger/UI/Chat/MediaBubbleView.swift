@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AVKit
 import AVFoundation
+import ImageIO
 
 // Inline image / video bubble rendered for received or sent media files.
 // Falls back to the regular file bubble when the file is missing on disk.
@@ -35,6 +36,8 @@ struct MediaBubbleView: View {
     /// SwiftUI a fixed layout size so it never needs to solve aspect-ratio
     /// equations during a LazyVStack/VStack layout pass.
     @State private var thumbnailDisplaySize: CGSize = CGSize(width: 220, height: 160)
+    /// Natural pixel dimensions of the image file (nil for videos/other or until loaded).
+    @State private var naturalImageSize: CGSize? = nil
     @State private var loadFailed = false
     @State private var fileExists = false
     @State private var showPreview = false
@@ -74,7 +77,7 @@ struct MediaBubbleView: View {
             await refreshFileState()
         }
         .sheet(isPresented: $showPreview) {
-            MediaPreviewSheet(url: url, kind: kind, filename: filename)
+            MediaPreviewSheet(url: url, kind: kind, filename: filename, naturalSize: naturalImageSize)
         }
         .alert("Cannot open file location",
                isPresented: Binding(get: { revealError != nil },
@@ -268,14 +271,15 @@ struct MediaBubbleView: View {
         let kindCopy = kind
         let maxW = maxBubbleWidth
         let maxH = maxBubbleHeight
-        let (exists, image, displaySize) = await Task.detached(priority: .utility) {
-            () -> (Bool, NSImage?, CGSize) in
+        let (exists, image, displaySize, naturalSz) = await Task.detached(priority: .utility) {
+            () -> (Bool, NSImage?, CGSize, CGSize) in
             let exists = FileManager.default.fileExists(atPath: pathCopy)
-            guard exists else { return (false, nil, .zero) }
+            guard exists else { return (false, nil, .zero, .zero) }
+            let natSz: CGSize = kindCopy == .image ? Self.naturalImagePixelSize(at: pathCopy) : .zero
             // Try the cache first.
             if let cached = ThumbnailCache.shared.thumbnail(for: pathCopy) {
                 let sz = Self.fitSize(natural: cached.size, maxWidth: maxW, maxHeight: maxH)
-                return (true, cached, sz)
+                return (true, cached, sz, natSz)
             }
             let raw: NSImage?
             switch kindCopy {
@@ -286,7 +290,7 @@ struct MediaBubbleView: View {
             case .other:
                 raw = nil
             }
-            guard let raw else { return (true, nil, .zero) }
+            guard let raw else { return (true, nil, .zero, natSz) }
             // Scale down to the maximum bubble display dimensions (pt) before
             // caching and returning.  Storing a down-sampled image means SwiftUI
             // always gets a small, fixed-dimension NSImage — preventing the
@@ -294,7 +298,7 @@ struct MediaBubbleView: View {
             let displaySz = Self.fitSize(natural: raw.size, maxWidth: maxW, maxHeight: maxH)
             let scaled = Self.scale(image: raw, to: displaySz)
             ThumbnailCache.shared.store(scaled, for: pathCopy)
-            return (true, scaled, displaySz)
+            return (true, scaled, displaySz, natSz)
         }.value
 
         await MainActor.run {
@@ -302,6 +306,7 @@ struct MediaBubbleView: View {
             self.thumbnail = image
             self.thumbnailDisplaySize = (image != nil) ? displaySize : CGSize(width: 220, height: 160)
             self.loadFailed = exists && image == nil
+            self.naturalImageSize = (naturalSz.width > 0 && naturalSz.height > 0) ? naturalSz : nil
         }
     }
 
@@ -352,6 +357,18 @@ struct MediaBubbleView: View {
             return nil
         }
     }
+
+    /// Read image pixel dimensions from the file header without decoding pixel data.
+    nonisolated private static func naturalImagePixelSize(at path: String) -> CGSize {
+        let url  = URL(fileURLWithPath: path) as CFURL
+        let opts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src   = CGImageSourceCreateWithURL(url, opts),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, opts) as? [CFString: Any],
+              let pw    = props[kCGImagePropertyPixelWidth]  as? CGFloat,
+              let ph    = props[kCGImagePropertyPixelHeight] as? CGFloat
+        else { return .zero }
+        return CGSize(width: pw, height: ph)
+    }
 }
 
 // MARK: - Press style
@@ -371,10 +388,30 @@ struct MediaPreviewSheet: View {
     let url: URL
     let kind: MediaKind
     let filename: String
+    var naturalSize: CGSize? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var image: NSImage? = nil
     @State private var player: AVPlayer? = nil
+
+    /// Ideal window size based on the image's natural pixel dimensions.
+    /// Caps at the visible screen area with an 80 pt margin on each axis.
+    private var sheetFrame: CGSize {
+        guard kind == .image,
+              let nat = naturalSize, nat.width > 0, nat.height > 0
+        else {
+            return CGSize(width: 1000, height: 720) // default for video / unknown
+        }
+        let screen  = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)
+        let headerH: CGFloat = 44
+        let maxW    = max(400, screen.width  - 80)
+        let maxH    = max(300, screen.height - 80 - headerH)
+        let scale   = min(maxW / nat.width, maxH / nat.height, 1.0)
+        return CGSize(
+            width:  max(400, (nat.width  * scale).rounded()),
+            height: max(300, (nat.height * scale).rounded()) + headerH
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -421,7 +458,7 @@ struct MediaPreviewSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black.opacity(0.95))
         }
-        .frame(minWidth: 600, idealWidth: 1000, minHeight: 460, idealHeight: 720)
+        .frame(minWidth: 300, idealWidth: sheetFrame.width, minHeight: 200, idealHeight: sheetFrame.height)
         .task(id: url.path) {
             switch kind {
             case .image:
