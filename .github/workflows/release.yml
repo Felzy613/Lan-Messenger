@@ -108,22 +108,34 @@ jobs:
           RELEASES=$(gh release list --limit 100 --json tagName,createdAt \
             --jq 'sort_by(.createdAt) | reverse')
 
-          MAC_TAG=$(echo "$RELEASES" | \
+          LATEST_MAC_TAG=$(echo "$RELEASES" | \
             jq -r '[.[] | select(.tagName | startswith("macos-v"))] | first | .tagName // empty')
-          WIN_TAG=$(echo "$RELEASES" | \
+          LATEST_WIN_TAG=$(echo "$RELEASES" | \
             jq -r '[.[] | select(.tagName | startswith("windows-v"))] | first | .tagName // empty')
 
-          echo "Latest macOS:   ${MAC_TAG:-(none)}"
-          echo "Latest Windows: ${WIN_TAG:-(none)}"
+          EXPECTED_MAC_VER=$(jq -r '.version // empty' version/macos.json)
+          EXPECTED_WIN_VER=$(jq -r '.version // empty' version/windows.json)
+          EXPECTED_MAC_TAG="macos-v${EXPECTED_MAC_VER}"
+          EXPECTED_WIN_TAG="windows-v${EXPECTED_WIN_VER}"
+
+          MAC_TAG=""
+          WIN_TAG=""
+          gh release view "$EXPECTED_MAC_TAG" --json tagName &>/dev/null && MAC_TAG="$EXPECTED_MAC_TAG"
+          gh release view "$EXPECTED_WIN_TAG" --json tagName &>/dev/null && WIN_TAG="$EXPECTED_WIN_TAG"
+
+          echo "Expected macOS:   ${EXPECTED_MAC_TAG}"
+          echo "Expected Windows: ${EXPECTED_WIN_TAG}"
+          echo "Latest macOS:     ${LATEST_MAC_TAG:-(none)}"
+          echo "Latest Windows:   ${LATEST_WIN_TAG:-(none)}"
           echo "mac_tag=$MAC_TAG" >> $GITHUB_OUTPUT
           echo "win_tag=$WIN_TAG" >> $GITHUB_OUTPUT
 
           if [ -z "$MAC_TAG" ]; then
-            echo "::warning::No macOS platform release found — waiting for macOS build"
+            echo "::warning::Expected macOS platform release ${EXPECTED_MAC_TAG} not found — waiting for macOS build"
             echo "skip=true" >> $GITHUB_OUTPUT; exit 0
           fi
           if [ -z "$WIN_TAG" ]; then
-            echo "::warning::No Windows platform release found — waiting for Windows build"
+            echo "::warning::Expected Windows platform release ${EXPECTED_WIN_TAG} not found — waiting for Windows build"
             echo "skip=true" >> $GITHUB_OUTPUT; exit 0
           fi
           echo "skip=false" >> $GITHUB_OUTPUT

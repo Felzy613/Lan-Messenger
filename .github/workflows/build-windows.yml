@@ -320,6 +320,7 @@ jobs:
     name: Publish Release
     needs: [preflight, build-test, smoke]
     if: |
+      always() &&
       needs.build-test.result == 'success' &&
       (needs.smoke.result == 'success' || needs.smoke.result == 'skipped')
     runs-on: ubuntu-latest
