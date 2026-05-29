@@ -204,39 +204,85 @@ struct SettingsView: View {
 
     // MARK: - Update UI helpers
 
-    // Renders release notes as Markdown. Collapsed at 6 lines; a "Show more"
-    // toggle reveals the full text in a scrollable area when notes are long.
-    @ViewBuilder
-    private func releaseNotesView(notes: String) -> some View {
-        let attrNotes = (try? AttributedString(
-            markdown: notes,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
-        )) ?? AttributedString(notes)
-        let isLong = notes.count > 200 || notes.components(separatedBy: "\n").count > 5
+    // Strips the "Downloads / Install" section that belongs in CI release pages,
+    // not in an in-app changelog. Everything from the first "---" separator or
+    // a "## Downloads" / "## Install" heading is removed.
+    private func trimmedNotes(_ raw: String) -> String {
+        var result: [String] = []
+        for line in raw.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t == "---" || t.hasPrefix("## Downloads") || t.hasPrefix("## Install") {
+                break
+            }
+            result.append(line)
+        }
+        while result.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            result.removeLast()
+        }
+        return result.joined(separator: "\n")
+    }
 
-        VStack(alignment: .leading, spacing: 4) {
-            if notesExpanded {
-                ScrollView {
-                    Text(attrNotes)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .environment(\.openURL, OpenURLAction { url in
-                            NSWorkspace.shared.open(url)
-                            return .handled
-                        })
-                }
-                .frame(maxHeight: 280)
-            } else {
-                Text(attrNotes)
+    // Parses inline markdown (bold, code, links) within a single line of text.
+    private func inlineText(_ s: String) -> Text {
+        let attr = (try? AttributedString(
+            markdown: s,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(s)
+        return Text(attr)
+    }
+
+    // Renders a single line with the appropriate visual treatment based on its
+    // Markdown prefix (heading, bullet, blockquote, or body text).
+    @ViewBuilder
+    private func noteLineView(_ line: String) -> some View {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty {
+            Color.clear.frame(height: 4)
+        } else if t.hasPrefix("### ") {
+            inlineText(String(t.dropFirst(4)))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary.opacity(0.85))
+        } else if t.hasPrefix("## ") {
+            inlineText(String(t.dropFirst(3)))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+        } else if t.hasPrefix("- ") || t.hasPrefix("* ") {
+            HStack(alignment: .top, spacing: 5) {
+                Text("•")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .lineLimit(6)
-                    .environment(\.openURL, OpenURLAction { url in
-                        NSWorkspace.shared.open(url)
-                        return .handled
-                    })
+                    .frame(width: 8, alignment: .leading)
+                inlineText(String(t.dropFirst(2)))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } else if t.hasPrefix("> ") {
+            inlineText(String(t.dropFirst(2)))
+                .font(.system(size: 11))
+                .italic()
+                .foregroundStyle(.tertiary)
+        } else {
+            inlineText(t)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // Renders release notes with proper heading hierarchy and bullet formatting.
+    // Collapses to 8 lines; a "Show more" toggle reveals the rest.
+    @ViewBuilder
+    private func releaseNotesView(notes: String) -> some View {
+        let trimmed = trimmedNotes(notes)
+        let lines = trimmed.components(separatedBy: "\n")
+        let isLong = lines.count > 8
+        let visibleLines = isLong && !notesExpanded ? Array(lines.prefix(8)) : lines
+
+        VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array(visibleLines.enumerated()), id: \.offset) { _, line in
+                    noteLineView(line)
+                }
             }
             if isLong {
                 Button(notesExpanded ? "Show less" : "Show more") {
@@ -245,6 +291,7 @@ struct SettingsView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Theme.accent)
                 .buttonStyle(.plain)
+                .padding(.top, 2)
             }
         }
     }

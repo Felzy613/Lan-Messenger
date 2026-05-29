@@ -15,6 +15,25 @@ namespace LanMessenger.UI;
 // which honours the system default browser.
 internal static class MarkdownHelper
 {
+    // Strips the "Downloads / Install" section that belongs in CI release pages,
+    // not in an in-app changelog. Everything from the first "---" separator or
+    // a "## Downloads" / "## Install" heading is removed.
+    public static string TrimNotes(string raw)
+    {
+        var lines  = raw.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+        var result = new List<string>();
+        foreach (var line in lines)
+        {
+            var t = line.Trim();
+            if (t == "---" || t.StartsWith("## Downloads") || t.StartsWith("## Install"))
+                break;
+            result.Add(line);
+        }
+        while (result.Count > 0 && string.IsNullOrWhiteSpace(result[^1]))
+            result.RemoveAt(result.Count - 1);
+        return string.Join("\n", result);
+    }
+
     public static void PopulateBlocks(RichTextBlock block, string markdown)
     {
         block.Blocks.Clear();

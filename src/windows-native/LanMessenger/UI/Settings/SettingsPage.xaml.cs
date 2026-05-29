@@ -66,12 +66,13 @@ public sealed partial class SettingsPage : Page
         // Populate the RichTextBlock with Markdown-rendered release notes.
         if (!string.IsNullOrWhiteSpace(info.Notes))
         {
-            MarkdownHelper.PopulateBlocks(UpdateNotesBlock, info.Notes);
+            var trimmed = MarkdownHelper.TrimNotes(info.Notes);
+            MarkdownHelper.PopulateBlocks(UpdateNotesBlock, trimmed);
             UpdateNotesScroll.Visibility = Visibility.Visible;
             _notesExpanded = false;
             UpdateNotesScroll.MaxHeight = 120;
 
-            var isLong = info.Notes.Length > 200 || info.Notes.Split('\n').Length > 5;
+            var isLong = trimmed.Split('\n').Length > 8;
             NotesToggleBtn.Visibility = isLong ? Visibility.Visible : Visibility.Collapsed;
             NotesToggleBtn.Content    = "Show more";
         }
