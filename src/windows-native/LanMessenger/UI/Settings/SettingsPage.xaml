@@ -68,6 +68,25 @@
                 </StackPanel>
             </StackPanel>
 
+            <!-- Cloud Relay -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Cloud Relay"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <ToggleSwitch x:Name="RelayEnabledToggle"
+                              Header="Enable cloud relay"
+                              OnContent="On"
+                              OffContent="Off"
+                              Toggled="RelayEnabledToggle_Toggled" />
+                <TextBlock Text="When enabled, messages sent to offline contacts are stored in the cloud and delivered when they reconnect. You need to deploy your own relay Worker — paste its URL below."
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           TextWrapping="Wrap" />
+                <TextBox x:Name="RelayUrlBox"
+                         Header="Worker URL"
+                         PlaceholderText="https://your-worker.workers.dev"
+                         LostFocus="RelayUrlBox_LostFocus" />
+            </StackPanel>
+
             <!-- Updates -->
             <StackPanel Spacing="6">
                 <TextBlock Text="Updates"

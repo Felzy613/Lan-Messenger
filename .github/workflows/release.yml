@@ -191,9 +191,27 @@ jobs:
           steps.tags.outputs.skip != 'true' &&
           steps.release.outputs.skip != 'true'
         run: |
+          # Use the previous macOS platform tag as the git log boundary, not the
+          # previous combined release tag. Combined release tags are created at
+          # whatever HEAD is at orchestration time — if a commit was pushed after
+          # the macOS build but before the orchestration job ran, the tag lands at
+          # the same SHA as current HEAD and git log returns nothing. Platform tags
+          # are created by the build runner at the exact build commit, so they are
+          # a stable anchor even under concurrent pushes.
+          PREV_MAC_TAG=$(gh release list --limit 100 \
+            --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("macos-v"))] | .[1].tagName // empty')
+
           chmod +x scripts/shared/generate-release-notes.sh
-          scripts/shared/generate-release-notes.sh combined \
-            "${{ steps.release.outputs.mac_ver }}" > /tmp/combined-changelog.md
+          if [ -n "$PREV_MAC_TAG" ]; then
+            echo "Generating notes since platform tag: $PREV_MAC_TAG"
+            scripts/shared/generate-release-notes.sh combined \
+              "${{ steps.release.outputs.mac_ver }}" \
+              "$PREV_MAC_TAG" > /tmp/combined-changelog.md
+          else
+            scripts/shared/generate-release-notes.sh combined \
+              "${{ steps.release.outputs.mac_ver }}" > /tmp/combined-changelog.md
+          fi
           echo "Changelog:"
           cat /tmp/combined-changelog.md
 

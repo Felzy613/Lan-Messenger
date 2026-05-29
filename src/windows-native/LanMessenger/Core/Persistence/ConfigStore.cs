@@ -45,9 +45,12 @@ public sealed class AppConfig
     [JsonPropertyName("start_in_tray")]         public bool   StartInTray        { get; set; } = false;
     [JsonPropertyName("close_to_tray")]         public bool   CloseToTray        { get; set; } = true;
     [JsonPropertyName("verbose_logging")]       public bool   VerboseLogging     { get; set; } = false;
-    // Cloud relay Worker URL. When non-empty, undeliverable messages are posted
-    // here so they can be retrieved even if this device goes offline.
-    [JsonPropertyName("relay_worker_url")]      public string RelayWorkerUrl     { get; set; } = "https://lan-messenger-relay.davefelzy20.workers.dev";
+    // When true, undeliverable messages are posted to RelayWorkerUrl so the
+    // recipient can pick them up when they come back online.
+    [JsonPropertyName("relay_enabled")]         public bool   RelayEnabled       { get; set; } = false;
+    // URL of a Cloudflare Worker (or compatible endpoint) that stores offline
+    // messages. Empty by default — users supply their own Worker URL.
+    [JsonPropertyName("relay_worker_url")]      public string RelayWorkerUrl     { get; set; } = "";
 }
 
 // Manages reading/writing config.json in %APPDATA%\LanMessenger\.

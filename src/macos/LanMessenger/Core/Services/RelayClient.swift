@@ -64,6 +64,7 @@ actor RelayClient {
     }()
 
     private var workerURL: URL? {
+        guard ConfigStore.shared.config.relayEnabled else { return nil }
         let raw = ConfigStore.shared.config.relayWorkerURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
         return URL(string: raw)

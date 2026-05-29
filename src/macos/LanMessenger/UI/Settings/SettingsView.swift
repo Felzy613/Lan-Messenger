@@ -11,6 +11,8 @@ struct SettingsView: View {
     @State private var hideFromDock = ConfigStore.shared.config.hideFromDock
     @State private var launchAtLogin = ConfigStore.shared.config.launchAtLogin
     @State private var verboseLogging = ConfigStore.shared.config.verboseLogging
+    @State private var relayEnabled = ConfigStore.shared.config.relayEnabled
+    @State private var relayWorkerURL = ConfigStore.shared.config.relayWorkerURL
     @State private var loginItemStatusText = ""
     @State private var loginItemNeedsApproval = false
     @State private var updateStatus = ""
@@ -89,6 +91,19 @@ struct SettingsView: View {
                             Text(logExportMessage)
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Cloud Relay") {
+                    Toggle("Enable cloud relay", isOn: $relayEnabled)
+                    Text("When enabled, messages sent to offline contacts are stored in the cloud and delivered when they reconnect. You need to deploy your own relay Worker — the URL below is where it lives.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    if relayEnabled {
+                        LabeledContent("Worker URL") {
+                            TextField("https://your-worker.workers.dev", text: $relayWorkerURL)
+                                .textFieldStyle(.roundedBorder)
                         }
                     }
                 }
@@ -351,6 +366,8 @@ struct SettingsView: View {
         ConfigStore.shared.config.inboxDir = inboxDir
         ConfigStore.shared.config.hideFromDock = hideFromDock
         ConfigStore.shared.config.verboseLogging = verboseLogging
+        ConfigStore.shared.config.relayEnabled = relayEnabled
+        ConfigStore.shared.config.relayWorkerURL = relayWorkerURL.trimmingCharacters(in: .whitespaces)
         ConfigStore.shared.save()
         model.applyDockPolicy()
     }

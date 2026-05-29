@@ -38,6 +38,9 @@ public sealed partial class SettingsPage : Page
         UpdateRepoBox.Text = cfg.UpdateRepo;
         CloseToTrayToggle.IsOn = cfg.CloseToTray;
         VerboseLoggingToggle.IsOn = cfg.VerboseLogging;
+        RelayEnabledToggle.IsOn = cfg.RelayEnabled;
+        RelayUrlBox.Text = cfg.RelayWorkerUrl;
+        RelayUrlBox.IsEnabled = cfg.RelayEnabled;
         VersionText.Text   = $"LAN Messenger v{UpdateService.Shared.CurrentVersion}";
         RefreshUpdateUI();
     }
@@ -197,6 +200,19 @@ public sealed partial class SettingsPage : Page
         ConfigStore.Shared.Config.VerboseLogging = VerboseLoggingToggle.IsOn;
         ConfigStore.Shared.Save();
         LanLogger.Info("Settings", $"verbose logging {(VerboseLoggingToggle.IsOn ? "enabled" : "disabled")}");
+    }
+
+    private void RelayEnabledToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        ConfigStore.Shared.Config.RelayEnabled = RelayEnabledToggle.IsOn;
+        ConfigStore.Shared.Save();
+        RelayUrlBox.IsEnabled = RelayEnabledToggle.IsOn;
+    }
+
+    private void RelayUrlBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        ConfigStore.Shared.Config.RelayWorkerUrl = RelayUrlBox.Text.Trim();
+        ConfigStore.Shared.Save();
     }
 
     private void OpenLogsFolder_Click(object sender, RoutedEventArgs e)

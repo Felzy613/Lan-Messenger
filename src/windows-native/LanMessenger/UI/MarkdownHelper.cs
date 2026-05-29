@@ -4,7 +4,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Media;
 using System.Text;
-using Windows.UI.Text;
 
 namespace LanMessenger.UI;
 
@@ -148,7 +147,7 @@ internal static class MarkdownHelper
                     dest.Add(new Run
                     {
                         Text       = text[(i + 1)..end],
-                        FontStyle  = Windows.UI.Text.FontStyle.Italic,
+                        FontStyle  = global::Windows.UI.Text.FontStyle.Italic,
                     });
                     i = end + 1;
                     continue;

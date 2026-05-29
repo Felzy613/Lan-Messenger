@@ -83,10 +83,12 @@ struct AppConfig: Codable {
     var lastUpdateCheck: Double = 0
     // When true, file-transfer and networking events are written to the log file.
     var verboseLogging: Bool = false
-    // Cloud relay Worker URL. When non-empty, undeliverable messages are posted
-    // to this endpoint so they can be retrieved when the sender is offline.
-    // Default: the shared relay Worker — can be overridden in Settings.
-    var relayWorkerURL: String = "https://lan-messenger-relay.davefelzy20.workers.dev"
+    // When true, undeliverable messages are posted to relayWorkerURL so the
+    // recipient can pick them up when they come back online.
+    var relayEnabled: Bool = false
+    // URL of a Cloudflare Worker (or compatible endpoint) that stores offline
+    // messages. Empty by default — users supply their own Worker URL.
+    var relayWorkerURL: String = ""
 
     enum CodingKeys: String, CodingKey {
         case username, contacts
@@ -101,6 +103,7 @@ struct AppConfig: Codable {
         case updateRepo = "update_repo"
         case lastUpdateCheck = "last_update_check"
         case verboseLogging = "verbose_logging"
+        case relayEnabled = "relay_enabled"
         case relayWorkerURL = "relay_worker_url"
     }
 
@@ -122,8 +125,8 @@ struct AppConfig: Codable {
         updateRepo = (try c.decodeIfPresent(String.self, forKey: .updateRepo)) ?? "felzy613/lan-messenger"
         lastUpdateCheck = (try c.decodeIfPresent(Double.self, forKey: .lastUpdateCheck)) ?? 0
         verboseLogging = (try c.decodeIfPresent(Bool.self, forKey: .verboseLogging)) ?? false
-        relayWorkerURL = (try c.decodeIfPresent(String.self, forKey: .relayWorkerURL))
-            ?? "https://lan-messenger-relay.davefelzy20.workers.dev"
+        relayEnabled = (try c.decodeIfPresent(Bool.self, forKey: .relayEnabled)) ?? false
+        relayWorkerURL = (try c.decodeIfPresent(String.self, forKey: .relayWorkerURL)) ?? ""
     }
 }
 

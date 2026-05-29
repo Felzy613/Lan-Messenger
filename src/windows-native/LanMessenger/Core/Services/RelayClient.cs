@@ -56,6 +56,7 @@ public sealed class RelayClient
     {
         get
         {
+            if (!ConfigStore.Shared.Config.RelayEnabled) return null;
             var raw = ConfigStore.Shared.Config.RelayWorkerUrl.Trim();
             return string.IsNullOrEmpty(raw) ? null : new Uri(raw.TrimEnd('/'));
         }
