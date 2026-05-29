@@ -77,7 +77,7 @@
                               OnContent="On"
                               OffContent="Off"
                               Toggled="RelayEnabledToggle_Toggled" />
-                <TextBlock Text="When enabled, messages sent to offline contacts are stored in the cloud and delivered when they reconnect. You need to deploy your own relay Worker — paste its URL below."
+                <TextBlock Text="When enabled, messages sent to offline contacts are stored in the cloud and delivered when they reconnect. Deploy your own Cloudflare Worker (see README) and paste its URL below."
                            Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                            TextWrapping="Wrap" />

@@ -237,6 +237,7 @@ public sealed partial class AppModel : ObservableObject
                 if (wasOffline)
                 {
                     LanLogger.Info("Net", $"peer {ip} ({publicKeyB64[..8]}) came back online — delivering pending queue");
+                    MigrateSyntheticRelayHistory(publicKeyB64, ip);
                     RefreshConversations();
                     MessagingService.Shared.DeliverPending(ip, publicKeyB64);
                     DeliverPendingFiles(ip, publicKeyB64);
@@ -253,6 +254,8 @@ public sealed partial class AppModel : ObservableObject
         Peers = updated;
         if (!string.IsNullOrEmpty(relayIdHash))
             _peerRelayIdHashes[publicKeyB64] = relayIdHash;
+
+        MigrateSyntheticRelayHistory(publicKeyB64, ip);
         RefreshConversations();
         MessagingService.Shared.DeliverPending(ip, publicKeyB64);
         DeliverPendingFiles(ip, publicKeyB64);
@@ -399,7 +402,13 @@ public sealed partial class AppModel : ObservableObject
         var publicKey = PeerByIP(peerIP)?.PublicKeyB64
             ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64;
         if (publicKey is null) return;
+        // Relay is ONLY used when the peer is confirmed offline. If the peer is
+        // currently online and TCP fails, that is a transient error — queue locally
+        // but do not upload to the cloud relay to avoid spurious relay deliveries.
+        var peerIsOnline = Peers.Values.Any(p => p.PublicKeyB64 == publicKey && p.IsOnline);
         _peerRelayIdHashes.TryGetValue(publicKey, out var relayIdHash);
+        if (peerIsOnline) relayIdHash = null;
+        LanLogger.Info("Send", $"routing for peer={publicKey[..Math.Min(8, publicKey.Length)]} online={peerIsOnline} relay={relayIdHash is not null}");
         MessagingService.Shared.SendText(text, peerIP, publicKey, relayIdHash, replyTo);
     }
 
@@ -829,4 +838,24 @@ public sealed partial class AppModel : ObservableObject
     }
 
     private PeerInfo? PeerByIP(string ip) => Peers.Values.FirstOrDefault(p => p.IP == ip);
+
+    // Migrates history stored under a synthetic "relay-{keyPrefix}" IP — created
+    // when a relay message arrived from a peer we had never met on the LAN — to the
+    // peer's real IP now that they have appeared on the network.
+    private void MigrateSyntheticRelayHistory(string publicKeyB64, string realIP)
+    {
+        var syntheticIP = $"relay-{publicKeyB64[..Math.Min(8, publicKeyB64.Length)]}";
+        if (!HistoryStore.Shared.History.ContainsKey(syntheticIP)) return;
+        HistoryStore.Shared.Migrate(syntheticIP, realIP);
+        HistoryStore.Shared.Save();
+        var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
+        if (msgs.Remove(syntheticIP, out var moved))
+        {
+            if (!msgs.TryGetValue(realIP, out var cur)) cur = msgs[realIP] = [];
+            cur.AddRange(moved);
+            cur.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
+        }
+        Messages = msgs;
+        LanLogger.Info("Relay", $"migrated synthetic-IP history from {syntheticIP} → {realIP}");
+    }
 }

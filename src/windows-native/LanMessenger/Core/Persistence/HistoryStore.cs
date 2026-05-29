@@ -17,6 +17,8 @@ public sealed class MessageEntry
     [JsonPropertyName("reply_to_message_id")] public string? ReplyToMessageId { get; set; }
     [JsonPropertyName("reply_to_preview")]    public string? ReplyToPreview   { get; set; }
     [JsonPropertyName("reply_to_sender")]     public string? ReplyToSender    { get; set; }
+    // "relay" when this message transited the cloud relay Worker; null for direct LAN delivery.
+    [JsonPropertyName("delivery_path")]     public string? DeliveryPath    { get; set; }
 }
 
 // Manages reading/writing the encrypted history file.
@@ -103,6 +105,16 @@ public sealed class HistoryStore
         if (!_history.TryGetValue(peerIP, out var list)) return;
         foreach (var e in list.Where(e => e.Incoming && !e.ReadReceiptSent))
             e.ReadReceiptSent = true;
+    }
+
+    // Marks a message entry as having transited the cloud relay.
+    // Called for outgoing messages when TCP fails and relay upload is attempted,
+    // and for incoming messages when they arrive via relay.
+    public void MarkRelayDelivery(string messageId, string peerIP)
+    {
+        if (!_history.TryGetValue(peerIP, out var list)) return;
+        foreach (var e in list.Where(e => e.MessageId == messageId && e.DeliveryPath != "relay"))
+            e.DeliveryPath = "relay";
     }
 
     // Rank-aware status update — never downgrades a delivered/read message back

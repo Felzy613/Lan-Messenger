@@ -27,6 +27,8 @@ public sealed class MessageRowViewModel : INotifyPropertyChanged
     /// Local file path of the replied-to media/file message, if any. Resolved
     /// from conversation history at map time; null for text replies.
     public string? ReplyFilePath    { get; init; }
+    /// True when this message transited the cloud relay Worker (not direct LAN delivery).
+    public bool DeliveredViaRelay   { get; init; }
 
     // Status is the one mutable field — checkmarks update without rebuilding the row.
     private string _status = "";
@@ -356,10 +358,11 @@ public sealed partial class ChatPage : Page
             IsFile    = isFile,
             FilePath  = path,
             MessageId = e.MessageId,
-            ReplyToMessageId = e.ReplyToMessageId,
-            ReplyToPreview   = e.ReplyToPreview,
-            ReplyToSender    = e.ReplyToSender,
-            ReplyFilePath    = replyFilePath,
+            ReplyToMessageId  = e.ReplyToMessageId,
+            ReplyToPreview    = e.ReplyToPreview,
+            ReplyToSender     = e.ReplyToSender,
+            ReplyFilePath     = replyFilePath,
+            DeliveredViaRelay = e.DeliveryPath == "relay",
         };
     }
 

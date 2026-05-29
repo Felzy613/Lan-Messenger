@@ -127,6 +127,7 @@ public sealed partial class MessageBubbleControl : UserControl
             ReplyChipThumbnailBorder.Visibility = Visibility.Collapsed;
         }
 
+        RelayBadge.Visibility = Row.DeliveredViaRelay ? Visibility.Visible : Visibility.Collapsed;
         UpdateStatusGlyph();
     }
 

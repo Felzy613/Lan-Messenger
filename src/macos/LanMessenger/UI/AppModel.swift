@@ -206,6 +206,8 @@ final class AppModel: ObservableObject {
         if let hash = relayIdHash, !hash.isEmpty {
             peerRelayIdHashes[publicKeyB64] = hash
         }
+
+        migrateSyntheticRelayHistory(publicKeyB64: publicKeyB64, toIP: ip)
         refreshConversations()
         // Deliver any queued messages and files for this peer.
         MessagingService.shared.deliverPending(toPeerIP: ip, peerPublicKeyB64: publicKeyB64)
@@ -320,7 +322,12 @@ final class AppModel: ObservableObject {
             ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == ip })?.publicKeyB64
             ?? knownPeerKeys[ip]
         guard let key = publicKey else { return }
-        let relayHash = peerRelayIdHashes[key]
+        // Relay is ONLY used when the peer is confirmed offline. If the peer is
+        // currently online and TCP fails, that is a transient error — queue locally
+        // but do not upload to the cloud relay to avoid spurious relay deliveries.
+        let peerIsOnline = peers.values.contains { $0.publicKeyB64 == key && $0.isOnline }
+        let relayHash = peerIsOnline ? nil : peerRelayIdHashes[key]
+        NetLogger.info("Send", "routing msgId for peer=\(key.prefix(8)) online=\(peerIsOnline) relay=\(relayHash != nil ? "yes" : "no")")
         MessagingService.shared.sendText(
             text,
             toPeerIP: ip,
@@ -717,6 +724,20 @@ final class AppModel: ObservableObject {
 
     private func peerByIP(_ ip: String) -> PeerInfo? {
         peers.values.first { $0.ip == ip }
+    }
+
+    // Migrates history stored under a synthetic "relay-{keyPrefix}" IP — created when
+    // a relay message arrived from a peer we had never met on the LAN — to their real IP.
+    private func migrateSyntheticRelayHistory(publicKeyB64: String, toIP: String) {
+        let syntheticIP = "relay-\(publicKeyB64.prefix(8))"
+        guard HistoryStore.shared.history[syntheticIP] != nil else { return }
+        HistoryStore.shared.migrate(fromIP: syntheticIP, toIP: toIP)
+        HistoryStore.shared.save()
+        if let moved = messages.removeValue(forKey: syntheticIP) {
+            let merged = (messages[toIP] ?? []) + moved
+            messages[toIP] = merged.sorted { $0.timestamp < $1.timestamp }
+        }
+        NetLogger.info("Relay", "migrated synthetic-IP history from \(syntheticIP) → \(toIP)")
     }
 
     // Rank used to ensure status only moves forward (Queued → Sending → Sent → Delivered → Read).

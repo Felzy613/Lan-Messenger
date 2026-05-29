@@ -103,6 +103,7 @@ final class MessagingService {
                 NetLogger.info("Send", "TCP failed msgId=\(messageId) peer=\(ip) — queueing locally and falling back to relay")
                 self.queuePendingMessage(
                     messageId: messageId,
+                    peerIP: ip,
                     text: text,
                     peerPublicKeyB64: peerPublicKeyB64,
                     peerRelayIdHash: peerRelayIdHash,
@@ -269,6 +270,7 @@ final class MessagingService {
 
     private func queuePendingMessage(
         messageId: String,
+        peerIP: String,
         text: String,
         peerPublicKeyB64: String,
         peerRelayIdHash: String?,
@@ -287,21 +289,23 @@ final class MessagingService {
         ConfigStore.shared.config.pendingMessages.append(pending)
         ConfigStore.shared.save()
 
-        // Also upload to cloud relay so delivery can proceed even if this
-        // device goes offline before the recipient comes back to the LAN.
-        if let hash = peerRelayIdHash, !hash.isEmpty {
-            NetLogger.info("Relay", "store msgId=\(messageId) peer=\(peerPublicKeyB64.prefix(8)) — uploading to cloud relay mailbox")
-            Task {
-                await RelayClient.shared.store(
-                    peerRelayIdHash: hash,
-                    messageId: messageId,
-                    ciphertextB64: ciphertextB64,
-                    nonceB64: nonceB64,
-                    timestamp: timestamp
-                )
-            }
-        } else {
-            NetLogger.warn("Relay", "skip store msgId=\(messageId) peer=\(peerPublicKeyB64.prefix(8)) — peer has no relay_id_hash (older client or never discovered)")
+        // Upload to cloud relay (only if peer was confirmed offline before sending —
+        // the relay hash is nil when the peer was online, preventing spurious relay use).
+        guard let hash = peerRelayIdHash, !hash.isEmpty else {
+            NetLogger.info("Relay", "skip store msgId=\(messageId) — peer online or has no relay_id_hash; message queued locally only")
+            return
+        }
+
+        NetLogger.info("Relay", "store msgId=\(messageId) peer=\(peerPublicKeyB64.prefix(8)) — uploading to cloud relay mailbox")
+        HistoryStore.shared.markRelayDelivery(messageId: messageId, peerIP: peerIP)
+        Task {
+            await RelayClient.shared.store(
+                peerRelayIdHash: hash,
+                messageId: messageId,
+                ciphertextB64: ciphertextB64,
+                nonceB64: nonceB64,
+                timestamp: timestamp
+            )
         }
     }
 
@@ -336,11 +340,19 @@ final class MessagingService {
             timestamp: msg.timestamp,
             messageId: msg.messageId,
             status: "",
-            readReceiptSent: false
+            readReceiptSent: false,
+            deliveryPath: "relay"
         )
         HistoryStore.shared.append(entry: entry, forPeerIP: ip)
         HistoryStore.shared.save()
         onMessageReceived?(ip, entry)
+        NetLogger.info("Relay", "delivered relay msg \(msg.messageId) from \(msg.senderUsername) via ip=\(ip)")
+
+        // Send sent_receipt so the sender sees "Delivered" for their relayed message.
+        // Only attempt when the IP is a real address (not a synthetic "relay-…" placeholder).
+        if !ip.hasPrefix("relay-") {
+            sendReceipt(type: "sent_receipt", messageId: msg.messageId, toPeerIP: ip)
+        }
 
         // Delete from relay now that we've processed it (best-effort)
         Task {

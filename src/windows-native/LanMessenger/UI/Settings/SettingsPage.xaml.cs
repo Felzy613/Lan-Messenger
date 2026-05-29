@@ -211,8 +211,12 @@ public sealed partial class SettingsPage : Page
 
     private void RelayUrlBox_LostFocus(object sender, RoutedEventArgs e)
     {
-        ConfigStore.Shared.Config.RelayWorkerUrl = RelayUrlBox.Text.Trim();
-        ConfigStore.Shared.Save();
+        var url = RelayUrlBox.Text.Trim();
+        if (!string.IsNullOrEmpty(url))
+        {
+            ConfigStore.Shared.Config.RelayWorkerUrl = url;
+            ConfigStore.Shared.Save();
+        }
     }
 
     private void OpenLogsFolder_Click(object sender, RoutedEventArgs e)

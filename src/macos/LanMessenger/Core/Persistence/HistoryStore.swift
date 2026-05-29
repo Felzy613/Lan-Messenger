@@ -27,6 +27,8 @@ struct MessageEntry: Codable, Identifiable {
     var replyToMessageId: String?
     var replyToPreview: String?
     var replyToSender: String?
+    // "relay" when this message transited the cloud relay Worker; nil for direct LAN delivery.
+    var deliveryPath: String?
 
     enum CodingKeys: String, CodingKey {
         case sender, text, incoming, timestamp, status
@@ -35,13 +37,14 @@ struct MessageEntry: Codable, Identifiable {
         case replyToMessageId = "reply_to_message_id"
         case replyToPreview = "reply_to_preview"
         case replyToSender = "reply_to_sender"
+        case deliveryPath = "delivery_path"
         // _stableId is intentionally excluded — it is a session-only value, never persisted.
     }
 
     init(sender: String, text: String, incoming: Bool, timestamp: Double,
          messageId: String?, status: String, readReceiptSent: Bool,
          replyToMessageId: String? = nil, replyToPreview: String? = nil,
-         replyToSender: String? = nil) {
+         replyToSender: String? = nil, deliveryPath: String? = nil) {
         self.sender = sender
         self.text = text
         self.incoming = incoming
@@ -52,6 +55,7 @@ struct MessageEntry: Codable, Identifiable {
         self.replyToMessageId = replyToMessageId
         self.replyToPreview = replyToPreview
         self.replyToSender = replyToSender
+        self.deliveryPath = deliveryPath
         self._stableId = UUID().uuidString  // generated once; stable for lifetime of this instance
     }
 
@@ -67,6 +71,7 @@ struct MessageEntry: Codable, Identifiable {
         replyToMessageId = try c.decodeIfPresent(String.self, forKey: .replyToMessageId)
         replyToPreview = try c.decodeIfPresent(String.self, forKey: .replyToPreview)
         replyToSender = try c.decodeIfPresent(String.self, forKey: .replyToSender)
+        deliveryPath = try c.decodeIfPresent(String.self, forKey: .deliveryPath)
         _stableId = UUID().uuidString  // generated once at decode time; stable for the session
     }
 }
@@ -179,6 +184,21 @@ final class HistoryStore {
             changed = true
         }
         if changed { history[ip] = entries }
+    }
+
+    // Marks a message entry as having transited the cloud relay.
+    // Called for outgoing messages when TCP fails and relay upload is attempted,
+    // and for incoming messages when they arrive via relay.
+    func markRelayDelivery(messageId: String, peerIP: String) {
+        guard var entries = history[peerIP] else { return }
+        var changed = false
+        for i in entries.indices where entries[i].messageId == messageId {
+            if entries[i].deliveryPath != "relay" {
+                entries[i].deliveryPath = "relay"
+                changed = true
+            }
+        }
+        if changed { history[peerIP] = entries }
     }
 
     // Rank-aware status update — never downgrades a delivered/read message back

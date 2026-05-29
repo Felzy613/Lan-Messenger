@@ -97,7 +97,7 @@ struct SettingsView: View {
 
                 Section("Cloud Relay") {
                     Toggle("Enable cloud relay", isOn: $relayEnabled)
-                    Text("When enabled, messages sent to offline contacts are stored in the cloud and delivered when they reconnect. You need to deploy your own relay Worker — the URL below is where it lives.")
+                    Text("When enabled, messages sent to offline contacts are stored in the cloud and delivered when they reconnect. Deploy your own Cloudflare Worker (see README) and paste its URL below.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     if relayEnabled {

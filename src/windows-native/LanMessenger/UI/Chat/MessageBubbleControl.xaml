@@ -163,6 +163,18 @@
                     <TextBlock x:Name="TimestampText"
                                FontSize="10"
                                Opacity="0.55" />
+                    <!-- Relay delivery badge — hidden for direct LAN messages. -->
+                    <StackPanel x:Name="RelayBadge"
+                                Orientation="Horizontal"
+                                Spacing="2"
+                                Visibility="Collapsed"
+                                Opacity="0.6">
+                        <FontIcon Glyph="&#xE753;"
+                                  FontFamily="Segoe MDL2 Assets"
+                                  FontSize="9" />
+                        <TextBlock Text="via relay"
+                                   FontSize="9" />
+                    </StackPanel>
                     <!-- Status check marks (text glyphs). -->
                     <TextBlock x:Name="StatusText"
                                FontSize="11"

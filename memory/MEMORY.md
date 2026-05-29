@@ -3,6 +3,8 @@
 Repo-local memory for LAN Messenger. These notes are documentation for future
 sessions and should stay aligned with the current native app tree.
 
+- [Relay system audit & hardening](relay-system-audit.md) — All relay bugs fixed 2026-05-29; delivery-mode tracking, offline-only gating, UI indicator, receipt for relay messages, synthetic IP migration, Worker hardening.
+
 - [LAN Messenger Native Rewrite](project_native_rewrite.md) - Current native
   project status, platform scope, tests, and next work themes.
 - [Repo file layout](project_file_layout.md) - Current root/docs/scripts/source

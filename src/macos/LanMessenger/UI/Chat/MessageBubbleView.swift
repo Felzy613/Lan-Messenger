@@ -106,6 +106,7 @@ struct MessageBubbleView: View {
                         Text(formattedTime)
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
+                        relayBadge
                         if !entry.incoming { statusIcon }
                     }
                 }
@@ -209,10 +210,13 @@ struct MessageBubbleView: View {
                     .font(.system(size: 14))
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                Text(formattedTime)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                HStack(spacing: 4) {
+                    Text(formattedTime)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    relayBadge
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -252,6 +256,7 @@ struct MessageBubbleView: View {
                 Text(formattedTime)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+                relayBadge
                 statusIcon
             }
         }
@@ -285,5 +290,19 @@ struct MessageBubbleView: View {
 
     private var statusIcon: some View {
         BubbleStatusView(status: entry.status)
+    }
+
+    // Small "via cloud relay" badge shown when a message transited the relay Worker.
+    @ViewBuilder
+    var relayBadge: some View {
+        if entry.deliveryPath == "relay" {
+            HStack(spacing: 3) {
+                Image(systemName: "cloud")
+                    .font(.system(size: 9))
+                Text("via relay")
+                    .font(.system(size: 9))
+            }
+            .foregroundStyle(.secondary.opacity(0.75))
+        }
     }
 }

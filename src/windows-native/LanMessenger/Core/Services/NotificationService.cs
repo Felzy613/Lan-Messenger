@@ -115,11 +115,14 @@ public sealed class NotificationService
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IPropertyStore
     {
-        int GetCount(out uint cProps);
-        int GetAt(uint iProp, out PropertyKey pkey);
-        int GetValue(ref PropertyKey key, out PropVariant pv);
-        int SetValue(ref PropertyKey key, ref PropVariant propvar);
-        int Commit();
+        // All methods return HRESULT with no [out retval] — declare void so the
+        // CLR marshaler checks the HRESULT and throws on failure rather than
+        // appending a phantom [out retval] parameter to the native call.
+        void GetCount(out uint cProps);
+        void GetAt(uint iProp, out PropertyKey pkey);
+        void GetValue(ref PropertyKey key, out PropVariant pv);
+        void SetValue(ref PropertyKey key, ref PropVariant propvar);
+        void Commit();
     }
 
     // System.AppUserModel.ID — the property that links a shortcut to its AUMID.

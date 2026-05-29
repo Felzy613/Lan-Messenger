@@ -117,7 +117,7 @@ public sealed class MessagingService
             Dispatch(() =>
             {
                 var status = success ? MessageStatus.Sent : MessageStatus.Queued;
-                if (!success) QueuePending(messageId, text, peerPublicKeyB64, peerRelayIdHash,
+                if (!success) QueuePending(messageId, peerIP, text, peerPublicKeyB64, peerRelayIdHash,
                                            capturedCt, capturedNonce, timestamp);
                 // ApplyStatus persists when the rank check passes; nothing else
                 // to save here. Crucially, if a "Delivered" receipt already
@@ -304,6 +304,7 @@ public sealed class MessagingService
 
     private void QueuePending(
         string messageId,
+        string peerIP,
         string text,
         string peerPublicKeyB64,
         string? peerRelayIdHash,
@@ -323,18 +324,17 @@ public sealed class MessagingService
         });
         ConfigStore.Shared.Save();
 
-        // Also upload to cloud relay so delivery can proceed even if this
-        // device goes offline before the recipient comes back to the LAN.
-        if (!string.IsNullOrEmpty(peerRelayIdHash))
+        // Upload to cloud relay (only if peer was confirmed offline before sending —
+        // the relay hash is null when the peer was online, preventing spurious relay use).
+        if (string.IsNullOrEmpty(peerRelayIdHash))
         {
-            LanLogger.Info("Relay", $"store msgId={messageId} peer={peerPublicKeyB64[..Math.Min(8, peerPublicKeyB64.Length)]} — uploading to cloud relay mailbox");
-            _ = RelayClient.Shared.StoreAsync(
-                peerRelayIdHash, messageId, ciphertextB64, nonceB64, timestamp);
+            LanLogger.Info("Relay", $"skip store msgId={messageId} — peer online or has no relay_id_hash; message queued locally only");
+            return;
         }
-        else
-        {
-            LanLogger.Warn("Relay", $"skip store msgId={messageId} peer={peerPublicKeyB64[..Math.Min(8, peerPublicKeyB64.Length)]} — peer has no relay_id_hash (older client or never discovered)");
-        }
+
+        LanLogger.Info("Relay", $"store msgId={messageId} peer={peerPublicKeyB64[..Math.Min(8, peerPublicKeyB64.Length)]} — uploading to cloud relay mailbox");
+        HistoryStore.Shared.MarkRelayDelivery(messageId, peerIP);
+        _ = RelayClient.Shared.StoreAsync(peerRelayIdHash, messageId, ciphertextB64, nonceB64, timestamp);
     }
 
     // MARK: - Handle relay-delivered messages (from cloud Worker)
@@ -372,10 +372,17 @@ public sealed class MessagingService
             MessageId       = msg.MessageId,
             Status          = "",
             ReadReceiptSent = false,
+            DeliveryPath    = "relay",
         };
         HistoryStore.Shared.Append(entry, fromStoredIP);
         HistoryStore.Shared.Save();
         Dispatch(() => OnMessageReceived?.Invoke(fromStoredIP, entry));
+        LanLogger.Info("Relay", $"delivered relay msg {msg.MessageId} from {msg.SenderUsername} via ip={fromStoredIP}");
+
+        // Send sent_receipt so the sender sees "Delivered" for their relayed message.
+        // Only attempt when the IP is a real address (not a synthetic "relay-…" placeholder).
+        if (!fromStoredIP.StartsWith("relay-", StringComparison.Ordinal))
+            SendReceipt("sent_receipt", msg.MessageId, fromStoredIP);
 
         // Delete from relay now that we've processed it (best-effort)
         _ = RelayClient.Shared.DeleteAsync(msg.MessageId);

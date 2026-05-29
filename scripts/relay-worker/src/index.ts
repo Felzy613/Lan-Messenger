@@ -38,7 +38,10 @@ interface StoredMessage {
 
 const TTL_SECONDS = 72 * 60 * 60;   // 72 hours
 const MAX_INBOX = 100;               // max messages per recipient
-const MAX_CT_LEN = 4096;            // base64-encoded ciphertext length limit (~3 KB plaintext)
+// Base64-encoded ciphertext length limit. AES-GCM overhead is 16-byte tag → base64 of
+// (plaintext + 16 bytes). A 4 KB text message base64-encodes to ~5.5 KB. Allow 16 KB
+// to accommodate rich text with embedded data; well within KV value limits (25 MB).
+const MAX_CT_LEN = 16384;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -164,13 +167,16 @@ async function handleStore(req: Request, env: Env): Promise<Response> {
     stored_at: Date.now() / 1000,
   };
 
-  // Write message + update inbox index (both with TTL)
+  // Write message, then update inbox index. Both use the same TTL so
+  // the index never expires before the messages it references.
   await env.RELAY_STORE.put(`msg:${message_id}`, JSON.stringify(msg), {
     expirationTtl: ttl,
   });
   inbox.push(message_id);
+  // Always refresh the inbox index TTL to the full window so adding a new
+  // message doesn't inherit the (shorter) expiry of the existing index.
   await env.RELAY_STORE.put(inboxKey, JSON.stringify(inbox), {
-    expirationTtl: ttl,
+    expirationTtl: TTL_SECONDS,
   });
 
   return json({ ok: true });
