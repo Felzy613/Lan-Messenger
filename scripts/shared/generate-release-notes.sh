@@ -50,7 +50,7 @@ if [ -n "${PREV_SHA:-}" ]; then
   COMMITS=$(git log --no-merges --pretty="format:%s" "${PREV_SHA}..HEAD" 2>/dev/null \
     | head -80 || true)
 else
-  COMMITS=$(git log --no-merges --pretty="format:%s" -25 HEAD 2>/dev/null || true)
+  COMMITS=$(git log --no-merges --pretty="format:%s" -10 HEAD 2>/dev/null || true)
 fi
 
 # ── Categorize commits ───────────────────────────────────────────────────────

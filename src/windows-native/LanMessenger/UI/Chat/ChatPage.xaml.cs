@@ -280,8 +280,10 @@ public sealed partial class ChatPage : Page
             if (wasAtBottom)
                 DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
 
-            // Auto-read any newly-arrived incoming messages for the open chat.
-            if (entries.Any(e => e.Incoming && !e.ReadReceiptSent))
+            // Auto-read newly-arrived incoming messages only while the window is
+            // visible — messages that arrive after the user hides to tray should
+            // not be silently marked read.
+            if (_model.IsWindowVisible && entries.Any(e => e.Incoming && !e.ReadReceiptSent))
                 _model.MarkConversationRead(_boundPeerIP);
             return;
         }

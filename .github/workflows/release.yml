@@ -1,12 +1,13 @@
 name: Release Orchestration
 
-# Triggers whenever either platform build completes successfully on main.
-# Finds the latest per-platform pre-releases, validates both exist, then
+# Triggers whenever either platform build completes successfully on main,
+# or on manual dispatch. Finds the latest per-platform pre-releases and
 # creates an atomic combined release containing both installers.
 #
-# Race-condition safety: when both platforms are built from the same commit,
-# whichever finishes first waits up to 45 minutes for the sibling build before
-# proceeding. The second queued instance hits the idempotency check and exits.
+# Idempotency: skips if a combined release for the current artifact pair
+# already exists. No sibling-wait — if one platform is behind, the combined
+# release reflects that, and a newer combined release is created when that
+# platform catches up.
 
 on:
   workflow_run:
@@ -27,9 +28,7 @@ jobs:
     name: Create Combined Release
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    timeout-minutes: 60
-    permissions:
-      contents: write
+    timeout-minutes: 20
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -37,159 +36,78 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Exit immediately if a combined release for the current version pair
-      # was already published by a concurrent orchestration instance.
-      - name: Check if combined release already exists
-        id: early_exit
-        run: |
-          MAC_VER=$(jq -r '.version' version/macos.json 2>/dev/null || echo "")
-          WIN_VER=$(jq -r '.version' version/windows.json 2>/dev/null || echo "")
-          if [ -n "$MAC_VER" ] && [ -n "$WIN_VER" ]; then
-            COMBINED_TAG="release-win${WIN_VER}-mac${MAC_VER}"
-            if gh release view "$COMBINED_TAG" --json tagName &>/dev/null; then
-              echo "::notice::$COMBINED_TAG already published — nothing to do"
-              echo "skip=true" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-          fi
-          echo "skip=false" >> $GITHUB_OUTPUT
-
-      # When both platforms change in the same commit, one build finishes first.
-      # Wait up to 45 minutes for the sibling build so we don't pair a new
-      # artifact with a stale one from the other platform.
-      - name: Wait for sibling platform build
-        if: |
-          steps.early_exit.outputs.skip != 'true' &&
-          github.event_name != 'workflow_dispatch'
-        env:
-          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
-          TRIGGER_WORKFLOW: ${{ github.event.workflow_run.name }}
-        run: |
-          if [[ "$TRIGGER_WORKFLOW" == *"macOS"* ]]; then
-            OTHER="Build Windows"
-          elif [[ "$TRIGGER_WORKFLOW" == *"Windows"* ]]; then
-            OTHER="Build macOS"
-          else
-            echo "Unknown trigger — skipping sibling wait"
-            exit 0
-          fi
-
-          echo "Waiting for '$OTHER' on commit ${TRIGGER_SHA:0:8}..."
-          MAX_WAIT=2700   # 45 minutes
-          ELAPSED=0
-
-          while true; do
-            STATUS=$(gh run list --workflow "$OTHER" --branch main \
-              --json status,headSha --limit 20 \
-              | jq -r ".[] | select(.headSha == \"$TRIGGER_SHA\") | .status" | head -1)
-
-            if [ -z "$STATUS" ]; then
-              echo "No '$OTHER' run found for this commit — proceeding"
-              break
-            fi
-            echo "  '$OTHER' status: $STATUS (${ELAPSED}s elapsed)"
-            case "$STATUS" in
-              in_progress|queued|waiting|requested|pending) ;;
-              *) echo "  '$OTHER' finished: $STATUS"; break ;;
-            esac
-
-            if [ $ELAPSED -ge $MAX_WAIT ]; then
-              echo "::warning::Timed out waiting for '$OTHER' — proceeding with latest artifact"
-              break
-            fi
-            sleep 30
-            ELAPSED=$((ELAPSED + 30))
-          done
-
+      # Find the latest successfully published platform pre-releases.
+      # Uses the most-recent available release rather than requiring an exact
+      # version match against the version files — that way a stalled platform
+      # build never permanently blocks the combined release.
       - name: Find latest per-platform releases
-        id: tags
-        if: steps.early_exit.outputs.skip != 'true'
+        id: releases
         run: |
           RELEASES=$(gh release list --limit 100 --json tagName,createdAt \
             --jq 'sort_by(.createdAt) | reverse')
 
-          LATEST_MAC_TAG=$(echo "$RELEASES" | \
-            jq -r '[.[] | select(.tagName | startswith("macos-v"))] | first | .tagName // empty')
-          LATEST_WIN_TAG=$(echo "$RELEASES" | \
-            jq -r '[.[] | select(.tagName | startswith("windows-v"))] | first | .tagName // empty')
-
-          EXPECTED_MAC_VER=$(jq -r '.version // empty' version/macos.json)
-          EXPECTED_WIN_VER=$(jq -r '.version // empty' version/windows.json)
-          EXPECTED_MAC_TAG="macos-v${EXPECTED_MAC_VER}"
-          EXPECTED_WIN_TAG="windows-v${EXPECTED_WIN_VER}"
-
-          MAC_TAG=""
-          WIN_TAG=""
-          gh release view "$EXPECTED_MAC_TAG" --json tagName &>/dev/null && MAC_TAG="$EXPECTED_MAC_TAG"
-          gh release view "$EXPECTED_WIN_TAG" --json tagName &>/dev/null && WIN_TAG="$EXPECTED_WIN_TAG"
-
-          echo "Expected macOS:   ${EXPECTED_MAC_TAG}"
-          echo "Expected Windows: ${EXPECTED_WIN_TAG}"
-          echo "Latest macOS:     ${LATEST_MAC_TAG:-(none)}"
-          echo "Latest Windows:   ${LATEST_WIN_TAG:-(none)}"
-          echo "mac_tag=$MAC_TAG" >> $GITHUB_OUTPUT
-          echo "win_tag=$WIN_TAG" >> $GITHUB_OUTPUT
+          MAC_TAG=$(echo "$RELEASES" | \
+            jq -r '[.[] | select(.tagName | startswith("macos-v"))] | .[0].tagName // empty')
+          WIN_TAG=$(echo "$RELEASES" | \
+            jq -r '[.[] | select(.tagName | startswith("windows-v"))] | .[0].tagName // empty')
 
           if [ -z "$MAC_TAG" ]; then
-            echo "::warning::Expected macOS platform release ${EXPECTED_MAC_TAG} not found — waiting for macOS build"
+            echo "::warning::No macOS platform release found — skipping until a macOS build publishes"
             echo "skip=true" >> $GITHUB_OUTPUT; exit 0
           fi
           if [ -z "$WIN_TAG" ]; then
-            echo "::warning::Expected Windows platform release ${EXPECTED_WIN_TAG} not found — waiting for Windows build"
+            echo "::warning::No Windows platform release found — skipping until a Windows build publishes"
             echo "skip=true" >> $GITHUB_OUTPUT; exit 0
           fi
-          echo "skip=false" >> $GITHUB_OUTPUT
 
-      - name: Compute combined release tag
-        id: release
-        if: steps.early_exit.outputs.skip != 'true' && steps.tags.outputs.skip != 'true'
-        run: |
-          MAC_VER="${{ steps.tags.outputs.mac_tag }}"; MAC_VER="${MAC_VER#macos-v}"
-          WIN_VER="${{ steps.tags.outputs.win_tag }}"; WIN_VER="${WIN_VER#windows-v}"
+          MAC_VER="${MAC_TAG#macos-v}"
+          WIN_VER="${WIN_TAG#windows-v}"
           COMBINED_TAG="release-win${WIN_VER}-mac${MAC_VER}"
 
-          echo "combined_tag=$COMBINED_TAG"           >> $GITHUB_OUTPUT
-          echo "release_title=LAN Messenger — Windows ${WIN_VER} | macOS ${MAC_VER}" >> $GITHUB_OUTPUT
-          echo "mac_ver=$MAC_VER"                     >> $GITHUB_OUTPUT
-          echo "win_ver=$WIN_VER"                     >> $GITHUB_OUTPUT
-
+          # Idempotency: skip if this exact combined release already exists.
           if gh release view "$COMBINED_TAG" --json tagName &>/dev/null; then
-            echo "::notice::$COMBINED_TAG already exists — skipping"
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "::notice::$COMBINED_TAG already published — nothing to do"
+            echo "skip=true" >> $GITHUB_OUTPUT; exit 0
           fi
 
+          # Warn when platform releases lag behind version files.
+          EXPECTED_MAC=$(jq -r '.version // empty' version/macos.json)
+          EXPECTED_WIN=$(jq -r '.version // empty' version/windows.json)
+          [ "$MAC_VER" != "$EXPECTED_MAC" ] && \
+            echo "::warning::macOS release $MAC_TAG lags behind version/macos.json ($EXPECTED_MAC) — run Build macOS to catch up"
+          [ "$WIN_VER" != "$EXPECTED_WIN" ] && \
+            echo "::warning::Windows release $WIN_TAG lags behind version/windows.json ($EXPECTED_WIN) — run Build Windows to catch up"
+
+          echo "mac_tag=$MAC_TAG"             >> $GITHUB_OUTPUT
+          echo "win_tag=$WIN_TAG"             >> $GITHUB_OUTPUT
+          echo "mac_ver=$MAC_VER"             >> $GITHUB_OUTPUT
+          echo "win_ver=$WIN_VER"             >> $GITHUB_OUTPUT
+          echo "combined_tag=$COMBINED_TAG"   >> $GITHUB_OUTPUT
+          echo "release_title=LAN Messenger — Windows ${WIN_VER} | macOS ${MAC_VER}" >> $GITHUB_OUTPUT
+          echo "skip=false"                   >> $GITHUB_OUTPUT
+
+          echo "macOS:   $MAC_TAG"
+          echo "Windows: $WIN_TAG"
+          echo "Combined: $COMBINED_TAG"
+
       - name: Download platform installers
-        if: |
-          steps.early_exit.outputs.skip != 'true' &&
-          steps.tags.outputs.skip != 'true' &&
-          steps.release.outputs.skip != 'true'
+        if: steps.releases.outputs.skip != 'true'
         run: |
           mkdir -p dist/macos dist/windows
-
-          # Combined release exposes only the two user-facing installers (.pkg, .exe).
-          # Update-channel artifacts (.zip, .sha256s) stay on per-platform pre-releases;
-          # the in-app updater finds them automatically via per-platform tags.
-          gh release download "${{ steps.tags.outputs.mac_tag }}" \
+          gh release download "${{ steps.releases.outputs.mac_tag }}" \
             --pattern "*.pkg" --dir dist/macos/
-          gh release download "${{ steps.tags.outputs.win_tag }}" \
+          gh release download "${{ steps.releases.outputs.win_tag }}" \
             --pattern "*.exe" --dir dist/windows/
-
           echo "Downloaded:"
           ls -lh dist/macos/ dist/windows/
 
       - name: Validate artifact sizes
-        if: |
-          steps.early_exit.outputs.skip != 'true' &&
-          steps.tags.outputs.skip != 'true' &&
-          steps.release.outputs.skip != 'true'
+        if: steps.releases.outputs.skip != 'true'
         run: |
           MAC_PKG=$(ls dist/macos/*.pkg 2>/dev/null | head -1)
           WIN_EXE=$(ls dist/windows/*.exe 2>/dev/null | head -1)
           [ -z "$MAC_PKG" ] && { echo "::error::macOS .pkg missing"; exit 1; }
           [ -z "$WIN_EXE" ] && { echo "::error::Windows .exe missing"; exit 1; }
-
           for F in "$MAC_PKG" "$WIN_EXE"; do
             SIZE=$(stat -c%s "$F" 2>/dev/null || stat -f%z "$F")
             [ "$SIZE" -lt 524288 ] && { echo "::error::Suspiciously small artifact: $F ($SIZE bytes)"; exit 1; }
@@ -197,48 +115,69 @@ jobs:
           done
 
       - name: Generate combined release notes
-        id: changelog
-        if: |
-          steps.early_exit.outputs.skip != 'true' &&
-          steps.tags.outputs.skip != 'true' &&
-          steps.release.outputs.skip != 'true'
+        if: steps.releases.outputs.skip != 'true'
+        env:
+          TRIGGER_WORKFLOW: ${{ github.event.workflow_run.name }}
         run: |
-          # Use the previous macOS platform tag as the git log boundary, not the
-          # previous combined release tag. Combined release tags are created at
-          # whatever HEAD is at orchestration time — if a commit was pushed after
-          # the macOS build but before the orchestration job ran, the tag lands at
-          # the same SHA as current HEAD and git log returns nothing. Platform tags
-          # are created by the build runner at the exact build commit, so they are
-          # a stable anchor even under concurrent pushes.
-          PREV_MAC_TAG=$(gh release list --limit 100 \
-            --json tagName,createdAt \
-            --jq '[.[] | select(.tagName | startswith("macos-v"))] | .[1].tagName // empty')
+          # Changelog boundary: the previous release of whichever platform just built.
+          # This means "what's new" shows only the commits for this specific build,
+          # not everything accumulated since the last combined release.
+          #
+          # e.g. Windows 1.6.12 triggers → boundary = windows-v1.6.11 → one build's changes.
+          # workflow_dispatch fallback → use most recently published platform's predecessor.
+          RELEASES=$(gh release list --limit 100 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse')
+
+          PREV_BOUNDARY=""
+
+          if [[ "$TRIGGER_WORKFLOW" == *"Windows"* ]]; then
+            PREV_BOUNDARY=$(echo "$RELEASES" | jq -r \
+              '[.[] | select(.tagName | startswith("windows-v"))] | .[1].tagName // empty')
+          elif [[ "$TRIGGER_WORKFLOW" == *"macOS"* ]]; then
+            PREV_BOUNDARY=$(echo "$RELEASES" | jq -r \
+              '[.[] | select(.tagName | startswith("macos-v"))] | .[1].tagName // empty')
+          fi
+
+          # workflow_dispatch: infer from most recently published platform release
+          if [ -z "$PREV_BOUNDARY" ]; then
+            RECENT=$(echo "$RELEASES" | jq -r \
+              '[.[] | select(.tagName | (startswith("macos-v") or startswith("windows-v")))] | .[0].tagName // empty')
+            if [[ "$RECENT" == windows-v* ]]; then
+              PREV_BOUNDARY=$(echo "$RELEASES" | jq -r \
+                '[.[] | select(.tagName | startswith("windows-v"))] | .[1].tagName // empty')
+            elif [[ "$RECENT" == macos-v* ]]; then
+              PREV_BOUNDARY=$(echo "$RELEASES" | jq -r \
+                '[.[] | select(.tagName | startswith("macos-v"))] | .[1].tagName // empty')
+            fi
+          fi
+
+          # Last resort: previous combined release
+          if [ -z "$PREV_BOUNDARY" ]; then
+            PREV_BOUNDARY=$(echo "$RELEASES" | jq -r \
+              '[.[] | select(.tagName | startswith("release-"))] | .[0].tagName // empty')
+          fi
 
           chmod +x scripts/shared/generate-release-notes.sh
-          if [ -n "$PREV_MAC_TAG" ]; then
-            echo "Generating notes since platform tag: $PREV_MAC_TAG"
+          if [ -n "$PREV_BOUNDARY" ]; then
+            echo "Generating changelog since: $PREV_BOUNDARY"
             scripts/shared/generate-release-notes.sh combined \
-              "${{ steps.release.outputs.mac_ver }}" \
-              "$PREV_MAC_TAG" > /tmp/combined-changelog.md
+              "${{ steps.releases.outputs.mac_ver }}" \
+              "$PREV_BOUNDARY" > /tmp/combined-changelog.md
           else
             scripts/shared/generate-release-notes.sh combined \
-              "${{ steps.release.outputs.mac_ver }}" > /tmp/combined-changelog.md
+              "${{ steps.releases.outputs.mac_ver }}" > /tmp/combined-changelog.md
           fi
-          echo "Changelog:"
           cat /tmp/combined-changelog.md
 
       - name: Create combined release
         id: draft
-        if: |
-          steps.early_exit.outputs.skip != 'true' &&
-          steps.tags.outputs.skip != 'true' &&
-          steps.release.outputs.skip != 'true'
+        if: steps.releases.outputs.skip != 'true'
         env:
-          TAG: ${{ steps.release.outputs.combined_tag }}
-          MAC_VER: ${{ steps.release.outputs.mac_ver }}
-          WIN_VER: ${{ steps.release.outputs.win_ver }}
-          MAC_TAG: ${{ steps.tags.outputs.mac_tag }}
-          WIN_TAG: ${{ steps.tags.outputs.win_tag }}
+          TAG: ${{ steps.releases.outputs.combined_tag }}
+          MAC_VER: ${{ steps.releases.outputs.mac_ver }}
+          WIN_VER: ${{ steps.releases.outputs.win_ver }}
+          MAC_TAG: ${{ steps.releases.outputs.mac_tag }}
+          WIN_TAG: ${{ steps.releases.outputs.win_tag }}
         run: |
           CHANGELOG=$(cat /tmp/combined-changelog.md 2>/dev/null || true)
 
@@ -266,7 +205,7 @@ jobs:
 
           # Create as draft first — upload assets — then publish atomically.
           gh release create "$TAG" \
-            --title "${{ steps.release.outputs.release_title }}" \
+            --title "${{ steps.releases.outputs.release_title }}" \
             --draft \
             --notes-file /tmp/combined-notes.md
 
@@ -276,10 +215,9 @@ jobs:
           gh release upload "$TAG" dist/windows/*.exe --clobber
           gh release edit "$TAG" --draft=false
 
-          echo "::notice::Published: ${{ steps.release.outputs.release_title }} ($TAG)"
+          echo "::notice::Published: ${{ steps.releases.outputs.release_title }} ($TAG)"
 
-      # Safety net: if any step above failed after the draft was created, clean it up
-      # so the previous stable release stays as the latest visible release.
+      # Safety net: if any step above failed after the draft was created, clean it up.
       - name: Delete draft on failure
         if: failure() && steps.draft.outputs.draft_tag != ''
         run: |

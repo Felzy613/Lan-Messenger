@@ -4,6 +4,7 @@ struct ChatView: View {
     @EnvironmentObject var model: AppModel
     let peerIP: String
     @Environment(\.colorScheme) var colorScheme
+    @Environment(\.scenePhase) var scenePhase
 
     @State private var replyTarget: MessageEntry? = nil
     @State private var scrollHighlightID: String? = nil
@@ -44,7 +45,12 @@ struct ChatView: View {
         }
         .background(Theme.chatBackground(colorScheme))
         .onAppear { markRead() }
-        .onChange(of: entries.count) { _ in markRead() }
+        // Only auto-read when the window is active. Messages that arrive while
+        // the window is minimized or the app is backgrounded should not be
+        // silently marked read.
+        .onChange(of: entries.count) { _ in if scenePhase == .active { markRead() } }
+        // Catch up on any messages that arrived while the window was inactive.
+        .onChange(of: scenePhase) { phase in if phase == .active { markRead() } }
     }
 
     // MARK: - Header

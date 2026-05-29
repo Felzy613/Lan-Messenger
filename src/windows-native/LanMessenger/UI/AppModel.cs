@@ -56,6 +56,11 @@ public sealed partial class AppModel : ObservableObject
     [ObservableProperty] private UpdateProgress                  _updateProgress = new(UpdateProgressState.Idle);
     [ObservableProperty] private bool                            _isLocalNetworkAvailable = true;
 
+    // True while the main window is visible on screen; false when hidden to tray.
+    // Read receipts are only auto-sent when the window is visible so that messages
+    // arriving after the user hides the window are not silently marked read.
+    public bool IsWindowVisible { get; set; } = true;
+
     // Fires when a single message's status changes (Sent / Delivered / Read).
     // ChatPage listens to update one row in place — far cheaper than firing
     // Messages PropertyChanged, which would re-evaluate every observer that

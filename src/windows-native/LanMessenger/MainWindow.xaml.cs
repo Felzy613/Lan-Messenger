@@ -296,6 +296,7 @@ public sealed partial class MainWindow : Window
 
     private void HideWindow()
     {
+        Model.IsWindowVisible = false;
         AppWindow.Hide();
     }
 
@@ -307,6 +308,11 @@ public sealed partial class MainWindow : Window
         var hwnd = WindowNative.GetWindowHandle(this);
         ShowWindow(hwnd, SW_RESTORE);
         SetForegroundWindow(hwnd);
+        // Mark the current conversation read now that the user can see it.
+        // This catches messages that arrived while the window was hidden.
+        Model.IsWindowVisible = true;
+        if (Model.SelectedPeerIP is not null)
+            Model.MarkConversationRead(Model.SelectedPeerIP);
     }
 
     private void QuitFromTray()
