@@ -37,9 +37,11 @@ else
     2>/dev/null || true)
 
   if [ -n "$PREV_TAG" ]; then
-    PREV_SHA=$(gh release view "$PREV_TAG" \
-      --json targetCommitish -q .targetCommitish 2>/dev/null || true)
-    echo "Generating notes since: $PREV_TAG (${PREV_SHA:0:8})" >&2
+    # Use the tag name directly — git resolves it to the tagged commit.
+    # targetCommitish returns the branch name ("main"), not a SHA, so
+    # `git log main..HEAD` silently produces zero commits.
+    PREV_SHA="$PREV_TAG"
+    echo "Generating notes since: $PREV_TAG" >&2
   fi
 fi
 
