@@ -359,15 +359,17 @@ struct MediaBubbleView: View {
     }
 
     /// Read image pixel dimensions from the file header without decoding pixel data.
+    /// CGImageSource property values are CFNumber/NSNumber (integer), not CGFloat,
+    /// so we cast via Int to avoid the silent nil that `as? CGFloat` produces.
     nonisolated private static func naturalImagePixelSize(at path: String) -> CGSize {
         let url  = URL(fileURLWithPath: path) as CFURL
         let opts = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let src   = CGImageSourceCreateWithURL(url, opts),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, opts) as? [CFString: Any],
-              let pw    = props[kCGImagePropertyPixelWidth]  as? CGFloat,
-              let ph    = props[kCGImagePropertyPixelHeight] as? CGFloat
+              let pw    = props[kCGImagePropertyPixelWidth]  as? Int,
+              let ph    = props[kCGImagePropertyPixelHeight] as? Int
         else { return .zero }
-        return CGSize(width: pw, height: ph)
+        return CGSize(width: CGFloat(pw), height: CGFloat(ph))
     }
 }
 
@@ -458,7 +460,7 @@ struct MediaPreviewSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black.opacity(0.95))
         }
-        .frame(minWidth: 300, idealWidth: sheetFrame.width, minHeight: 200, idealHeight: sheetFrame.height)
+        .frame(width: sheetFrame.width, height: sheetFrame.height)
         .task(id: url.path) {
             switch kind {
             case .image:
