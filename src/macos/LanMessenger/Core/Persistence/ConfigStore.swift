@@ -7,19 +7,24 @@ struct ContactConfig: Codable, Identifiable {
     var lastIP: String
     // Base64-encoded profile picture (PNG/JPEG). Optional.
     var photoB64: String?
+    // SHA256(relay_id) for this peer — persisted so the relay mailbox address
+    // is known even when the peer hasn't been seen in the current session.
+    var relayIdHash: String?
 
     enum CodingKeys: String, CodingKey {
         case publicKeyB64 = "public_key_b64"
         case username
         case lastIP = "last_ip"
         case photoB64 = "photo_b64"
+        case relayIdHash = "relay_id_hash"
     }
 
-    init(publicKeyB64: String, username: String, lastIP: String, photoB64: String? = nil) {
+    init(publicKeyB64: String, username: String, lastIP: String, photoB64: String? = nil, relayIdHash: String? = nil) {
         self.publicKeyB64 = publicKeyB64
         self.username = username
         self.lastIP = lastIP
         self.photoB64 = photoB64
+        self.relayIdHash = relayIdHash
     }
 
     init(from decoder: Decoder) throws {
@@ -28,6 +33,7 @@ struct ContactConfig: Codable, Identifiable {
         username = try c.decode(String.self, forKey: .username)
         lastIP = try c.decode(String.self, forKey: .lastIP)
         photoB64 = try c.decodeIfPresent(String.self, forKey: .photoB64)
+        relayIdHash = try c.decodeIfPresent(String.self, forKey: .relayIdHash)
     }
 }
 

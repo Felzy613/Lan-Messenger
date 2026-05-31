@@ -24,7 +24,7 @@ struct ComposerView: View {
     @State private var capturedScreenshotPath: String? = nil
 
     private let minHeight: CGFloat = 36
-    private let maxHeight: CGFloat = 120
+    private let maxHeight: CGFloat = 130
 
     private var clampedHeight: CGFloat {
         min(max(measuredHeight, minHeight), maxHeight)
@@ -62,18 +62,6 @@ struct ComposerView: View {
             .help("Capture and send a screenshot")
 
             ZStack(alignment: .topLeading) {
-                // Hidden, off-screen text used to measure ideal height for the draft string.
-                Text(draft.isEmpty ? " " : draft)
-                    .font(.system(size: 14))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(GeometryReader { geo in
-                        Color.clear
-                            .preference(key: ComposerHeightKey.self, value: geo.size.height)
-                    })
-                    .hidden()
-
                 if draft.isEmpty {
                     Text("Message")
                         .font(.system(size: 14))
@@ -83,12 +71,9 @@ struct ComposerView: View {
                         .allowsHitTesting(false)
                 }
 
-                ComposerTextEditor(text: $draft, onSubmit: send)
+                ComposerTextEditor(text: $draft, contentHeight: $measuredHeight, onSubmit: send)
             }
             .frame(height: clampedHeight)
-            .onPreferenceChange(ComposerHeightKey.self) { newValue in
-                measuredHeight = newValue
-            }
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
             .overlay(
                 RoundedRectangle(cornerRadius: 18)
@@ -260,6 +245,7 @@ struct ComposerView: View {
 
 struct ComposerTextEditor: NSViewRepresentable {
     @Binding var text: String
+    @Binding var contentHeight: CGFloat
     var onSubmit: () -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -273,13 +259,17 @@ struct ComposerTextEditor: NSViewRepresentable {
         tv.isAutomaticDashSubstitutionEnabled = false
         tv.drawsBackground = false
         scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let tv = scrollView.documentView as? NSTextView else { return }
-        if tv.string != text { tv.string = text }
+        if tv.string != text {
+            tv.string = text
+            context.coordinator.invalidateHeight(tv)
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -291,6 +281,17 @@ struct ComposerTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             parent.text = tv.string
+            invalidateHeight(tv)
+        }
+
+        func invalidateHeight(_ tv: NSTextView) {
+            guard let lm = tv.layoutManager, let tc = tv.textContainer else { return }
+            lm.ensureLayout(for: tc)
+            let used = lm.usedRect(for: tc).height
+            let total = used + tv.textContainerInset.height * 2
+            DispatchQueue.main.async { [weak self] in
+                self?.parent.contentHeight = total
+            }
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -304,15 +305,6 @@ struct ComposerTextEditor: NSViewRepresentable {
             }
             return false
         }
-    }
-}
-
-// MARK: - Height measurement preference key
-
-private struct ComposerHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 36
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 

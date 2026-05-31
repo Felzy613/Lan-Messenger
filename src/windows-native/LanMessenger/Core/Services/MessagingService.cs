@@ -212,15 +212,21 @@ public sealed class MessagingService
                 ["nonce"]                 = encrypted.nonceB64,
                 ["ciphertext"]            = encrypted.ctB64,
             };
+            var msgId = msg.MessageId;
             Task.Run(async () =>
             {
-                var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"pending msgId={msg.MessageId}");
-                if (success) Dispatch(() => ApplyStatus(MessageStatus.Sent, msg.MessageId, peerIP));
+                var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"pending msgId={msgId}");
+                if (!success) return;
+                // Remove only after confirmed delivery so a TCP failure doesn't
+                // silently drop the message from the queue.
+                Dispatch(() =>
+                {
+                    ApplyStatus(MessageStatus.Sent, msgId, peerIP);
+                    ConfigStore.Shared.Config.PendingMessages.RemoveAll(m => m.MessageId == msgId);
+                    ConfigStore.Shared.Save();
+                });
             });
         }
-
-        ConfigStore.Shared.Config.PendingMessages.RemoveAll(m => m.PeerPublicKeyB64 == peerPublicKeyB64);
-        ConfigStore.Shared.Save();
     }
 
     // MARK: - Private receive handlers

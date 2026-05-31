@@ -253,7 +253,18 @@ public sealed partial class AppModel : ObservableObject
         };
         Peers = updated;
         if (!string.IsNullOrEmpty(relayIdHash))
+        {
             _peerRelayIdHashes[publicKeyB64] = relayIdHash;
+            // Persist relay hash into the contact so it survives app restarts.
+            // Without this, messages to offline peers skip the relay because
+            // _peerRelayIdHashes is only populated from live discovery packets.
+            var c = ConfigStore.Shared.Config.Contacts.FirstOrDefault(x => x.PublicKeyB64 == publicKeyB64);
+            if (c is not null && c.RelayIdHash != relayIdHash)
+            {
+                c.RelayIdHash = relayIdHash;
+                ConfigStore.Shared.Save();
+            }
+        }
 
         MigrateSyntheticRelayHistory(publicKeyB64, ip);
         RefreshConversations();
@@ -406,7 +417,10 @@ public sealed partial class AppModel : ObservableObject
         // currently online and TCP fails, that is a transient error — queue locally
         // but do not upload to the cloud relay to avoid spurious relay deliveries.
         var peerIsOnline = Peers.Values.Any(p => p.PublicKeyB64 == publicKey && p.IsOnline);
+        // Fall back to the contact's persisted relay hash when the peer hasn't
+        // been seen live in this session (_peerRelayIdHashes is in-memory only).
         _peerRelayIdHashes.TryGetValue(publicKey, out var relayIdHash);
+        relayIdHash ??= ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKey)?.RelayIdHash;
         if (peerIsOnline) relayIdHash = null;
         LanLogger.Info("Send", $"routing for peer={publicKey[..Math.Min(8, publicKey.Length)]} online={peerIsOnline} relay={relayIdHash is not null}");
         MessagingService.Shared.SendText(text, peerIP, publicKey, relayIdHash, replyTo);

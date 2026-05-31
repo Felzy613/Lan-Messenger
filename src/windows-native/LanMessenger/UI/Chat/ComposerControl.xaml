@@ -17,6 +17,7 @@
         <!-- Attach button — Segoe MDL2 "Attach" glyph matches the macOS SF Symbol paperclip -->
         <Button x:Name="AttachBtn"
                 Grid.Column="0"
+                VerticalAlignment="Bottom"
                 Width="32" Height="32"
                 Padding="0"
                 CornerRadius="16"
@@ -43,6 +44,7 @@
              double-tap can't enqueue two screenshots in a row. -->
         <Button x:Name="ScreenshotBtn"
                 Grid.Column="1"
+                VerticalAlignment="Bottom"
                 Width="32" Height="32"
                 Padding="0"
                 CornerRadius="16"
@@ -72,6 +74,7 @@
 
         <!-- Input box — custom Border keeps the WhatsApp rounded style at all focus states -->
         <Border Grid.Column="2"
+                VerticalAlignment="Bottom"
                 Background="{ThemeResource ControlFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                 BorderThickness="1"
@@ -82,10 +85,11 @@
                      AcceptsReturn="False"
                      TextWrapping="Wrap"
                      MinHeight="32"
-                     MaxHeight="120"
+                     MaxHeight="138"
                      BorderThickness="0"
                      Background="Transparent"
                      VerticalContentAlignment="Center"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
                      KeyDown="InputBox_KeyDown"
                      TextChanged="InputBox_TextChanged">
                 <!-- Suppress TextBox's own focus/hover chrome so the outer Border stays visible -->
@@ -101,6 +105,7 @@
         <!-- Send button — WhatsApp green circle with up arrow, matching macOS arrow.up.circle.fill -->
         <Button x:Name="SendBtn"
                 Grid.Column="3"
+                VerticalAlignment="Bottom"
                 Width="38" Height="38"
                 Padding="0"
                 CornerRadius="19"

@@ -10,6 +10,9 @@ public sealed class ContactConfig
     [JsonPropertyName("last_ip")]        public string LastIP       { get; set; } = "";
     // Optional base64-encoded JPEG/PNG used as the contact's avatar.
     [JsonPropertyName("photo_b64")]      public string? PhotoB64    { get; set; }
+    // SHA256(relay_id) for this peer — persisted so the relay mailbox address
+    // is known even when the peer hasn't been seen in the current session.
+    [JsonPropertyName("relay_id_hash")]  public string? RelayIdHash { get; set; }
 }
 
 public sealed class PendingMessageConfig

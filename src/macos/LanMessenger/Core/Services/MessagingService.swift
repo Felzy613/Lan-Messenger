@@ -163,8 +163,7 @@ final class MessagingService {
     // MARK: - Deliver pending messages to a newly-online peer
 
     func deliverPending(toPeerIP ip: String, peerPublicKeyB64: String) {
-        var pending = ConfigStore.shared.config.pendingMessages
-        let toDeliver = pending.filter { $0.peerPublicKeyB64 == peerPublicKeyB64 }
+        let toDeliver = ConfigStore.shared.config.pendingMessages.filter { $0.peerPublicKeyB64 == peerPublicKeyB64 }
         guard !toDeliver.isEmpty else { return }
 
         for msg in toDeliver {
@@ -186,16 +185,16 @@ final class MessagingService {
                 "nonce": nonceB64,
                 "ciphertext": ctB64,
             ]
+            let msgId = msg.messageId
             sendJSON(packet, toIP: ip, port: tcpPort) { [weak self] success in
-                if success {
-                    self?.updateStatus("Sent", forMessageId: msg.messageId, peerIP: ip)
-                }
+                guard success else { return }
+                self?.updateStatus("Sent", forMessageId: msgId, peerIP: ip)
+                // Remove only after confirmed delivery so a TCP failure doesn't
+                // silently drop the message from the queue.
+                ConfigStore.shared.config.pendingMessages.removeAll { $0.messageId == msgId }
+                ConfigStore.shared.save()
             }
         }
-
-        pending.removeAll { $0.peerPublicKeyB64 == peerPublicKeyB64 }
-        ConfigStore.shared.config.pendingMessages = pending
-        ConfigStore.shared.save()
     }
 
     // MARK: - Private receive handlers

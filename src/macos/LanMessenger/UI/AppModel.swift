@@ -205,6 +205,14 @@ final class AppModel: ObservableObject {
         knownPeerKeys[ip] = publicKeyB64
         if let hash = relayIdHash, !hash.isEmpty {
             peerRelayIdHashes[publicKeyB64] = hash
+            // Persist relay hash into the contact so it survives app restarts.
+            // Without this, messages to offline peers skip the relay because
+            // peerRelayIdHashes is only populated from live discovery packets.
+            if let idx = ConfigStore.shared.config.contacts.firstIndex(where: { $0.publicKeyB64 == publicKeyB64 }),
+               ConfigStore.shared.config.contacts[idx].relayIdHash != hash {
+                ConfigStore.shared.config.contacts[idx].relayIdHash = hash
+                ConfigStore.shared.save()
+            }
         }
 
         migrateSyntheticRelayHistory(publicKeyB64: publicKeyB64, toIP: ip)
@@ -326,7 +334,10 @@ final class AppModel: ObservableObject {
         // currently online and TCP fails, that is a transient error — queue locally
         // but do not upload to the cloud relay to avoid spurious relay deliveries.
         let peerIsOnline = peers.values.contains { $0.publicKeyB64 == key && $0.isOnline }
-        let relayHash = peerIsOnline ? nil : peerRelayIdHashes[key]
+        // Fall back to the contact's persisted relay hash when the peer hasn't
+        // been seen live in this session (peerRelayIdHashes is in-memory only).
+        let relayHash: String? = peerIsOnline ? nil :
+            (peerRelayIdHashes[key] ?? ConfigStore.shared.config.contacts.first(where: { $0.publicKeyB64 == key })?.relayIdHash)
         NetLogger.info("Send", "routing msgId for peer=\(key.prefix(8)) online=\(peerIsOnline) relay=\(relayHash != nil ? "yes" : "no")")
         MessagingService.shared.sendText(
             text,
