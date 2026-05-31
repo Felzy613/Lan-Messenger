@@ -104,8 +104,9 @@ enum ScreenshotService {
         return true
     }
 
-    /// Captures the primary display and writes it as a PNG into a stable temp
-    /// directory.  Returns the absolute file path on success.
+    /// Captures the primary display and writes it as a PNG into the configured
+    /// screenshots folder (or ~/Downloads/LAN Messenger Screenshots/ by default).
+    /// Returns the absolute file path on success.
     /// All ScreenCaptureKit work runs off the main actor.
     static func capturePrimaryDisplay() async throws -> String {
         let startedAt = Date()
@@ -119,6 +120,9 @@ enum ScreenshotService {
                 throw ScreenshotError.permissionDenied
             }
         }
+
+        // Read the user-configured directory on the main actor before detaching.
+        let customDir = ConfigStore.shared.config.screenshotDir
 
         // Off-main capture + write.
         return try await Task.detached(priority: .userInitiated) { () -> String in
@@ -143,7 +147,7 @@ enum ScreenshotService {
 
             // Encode as PNG using CGImageDestination — the Core Graphics API
             // is explicitly thread-safe (unlike NSBitmapImageRep).
-            let dir = try tempScreenshotDirectory()
+            let dir = try tempScreenshotDirectory(customPath: customDir)
             let filename = "Screenshot \(filenameTimestamp()).png"
             let url = dir.appendingPathComponent(filename)
             guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
@@ -213,6 +217,8 @@ enum ScreenshotService {
             }
         }
 
+        let customDir = ConfigStore.shared.config.screenshotDir
+
         return try await Task.detached(priority: .userInitiated) { () -> String in
             let cgImage: CGImage
             do {
@@ -229,7 +235,7 @@ enum ScreenshotService {
                 throw ScreenshotError.captureFailed(msg)
             }
 
-            let dir = try Self.tempScreenshotDirectory()
+            let dir = try Self.tempScreenshotDirectory(customPath: customDir)
             let filename = "Screenshot \(Self.filenameTimestamp()).png"
             let url = dir.appendingPathComponent(filename)
             guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
@@ -353,16 +359,21 @@ enum ScreenshotService {
     // and never touch UI state.  The @MainActor on the enclosing enum applies
     // to the public API surface only.
     //
-    // Screenshots are saved to ~/Downloads/LAN Messenger Screenshots/ rather than
-    // NSTemporaryDirectory().  The temp directory is cleaned by macOS between
-    // reboots and periodic maintenance, so absolute paths stored in chat history
-    // would become invalid after a restart, showing "File no longer available".
-    // The Downloads folder is permanent for the lifetime of the user's account.
-    nonisolated private static func tempScreenshotDirectory() throws -> URL {
+    // Screenshots are saved to a user-configurable folder (defaulting to
+    // ~/Downloads/LAN Messenger Screenshots/) rather than NSTemporaryDirectory().
+    // The temp directory is cleaned by macOS between reboots and periodic
+    // maintenance, so absolute paths stored in chat history would become invalid
+    // after a restart, showing "File no longer available".
+    nonisolated private static func tempScreenshotDirectory(customPath: String = "") throws -> URL {
         let fm = FileManager.default
-        let downloads = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first
-            ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let base = downloads.appendingPathComponent("LAN Messenger Screenshots", isDirectory: true)
+        let base: URL
+        if !customPath.isEmpty {
+            base = URL(fileURLWithPath: customPath)
+        } else {
+            let downloads = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            base = downloads.appendingPathComponent("LAN Messenger Screenshots", isDirectory: true)
+        }
         if !fm.fileExists(atPath: base.path) {
             try fm.createDirectory(at: base, withIntermediateDirectories: true)
         }

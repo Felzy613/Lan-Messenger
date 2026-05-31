@@ -32,6 +32,8 @@ struct MediaBubbleView: View {
     @Environment(\.colorScheme) var colorScheme
 
     @State private var thumbnail: NSImage? = nil
+    // Retained while the preview panel is on screen; released on close.
+    @State private var previewPanel: NSPanel? = nil
     /// Pre-computed display frame for the loaded thumbnail (pt), used to give
     /// SwiftUI a fixed layout size so it never needs to solve aspect-ratio
     /// equations during a LazyVStack/VStack layout pass.
@@ -40,7 +42,6 @@ struct MediaBubbleView: View {
     @State private var naturalImageSize: CGSize? = nil
     @State private var loadFailed = false
     @State private var fileExists = false
-    @State private var showPreview = false
     @State private var revealError: String? = nil
 
     private var path: String {
@@ -75,9 +76,6 @@ struct MediaBubbleView: View {
         .padding(.vertical, 1)
         .task(id: path) {
             await refreshFileState()
-        }
-        .sheet(isPresented: $showPreview) {
-            MediaPreviewSheet(url: url, kind: kind, filename: filename, naturalSize: naturalImageSize)
         }
         .alert("Cannot open file location",
                isPresented: Binding(get: { revealError != nil },
@@ -133,7 +131,7 @@ struct MediaBubbleView: View {
     @ViewBuilder
     private var mediaTile: some View {
         Button {
-            showPreview = true
+            openPreviewPanel()
         } label: {
             ZStack(alignment: .bottomTrailing) {
                 // tileContent already carries an explicit fixed frame (either the
@@ -252,6 +250,30 @@ struct MediaBubbleView: View {
         .padding(.vertical, 10)
         .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 14))
         .frame(maxWidth: 320)
+    }
+
+    // MARK: - Preview panel
+
+    @MainActor
+    private func openPreviewPanel() {
+        let size = MediaPreviewSheet.frameSize(naturalSize: naturalImageSize, kind: kind)
+        let panel = EscapablePanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = filename
+        panel.center()
+        panel.contentView = NSHostingView(rootView: MediaPreviewSheet(
+            url: url,
+            kind: kind,
+            filename: filename,
+            naturalSize: naturalImageSize,
+            onClose: { [weak panel] in panel?.close() }
+        ))
+        panel.makeKeyAndOrderFront(nil)
+        previewPanel = panel
     }
 
     // MARK: - Helpers
@@ -391,18 +413,18 @@ struct MediaPreviewSheet: View {
     let kind: MediaKind
     let filename: String
     var naturalSize: CGSize? = nil
+    var onClose: (() -> Void)? = nil
 
-    @Environment(\.dismiss) private var dismiss
     @State private var image: NSImage? = nil
     @State private var player: AVPlayer? = nil
 
-    /// Ideal window size based on the image's natural pixel dimensions.
+    /// Window size based on the image's natural pixel dimensions.
     /// Caps at the visible screen area with an 80 pt margin on each axis.
-    private var sheetFrame: CGSize {
+    static func frameSize(naturalSize: CGSize?, kind: MediaKind) -> CGSize {
         guard kind == .image,
               let nat = naturalSize, nat.width > 0, nat.height > 0
         else {
-            return CGSize(width: 1000, height: 720) // default for video / unknown
+            return CGSize(width: 1000, height: 720)
         }
         let screen  = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)
         let headerH: CGFloat = 44
@@ -427,7 +449,7 @@ struct MediaPreviewSheet: View {
                 } label: {
                     Label("Show in Finder", systemImage: "folder")
                 }
-                Button("Close") { dismiss() }
+                Button("Close") { onClose?() }
                     .keyboardShortcut(.escape, modifiers: [])
             }
             .padding(10)
@@ -460,7 +482,6 @@ struct MediaPreviewSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black.opacity(0.95))
         }
-        .frame(width: sheetFrame.width, height: sheetFrame.height)
         .task(id: url.path) {
             switch kind {
             case .image:
@@ -522,6 +543,12 @@ struct ZoomableImageView: NSViewRepresentable {
         guard let imageView = nsView.documentView as? NSImageView else { return }
         imageView.image = image
     }
+}
+
+// MARK: - Escapable panel
+
+private final class EscapablePanel: NSPanel {
+    override func cancelOperation(_ sender: Any?) { close() }
 }
 
 // MARK: - Thumbnail cache (in-memory, NSCache-backed)

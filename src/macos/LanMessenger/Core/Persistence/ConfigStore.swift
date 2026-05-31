@@ -89,6 +89,8 @@ struct AppConfig: Codable {
     // URL of a Cloudflare Worker (or compatible endpoint) that stores offline
     // messages. Empty by default — users supply their own Worker URL.
     var relayWorkerURL: String = ""
+    // User-chosen folder for screenshots. Empty means default (Downloads/LAN Messenger Screenshots).
+    var screenshotDir: String = ""
 
     enum CodingKeys: String, CodingKey {
         case username, contacts
@@ -105,6 +107,7 @@ struct AppConfig: Codable {
         case verboseLogging = "verbose_logging"
         case relayEnabled = "relay_enabled"
         case relayWorkerURL = "relay_worker_url"
+        case screenshotDir = "screenshot_dir"
     }
 
     init() {}
@@ -127,6 +130,7 @@ struct AppConfig: Codable {
         verboseLogging = (try c.decodeIfPresent(Bool.self, forKey: .verboseLogging)) ?? false
         relayEnabled = (try c.decodeIfPresent(Bool.self, forKey: .relayEnabled)) ?? false
         relayWorkerURL = (try c.decodeIfPresent(String.self, forKey: .relayWorkerURL)) ?? ""
+        screenshotDir = (try c.decodeIfPresent(String.self, forKey: .screenshotDir)) ?? ""
     }
 }
 

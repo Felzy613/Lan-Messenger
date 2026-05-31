@@ -35,6 +35,30 @@
                 </Grid>
             </StackPanel>
 
+            <!-- Screenshots folder -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Screenshots folder"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="ScreenshotDirBox"
+                             Grid.Column="0"
+                             IsReadOnly="True" />
+                    <Button x:Name="ResetScreenshotDirBtn"
+                            Grid.Column="1"
+                            Content="Reset"
+                            Visibility="Collapsed"
+                            Click="ResetScreenshotDir_Click" />
+                    <Button Grid.Column="2"
+                            Content="Browse…"
+                            Click="BrowseScreenshotDir_Click" />
+                </Grid>
+            </StackPanel>
+
             <!-- Background behavior -->
             <StackPanel Spacing="6">
                 <TextBlock Text="Background"

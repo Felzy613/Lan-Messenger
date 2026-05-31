@@ -51,6 +51,8 @@ public sealed class AppConfig
     // URL of a Cloudflare Worker (or compatible endpoint) that stores offline
     // messages. Empty by default — users supply their own Worker URL.
     [JsonPropertyName("relay_worker_url")]      public string RelayWorkerUrl     { get; set; } = "";
+    // User-chosen folder for screenshots. Empty means default (Downloads\LAN Messenger Screenshots).
+    [JsonPropertyName("screenshot_dir")]        public string ScreenshotDir      { get; set; } = "";
 }
 
 // Manages reading/writing config.json in %APPDATA%\LanMessenger\.
@@ -102,6 +104,13 @@ public sealed class ConfigStore
     public string UpdateStagingDirectory => Path.Combine(_appDataDir, "Updates");
 
     public string AppDataDirectory => _appDataDir;
+
+    public string ScreenshotDirectory =>
+        string.IsNullOrEmpty(Config.ScreenshotDir)
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Downloads", "LAN Messenger Screenshots")
+            : Config.ScreenshotDir;
 
     // MARK: - Persistence
 

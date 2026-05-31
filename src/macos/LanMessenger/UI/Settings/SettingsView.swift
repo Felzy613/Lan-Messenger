@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var username = ConfigStore.shared.config.username
     @State private var updateRepo = ConfigStore.shared.config.updateRepo
     @State private var inboxDir = ConfigStore.shared.config.inboxDir
+    @State private var screenshotDir = ConfigStore.shared.config.screenshotDir
     @State private var hideFromDock = ConfigStore.shared.config.hideFromDock
     @State private var launchAtLogin = ConfigStore.shared.config.launchAtLogin
     @State private var verboseLogging = ConfigStore.shared.config.verboseLogging
@@ -60,7 +61,7 @@ struct SettingsView: View {
                 }
 
                 Section("Files") {
-                    LabeledContent("Save location") {
+                    LabeledContent("Received files") {
                         HStack(spacing: 8) {
                             Text(inboxDir.isEmpty ? "Default" : inboxDir)
                                 .foregroundStyle(inboxDir.isEmpty ? .secondary : .primary)
@@ -72,6 +73,21 @@ struct SettingsView: View {
                                     .buttonStyle(.bordered)
                             }
                             Button("Choose…") { pickInboxDir() }
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                    LabeledContent("Screenshots") {
+                        HStack(spacing: 8) {
+                            Text(screenshotDir.isEmpty ? "Default (Downloads/LAN Messenger Screenshots)" : screenshotDir)
+                                .foregroundStyle(screenshotDir.isEmpty ? .secondary : .primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 0)
+                            if !screenshotDir.isEmpty {
+                                Button("Reset") { screenshotDir = "" }
+                                    .buttonStyle(.bordered)
+                            }
+                            Button("Choose…") { pickScreenshotDir() }
                                 .buttonStyle(.bordered)
                         }
                     }
@@ -360,6 +376,7 @@ struct SettingsView: View {
         ConfigStore.shared.config.username = username
         ConfigStore.shared.config.updateRepo = updateRepo.trimmingCharacters(in: .whitespaces)
         ConfigStore.shared.config.inboxDir = inboxDir
+        ConfigStore.shared.config.screenshotDir = screenshotDir
         ConfigStore.shared.config.hideFromDock = hideFromDock
         ConfigStore.shared.config.verboseLogging = verboseLogging
         ConfigStore.shared.config.relayEnabled = relayEnabled
@@ -424,6 +441,17 @@ struct SettingsView: View {
         panel.prompt = "Select"
         if panel.runModal() == .OK, let url = panel.url {
             inboxDir = url.path
+        }
+    }
+
+    private func pickScreenshotDir() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select"
+        if panel.runModal() == .OK, let url = panel.url {
+            screenshotDir = url.path
         }
     }
 

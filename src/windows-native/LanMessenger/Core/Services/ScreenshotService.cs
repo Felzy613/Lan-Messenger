@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.Versioning;
 using System.Text;
+using LanMessenger.Core.Persistence;
 
 namespace LanMessenger.Core.Services;
 
@@ -210,7 +211,7 @@ public static class ScreenshotService
 
     private static string EnsureTempDirectory()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "LanMessenger-Screenshots");
+        var dir = ConfigStore.Shared.ScreenshotDirectory;
         if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
         return dir;
     }

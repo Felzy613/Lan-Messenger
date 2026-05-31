@@ -35,6 +35,9 @@ public sealed partial class SettingsPage : Page
         var cfg = ConfigStore.Shared.Config;
         UsernameBox.Text   = cfg.Username;
         InboxBox.Text      = ConfigStore.Shared.InboxDirectory;
+        ScreenshotDirBox.Text = ConfigStore.Shared.ScreenshotDirectory;
+        ResetScreenshotDirBtn.Visibility = string.IsNullOrEmpty(cfg.ScreenshotDir)
+            ? Visibility.Collapsed : Visibility.Visible;
         UpdateRepoBox.Text = cfg.UpdateRepo;
         CloseToTrayToggle.IsOn = cfg.CloseToTray;
         VerboseLoggingToggle.IsOn = cfg.VerboseLogging;
@@ -170,6 +173,30 @@ public sealed partial class SettingsPage : Page
         ConfigStore.Shared.Config.InboxDir = folder.Path;
         ConfigStore.Shared.Save();
         InboxBox.Text = folder.Path;
+    }
+
+    private async void BrowseScreenshotDir_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new Windows.Storage.Pickers.FolderPicker();
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+        picker.FileTypeFilter.Add("*");
+
+        var folder = await picker.PickSingleFolderAsync();
+        if (folder is null) return;
+
+        ConfigStore.Shared.Config.ScreenshotDir = folder.Path;
+        ConfigStore.Shared.Save();
+        ScreenshotDirBox.Text = folder.Path;
+        ResetScreenshotDirBtn.Visibility = Visibility.Visible;
+    }
+
+    private void ResetScreenshotDir_Click(object sender, RoutedEventArgs e)
+    {
+        ConfigStore.Shared.Config.ScreenshotDir = "";
+        ConfigStore.Shared.Save();
+        ScreenshotDirBox.Text = ConfigStore.Shared.ScreenshotDirectory;
+        ResetScreenshotDirBtn.Visibility = Visibility.Collapsed;
     }
 
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e)

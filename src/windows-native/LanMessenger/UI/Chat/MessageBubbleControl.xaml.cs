@@ -286,13 +286,8 @@ public sealed partial class MessageBubbleControl : UserControl
         }
         try
         {
-            // ContentDialog requires an XamlRoot — the bubble's XamlRoot works
-            // because it inherits from the active visual tree.
-            var dialog = new MediaPreviewDialog(path, _mediaKind, Row?.Text ?? Path.GetFileName(path))
-            {
-                XamlRoot = this.XamlRoot,
-            };
-            _ = await dialog.ShowAsync();
+            var win = new MediaPreviewWindow(path, _mediaKind, Row?.Text ?? Path.GetFileName(path));
+            win.Activate();
         }
         catch (Exception ex)
         {
