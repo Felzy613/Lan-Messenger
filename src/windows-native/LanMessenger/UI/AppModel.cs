@@ -759,8 +759,7 @@ public sealed partial class AppModel : ObservableObject
                 ConfigStore.Shared.Save();
             }
             RefreshConversations();
-            if (SelectedPeerIP != ip)
-                NotificationService.Shared.ShowMessage(entry.Sender, entry.Text);
+            NotificationService.Shared.ShowMessage(entry.Sender, entry.Text);
         };
 
         MessagingService.Shared.OnStatusUpdate = (ip, msgId, status) =>

@@ -26,6 +26,8 @@ public sealed partial class MainWindow : Window
     // True after the user has explicitly requested Quit (tray menu or AppDelegate); causes
     // closing the window to actually exit the process rather than hide.
     private bool _allowExit;
+    // Tracks tray-hide separately so the minimized-state handler doesn't clobber it.
+    private bool _isHiddenToTray;
 
     public ICommand ShowFromTrayCommand { get; }
     public ICommand OpenFromTrayCommand { get; }
@@ -65,6 +67,7 @@ public sealed partial class MainWindow : Window
         // unpackaged-WinUI3 way to do this — the regular Window.Closed event fires
         // too late to cancel.
         appWindow.Closing += OnAppWindowClosing;
+        appWindow.Changed += OnAppWindowChanged;
     }
 
     // Reuse a single ChatPage instance — re-binding `Model` would also re-fire OnPropertyChanged,
@@ -285,6 +288,22 @@ public sealed partial class MainWindow : Window
 
     // MARK: - Tray / background lifecycle
 
+    private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        // Ignore presenter changes while hidden to tray — that state is managed
+        // explicitly by HideWindow/ShowWindowFromTray.
+        if (_isHiddenToTray) return;
+        if (sender.Presenter is OverlappedPresenter op)
+        {
+            var nowVisible = op.State != OverlappedPresenterState.Minimized;
+            if (Model.IsWindowVisible == nowVisible) return;
+            Model.IsWindowVisible = nowVisible;
+            // Catch up on any unread messages that arrived while minimized.
+            if (nowVisible && Model.SelectedPeerIP is not null)
+                Model.MarkConversationRead(Model.SelectedPeerIP);
+        }
+    }
+
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         if (_allowExit) return;
@@ -296,12 +315,14 @@ public sealed partial class MainWindow : Window
 
     private void HideWindow()
     {
+        _isHiddenToTray = true;
         Model.IsWindowVisible = false;
         AppWindow.Hide();
     }
 
     public void ShowWindowFromTray()
     {
+        _isHiddenToTray = false;
         var aw = AppWindow;
         aw.Show();
         // Bring to foreground.
