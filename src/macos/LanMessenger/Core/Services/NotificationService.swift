@@ -3,13 +3,26 @@ import UserNotifications
 
 // Wraps UNUserNotificationCenter for inbound message and file notifications.
 // Request authorization on first launch.
-final class NotificationService {
+final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     static let shared = NotificationService()
-    private init() {}
+    private override init() {}
 
     func requestAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        let center = UNUserNotificationCenter.current()
+        // Must set delegate before requesting auth so willPresent fires correctly.
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    // Without this, macOS suppresses banners whenever the app is "active" —
+    // which includes window-closed and minimized states, not just foreground.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
     }
 
     func showMessage(from sender: String, text: String) {
