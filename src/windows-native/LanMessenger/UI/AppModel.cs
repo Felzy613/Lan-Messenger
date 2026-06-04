@@ -272,6 +272,14 @@ public sealed partial class AppModel : ObservableObject
         DeliverPendingFiles(ip, publicKeyB64);
     }
 
+    private void TouchPeer(string? publicKeyB64)
+    {
+        if (string.IsNullOrEmpty(publicKeyB64)) return;
+        var current = Peers;
+        if (!current.TryGetValue(publicKeyB64, out var existing)) return;
+        existing.LastSeen = DateTime.UtcNow;
+    }
+
     private void StartPeerTimeoutTimer()
     {
         // Keep peers in the dictionary even when they go offline — their public key
@@ -730,6 +738,9 @@ public sealed partial class AppModel : ObservableObject
 
         Coordinator.PacketReceived += pkt =>
         {
+            // Refresh LastSeen for the sender so TCP activity (text, typing,
+            // receipts, file chunks) keeps them marked online — mirrors macOS touchPeer.
+            TouchPeer(pkt.SenderPublicKeyB64);
             switch (pkt)
             {
                 case ValidatedText or ValidatedTyping or ValidatedReceipt:
