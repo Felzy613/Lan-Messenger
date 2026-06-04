@@ -647,7 +647,9 @@ final class AppModel: ObservableObject {
                 ConfigStore.shared.save()
             }
             self.refreshConversations()
-            NotificationService.shared.showMessage(from: entry.sender, text: entry.text)
+            if entry.incoming && self.selectedPeerIP != ip {
+                NotificationService.shared.showMessage(from: entry.sender, text: entry.text)
+            }
         }
         MessagingService.shared.onStatusUpdate = { [weak self] ip, msgId, status in
             guard let self else { return }
