@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 // Represents a discovered or saved peer.
 struct PeerInfo: Identifiable {
@@ -647,7 +648,15 @@ final class AppModel: ObservableObject {
                 ConfigStore.shared.save()
             }
             self.refreshConversations()
-            if entry.incoming && self.selectedPeerIP != ip {
+            // Only suppress the notification if the window is actually visible
+            // AND the user is already looking at this conversation. When the window
+            // is closed/minimized, selectedPeerIP stays set to the last peer, so we
+            // must not let it block notifications for that peer.
+            let windowVisible = NSApp.windows.contains {
+                $0.isVisible && $0.canBecomeMain && !($0 is NSPanel)
+            }
+            let isViewingConversation = windowVisible && self.selectedPeerIP == ip
+            if entry.incoming && !isViewingConversation {
                 NotificationService.shared.showMessage(from: entry.sender, text: entry.text)
             }
         }
