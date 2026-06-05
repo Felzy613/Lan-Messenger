@@ -165,4 +165,39 @@ public class PacketValidatorTests
         Assert.IsNotNull(result);
         Assert.AreEqual("Bob", result!.Username);
     }
+
+    [TestMethod]
+    public void GoodbyePacketAccepted()
+    {
+        // The departure datagram must pass the validator, otherwise peers can
+        // never flip offline promptly. This was the missing piece in the rebuild.
+        var pkt = new DiscoveryPacket
+        {
+            Type         = "goodbye",
+            Username     = "Bob",
+            Port         = 54232,
+            PublicKeyB64 = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBK=",
+            Ips          = ["10.0.0.2"],
+        };
+        var data = JsonSerializer.SerializeToUtf8Bytes(pkt);
+        var result = PacketValidator.ValidateDiscovery(data, "10.0.0.2", OwnKey, new HashSet<string>());
+        Assert.IsNotNull(result);
+        Assert.AreEqual("goodbye", result!.Type);
+    }
+
+    [TestMethod]
+    public void UnknownDiscoveryTypeDropped()
+    {
+        var pkt = new DiscoveryPacket
+        {
+            Type         = "banana",
+            Username     = "Bob",
+            Port         = 54232,
+            PublicKeyB64 = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBK=",
+            Ips          = ["10.0.0.2"],
+        };
+        var data = JsonSerializer.SerializeToUtf8Bytes(pkt);
+        var result = PacketValidator.ValidateDiscovery(data, "10.0.0.2", OwnKey, new HashSet<string>());
+        Assert.IsNull(result);
+    }
 }

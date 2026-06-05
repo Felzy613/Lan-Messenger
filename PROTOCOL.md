@@ -85,7 +85,7 @@ or other virtual adapters.
 
 ### Discovery Packet
 
-`discovery` and `discovery_reply` have the same shape:
+`discovery`, `discovery_reply`, and `goodbye` all have the same shape:
 
 ```json
 {
@@ -99,7 +99,7 @@ or other virtual adapters.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | string | yes | `discovery` or `discovery_reply` |
+| `type` | string | yes | `discovery`, `discovery_reply`, or `goodbye` |
 | `username` | string | yes | Sender display name |
 | `port` | integer | yes | Sender TCP port, normally `54232` |
 | `public_key_b64` | string | yes | Standard base64 of raw 32-byte X25519 public key |
@@ -110,7 +110,27 @@ or other virtual adapters.
 
 When a client receives `discovery`, it sends exactly one `discovery_reply` back
 to `{source_ip}:54231` over UDP. Do not send discovery replies to TCP port
-`54232`. Do not reply to `discovery_reply`; that creates a ping-pong loop.
+`54232`. Do not reply to `discovery_reply` or `goodbye`; replying to either
+creates a ping-pong loop or contradicts the departure.
+
+### Goodbye
+
+A `goodbye` is a departure announcement. A client emits it when it is leaving
+the LAN — clean quit, system sleep/suspend, or local network loss — so peers can
+mark it offline immediately instead of waiting out the silence timeout. It is
+sent to the same targets as a beacon (subnet broadcast, multicast, limited
+broadcast, and unicast hints), repeated a few times because UDP is lossy and it
+is a one-shot signal.
+
+Receivers must:
+
+- never reply to a `goodbye`;
+- never treat it as a heartbeat (it must not refresh `last_seen`);
+- mark the peer identified by `public_key_b64` offline at once.
+
+`goodbye` is additive and optional. Clients that predate it simply drop the
+packet (their validator rejects unknown types) and fall back to the silence
+timeout — graceful degradation, never a failure.
 
 ### Self Suppression
 
@@ -118,7 +138,43 @@ Drop discovery packets if:
 
 - source IP is one of this machine's current local IPv4 addresses;
 - `public_key_b64` equals this client's public key;
-- `public_key_b64` is empty or malformed.
+- `public_key_b64` is empty or malformed;
+- `type` is not one of `discovery`, `discovery_reply`, or `goodbye`.
+
+## Presence
+
+Online/offline status is LAN-local and derived from a per-peer state machine, not
+a single timestamp comparison. The cloud relay carries messages only and plays no
+part in presence.
+
+Inputs:
+
+- **Heartbeat** — a `discovery`, `discovery_reply`, or any inbound TCP packet
+  from a peer refreshes its `last_seen` and marks it online.
+- **Goodbye** — marks the peer offline immediately.
+- **Liveness probe** — when a peer goes quiet, the observer unicasts a
+  `discovery` to each address the peer has advertised (its `ips`) to reconfirm it
+  before declaring it offline.
+
+State, evaluated about once per second against `now - last_seen`:
+
+| Age since last_seen | State | Behavior |
+|---|---|---|
+| `< 5 s` | Online | healthy |
+| `5 s – 12 s` | Online (probing) | still shown online; unicast probe each tick |
+| `≥ 12 s` | Offline | gray |
+
+The probing window is what lets the offline timeout be short without flicker: a
+quiet peer is actively reconfirmed rather than passively assumed dead the instant
+a few beacons are lost. The 1.5 s beacon interval gives roughly three beacons of
+slack before probing begins.
+
+Peers are retained in memory after they go offline (their public key is needed to
+queue/relay messages); presence is an explicit field on the record. Non-contact
+peers that stay offline for more than five minutes are pruned. Losing the local
+network marks every peer offline at once; regaining it triggers an immediate
+beacon and relay drain. Timeouts are local policy — each client may choose its
+own and they carry no wire dependency.
 
 ## Framing
 

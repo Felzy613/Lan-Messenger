@@ -10,7 +10,15 @@ struct PeerInfo: Identifiable {
     var port: Int
     var publicKeyB64: String
     var lastSeen: Date
-    var isOnline: Bool { Date().timeIntervalSince(lastSeen) < 20 }
+    // Explicit, authoritative presence. Set by the presence evaluator, by
+    // heartbeats (discovery/TCP), and by goodbye/network-loss — never inferred
+    // from `lastSeen` at read time, so the UI updates reactively and macOS and
+    // Windows agree. See PresenceEvaluator.
+    var presence: PeerPresence = .online
+    // Every IP this peer has advertised (from discovery `ips`), used as probe
+    // targets so a multi-homed or roaming peer can still be reconfirmed.
+    var knownIPs: [String] = []
+    var isOnline: Bool { presence == .online }
 }
 
 // ViewModel for one conversation row in the sidebar.
@@ -69,9 +77,15 @@ final class AppModel: ObservableObject {
     // Used to upload queued messages to the cloud relay mailbox of offline peers.
     private var peerRelayIdHashes: [String: String] = [:]   // keyed by peerPublicKeyB64
 
+    // Lets the AppDelegate reach the live model from @MainActor lifecycle hooks
+    // (e.g. applicationWillTerminate, which must send the goodbye synchronously
+    // before the process exits — a Task hop would be dropped).
+    static weak var shared: AppModel?
+
     // MARK: - Init
 
     init() {
+        Self.shared = self
         wireDelegates()
         start()
     }
@@ -99,6 +113,30 @@ final class AppModel: ObservableObject {
         reconcileLoginItem()
         scheduleAutoUpdateCheck()
         startRelayPolling()
+        registerLifecycleObservers()
+    }
+
+    // Announce departure on sleep so peers flip us offline instantly instead of
+    // waiting out the silence timeout; re-announce on wake. (Quit is handled in
+    // the AppDelegate's applicationWillTerminate, which must run synchronously.)
+    private func registerLifecycleObservers() {
+        let wsnc = NSWorkspace.shared.notificationCenter
+        wsnc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { [weak self] _ in
+            Task { @MainActor in self?.handleWillSleep() }
+        }
+        wsnc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { [weak self] _ in
+            Task { @MainActor in self?.scan() }
+        }
+    }
+
+    private func handleWillSleep() {
+        coordinator.sendGoodbye()
+        markAllPeersOffline(reason: "sleep")
+    }
+
+    // Called from the AppDelegate at quit. Must stay synchronous.
+    func sendGoodbyeOnTerminate() {
+        coordinator.sendGoodbye()
     }
 
     // If the user previously asked for launch-at-login but the system's
@@ -162,7 +200,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - Peers
 
-    private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String, relayIdHash: String? = nil) {
+    private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String, relayIdHash: String? = nil, advertisedIPs: [String] = []) {
         // Last-resort self-suppression — defends against stale `ownIPs` in
         // the discovery service when the machine's network interfaces change.
         if publicKeyB64.isEmpty || publicKeyB64 == KeyManager.shared.publicKeyB64 { return }
@@ -201,7 +239,12 @@ final class AppModel: ObservableObject {
             }
         }
 
-        let info = PeerInfo(ip: ip, username: username, port: port, publicKeyB64: publicKeyB64, lastSeen: Date())
+        // A heartbeat (beacon or reply) means the peer is reachable now —
+        // presence is online and the silence clock resets.
+        var knownIPs = advertisedIPs
+        if !knownIPs.contains(ip) { knownIPs.insert(ip, at: 0) }
+        let info = PeerInfo(ip: ip, username: username, port: port, publicKeyB64: publicKeyB64,
+                            lastSeen: Date(), presence: .online, knownIPs: knownIPs)
         peers[publicKeyB64] = info
         knownPeerKeys[ip] = publicKeyB64
         if let hash = relayIdHash, !hash.isEmpty {
@@ -223,17 +266,64 @@ final class AppModel: ObservableObject {
         deliverPendingFiles(toPeerIP: ip, peerPublicKeyB64: publicKeyB64)
     }
 
+    // How long a non-contact peer may sit offline before it is dropped from the
+    // dict. Contacts are kept indefinitely (their key is needed to queue/relay).
+    private let nonContactPruneAfter: TimeInterval = 300
+
+    // Drives the LAN presence state machine. Runs every second: re-evaluates
+    // every peer from its lastSeen, actively probes the ones that have gone
+    // quiet, flips presence on transitions, and prunes long-gone non-contacts.
+    // Peers are NOT deleted the instant they go offline — presence is explicit,
+    // so an offline contact stays in the dict (matching Windows) and the row
+    // simply shows gray.
     private func startPeerTimeoutTimer() {
-        // NetworkInterfaceMonitor (owned by the coordinator) keeps ownIPs live
-        // across DHCP/Wi-Fi/VPN transitions, so this timer no longer needs to
-        // poke it on every tick.
-        peerTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let before = self.peers.count
-                self.peers = self.peers.filter { $0.value.isOnline }
-                if self.peers.count != before { self.refreshConversations() }
+        peerTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.evaluatePresence() }
+        }
+    }
+
+    private func evaluatePresence() {
+        let now = Date()
+        let contactKeys = Set(ConfigStore.shared.config.contacts.map { $0.publicKeyB64 })
+        var changed = false
+        var probeTargets: [String] = []
+        // Mutate a copy, then assign once — never mutate `peers` while iterating it.
+        var updated = peers
+
+        for (key, info) in peers {
+            let decision = PresenceEvaluator.decide(lastSeen: info.lastSeen, now: now)
+
+            // Prune non-contact peers that have been gone a long time so the
+            // dict can't grow without bound from one-off discovered devices.
+            if decision == .offline,
+               !contactKeys.contains(key),
+               now.timeIntervalSince(info.lastSeen) > nonContactPruneAfter {
+                updated.removeValue(forKey: key)
+                changed = true
+                continue
             }
+
+            if decision.shouldProbe {
+                // Reconfirm via unicast before declaring offline. Probe every
+                // address the peer has advertised, not just the last one.
+                probeTargets.append(contentsOf: info.knownIPs.isEmpty ? [info.ip] : info.knownIPs)
+            }
+
+            if info.presence != decision.presence {
+                var copy = info
+                copy.presence = decision.presence
+                updated[key] = copy
+                changed = true
+            }
+        }
+
+        // Send probes outside the loop. Cheap unicast UDP; harmless if the peer
+        // has actually left (a datagram to a dead IP is just dropped).
+        for ip in Set(probeTargets) { coordinator.probe(ip: ip) }
+
+        if changed {
+            peers = updated
+            refreshConversations()
         }
     }
 
@@ -313,8 +403,13 @@ final class AppModel: ObservableObject {
 
     private func touchPeer(publicKeyB64: String) {
         guard var info = peers[publicKeyB64] else { return }
+        let wasOffline = info.presence == .offline
         info.lastSeen = Date()
+        info.presence = .online
         peers[publicKeyB64] = info
+        // Any inbound TCP traffic proves the peer is back — surface it at once
+        // rather than waiting for the next discovery beacon.
+        if wasOffline { refreshConversations() }
     }
 
     // Trigger a manual UDP discovery broadcast.
@@ -442,7 +537,10 @@ final class AppModel: ObservableObject {
             ?? knownPeerKeys[ip]
         guard let key = publicKey else { return }
 
-        if peerByIP(ip) != nil {
+        // Stream immediately only when the peer is actually online. Offline peers
+        // remain in the dict now (presence is explicit), so test isOnline rather
+        // than mere existence — otherwise the file would skip the persisted queue.
+        if peerByIP(ip)?.isOnline == true {
             FileTransferService.shared.enqueue(filePath: path, toPeerIP: ip, peerPublicKeyB64: key)
         } else {
             // Persist the pending file so it survives an app restart while the peer is offline.
@@ -798,7 +896,8 @@ extension AppModel: NetworkCoordinatorDelegate {
         case .fileStart, .fileChunk, .fileEnd:
             FileTransferService.shared.handlePacket(packet)
         case .discovery(let pkt, let ip):
-            upsertPeer(ip: ip, username: pkt.username, port: pkt.port, publicKeyB64: pkt.publicKeyB64)
+            upsertPeer(ip: ip, username: pkt.username, port: pkt.port,
+                       publicKeyB64: pkt.publicKeyB64, advertisedIPs: pkt.ips)
         }
     }
 
@@ -808,20 +907,52 @@ extension AppModel: NetworkCoordinatorDelegate {
             username: packet.username,
             port: packet.port,
             publicKeyB64: packet.publicKeyB64,
-            relayIdHash: packet.relayIdHash
+            relayIdHash: packet.relayIdHash,
+            advertisedIPs: packet.ips
         )
+    }
+
+    // A peer announced its departure (clean quit / sleep / network loss). Flip
+    // it offline immediately and push lastSeen into the past so the next
+    // presence tick agrees and won't bounce it back online.
+    func coordinator(_ c: NetworkCoordinator, didReceiveGoodbyeFrom publicKeyB64: String, fromIP ip: String) {
+        guard var info = peers[publicKeyB64] else { return }
+        NetLogger.info("Net", "peer \(publicKeyB64.prefix(8)) said goodbye — marking offline")
+        info.presence = .offline
+        info.lastSeen = .distantPast
+        peers[publicKeyB64] = info
+        refreshConversations()
     }
 
     func coordinatorNetworkAvailabilityChanged(_ c: NetworkCoordinator) {
         let available = c.isLocalNetworkAvailable
         let wasAvailable = isLocalNetworkAvailable
         if isLocalNetworkAvailable != available { isLocalNetworkAvailable = available }
-        // When the LAN comes back after being offline, drain the relay mailbox
-        // immediately — the recipient may have been unreachable while messages
-        // piled up on the Worker.
+        if !available {
+            // Our own LAN dropped — we can no longer see anyone, so don't keep
+            // showing stale green dots. Beacons will revive real peers on return.
+            markAllPeersOffline(reason: "network-down")
+        }
+        // When the LAN comes back after being offline, re-announce ourselves and
+        // drain the relay mailbox immediately — the recipient may have been
+        // unreachable while messages piled up on the Worker.
         if available, !wasAvailable {
-            NetLogger.info("Relay", "network became available — triggering immediate relay fetch")
+            NetLogger.info("Net", "network became available — rescanning and fetching relay")
+            scan()
             fetchRelayMessages(reason: "network-up")
         }
+    }
+
+    // Flip every known peer offline locally (we've lost the ability to observe
+    // them). lastSeen is aged out so the presence tick stays in agreement.
+    private func markAllPeersOffline(reason: String) {
+        guard !peers.isEmpty else { return }
+        NetLogger.info("Net", "marking all peers offline (\(reason))")
+        for (key, var info) in peers where info.presence != .offline {
+            info.presence = .offline
+            info.lastSeen = .distantPast
+            peers[key] = info
+        }
+        refreshConversations()
     }
 }

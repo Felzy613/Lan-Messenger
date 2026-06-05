@@ -22,6 +22,14 @@ final class LanMessengerAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    // Announce our departure so peers flip us offline instantly instead of
+    // waiting out the silence timeout. This must be synchronous — the process
+    // exits right after, so a Task/async hop would never run. The send itself
+    // is a non-blocking UDP sendto handed to the kernel.
+    func applicationWillTerminate(_ notification: Notification) {
+        AppModel.shared?.sendGoodbyeOnTerminate()
+    }
+
     // When the user clicks the dock icon (if visible) or relaunches, surface the window again.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows {

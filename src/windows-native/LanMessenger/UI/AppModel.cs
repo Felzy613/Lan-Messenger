@@ -17,10 +17,15 @@ public sealed class PeerInfo
     public int      Port         { get; init; }
     public string   PublicKeyB64 { get; init; } = "";
     public DateTime LastSeen     { get; set; }
-    // 20 s matches the macOS threshold (1.5 s beacon interval × ~13 misses).
-    // The previous 7 s value was too tight: normal Wi-Fi jitter and the 1.2 s
-    // dedup window caused peers to flip offline/online on a loaded LAN.
-    public bool     IsOnline     => (DateTime.UtcNow - LastSeen).TotalSeconds < 20;
+    // Explicit, authoritative presence. Set by the presence evaluator, by
+    // heartbeats (discovery/TCP), and by goodbye/network-loss — never inferred
+    // from LastSeen at read time, so the UI updates reactively and Windows and
+    // macOS agree. See PresenceEvaluator.
+    public PeerPresence Presence { get; set; } = PeerPresence.Online;
+    // Every IP this peer has advertised (from discovery `ips`), used as probe
+    // targets so a multi-homed or roaming peer can still be reconfirmed.
+    public List<string> KnownIPs { get; set; } = [];
+    public bool     IsOnline     => Presence == PeerPresence.Online;
 }
 
 // View model for one conversation row in the sidebar.
@@ -131,12 +136,19 @@ public sealed partial class AppModel : ObservableObject
             var available = Coordinator.IsLocalNetworkAvailable;
             var wasAvailable = IsLocalNetworkAvailable;
             if (IsLocalNetworkAvailable != available) IsLocalNetworkAvailable = available;
-            // When the LAN comes back after being unavailable, drain the relay
-            // mailbox immediately — pending messages may have piled up on the
-            // Worker while we were unreachable.
+            if (!available)
+            {
+                // Our own LAN dropped — we can't see anyone, so don't keep showing
+                // stale green dots. Beacons will revive real peers on return.
+                MarkAllPeersOffline("network-down");
+            }
+            // When the LAN comes back after being unavailable, re-announce
+            // ourselves and drain the relay mailbox immediately — pending
+            // messages may have piled up on the Worker while we were unreachable.
             if (available && !wasAvailable)
             {
-                LanLogger.Info("Relay", "network became available — triggering immediate relay fetch");
+                LanLogger.Info("Net", "network became available — rescanning and fetching relay");
+                Coordinator.Discovery.SendBeacon();
                 _ = FetchRelayMessagesAsync("network-up");
             }
         };
@@ -146,6 +158,26 @@ public sealed partial class AppModel : ObservableObject
         CheckMigration();
         ScheduleAutoUpdateCheck();
         StartRelayPolling();
+
+        // Announce departure on sleep so peers flip us offline instantly instead
+        // of waiting out the silence timeout; re-announce on wake. The handler
+        // runs on a SystemEvents thread — SendGoodbye is thread-safe, but UI
+        // state must hop to the dispatcher.
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+    }
+
+    private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        switch (e.Mode)
+        {
+            case Microsoft.Win32.PowerModes.Suspend:
+                Coordinator.SendGoodbye();
+                _dq.TryEnqueue(() => MarkAllPeersOffline("sleep"));
+                break;
+            case Microsoft.Win32.PowerModes.Resume:
+                _dq.TryEnqueue(() => Coordinator.Discovery.SendBeacon());
+                break;
+        }
     }
 
     // MARK: - Migration
@@ -175,7 +207,8 @@ public sealed partial class AppModel : ObservableObject
 
     // MARK: - Peers
 
-    private void UpsertPeer(string ip, string username, int port, string publicKeyB64, string? relayIdHash = null)
+    private void UpsertPeer(string ip, string username, int port, string publicKeyB64,
+                            string? relayIdHash = null, List<string>? advertisedIPs = null)
     {
         // Last-resort self-suppression — defends against stale OwnIPs in the
         // discovery service when the machine's network interfaces change.
@@ -223,20 +256,30 @@ public sealed partial class AppModel : ObservableObject
             if (SelectedPeerIP == oldIP) SelectedPeerIP = ip;
         }
 
+        // Every address the peer has advertised, used as probe targets. The
+        // current source IP goes first.
+        var knownIPs = advertisedIPs is null ? new List<string>() : new List<string>(advertisedIPs);
+        knownIPs.Remove(ip);
+        knownIPs.Insert(0, ip);
+
         var current = Peers;
         var updated = new Dictionary<string, PeerInfo>(current);
         if (updated.TryGetValue(publicKeyB64, out var existing))
         {
             if (existing.IP == ip)
             {
-                // Same IP — just bump the heartbeat timestamp.
-                // Check whether the peer was offline before this beacon arrived so we
-                // can deliver any messages that were queued while they were unreachable.
+                // Same IP — a heartbeat: presence is online and the silence clock
+                // resets. Check whether the peer was offline before this beacon so
+                // we can deliver anything queued while they were unreachable.
                 var wasOffline = !existing.IsOnline;
                 existing.LastSeen = DateTime.UtcNow;
+                existing.Presence = PeerPresence.Online;
+                existing.KnownIPs = knownIPs;
                 if (wasOffline)
                 {
                     LanLogger.Info("Net", $"peer {ip} ({publicKeyB64[..8]}) came back online — delivering pending queue");
+                    // Reassign Peers so the chat header refreshes on the comeback.
+                    Peers = updated;
                     MigrateSyntheticRelayHistory(publicKeyB64, ip);
                     RefreshConversations();
                     MessagingService.Shared.DeliverPending(ip, publicKeyB64);
@@ -250,6 +293,7 @@ public sealed partial class AppModel : ObservableObject
         {
             IP = ip, Username = username, Port = port,
             PublicKeyB64 = publicKeyB64, LastSeen = DateTime.UtcNow,
+            Presence = PeerPresence.Online, KnownIPs = knownIPs,
         };
         Peers = updated;
         if (!string.IsNullOrEmpty(relayIdHash))
@@ -277,28 +321,111 @@ public sealed partial class AppModel : ObservableObject
         if (string.IsNullOrEmpty(publicKeyB64)) return;
         var current = Peers;
         if (!current.TryGetValue(publicKeyB64, out var existing)) return;
+        var wasOffline = existing.Presence == PeerPresence.Offline;
         existing.LastSeen = DateTime.UtcNow;
+        existing.Presence = PeerPresence.Online;
+        // Any inbound TCP traffic proves the peer is back — surface it at once
+        // rather than waiting for the next discovery beacon. Reassign Peers so the
+        // chat header (which listens for the Peers change) refreshes too.
+        if (wasOffline)
+        {
+            Peers = new Dictionary<string, PeerInfo>(current);
+            RefreshConversations();
+        }
     }
 
+    // How long a non-contact peer may sit offline before it is dropped from the
+    // dict. Contacts are kept indefinitely (their key is needed to queue/relay).
+    private static readonly TimeSpan NonContactPruneAfter = TimeSpan.FromSeconds(300);
+
+    // Drives the LAN presence state machine. Runs every second: re-evaluates
+    // every peer from its LastSeen, actively probes the ones that have gone
+    // quiet, flips presence on transitions, and prunes long-gone non-contacts.
+    // Peers are NOT deleted the instant they go offline — presence is explicit,
+    // so an offline contact stays in the dict and the row simply shows gray.
     private void StartPeerTimeoutTimer()
     {
-        // Keep peers in the dictionary even when they go offline — their public key
-        // is needed to queue outgoing messages for delivery when they reconnect.
-        // IsOnline is computed from LastSeen, so the UI still shows them as offline.
-        // NetworkInterfaceMonitor (owned by Coordinator) keeps OwnIPs live, so this
-        // timer no longer needs to poke it on every tick.
-        _peerTimeoutTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        var _lastOnlineSet = new HashSet<string>();
-        _peerTimeoutTimer.Tick += (_, _) =>
-        {
-            var nowOnline = Peers.Keys.Where(k => Peers[k].IsOnline).ToHashSet();
-            if (!nowOnline.SetEquals(_lastOnlineSet))
-            {
-                _lastOnlineSet = nowOnline;
-                RefreshConversations();
-            }
-        };
+        _peerTimeoutTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _peerTimeoutTimer.Tick += (_, _) => EvaluatePresence();
         _peerTimeoutTimer.Start();
+    }
+
+    private void EvaluatePresence()
+    {
+        var now = DateTime.UtcNow;
+        var contactKeys = ConfigStore.Shared.Config.Contacts.Select(c => c.PublicKeyB64).ToHashSet();
+        var probeTargets = new HashSet<string>();
+        var changed = false;
+
+        var updated = new Dictionary<string, PeerInfo>(Peers);
+        foreach (var (key, info) in Peers)
+        {
+            var decision = PresenceEvaluator.Decide(info.LastSeen, now);
+
+            // Prune non-contact peers gone a long time so the dict can't grow
+            // without bound from one-off discovered devices.
+            if (decision == PresenceEvaluator.Decision.Offline
+                && !contactKeys.Contains(key)
+                && now - info.LastSeen > NonContactPruneAfter)
+            {
+                updated.Remove(key);
+                changed = true;
+                continue;
+            }
+
+            if (decision.ShouldProbe())
+            {
+                // Reconfirm via unicast before declaring offline. Probe every
+                // address the peer has advertised, not just the last one.
+                if (info.KnownIPs.Count == 0) probeTargets.Add(info.IP);
+                else foreach (var ip in info.KnownIPs) probeTargets.Add(ip);
+            }
+
+            var presence = decision.Presence();
+            if (info.Presence != presence)
+            {
+                info.Presence = presence;
+                changed = true;
+            }
+        }
+
+        foreach (var ip in probeTargets) Coordinator.Probe(ip);
+
+        if (changed)
+        {
+            Peers = updated;
+            RefreshConversations();
+        }
+    }
+
+    // A peer announced its departure (clean quit / sleep / network loss). Flip it
+    // offline immediately and push LastSeen into the past so the next presence
+    // tick agrees and won't bounce it back online.
+    private void HandleGoodbye(string publicKeyB64, string fromIP)
+    {
+        if (string.IsNullOrEmpty(publicKeyB64)) return;
+        var current = Peers;
+        if (!current.TryGetValue(publicKeyB64, out var existing)) return;
+        LanLogger.Info("Net", $"peer {publicKeyB64[..Math.Min(8, publicKeyB64.Length)]} said goodbye — marking offline");
+        existing.Presence = PeerPresence.Offline;
+        existing.LastSeen = DateTime.MinValue;
+        Peers = new Dictionary<string, PeerInfo>(current);
+        RefreshConversations();
+    }
+
+    // Flip every known peer offline locally (we've lost the ability to observe
+    // them). LastSeen is aged out so the presence tick stays in agreement.
+    private void MarkAllPeersOffline(string reason)
+    {
+        if (Peers.Count == 0) return;
+        LanLogger.Info("Net", $"marking all peers offline ({reason})");
+        foreach (var info in Peers.Values)
+        {
+            info.Presence = PeerPresence.Offline;
+            info.LastSeen = DateTime.MinValue;
+        }
+        Peers = new Dictionary<string, PeerInfo>(Peers);
+        RefreshConversations();
     }
 
     // MARK: - Conversations
@@ -484,8 +611,8 @@ public sealed partial class AppModel : ObservableObject
             return false;
         }
 
-        var onlinePeer = PeerByIP(peerIP);
-        var publicKey = onlinePeer?.PublicKeyB64
+        var peer = PeerByIP(peerIP);
+        var publicKey = peer?.PublicKeyB64
             ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64;
         if (publicKey is null)
         {
@@ -493,7 +620,10 @@ public sealed partial class AppModel : ObservableObject
             return false;
         }
 
-        if (onlinePeer is not null)
+        // Stream immediately only when the peer is actually online. Offline peers
+        // stay in the dict (presence is explicit), so test IsOnline rather than
+        // mere existence — otherwise the file would skip the persisted queue.
+        if (peer is not null && peer.IsOnline)
         {
             FileTransferService.Shared.Enqueue(filePath, peerIP, publicKey);
             return true;
@@ -749,13 +879,15 @@ public sealed partial class AppModel : ObservableObject
                     FileTransferService.Shared.HandlePacket(pkt); break;
                 case ValidatedDiscovery vd:
                     UpsertPeer(vd.SenderIP, vd.Packet.Username, vd.Packet.Port,
-                               vd.Packet.PublicKeyB64, vd.Packet.RelayIdHash);
+                               vd.Packet.PublicKeyB64, vd.Packet.RelayIdHash, vd.Packet.Ips);
                     break;
             }
         };
 
         Coordinator.PeerDiscovered += (pkt, ip) =>
-            UpsertPeer(ip, pkt.Username, pkt.Port, pkt.PublicKeyB64, pkt.RelayIdHash);
+            UpsertPeer(ip, pkt.Username, pkt.Port, pkt.PublicKeyB64, pkt.RelayIdHash, pkt.Ips);
+
+        Coordinator.PeerDeparted += HandleGoodbye;
 
         MessagingService.Shared.OnMessageReceived = (ip, entry) =>
         {

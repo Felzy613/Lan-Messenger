@@ -175,8 +175,30 @@ The service sends to:
 - limited broadcast;
 - extra unicast targets.
 
+It also emits a one-shot `goodbye` datagram on departure (quit, sleep, network
+loss) and can `probe` a single peer with a unicast `discovery` to reconfirm
+liveness. Incoming `goodbye` packets are routed to a separate departed callback —
+they are never replied to and never refresh `last_seen`.
+
 Windows additionally disables UDP connection reset behavior with
 `SIO_UDP_CONNRESET`.
+
+### Presence
+
+Online/offline status is LAN-local and driven by a per-peer state machine, not a
+single timestamp comparison. The pure decision core is `PresenceEvaluator`
+(mirrored on both platforms and unit-tested): given `last_seen` and `now` it
+returns Online (`< 5 s`), Probing (`5–12 s`, still shown online but unicast-probed
+each tick), or Offline (`≥ 12 s`). `AppModel` runs the evaluator about once a
+second, issues probes for quiet peers, flips an explicit `presence` field on
+transitions, and prunes non-contact peers that stay offline beyond five minutes.
+
+A heartbeat (discovery/reply or any inbound TCP packet) marks a peer online; a
+`goodbye` marks it offline immediately; losing the local network marks every peer
+offline at once. Offline peers are retained in the dictionary (their public key is
+needed to queue/relay), so callers that need reachability test `IsOnline`/
+`isOnline` rather than mere presence in the map. The cloud relay carries messages
+only and never participates in presence.
 
 ### Network Coordinator
 

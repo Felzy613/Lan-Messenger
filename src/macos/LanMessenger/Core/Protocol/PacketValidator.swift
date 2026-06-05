@@ -108,7 +108,7 @@ enum PacketValidator {
         guard !ownIPs.contains(senderIP) else { return nil }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let typeStr = json["type"] as? String,
-              typeStr == "discovery" || typeStr == "discovery_reply",
+              typeStr == "discovery" || typeStr == "discovery_reply" || typeStr == "goodbye",
               let pkt = try? JSONDecoder().decode(DiscoveryPacket.self, from: data) else {
             return nil
         }

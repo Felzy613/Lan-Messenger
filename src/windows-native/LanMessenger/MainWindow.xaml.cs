@@ -306,11 +306,18 @@ public sealed partial class MainWindow : Window
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        if (_allowExit) return;
-        if (!ConfigStore.Shared.Config.CloseToTray) return;
-        // Cancel the close, hide the window. The TaskbarIcon keeps the app alive.
-        args.Cancel = true;
-        HideWindow();
+        if (!_allowExit && ConfigStore.Shared.Config.CloseToTray)
+        {
+            // Cancel the close, hide the window. The TaskbarIcon keeps the app alive.
+            args.Cancel = true;
+            HideWindow();
+            return;
+        }
+        // The app is actually exiting — announce departure so peers flip us
+        // offline instantly instead of waiting out the silence timeout. The send
+        // is a non-blocking UDP sendto handed to the kernel, so it completes
+        // before the process tears down.
+        Model.Coordinator.SendGoodbye();
     }
 
     private void HideWindow()
@@ -338,6 +345,9 @@ public sealed partial class MainWindow : Window
 
     private void QuitFromTray()
     {
+        // Application.Exit() may not raise AppWindow.Closing, so announce
+        // departure here too. A duplicate goodbye is harmless (peers dedup it).
+        Model.Coordinator.SendGoodbye();
         _allowExit = true;
         Application.Current.Exit();
     }

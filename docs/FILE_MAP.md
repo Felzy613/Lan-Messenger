@@ -131,9 +131,10 @@ state for the app.
 | Path | Purpose |
 |---|---|
 | `src/macos/LanMessenger/Core/Networking/NetworkInterfaceMonitor.swift` | Enumerates eligible IPv4 interfaces, computes broadcast addresses, and publishes changes. |
-| `src/macos/LanMessenger/Core/Networking/DiscoveryService.swift` | UDP discovery sockets, per-interface multicast/broadcast/unicast beacons, replies, receive loop, and self-suppression. |
+| `src/macos/LanMessenger/Core/Networking/DiscoveryService.swift` | UDP discovery sockets, per-interface multicast/broadcast/unicast beacons, replies, goodbye/probe, receive loop, and self-suppression. |
 | `src/macos/LanMessenger/Core/Networking/NetworkCoordinator.swift` | Owns network lifecycle, discovery, TCP listener, inbound frame validation, peer sessions, and callbacks. |
 | `src/macos/LanMessenger/Core/Networking/PeerSession.swift` | Persistent TCP peer connection with reconnect backoff and serial outgoing queue. |
+| `src/macos/LanMessenger/Core/Networking/PresenceEvaluator.swift` | Pure LAN presence state machine (Online/Probing/Offline) from `last_seen`; the testable core driving online/offline status. |
 
 ## macOS Persistence Layer
 
@@ -184,7 +185,8 @@ state for the app.
 | `src/macos/LanMessengerTests/HistoryStoreTests.swift` | History encryption, cap, wrong-key, and known history vector tests. |
 | `src/macos/LanMessengerTests/MessageStatusTests.swift` | Monotonic status behavior tests. |
 | `src/macos/LanMessengerTests/NetworkInterfaceMonitorTests.swift` | Adapter filtering, broadcast, lifecycle, and observer tests. |
-| `src/macos/LanMessengerTests/PacketValidatorTests.swift` | Packet validation and sanitization tests. |
+| `src/macos/LanMessengerTests/PacketValidatorTests.swift` | Packet validation and sanitization tests, including discovery/goodbye types. |
+| `src/macos/LanMessengerTests/PresenceEvaluatorTests.swift` | LAN presence state-machine transitions (online/probing/offline). |
 | `src/macos/LanMessengerTests/known_good_exchange.json` | Cross-platform crypto/framing/history test vectors. |
 
 ## Windows Project Root
@@ -231,9 +233,10 @@ state for the app.
 | Path | Purpose |
 |---|---|
 | `src/windows-native/LanMessenger/Core/Networking/NetworkInterfaceMonitor.cs` | Enumerates eligible IPv4 adapters, computes broadcast addresses, and publishes changes. |
-| `src/windows-native/LanMessenger/Core/Networking/DiscoveryService.cs` | UDP discovery sockets, per-interface multicast/broadcast/unicast beacons, replies, receive loop, and Windows UDP reset handling. |
+| `src/windows-native/LanMessenger/Core/Networking/DiscoveryService.cs` | UDP discovery sockets, per-interface multicast/broadcast/unicast beacons, replies, goodbye/probe, receive loop, and Windows UDP reset handling. |
 | `src/windows-native/LanMessenger/Core/Networking/NetworkCoordinator.cs` | Network lifecycle, TCP listener, inbound validation, session management, and UI-dispatched callbacks. |
 | `src/windows-native/LanMessenger/Core/Networking/PeerSession.cs` | Persistent TCP peer connection with reconnect backoff and concurrent send/receive loops. |
+| `src/windows-native/LanMessenger/Core/Networking/PresenceEvaluator.cs` | Pure LAN presence state machine (Online/Probing/Offline) from `LastSeen`; mirror of the macOS evaluator. |
 
 ## Windows Persistence Layer
 
@@ -297,7 +300,8 @@ state for the app.
 | `src/windows-native/LanMessenger.Tests/HistoryStoreTests.cs` | History encryption, cap, wrong-key, and known history vector tests. |
 | `src/windows-native/LanMessenger.Tests/MessageStatusTests.cs` | Monotonic status behavior tests. |
 | `src/windows-native/LanMessenger.Tests/NetworkInterfaceMonitorTests.cs` | Adapter filtering and broadcast tests. |
-| `src/windows-native/LanMessenger.Tests/PacketValidatorTests.cs` | Packet validation and sanitization tests. |
+| `src/windows-native/LanMessenger.Tests/PacketValidatorTests.cs` | Packet validation and sanitization tests, including discovery/goodbye types. |
+| `src/windows-native/LanMessenger.Tests/PresenceEvaluatorTests.cs` | LAN presence state-machine transitions (online/probing/offline). |
 | `src/windows-native/LanMessenger.Tests/known_good_exchange.json` | Cross-platform crypto/framing/history test vectors. |
 
 ## Generated Or Ignored Runtime Areas

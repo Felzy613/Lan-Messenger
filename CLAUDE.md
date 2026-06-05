@@ -177,6 +177,9 @@ Transport:
 - TCP frames are 4-byte unsigned big-endian length plus UTF-8 JSON body.
 - Reject frame sizes `<= 0` or `> 50 MiB`.
 - Discovery replies go to `{source_ip}:54231`, not the TCP port.
+- Discovery validators accept exactly three types: `discovery`,
+  `discovery_reply`, and `goodbye`. A `goodbye` is a departure announcement —
+  never reply to it, never let it refresh `last_seen`; it marks the peer offline.
 
 Crypto:
 
@@ -305,6 +308,11 @@ Use the smallest sufficient set for the change:
 - Do not store private keys in config JSON.
 - Do not switch discovery to TCP or frame UDP packets.
 - Do not rely on internet reachability for LAN availability.
+- Do not regress presence to a single `now - last_seen` comparison, and do not
+  delete peers the moment they go offline. Presence is an explicit per-peer
+  state set by the evaluator, goodbye, and liveness probes; both platforms keep
+  offline peers (their key is needed for queue/relay). See PROTOCOL.md → Presence
+  and `PresenceEvaluator` on each platform.
 - Do not remove SHA256 sidecar support from updaters; combined releases may only
   expose installer assets while sidecars live on per-platform releases.
 - Do not treat generated Xcode project files as source.
