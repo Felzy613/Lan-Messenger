@@ -22,6 +22,13 @@ import Darwin
 
 protocol DiscoveryServiceDelegate: AnyObject {
     func discoveryService(_ service: DiscoveryService, didDiscoverPeer packet: DiscoveryPacket, fromIP: String)
+    // A peer announced it is leaving (clean quit / sleep / network loss).
+    func discoveryService(_ service: DiscoveryService, didReceiveGoodbyeFrom publicKeyB64: String, fromIP: String)
+}
+
+// Default no-op so existing implementers don't have to add the goodbye hook.
+extension DiscoveryServiceDelegate {
+    func discoveryService(_ service: DiscoveryService, didReceiveGoodbyeFrom publicKeyB64: String, fromIP: String) {}
 }
 
 final class DiscoveryService {
@@ -237,6 +244,52 @@ final class DiscoveryService {
         }
     }
 
+    // Broadcasts a one-shot "goodbye" so peers can flip us offline instantly
+    // instead of waiting out the silence timeout. Sent on clean quit, sleep,
+    // and network loss. UDP is lossy and this is our only departure signal, so
+    // every datagram is emitted a few times across all targets.
+    func sendGoodbye() {
+        guard let base = buildPayload?() else { return }
+        let payload = DiscoveryPacket(
+            type: "goodbye",
+            username: base.username,
+            port: base.port,
+            publicKeyB64: base.publicKeyB64,
+            ips: base.ips,
+            relayIdHash: base.relayIdHash
+        )
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        let extras = extraTargets?() ?? []
+
+        socketLock.lock(); defer { socketLock.unlock() }
+        guard !sendSockets.isEmpty else { return }
+
+        for _ in 0..<3 {
+            for (localIP, fd) in sendSockets {
+                let adapter = monitor.adapters.first { $0.localIP == localIP }
+                if let bcast = adapter?.broadcastAddress {
+                    sendUDPLocked(data: data, fd: fd, toIP: bcast, port: discoveryPort, label: "goodbye-bcast")
+                }
+                sendUDPLocked(data: data, fd: fd, toIP: multicastGroup, port: discoveryPort, label: "goodbye-mcast")
+                sendUDPLocked(data: data, fd: fd, toIP: "255.255.255.255", port: discoveryPort, label: "goodbye-lbcast")
+                for target in extras {
+                    sendUDPLocked(data: data, fd: fd, toIP: target, port: discoveryPort, label: "goodbye-unicast")
+                }
+            }
+        }
+        NetLogger.info("Discovery", "tx goodbye to \(sendSockets.count) iface(s), \(extras.count) extra target(s)")
+    }
+
+    // Active liveness probe: unicast a "discovery" (which elicits a
+    // discovery_reply) directly to one IP. Used to reconfirm a peer that has
+    // gone quiet before declaring it offline — this is what keeps the short
+    // offline timeout from flickering on a lossy LAN.
+    func probe(ip: String) {
+        guard let payload = buildPayload?() else { return }
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        sendUDP(data: data, toIP: ip, port: discoveryPort)
+    }
+
     // Used by NetworkCoordinator for one-off unicast discovery replies.
     func sendUDP(data: Data, toIP: String, port: UInt16) {
         socketLock.lock(); defer { socketLock.unlock() }
@@ -337,6 +390,18 @@ final class DiscoveryService {
             return
         }
         lastSeen[dedupKey] = now
+
+        // A goodbye is a departure announcement: never reply, never treat it as
+        // a heartbeat. Hand it straight to the delegate so the peer flips
+        // offline immediately instead of waiting out the silence timeout.
+        if pkt.type == "goodbye" {
+            NetLogger.info("Discovery", "rx goodbye from \(fromIP) user='\(pkt.username)'")
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.delegate?.discoveryService(self, didReceiveGoodbyeFrom: pkt.publicKeyB64, fromIP: fromIP)
+            }
+            return
+        }
 
         // Reply to "discovery" packets (not to "discovery_reply" — that would
         // create an infinite ping-pong).

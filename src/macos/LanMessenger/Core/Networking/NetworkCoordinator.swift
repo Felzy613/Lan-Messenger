@@ -9,11 +9,13 @@ import Foundation
 protocol NetworkCoordinatorDelegate: AnyObject {
     @MainActor func coordinator(_ c: NetworkCoordinator, didReceivePacket packet: ValidatedPacket)
     @MainActor func coordinator(_ c: NetworkCoordinator, didDiscoverPeer packet: DiscoveryPacket, fromIP: String)
+    @MainActor func coordinator(_ c: NetworkCoordinator, didReceiveGoodbyeFrom publicKeyB64: String, fromIP: String)
     @MainActor func coordinatorNetworkAvailabilityChanged(_ c: NetworkCoordinator)
 }
 
-// Default no-op for the availability hook so existing implementers don't need to add it.
+// Default no-ops so existing implementers don't need to add these hooks.
 extension NetworkCoordinatorDelegate {
+    @MainActor func coordinator(_ c: NetworkCoordinator, didReceiveGoodbyeFrom publicKeyB64: String, fromIP: String) {}
     @MainActor func coordinatorNetworkAvailabilityChanged(_ c: NetworkCoordinator) {}
 }
 
@@ -113,6 +115,12 @@ final class NetworkCoordinator: NSObject {
     func send(frames: [Data], toIP: String, port: Int = 54232) {
         for frame in frames { send(frame: frame, toIP: toIP, port: port) }
     }
+
+    // Announce our departure so peers flip us offline immediately.
+    func sendGoodbye() { discovery.sendGoodbye() }
+
+    // Actively reconfirm a quiet peer before declaring it offline.
+    func probe(ip: String) { discovery.probe(ip: ip) }
 
     // Ensure a persistent session exists for this peer.
     func ensureSession(ip: String, port: Int) {
@@ -253,6 +261,13 @@ extension NetworkCoordinator: DiscoveryServiceDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.delegate?.coordinator(self, didDiscoverPeer: packet, fromIP: fromIP)
+        }
+    }
+
+    func discoveryService(_ service: DiscoveryService, didReceiveGoodbyeFrom publicKeyB64: String, fromIP: String) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.delegate?.coordinator(self, didReceiveGoodbyeFrom: publicKeyB64, fromIP: fromIP)
         }
     }
 }

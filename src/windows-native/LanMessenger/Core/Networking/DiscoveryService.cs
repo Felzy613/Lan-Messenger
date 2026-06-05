@@ -30,6 +30,10 @@ public sealed class DiscoveryService : IDisposable
     public delegate void PeerDiscoveredHandler(DiscoveryPacket packet, string fromIP);
     public event PeerDiscoveredHandler? PeerDiscovered;
 
+    // A peer announced it is leaving (clean quit / sleep / network loss).
+    public delegate void PeerDepartedHandler(string publicKeyB64, string fromIP);
+    public event PeerDepartedHandler? PeerDeparted;
+
     // Set before Start()
     public Func<DiscoveryPacket>?  BuildPayload  { get; set; }
     public Func<IEnumerable<string>>? ExtraTargets { get; set; }
@@ -324,6 +328,79 @@ public sealed class DiscoveryService : IDisposable
         }
     }
 
+    // Broadcasts a one-shot "goodbye" so peers can flip us offline instantly
+    // instead of waiting out the silence timeout. Sent on clean quit, sleep, and
+    // network loss. UDP is lossy and this is our only departure signal, so each
+    // datagram is emitted a few times across every target.
+    public void SendGoodbye()
+    {
+        if (BuildPayload is null) return;
+
+        byte[] data;
+        try
+        {
+            var src = BuildPayload();
+            var payload = new DiscoveryPacket
+            {
+                Type         = "goodbye",
+                Username     = src.Username,
+                Port         = src.Port,
+                PublicKeyB64 = src.PublicKeyB64,
+                Ips          = src.Ips,
+                RelayIdHash  = src.RelayIdHash,
+            };
+            data = JsonSerializer.SerializeToUtf8Bytes(payload);
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Discovery", $"goodbye serialize failed: {ex.Message}");
+            return;
+        }
+
+        var extras = ExtraTargets?.Invoke()?.ToList() ?? [];
+
+        lock (_socketLock)
+        {
+            if (_sendSockets.Count == 0) return;
+
+            for (var i = 0; i < 3; i++)
+            {
+                foreach (var (localIP, sock) in _sendSockets)
+                {
+                    var adapter = _monitor.Adapters.FirstOrDefault(a => a.LocalIP.ToString() == localIP);
+                    if (adapter is not null)
+                        TrySend(sock, data, adapter.BroadcastAddress, DiscoveryPort, "goodbye-bcast");
+                    TrySend(sock, data, MulticastAddr,       DiscoveryPort, "goodbye-mcast");
+                    TrySend(sock, data, IPAddress.Broadcast, DiscoveryPort, "goodbye-lbcast");
+                    foreach (var target in extras)
+                    {
+                        if (!IPAddress.TryParse(target, out var ip)) continue;
+                        TrySend(sock, data, ip, DiscoveryPort, "goodbye-unicast");
+                    }
+                }
+            }
+        }
+        LanLogger.Info("Discovery", $"tx goodbye to {_sendSockets.Count} iface(s), {extras.Count} extra target(s)");
+    }
+
+    // Active liveness probe: unicast a "discovery" (which elicits a
+    // discovery_reply) directly to one IP. Used to reconfirm a peer that has
+    // gone quiet before declaring it offline — this is what keeps the short
+    // offline timeout from flickering on a lossy LAN.
+    public void Probe(string ip)
+    {
+        if (BuildPayload is null) return;
+        try
+        {
+            var data = JsonSerializer.SerializeToUtf8Bytes(BuildPayload());
+            SendUdp(data, ip, DiscoveryPort);
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Info("Discovery", $"probe to {ip} failed: {ex.Message}");
+        }
+    }
+
     private static void TrySend(Socket sock, byte[] data, IPAddress dest, int port, string label)
     {
         try { sock.SendTo(data, new IPEndPoint(dest, port)); }
@@ -396,6 +473,20 @@ public sealed class DiscoveryService : IDisposable
         if (_lastSeen.TryGetValue(dedupKey, out var last) && now - last < DedupWindowMs)
             return;
         _lastSeen[dedupKey] = now;
+
+        // A goodbye is a departure announcement: never reply, never treat it as
+        // a heartbeat. Hand it straight to the handler so the peer flips offline
+        // immediately instead of waiting out the silence timeout.
+        if (pkt.Type == "goodbye")
+        {
+            LanLogger.Info("Discovery", $"rx goodbye from {fromIP} user='{pkt.Username}'");
+            try { PeerDeparted?.Invoke(pkt.PublicKeyB64, fromIP); }
+            catch (Exception ex)
+            {
+                LanLogger.Warn("Discovery", $"PeerDeparted handler threw: {ex.GetType().Name} {ex.Message}");
+            }
+            return;
+        }
 
         // Reply to "discovery" packets (not to "discovery_reply" — that would
         // create an infinite ping-pong).

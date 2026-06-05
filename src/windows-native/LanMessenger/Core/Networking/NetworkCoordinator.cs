@@ -15,6 +15,7 @@ public sealed class NetworkCoordinator : IDisposable
 {
     public event Action<ValidatedPacket>?         PacketReceived;
     public event Action<DiscoveryPacket, string>? PeerDiscovered;
+    public event Action<string, string>?          PeerDeparted;   // (publicKeyB64, fromIP)
     public event Action?                          NetworkAvailabilityChanged;
 
     public readonly NetworkInterfaceMonitor Network  = new();
@@ -67,6 +68,8 @@ public sealed class NetworkCoordinator : IDisposable
         Discovery.ExtraTargets = () => _sessions.Keys;
         Discovery.PeerDiscovered += (pkt, ip) =>
             _dispatcherQueue?.TryEnqueue(() => PeerDiscovered?.Invoke(pkt, ip));
+        Discovery.PeerDeparted += (key, ip) =>
+            _dispatcherQueue?.TryEnqueue(() => PeerDeparted?.Invoke(key, ip));
         Discovery.Start();
 
         StartTcpListener();
@@ -125,6 +128,12 @@ public sealed class NetworkCoordinator : IDisposable
     {
         foreach (var f in frames) Send(f, toIP, port);
     }
+
+    // Announce our departure so peers flip us offline immediately.
+    public void SendGoodbye() => Discovery.SendGoodbye();
+
+    // Actively reconfirm a quiet peer before declaring it offline.
+    public void Probe(string ip) => Discovery.Probe(ip);
 
     // Ensure a persistent session exists for this peer.
     public void EnsureSession(string ip, int port)

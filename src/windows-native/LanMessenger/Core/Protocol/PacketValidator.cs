@@ -85,7 +85,7 @@ public static class PacketValidator
         {
             var pkt = JsonSerializer.Deserialize<DiscoveryPacket>(data);
             if (pkt is null) return null;
-            if (pkt.Type != "discovery" && pkt.Type != "discovery_reply") return null;
+            if (pkt.Type != "discovery" && pkt.Type != "discovery_reply" && pkt.Type != "goodbye") return null;
             if (string.IsNullOrEmpty(pkt.PublicKeyB64)) return null;
             if (pkt.PublicKeyB64 == ownPublicKeyB64) return null;
             return pkt;

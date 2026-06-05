@@ -161,4 +161,42 @@ final class PacketValidatorTests: XCTestCase {
     func testFilenameNormal() {
         XCTAssertEqual(PacketValidator.sanitizeFilename("photo.jpg"), "photo.jpg")
     }
+
+    // MARK: - Discovery validation
+
+    private func discoveryData(type: String, key: String) -> Data {
+        let json: [String: Any] = [
+            "type": type,
+            "username": "Bob",
+            "port": 54232,
+            "public_key_b64": key,
+            "ips": ["1.2.3.4"],
+        ]
+        return try! JSONSerialization.data(withJSONObject: json)
+    }
+
+    func testValidateDiscoveryAcceptsDiscovery() {
+        let data = discoveryData(type: "discovery", key: peerKey)
+        let pkt = PacketValidator.validateDiscovery(data: data, senderIP: "1.2.3.4", ownPublicKeyB64: ownKey, ownIPs: [])
+        XCTAssertEqual(pkt?.type, "discovery")
+    }
+
+    func testValidateDiscoveryAcceptsGoodbye() {
+        // The departure datagram must pass the validator, otherwise peers can
+        // never flip offline promptly. This was the missing piece in the rebuild.
+        let data = discoveryData(type: "goodbye", key: peerKey)
+        let pkt = PacketValidator.validateDiscovery(data: data, senderIP: "1.2.3.4", ownPublicKeyB64: ownKey, ownIPs: [])
+        XCTAssertEqual(pkt?.type, "goodbye")
+        XCTAssertEqual(pkt?.publicKeyB64, peerKey)
+    }
+
+    func testValidateDiscoveryRejectsUnknownType() {
+        let data = discoveryData(type: "banana", key: peerKey)
+        XCTAssertNil(PacketValidator.validateDiscovery(data: data, senderIP: "1.2.3.4", ownPublicKeyB64: ownKey, ownIPs: []))
+    }
+
+    func testValidateDiscoveryDropsOwnPacket() {
+        let data = discoveryData(type: "goodbye", key: ownKey)
+        XCTAssertNil(PacketValidator.validateDiscovery(data: data, senderIP: "1.2.3.4", ownPublicKeyB64: ownKey, ownIPs: []))
+    }
 }
