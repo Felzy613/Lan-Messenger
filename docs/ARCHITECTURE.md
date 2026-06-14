@@ -500,6 +500,26 @@ Important files:
 
 The tray icon is always present. Closing can hide to tray based on config.
 
+`AppModel.TotalUnreadCount` is recomputed every time conversations refresh (sum
+of unread counts across active, non-archived conversations). `MainWindow`
+observes this property and toggles a small red-dot overlay on the taskbar
+button via `ITaskbarList3.SetOverlayIcon` (`Assets/BadgeDot.ico`), clearing it
+(`SetOverlayIcon(hwnd, null, null)`) once the count returns to zero.
+
+The composer keeps an in-memory per-conversation draft (`AppModel.Drafts`,
+keyed by peer IP, not persisted) so switching conversations without sending
+restores the typed text; the draft is cleared once the message is sent.
+
+Screenshot capture (`ChatPage.OnScreenshotRequested`) offers "Select region...",
+"Full Screen", or a specific window via `ScreenshotWindowPickerDialog`.
+"Select region..." captures the whole primary display first, then shows
+`RegionSelectOverlayWindow` — a borderless, topmost, full-display overlay —
+for a click-and-drag rectangle selection; the backing capture is cropped to
+that rectangle via `ScreenshotService.CropToRegionAsync`. A click without a
+drag falls back to the full-display capture. This covers the primary display
+only; multi-monitor region selection and per-window hover highlighting are
+follow-ups.
+
 ## Update Architecture
 
 Both platforms check GitHub Releases using `update_repo` from config, defaulting

@@ -483,9 +483,23 @@ public sealed partial class ChatPage : Page
 
             // Step 2 — capture (off UI thread).
             var hwnd = picker.SelectedHwnd;
-            capturedPath = hwnd == IntPtr.Zero
-                ? await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync()
-                : await Core.Services.ScreenshotService.CaptureWindowAsync(hwnd);
+            if (hwnd == ScreenshotWindowPickerDialog.SelectRegionSentinel)
+            {
+                // Drag-to-select: capture the whole primary display first, then
+                // let the user crop it with the overlay window.
+                var fullPath = await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync();
+                var overlay = new RegionSelectOverlayWindow(fullPath);
+                var region = await overlay.SelectAsync();
+                capturedPath = region is { } r
+                    ? await Core.Services.ScreenshotService.CropToRegionAsync(fullPath, r)
+                    : fullPath;   // no drag — use the full-display capture as-is
+            }
+            else
+            {
+                capturedPath = hwnd == IntPtr.Zero
+                    ? await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync()
+                    : await Core.Services.ScreenshotService.CaptureWindowAsync(hwnd);
+            }
 
             // Step 3 — preview: user must explicitly click Send.
             var preview = new ScreenshotPreviewDialog(capturedPath) { XamlRoot = XamlRoot };

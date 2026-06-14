@@ -201,7 +201,7 @@ state for the app.
 | `src/windows-native/LanMessenger/App.xaml` | WinUI application resource root. |
 | `src/windows-native/LanMessenger/App.xaml.cs` | WinUI app startup, binding/resource diagnostics, unhandled exception capture, crash log and message box. |
 | `src/windows-native/LanMessenger/MainWindow.xaml` | Main shell layout, sidebar/content columns, toolbar buttons, and tray icon. |
-| `src/windows-native/LanMessenger/MainWindow.xaml.cs` | Window shell behavior, dialog orchestration, chat/archive page reuse, migration dialog, tray lifecycle. |
+| `src/windows-native/LanMessenger/MainWindow.xaml.cs` | Window shell behavior, dialog orchestration, chat/archive page reuse, migration dialog, tray lifecycle, and the taskbar unread-count overlay icon (`ITaskbarList3.SetOverlayIcon`, driven by `AppModel.TotalUnreadCount`). |
 
 ## Windows Assets
 
@@ -211,6 +211,7 @@ state for the app.
 | `src/windows-native/LanMessenger/Assets/icon_32.png` | 32px PNG icon asset. |
 | `src/windows-native/LanMessenger/Assets/icon_64.png` | 64px PNG icon asset. |
 | `src/windows-native/LanMessenger/Assets/icon_256.png` | 256px PNG icon asset. |
+| `src/windows-native/LanMessenger/Assets/BadgeDot.ico` | Small red-dot overlay icon shown on the taskbar button (via `ITaskbarList3.SetOverlayIcon`) when there are unread messages in any active conversation. |
 
 ## Windows Protocol Layer
 
@@ -257,7 +258,7 @@ state for the app.
 | `src/windows-native/LanMessenger/Core/Services/UpdateService.cs` | GitHub release checks, EXE download, SHA256 verification, elevated silent installer handoff, and exit. |
 | `src/windows-native/LanMessenger/Core/Services/LanLogger.cs` | Structured log writer under `%APPDATA%\LanMessenger\Logs`. |
 | `src/windows-native/LanMessenger/Core/Services/CryptoRuntimeDiagnostics.cs` | One-time diagnostics for libsodium and VC++ runtime DLL availability. |
-| `src/windows-native/LanMessenger/Core/Services/ScreenshotService.cs` | Primary-display capture via GDI `CopyFromScreen`; writes PNG to `%TEMP%\LanMessenger-Screenshots` and returns the path for the existing file-transfer pipeline. |
+| `src/windows-native/LanMessenger/Core/Services/ScreenshotService.cs` | Primary-display and per-window capture via GDI `CopyFromScreen`/`PrintWindow`; `CropToRegionAsync` crops a captured PNG to a pixel rectangle for the drag-to-select-region flow. Writes PNG to `%TEMP%\LanMessenger-Screenshots` and returns the path for the existing file-transfer pipeline. |
 
 ## Windows UI
 
@@ -277,11 +278,13 @@ state for the app.
 | `src/windows-native/LanMessenger/UI/Sidebar/ArchivedPage.xaml.cs` | Archived list binding and open/back events. |
 | `src/windows-native/LanMessenger/UI/Sidebar/ContactEditorDialog.cs` | Contact editor, peer picker, naming dialog, and new-message dialog implementations. |
 | `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml` | Chat page XAML. |
-| `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml.cs` | Chat binding, selected peer handling, read receipts, messages, reply behavior, transfers. |
+| `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml.cs` | Chat binding, selected peer handling, read receipts, messages, reply behavior, transfers, per-conversation draft save/restore (`AppModel.Drafts`), message deletion (`RequestDeleteMessage`), and the screenshot capture flow including drag-to-select-region. |
 | `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml` | Composer XAML with text entry, send, attachment, screenshot, and drop target UI. |
-| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml.cs` | Composer key handling, typing callbacks, send callbacks, file drop/picker, and screenshot-request event. |
-| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml` | Message/file bubble XAML including the inline image tile, video poster tile, and document action row. |
-| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml.cs` | Bubble rendering, inline media branching, "Open" / "Show in folder" actions, status visuals, reply interactions, and modal preview launch. |
+| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml.cs` | Composer key handling, typing callbacks, send callbacks, file drop/picker, screenshot-request event, and a `Text` property used to save/restore per-conversation drafts. |
+| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml` | Message/file bubble XAML including the inline image tile, video poster tile, document action row, and the "Delete for Me" / "Delete for Everyone" context-menu items. |
+| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml.cs` | Bubble rendering, inline media branching, "Open" / "Show in folder" actions, status visuals, reply interactions, modal preview launch, the "deleted message" placeholder, and delete-menu click handlers. |
+| `src/windows-native/LanMessenger/UI/Chat/ScreenshotDialogs.cs` | `ScreenshotWindowPickerDialog` (choose "Select region...", a window, or full screen) and `ScreenshotPreviewDialog` (send/cancel preview). |
+| `src/windows-native/LanMessenger/UI/Chat/RegionSelectOverlayWindow.xaml.cs` | Full-screen borderless overlay over the primary display for drag-to-select-region screenshot capture; crops the pre-captured backing bitmap to the dragged rectangle. Primary-display only — multi-monitor and per-window hover highlighting are follow-ups. |
 | `src/windows-native/LanMessenger/UI/Chat/MediaTypes.cs` | Extension-based image/video classification (`MediaKind`) and `FileReveal` helper that calls `explorer.exe /select` off the UI thread. |
 | `src/windows-native/LanMessenger/UI/Chat/MediaPreviewDialog.xaml` | Modal media viewer XAML (image / `MediaPlayerElement`). |
 | `src/windows-native/LanMessenger/UI/Chat/MediaPreviewDialog.xaml.cs` | Modal viewer code-behind: lazy media-source binding, transport-control teardown on close, and "Show in folder" primary-button handling. |

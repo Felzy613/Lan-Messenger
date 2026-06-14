@@ -15,6 +15,10 @@ namespace LanMessenger.UI.Chat;
 /// </summary>
 internal sealed class ScreenshotWindowPickerDialog : ContentDialog
 {
+    // Sentinel value meaning "let the user drag-select a region of the
+    // primary display". Distinct from IntPtr.Zero (full screen).
+    public static readonly IntPtr SelectRegionSentinel = new(-1);
+
     public IntPtr SelectedHwnd { get; private set; } = IntPtr.Zero;
 
     private readonly ListView _list;
@@ -37,7 +41,15 @@ internal sealed class ScreenshotWindowPickerDialog : ContentDialog
             MaxHeight     = 440,
         };
 
-        // "Full Screen" is always the first option.
+        // "Select region..." is always the first option \u2014 drag to capture an
+        // arbitrary rectangle of the primary display.
+        _list.Items.Add(BuildRow(
+            icon:     "\uE7C4",
+            title:    "Select region...",
+            subtitle: "Drag to capture part of the screen",
+            tag:      new WindowEntry { Hwnd = SelectRegionSentinel }));
+
+        // "Full Screen" is always the second option.
         _list.Items.Add(BuildRow(
             icon:     "\uE7F4",
             title:    "Full Screen",
