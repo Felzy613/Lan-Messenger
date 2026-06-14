@@ -60,6 +60,11 @@ public sealed partial class AppModel : ObservableObject
     [ObservableProperty] private UpdateInfo?                     _availableUpdate;
     [ObservableProperty] private UpdateProgress                  _updateProgress = new(UpdateProgressState.Idle);
     [ObservableProperty] private bool                            _isLocalNetworkAvailable = true;
+    [ObservableProperty] private int                             _totalUnreadCount;
+
+    // In-memory per-peer draft text for the composer. Not persisted — switching
+    // conversations without sending restores whatever was typed.
+    public Dictionary<string, string> Drafts { get; } = new();
 
     // True while the main window is visible on screen; false when hidden to tray.
     // Read receipts are only auto-sent when the window is visible so that messages
@@ -522,6 +527,7 @@ public sealed partial class AppModel : ObservableObject
             (b.LastTimestamp ?? DateTime.MinValue).CompareTo(a.LastTimestamp ?? DateTime.MinValue));
         Conversations = active;
         ArchivedConversations = arch;
+        TotalUnreadCount = active.Sum(c => c.UnreadCount);
     }
 
     private static int CountUnread(IReadOnlyList<MessageEntry> entries)
@@ -873,7 +879,7 @@ public sealed partial class AppModel : ObservableObject
             TouchPeer(pkt.SenderPublicKeyB64);
             switch (pkt)
             {
-                case ValidatedText or ValidatedTyping or ValidatedReceipt:
+                case ValidatedText or ValidatedTyping or ValidatedReceipt or ValidatedDelete:
                     MessagingService.Shared.HandlePacket(pkt); break;
                 case ValidatedFileStart or ValidatedFileChunk or ValidatedFileEnd:
                     FileTransferService.Shared.HandlePacket(pkt); break;

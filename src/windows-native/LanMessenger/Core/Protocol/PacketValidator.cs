@@ -44,6 +44,12 @@ public static class PacketValidator
                     if (pkt is null || string.IsNullOrEmpty(pkt.MessageId)) return null;
                     return new ValidatedReceipt(pkt, senderIP);
                 }
+                case "delete_message":
+                {
+                    var pkt = JsonSerializer.Deserialize<ReceiptPacket>(data);
+                    if (pkt is null || string.IsNullOrEmpty(pkt.MessageId)) return null;
+                    return new ValidatedDelete(pkt, senderIP);
+                }
                 case "file_start":
                 {
                     var pkt = JsonSerializer.Deserialize<FileStartPacket>(data);

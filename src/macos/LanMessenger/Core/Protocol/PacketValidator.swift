@@ -74,6 +74,12 @@ enum PacketValidator {
             }
             return .success(.receipt(pkt, senderIP: senderIP))
 
+        case .deleteMessage:
+            guard let d = data, let pkt = try? JSONDecoder().decode(ReceiptPacket.self, from: d) else {
+                return .failure(.missingRequiredField("delete_message fields"))
+            }
+            return .success(.delete(pkt, senderIP: senderIP))
+
         case .fileStart:
             guard let d = data, let pkt = try? JSONDecoder().decode(FileStartPacket.self, from: d) else {
                 return .failure(.missingRequiredField("file_start fields"))

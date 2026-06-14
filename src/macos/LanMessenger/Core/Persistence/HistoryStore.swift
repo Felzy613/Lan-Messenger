@@ -29,6 +29,10 @@ struct MessageEntry: Codable, Identifiable {
     var replyToSender: String?
     // "relay" when this message transited the cloud relay Worker; nil for direct LAN delivery.
     var deliveryPath: String?
+    // True when this entry has been deleted (locally via "delete for me" applied
+    // remotely, or "delete for everyone"). When true, `text` and reply preview
+    // fields are cleared and the UI renders a "this message was deleted" placeholder.
+    var deleted: Bool
 
     enum CodingKeys: String, CodingKey {
         case sender, text, incoming, timestamp, status
@@ -38,13 +42,14 @@ struct MessageEntry: Codable, Identifiable {
         case replyToPreview = "reply_to_preview"
         case replyToSender = "reply_to_sender"
         case deliveryPath = "delivery_path"
+        case deleted
         // _stableId is intentionally excluded — it is a session-only value, never persisted.
     }
 
     init(sender: String, text: String, incoming: Bool, timestamp: Double,
          messageId: String?, status: String, readReceiptSent: Bool,
          replyToMessageId: String? = nil, replyToPreview: String? = nil,
-         replyToSender: String? = nil, deliveryPath: String? = nil) {
+         replyToSender: String? = nil, deliveryPath: String? = nil, deleted: Bool = false) {
         self.sender = sender
         self.text = text
         self.incoming = incoming
@@ -56,6 +61,7 @@ struct MessageEntry: Codable, Identifiable {
         self.replyToPreview = replyToPreview
         self.replyToSender = replyToSender
         self.deliveryPath = deliveryPath
+        self.deleted = deleted
         self._stableId = UUID().uuidString  // generated once; stable for lifetime of this instance
     }
 
@@ -72,7 +78,21 @@ struct MessageEntry: Codable, Identifiable {
         replyToPreview = try c.decodeIfPresent(String.self, forKey: .replyToPreview)
         replyToSender = try c.decodeIfPresent(String.self, forKey: .replyToSender)
         deliveryPath = try c.decodeIfPresent(String.self, forKey: .deliveryPath)
+        deleted = try c.decodeIfPresent(Bool.self, forKey: .deleted) ?? false
         _stableId = UUID().uuidString  // generated once at decode time; stable for the session
+    }
+
+    // Matches entries without relying on messageId equality alone — useful for
+    // "delete for me" on entries that might lack a stable id (e.g. very old
+    // file-transfer entries migrated from Python history).
+    static func sameEntry(_ a: MessageEntry, _ b: MessageEntry) -> Bool {
+        if let aId = a.messageId, let bId = b.messageId {
+            return aId == bId
+        }
+        return a.timestamp == b.timestamp
+            && a.sender == b.sender
+            && a.text == b.text
+            && a.incoming == b.incoming
     }
 }
 
@@ -223,6 +243,37 @@ final class HistoryStore {
 
     func entries(forPeerIP ip: String) -> [MessageEntry] {
         history[ip] ?? []
+    }
+
+    // Marks the entry identified by messageId as deleted: clears text and reply
+    // preview fields, leaving a "this message was deleted" placeholder. Used for
+    // both "delete for everyone" (our own outgoing message) and inbound
+    // delete_message notices from a peer.
+    func markDeleted(messageId: String, peerIP: String) {
+        guard var entries = history[peerIP] else { return }
+        var changed = false
+        for i in entries.indices where entries[i].messageId == messageId {
+            entries[i].deleted = true
+            entries[i].text = ""
+            entries[i].replyToMessageId = nil
+            entries[i].replyToPreview = nil
+            entries[i].replyToSender = nil
+            changed = true
+        }
+        if changed {
+            history[peerIP] = entries
+            save()
+        }
+    }
+
+    // Removes the first entry matching `entry` via sameEntry — used for
+    // "delete for me", a local-only operation that never sends a packet.
+    func removeEntry(matching entry: MessageEntry, peerIP: String) {
+        guard var entries = history[peerIP] else { return }
+        guard let idx = entries.firstIndex(where: { Self.sameEntry($0, entry) }) else { return }
+        entries.remove(at: idx)
+        history[peerIP] = entries
+        save()
     }
 
     // Drops all messages for a peer IP. Caller is responsible for persisting via save().

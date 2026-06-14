@@ -20,6 +20,7 @@ public sealed class MessagingService
     public Action<string, MessageEntry>?      OnMessageReceived { get; set; }  // peerIP, entry
     public Action<string, string, string>?    OnStatusUpdate    { get; set; }  // peerIP, messageId, status
     public Action<string, string, bool>?      OnTypingUpdate    { get; set; }  // peerIP, senderName, active
+    public Action<string, string>?            OnMessageDeleted  { get; set; }  // peerIP, messageId
 
     private const int TcpPort = 54232;
     private readonly Dictionary<string, DateTime> _typingSentAt    = [];
@@ -38,6 +39,7 @@ public sealed class MessagingService
             case ValidatedText   t: HandleText(t.Packet,    t.SenderIP); break;
             case ValidatedTyping t: HandleTyping(t.Packet,  t.SenderIP); break;
             case ValidatedReceipt r: HandleReceipt(r.Packet, r.SenderIP); break;
+            case ValidatedDelete d: HandleDeleteMessage(d.Packet, d.SenderIP); break;
         }
     }
 
@@ -181,6 +183,27 @@ public sealed class MessagingService
         });
     }
 
+    // MARK: - Send delete notice
+
+    // "Delete for everyone" — best-effort, unencrypted notice that the sender's
+    // own outgoing message should be marked deleted on the receiver's side too.
+    public void SendDeleteMessage(string messageId, string peerIP)
+    {
+        var packet = new Dictionary<string, object?>
+        {
+            ["type"]                  = "delete_message",
+            ["message_id"]            = messageId,
+            ["sender"]                = ConfigStore.Shared.Config.Username,
+            ["sender_public_key_b64"] = KeyManager.Shared.PublicKeyB64,
+            ["port"]                  = TcpPort,
+        };
+        Task.Run(async () =>
+        {
+            var ok = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"delete_message msgId={messageId}");
+            if (!ok) LanLogger.Warn("Delete", $"failed to send delete_message msgId={messageId} peer={peerIP}");
+        });
+    }
+
     // MARK: - Deliver pending messages for a newly-online peer
 
     public void DeliverPending(string peerIP, string peerPublicKeyB64)
@@ -283,6 +306,14 @@ public sealed class MessagingService
 
     private void HandleTyping(TypingPacket pkt, string ip) =>
         Dispatch(() => OnTypingUpdate?.Invoke(ip, pkt.Sender, pkt.Active));
+
+    private void HandleDeleteMessage(ReceiptPacket pkt, string ip)
+    {
+        LanLogger.Info("Recv", $"delete_message msgId={pkt.MessageId} peer={ip}");
+        HistoryStore.Shared.MarkDeleted(pkt.MessageId, ip);
+        HistoryStore.Shared.Save();
+        Dispatch(() => OnMessageDeleted?.Invoke(ip, pkt.MessageId));
+    }
 
     private void HandleReceipt(ReceiptPacket pkt, string ip)
     {

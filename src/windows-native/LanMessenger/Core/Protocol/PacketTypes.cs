@@ -109,6 +109,13 @@ public sealed class ValidatedReceipt(ReceiptPacket packet, string senderIP) : Va
     public override string? SenderPublicKeyB64 { get; } = packet.SenderPublicKeyB64;
 }
 
+public sealed class ValidatedDelete(ReceiptPacket packet, string senderIP) : ValidatedPacket
+{
+    public ReceiptPacket Packet { get; } = packet;
+    public override string  SenderIP           { get; } = senderIP;
+    public override string? SenderPublicKeyB64 { get; } = packet.SenderPublicKeyB64;
+}
+
 public sealed class ValidatedFileStart(FileStartPacket packet, string senderIP) : ValidatedPacket
 {
     public FileStartPacket Packet { get; } = packet;

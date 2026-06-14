@@ -52,6 +52,9 @@ final class AppModel: ObservableObject {
     @Published var archivedConversations: [ConversationViewModel] = []
     @Published var selectedPeerIP: String?
     @Published var messages: [String: [MessageEntry]] = [:]          // keyed by peerIP
+    // In-memory only — not persisted to ConfigStore/disk. Lets the user switch
+    // conversations without losing an in-progress, unsent draft.
+    @Published var drafts: [String: String] = [:]
     @Published var typingStates: [String: (sender: String, active: Bool)] = [:]
     @Published var activeTransfers: [String: (label: String, bytes: Int64, total: Int64)] = [:]
     @Published var showMigrationPrompt = false
@@ -390,10 +393,18 @@ final class AppModel: ObservableObject {
         archivedList.sort { ($0.lastTimestamp ?? .distantPast) > ($1.lastTimestamp ?? .distantPast) }
         conversations = active
         archivedConversations = archivedList
+
+        // Dock badge mirrors unread counts for visible (non-archived) conversations only —
+        // archived threads are intentionally out of sight and shouldn't nag the dock icon.
+        let totalUnread = active.reduce(0) { $0 + $1.unreadCount }
+        NSApp.dockTile.badgeLabel = totalUnread > 0 ? "\(totalUnread)" : nil
     }
 
     private func lastMessagePreview(_ entries: [MessageEntry]) -> String {
         guard let last = entries.last else { return "" }
+        if last.deleted {
+            return "This message was deleted"
+        }
         if last.text.hasPrefix("__FILE__:") {
             let path = String(last.text.dropFirst("__FILE__:".count))
             return "📎 \(URL(fileURLWithPath: path).lastPathComponent)"
@@ -891,7 +902,7 @@ extension AppModel: NetworkCoordinatorDelegate {
             knownPeerKeys[packet.senderIP] = key
         }
         switch packet {
-        case .text, .typing, .receipt:
+        case .text, .typing, .receipt, .delete:
             MessagingService.shared.handlePacket(packet)
         case .fileStart, .fileChunk, .fileEnd:
             FileTransferService.shared.handlePacket(packet)

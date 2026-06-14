@@ -100,6 +100,10 @@ struct ComposerView: View {
                         model.sendTyping(false, toPeerIP: peerIP)
                     }
                 }
+                model.drafts[peerIP] = newValue.isEmpty ? nil : newValue
+            }
+            .onAppear {
+                draft = model.drafts[peerIP] ?? ""
             }
 
             Button(action: send) {
@@ -223,6 +227,7 @@ struct ComposerView: View {
         typingTimer = nil
         model.sendMessage(trimmed, toPeerIP: peerIP, replyTo: replyTarget)
         draft = ""
+        model.drafts[peerIP] = nil
         replyTarget = nil
         model.sendTyping(false, toPeerIP: peerIP)
     }
