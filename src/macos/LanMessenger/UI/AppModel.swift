@@ -488,6 +488,39 @@ final class AppModel: ObservableObject {
         markConversationRead(peerIP: peerIP)
     }
 
+    // MARK: - Message deletion
+
+    // "Delete for everyone" only applies to our own outgoing messages that have
+    // a stable messageId. "Delete for me" removes the entry locally only and
+    // never sends a packet.
+    func deleteMessage(_ entry: MessageEntry, peerIP: String, forEveryone: Bool) {
+        if forEveryone {
+            guard !entry.incoming, let messageId = entry.messageId else { return }
+            HistoryStore.shared.markDeleted(messageId: messageId, peerIP: peerIP)
+            if var entries = messages[peerIP] {
+                for i in entries.indices where entries[i].messageId == messageId {
+                    entries[i].deleted = true
+                    entries[i].text = ""
+                    entries[i].replyToMessageId = nil
+                    entries[i].replyToPreview = nil
+                    entries[i].replyToSender = nil
+                }
+                messages[peerIP] = entries
+            }
+            MessagingService.shared.sendDeleteMessage(messageId: messageId, toPeerIP: peerIP)
+            refreshConversations()
+        } else {
+            HistoryStore.shared.removeEntry(matching: entry, peerIP: peerIP)
+            if var entries = messages[peerIP] {
+                if let idx = entries.firstIndex(where: { MessageEntry.sameEntry($0, entry) }) {
+                    entries.remove(at: idx)
+                    messages[peerIP] = entries
+                }
+            }
+            refreshConversations()
+        }
+    }
+
     // MARK: - Cloud relay
 
     /// Starts both an immediate relay fetch and a recurring poll. The poll keeps
@@ -797,6 +830,20 @@ final class AppModel: ObservableObject {
         MessagingService.shared.onTypingUpdate = { [weak self] ip, sender, active in
             guard let self else { return }
             self.typingStates[ip] = (sender, active)
+            self.refreshConversations()
+        }
+        MessagingService.shared.onMessageDeleted = { [weak self] ip, messageId in
+            guard let self else { return }
+            if var entries = self.messages[ip] {
+                for i in entries.indices where entries[i].messageId == messageId {
+                    entries[i].deleted = true
+                    entries[i].text = ""
+                    entries[i].replyToMessageId = nil
+                    entries[i].replyToPreview = nil
+                    entries[i].replyToSender = nil
+                }
+                self.messages[ip] = entries
+            }
             self.refreshConversations()
         }
 

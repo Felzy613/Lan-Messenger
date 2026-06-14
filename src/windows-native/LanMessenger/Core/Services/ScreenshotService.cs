@@ -159,7 +159,55 @@ public static class ScreenshotService
         }).ConfigureAwait(false);
     }
 
+    // ── Region crop (new) ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Crops an existing screenshot PNG to the given pixel rectangle (screen
+    /// coordinates of the primary display, origin top-left) and saves the
+    /// result as a new PNG. The source file is deleted on success. Returns the
+    /// new file's absolute path.
+    /// </summary>
+    public static async Task<string> CropToRegionAsync(string sourcePath, Rectangle region)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                using var source = new Bitmap(sourcePath);
+                var bounds = new Rectangle(0, 0, source.Width, source.Height);
+                var clipped = Rectangle.Intersect(bounds, region);
+                if (clipped.Width <= 0 || clipped.Height <= 0)
+                    throw new ScreenshotException("Selected region is empty.");
+
+                using var cropped = new Bitmap(clipped.Width, clipped.Height, PixelFormat.Format32bppArgb);
+                using (var graphics = Graphics.FromImage(cropped))
+                {
+                    graphics.DrawImage(source, new Rectangle(0, 0, clipped.Width, clipped.Height),
+                        clipped, GraphicsUnit.Pixel);
+                }
+
+                var dir  = EnsureTempDirectory();
+                var name = $"Screenshot {FilenameTimestamp()}.png";
+                var path = Path.Combine(dir, name);
+                cropped.Save(path, ImageFormat.Png);
+
+                try { File.Delete(sourcePath); } catch { }
+
+                LanLogger.Screenshot("captured", display: "region",
+                    widthPx: clipped.Width, heightPx: clipped.Height, path: path);
+                return path;
+            }
+            catch (ScreenshotException) { throw; }
+            catch (Exception ex)
+            {
+                LanLogger.Screenshot("failed", reason: $"{ex.GetType().Name}: {ex.Message}");
+                throw new ScreenshotException($"Region crop failed: {ex.Message}", ex);
+            }
+        }).ConfigureAwait(false);
+    }
+
     // ── Window enumeration (new) ─────────────────────────────────────────────
+
 
     /// <summary>
     /// Returns all visible, non-minimised top-level windows with non-empty

@@ -359,6 +359,20 @@ Read flow:
    messages.
 2. It marks `read_receipt_sent` in memory and history.
 
+Delete flow:
+
+1. "Delete for me" (any message, either direction) is local-only: the entry is
+   removed from history and the in-memory conversation; no packet is sent.
+2. "Delete for everyone" applies only to the sender's own outgoing messages
+   with a `message_id`. The local history entry is marked `deleted` (text and
+   reply-preview fields cleared) and a `delete_message` packet — same shape as
+   `sent_receipt`/`read_receipt`, unencrypted — is sent to the peer over a
+   one-shot TCP connection.
+3. On receipt, the peer marks its matching history entry `deleted` the same
+   way and the UI renders a "This message was deleted" placeholder. The
+   conversation list preview shows the same placeholder text when the last
+   message in a thread is deleted.
+
 ## Cloud Relay
 
 `RelayClient` (singleton, one per platform) provides an HTTP fallback delivery

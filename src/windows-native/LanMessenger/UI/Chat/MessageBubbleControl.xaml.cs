@@ -66,7 +66,32 @@ public sealed partial class MessageBubbleControl : UserControl
         ShowInExplorerMenu.Visibility = Visibility.Collapsed;
         MessageText.Text = "";
         MessageText.Visibility = Visibility.Visible;
+        MessageText.FontStyle = Windows.UI.Text.FontStyle.Normal;
+        MessageText.Foreground = Theme.BubbleTextBrush;
         ImagePreview.Source = null;
+
+        if (Row.Deleted)
+        {
+            MessageText.Text = "This message was deleted";
+            MessageText.FontStyle = Windows.UI.Text.FontStyle.Italic;
+            MessageText.Foreground = Theme.MutedTextBrush;
+            ReplyChip.Visibility = Visibility.Collapsed;
+            ReplyChipThumbnailBorder.Visibility = Visibility.Collapsed;
+            RelayBadge.Visibility = Visibility.Collapsed;
+
+            if (Row.Incoming)
+            {
+                Bubble.HorizontalAlignment = HorizontalAlignment.Left;
+                Bubble.Background          = Theme.IncomingBubbleBrush;
+            }
+            else
+            {
+                Bubble.HorizontalAlignment = HorizontalAlignment.Right;
+                Bubble.Background          = Theme.OutgoingBubbleBrush;
+            }
+            UpdateStatusGlyph();
+            return;
+        }
 
         if (Row.IsFile)
         {
@@ -345,6 +370,30 @@ public sealed partial class MessageBubbleControl : UserControl
         var pkg = new DataPackage();
         pkg.SetText(Row.IsFile ? Row.FilePath : Row.Text);
         Clipboard.SetContent(pkg);
+    }
+
+    private void BubbleMenu_Opening(object? sender, object e)
+    {
+        if (Row is null) return;
+        var deleted = Row.Deleted;
+        ReplyMenu.Visibility = deleted ? Visibility.Collapsed : Visibility.Visible;
+        // Copy is already hidden implicitly by being meaningless on a placeholder,
+        // but leave it visible — it just copies the empty deleted text.
+        DeleteForEveryoneMenu.Visibility = (!deleted && !Row.Incoming) ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void DeleteForMeMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (Row is null) return;
+        var chatPage = FindParent<ChatPage>();
+        chatPage?.RequestDeleteMessage(Row.MessageId, Row.Incoming, Row.Text, Row.IsFile, Row.FilePath, Row.Timestamp, forEveryone: false);
+    }
+
+    private void DeleteForEveryoneMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (Row is null || Row.Incoming) return;
+        var chatPage = FindParent<ChatPage>();
+        chatPage?.RequestDeleteMessage(Row.MessageId, Row.Incoming, Row.Text, Row.IsFile, Row.FilePath, Row.Timestamp, forEveryone: true);
     }
 
     private void ReplyChip_Tapped(object sender, TappedRoutedEventArgs e)

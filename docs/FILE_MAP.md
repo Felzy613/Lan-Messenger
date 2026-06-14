@@ -155,7 +155,7 @@ state for the app.
 | `src/macos/LanMessenger/Core/Services/UpdateService.swift` | GitHub release checks, ZIP download, SHA256 verification, extraction, helper script install, and relaunch. |
 | `src/macos/LanMessenger/Core/Services/LoginItemService.swift` | macOS 13+ launch-at-login management through `SMAppService.mainApp`. |
 | `src/macos/LanMessenger/Core/Services/NetLogger.swift` | Structured network logger to app-data log file and `os_log`. |
-| `src/macos/LanMessenger/Core/Services/ScreenshotService.swift` | Primary-display capture with Screen Recording permission gate; writes PNG to a temp dir and returns the path for the existing file-transfer pipeline. |
+| `src/macos/LanMessenger/Core/Services/ScreenshotService.swift` | Screenshot capture: `captureInteractive()` launches `/usr/sbin/screencapture -i` for a native drag-to-select-region/click-a-window overlay (primary flow); `capturePrimaryDisplay`/`getShareableWindows`/`captureWindow` are ScreenCaptureKit-based alternatives retained but no longer wired into the composer. All paths write a PNG to a temp dir and return the path for the existing file-transfer pipeline. |
 
 ## macOS UI
 
@@ -168,8 +168,8 @@ state for the app.
 | `src/macos/LanMessenger/UI/Sidebar/ConversationRowView.swift` | Sidebar row rendering: avatar, preview, timestamp, unread count, typing, online state. |
 | `src/macos/LanMessenger/UI/Sidebar/ContactsView.swift` | Contacts sheet, search, add-from-LAN scanner, contact editor, contact photos, naming flow. |
 | `src/macos/LanMessenger/UI/Chat/ChatView.swift` | Chat detail view, header, message list, reply banner, transfer banner, read marking. |
-| `src/macos/LanMessenger/UI/Chat/ComposerView.swift` | NSTextView-backed composer, Return-to-send, Shift+Return newline, drag/drop, file picker, and screenshot capture button. |
-| `src/macos/LanMessenger/UI/Chat/MessageBubbleView.swift` | Text/file bubble rendering, status icons, reply chips, copy/show context menus; delegates to `MediaBubbleView` for image and video attachments. |
+| `src/macos/LanMessenger/UI/Chat/ComposerView.swift` | NSTextView-backed composer, Return-to-send, Shift+Return newline, drag/drop, file picker, per-conversation draft restore, and screenshot capture button (`screencapture -i` interactive overlay). `WindowPickerView`/`ScreenshotPreviewView` remain defined here; the window-picker sheet is no longer shown. |
+| `src/macos/LanMessenger/UI/Chat/MessageBubbleView.swift` | Text/file bubble rendering, status icons, reply chips, copy/show/delete context menus, and "This message was deleted" placeholder; delegates to `MediaBubbleView` for image and video attachments. |
 | `src/macos/LanMessenger/UI/Chat/MediaBubbleView.swift` | Inline image and video bubbles with async thumbnail decode (NSImage / AVAssetImageGenerator), an in-memory `ThumbnailCache`, and a modal preview sheet hosting `NSImageView`/`VideoPlayer`. |
 | `src/macos/LanMessenger/UI/Chat/MediaTypes.swift` | Extension-based image/video classification (`MediaKind`) and `FinderReveal` helper that opens Finder with the file selected off the main thread. |
 | `src/macos/LanMessenger/UI/Chat/FileTransferBannerView.swift` | In-chat transfer progress banner. |

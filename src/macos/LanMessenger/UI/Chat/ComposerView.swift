@@ -13,13 +13,13 @@ struct ComposerView: View {
     @State private var typingTimer: Task<Void, Never>?
 
     // Screenshot flow ─────────────────────────────────────────────────────────
-    // Step 1 → camera button tapped → fetch window list → show picker sheet
-    // Step 2 → user picks a window → capture → show preview sheet
-    // Step 3 → user clicks Send in preview → sendFile() → dismiss
+    // Step 1 → camera button tapped → `screencapture -i` overlay (drag a region
+    //          or click a window, like Cmd+Shift+4 / Cmd+Shift+5's "Selected
+    //          Portion"). Esc cancels silently (no file written, no error shown).
+    // Step 2 → on success, show the preview sheet with the captured PNG.
+    // Step 3 → user clicks Send in preview → sendFile() → dismiss.
     @State private var screenshotBusy = false          // spinner on camera button
     @State private var screenshotError: String? = nil  // surfaced in alert
-    @State private var showWindowPicker = false
-    @State private var windowPickerItems: [ScreenshotWindowItem] = []
     @State private var showScreenshotPreview = false
     @State private var capturedScreenshotPath: String? = nil
 
@@ -127,14 +127,6 @@ struct ComposerView: View {
         } message: {
             Text(screenshotError ?? "")
         }
-        // Step 1 – window picker
-        .sheet(isPresented: $showWindowPicker) {
-            WindowPickerView(items: windowPickerItems, onSelect: { item in
-                handleWindowSelected(item)
-            }, onCancel: {
-                showWindowPicker = false
-            })
-        }
         // Step 2 – preview before sending
         .sheet(isPresented: $showScreenshotPreview) {
             if let path = capturedScreenshotPath {
@@ -156,45 +148,20 @@ struct ComposerView: View {
 
     // MARK: - Screenshot flow
 
-    /// Step 1: fetch the list of capturable windows, then show the picker.
+    /// Step 1: launch the interactive screen capture overlay (`screencapture -i`),
+    /// which lets the user drag a rectangle to capture a region or click a window
+    /// to capture it — the same UX as Cmd+Shift+4 / Cmd+Shift+5's "Selected Portion".
+    /// If the user presses Esc to cancel, `captureInteractive()` returns nil and
+    /// we silently return to the composer with no error dialog.
     private func startScreenshotFlow() {
         guard !screenshotBusy else { return }
         screenshotBusy = true
         Task {
             do {
-                let windows = try await ScreenshotService.getShareableWindows()
-                var items: [ScreenshotWindowItem] = [.fullScreen]
-                items += windows.map { .window($0) }
-                windowPickerItems = items
-                screenshotBusy = false
-                showWindowPicker = true
-            } catch let err as ScreenshotError {
-                screenshotBusy = false
-                screenshotError = err.errorDescription
-            } catch {
-                screenshotBusy = false
-                screenshotError = error.localizedDescription
-            }
-        }
-    }
-
-    /// Step 2: user chose a window (or Full Screen) from the picker.
-    /// Dismiss the picker, wait for its animation to finish, then capture.
-    private func handleWindowSelected(_ item: ScreenshotWindowItem) {
-        showWindowPicker = false
-        screenshotBusy = true
-        Task {
-            // Allow the picker sheet to finish its dismiss animation before
-            // capturing.  For Full Screen this also ensures the picker is gone
-            // from the screenshot.
-            try? await Task.sleep(nanoseconds: 380_000_000)
-            do {
-                let path: String
-                switch item {
-                case .fullScreen:
-                    path = try await ScreenshotService.capturePrimaryDisplay()
-                case .window(let info):
-                    path = try await ScreenshotService.captureWindow(id: info.id)
+                guard let path = try await ScreenshotService.captureInteractive() else {
+                    // User pressed Esc — no file was created, nothing to do.
+                    screenshotBusy = false
+                    return
                 }
                 capturedScreenshotPath = path
                 screenshotBusy = false

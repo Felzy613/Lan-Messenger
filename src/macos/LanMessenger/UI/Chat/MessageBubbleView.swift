@@ -10,6 +10,9 @@ struct MessageBubbleView: View {
     /// resolved by ChatView from conversation history. Nil for text replies or when
     /// the original message is not found.
     var replyFilePath: String? = nil
+    /// Called when the user chooses a delete option from the context menu.
+    /// The Bool is `forEveryone` — true for "Delete for Everyone", false for "Delete for Me".
+    var onDelete: ((Bool) -> Void)? = nil
     @Environment(\.colorScheme) var colorScheme
     // Tracks whether the received file still exists on disk (checked asynchronously).
     @State private var fileExists = false
@@ -46,7 +49,9 @@ struct MessageBubbleView: View {
 
     @ViewBuilder
     private var bubble: some View {
-        if let path = filePath {
+        if entry.deleted {
+            deletedBubble
+        } else if let path = filePath {
             // Photos and videos get an inline media bubble; everything else
             // falls through to the generic "document" bubble.  MediaBubbleView
             // handles its own file-existence check so it can render a
@@ -59,7 +64,8 @@ struct MessageBubbleView: View {
                     kind: mediaKind,
                     onReply: onReply,
                     onTapReplyTarget: onTapReplyTarget,
-                    replyFilePath: replyFilePath
+                    replyFilePath: replyFilePath,
+                    onDelete: onDelete
                 )
             case .other:
                 fileBubble(path: path)
@@ -69,6 +75,33 @@ struct MessageBubbleView: View {
         } else {
             outgoingBubble
         }
+    }
+
+    // MARK: - Deleted placeholder bubble
+
+    // Rendered in place of the normal text/file/image content when
+    // `entry.deleted == true`. Reply-chip and file-action UI are suppressed.
+    private var deletedBubble: some View {
+        let bg = entry.incoming ? Theme.incomingBubble(colorScheme) : Theme.outgoingBubble(colorScheme)
+        return HStack(spacing: 6) {
+            Image(systemName: "trash")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Text("This message was deleted")
+                .font(.system(size: 13))
+                .italic()
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(bg,
+                    in: UnevenRoundedRectangle(
+                        topLeadingRadius: 16,
+                        bottomLeadingRadius: entry.incoming ? (isFirstInRun ? 4 : 16) : 16,
+                        bottomTrailingRadius: entry.incoming ? 16 : (isFirstInRun ? 4 : 16),
+                        topTrailingRadius: 16
+                    ))
+        .frame(maxWidth: 420, alignment: entry.incoming ? .leading : .trailing)
     }
 
     // MARK: - Reply preview chip (shown at top of bubble when replying)
@@ -184,6 +217,17 @@ struct MessageBubbleView: View {
                     NSWorkspace.shared.open(url)
                 } label: { Label("Open", systemImage: "square.and.arrow.up") }
             }
+            if onDelete != nil {
+                Divider()
+                Button(role: .destructive) { onDelete?(false) } label: {
+                    Label("Delete for Me", systemImage: "trash")
+                }
+                if !entry.incoming, entry.messageId != nil {
+                    Button(role: .destructive) { onDelete?(true) } label: {
+                        Label("Delete for Everyone", systemImage: "trash.fill")
+                    }
+                }
+            }
         }
         .alert("Cannot open file location",
                isPresented: Binding(get: { revealError != nil },
@@ -238,6 +282,12 @@ struct MessageBubbleView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(entry.text, forType: .string)
             } label: { Label("Copy", systemImage: "doc.on.doc") }
+            if onDelete != nil {
+                Divider()
+                Button(role: .destructive) { onDelete?(false) } label: {
+                    Label("Delete for Me", systemImage: "trash")
+                }
+            }
         }
     }
 
@@ -279,6 +329,17 @@ struct MessageBubbleView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(entry.text, forType: .string)
             } label: { Label("Copy", systemImage: "doc.on.doc") }
+            if onDelete != nil {
+                Divider()
+                Button(role: .destructive) { onDelete?(false) } label: {
+                    Label("Delete for Me", systemImage: "trash")
+                }
+                if entry.messageId != nil {
+                    Button(role: .destructive) { onDelete?(true) } label: {
+                        Label("Delete for Everyone", systemImage: "trash.fill")
+                    }
+                }
+            }
         }
     }
 

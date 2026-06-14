@@ -168,6 +168,68 @@ enum ScreenshotService {
         }.value
     }
 
+    // MARK: - Interactive capture (screencapture -i)
+
+    /// Launches the system `/usr/sbin/screencapture -i` tool, which gives the
+    /// user the same drag-to-select-a-region or click-a-window UX as
+    /// Cmd+Shift+4 / Cmd+Shift+5's "Selected Portion" mode — entirely native,
+    /// with on-screen highlight and crosshair cursor handled by the OS.
+    ///
+    /// The app is not sandboxed (see LanMessenger.entitlements), so launching
+    /// `/usr/sbin/screencapture` via `Process` is permitted.
+    ///
+    /// Returns the path to the captured PNG, or `nil` if the user cancelled
+    /// (pressed Esc) — in which case no temp file is created and no error
+    /// should be surfaced.
+    ///
+    /// `screencapture -i` itself prompts for Screen Recording permission via
+    /// the system TCC dialog if needed, so no explicit preflight is required
+    /// here (unlike the ScreenCaptureKit paths above).
+    static func captureInteractive() async throws -> String? {
+        NetLogger.screenshot(event: "interactive_request", permission: hasPermission() ? "granted" : "unknown")
+
+        let customDir = ConfigStore.shared.config.screenshotDir
+        let dir = try tempScreenshotDirectory(customPath: customDir)
+        let filename = "Screenshot \(filenameTimestamp()).png"
+        let url = dir.appendingPathComponent(filename)
+
+        // Remove any stale file at this path (extremely unlikely given the
+        // timestamped filename, but keeps the "did the user cancel" check honest).
+        try? FileManager.default.removeItem(at: url)
+
+        let startedAt = Date()
+        let exitCode: Int32 = await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            // -i: interactive (drag a region or click a window), -o: omit window
+            // shadow for window captures so the PNG matches just the content.
+            process.arguments = ["-i", "-o", url.path]
+            do {
+                try process.run()
+            } catch {
+                return Int32(-1)
+            }
+            process.waitUntilExit()
+            return process.terminationStatus
+        }.value
+
+        guard exitCode == 0 else {
+            NetLogger.screenshot(event: "interactive_failed", reason: "screencapture exited \(exitCode)")
+            throw ScreenshotError.captureFailed("screencapture exited with status \(exitCode)")
+        }
+
+        // If the user pressed Esc to cancel, screencapture exits 0 but never
+        // writes the file — that's our cancellation signal.
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            NetLogger.screenshot(event: "interactive_cancelled")
+            return nil
+        }
+
+        let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        NetLogger.screenshot(event: "interactive_captured", permission: "granted", initMs: elapsedMs, path: url.path)
+        return url.path
+    }
+
     // MARK: - Window enumeration and targeted capture
 
     /// Returns the list of on-screen windows that can be individually captured.

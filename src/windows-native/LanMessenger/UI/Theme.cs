@@ -49,6 +49,9 @@ public static class Theme
         new(Color.FromArgb(255, 17, 27, 33));
     public static readonly SolidColorBrush BubbleFailedBrush =
         new(Color.FromArgb(255, 220, 60, 60));
+    /// <summary>Muted/gray text used for "this message was deleted" placeholders.</summary>
+    public static readonly SolidColorBrush MutedTextBrush =
+        new(Color.FromArgb(255, 142, 142, 147));
 
     // One brush per avatar palette colour — shared across every avatar row.
     public static readonly SolidColorBrush[] AvatarBrushes;
