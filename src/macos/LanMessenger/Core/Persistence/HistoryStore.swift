@@ -270,7 +270,7 @@ final class HistoryStore {
     // "delete for me", a local-only operation that never sends a packet.
     func removeEntry(matching entry: MessageEntry, peerIP: String) {
         guard var entries = history[peerIP] else { return }
-        guard let idx = entries.firstIndex(where: { Self.sameEntry($0, entry) }) else { return }
+        guard let idx = entries.firstIndex(where: { MessageEntry.sameEntry($0, entry) }) else { return }
         entries.remove(at: idx)
         history[peerIP] = entries
         save()
