@@ -6,10 +6,10 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System;
-using System.Drawing;
 using System.Threading.Tasks;
 using Windows.Foundation;
 using WinRT.Interop;
+using Rectangle = System.Drawing.Rectangle;
 
 namespace LanMessenger.UI.Chat;
 
