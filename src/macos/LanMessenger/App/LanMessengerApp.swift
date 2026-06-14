@@ -76,6 +76,23 @@ enum WindowController {
         if !foundExisting {
             bringNewWindowToFront(retries: 8)
         }
+
+        // SwiftUI's Window scene can implicitly promote the app to .regular as
+        // a side effect of materializing/activating its window, independent of
+        // the explicit policy call above. Re-assert .accessory afterwards so a
+        // stray Dock icon doesn't reappear when the user has hidden it.
+        reassertDockPolicy()
+    }
+
+    // Re-applies the user's dock preference after window operations that might
+    // have caused AppKit to implicitly change the activation policy.
+    private static func reassertDockPolicy() {
+        guard ConfigStore.shared.config.hideFromDock else { return }
+        DispatchQueue.main.async {
+            if NSApp.activationPolicy() != .accessory {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
     }
 
     // Polls NSApp.windows until a main-eligible window appears, then raises it.
@@ -85,6 +102,7 @@ enum WindowController {
             for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
                 w.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
+                reassertDockPolicy()
                 return
             }
             bringNewWindowToFront(retries: retries - 1)

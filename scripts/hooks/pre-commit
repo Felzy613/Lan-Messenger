@@ -78,7 +78,8 @@ if [[ $BUMP_MACOS -eq 1 ]]; then
 
     # Sync full version (MAJOR.MINOR.PATCH) into project.yml
     PROJECT_YML="$REPO_ROOT/src/macos/project.yml"
-    sed -i '' "s/MARKETING_VERSION: \"[0-9][0-9.]*\"/MARKETING_VERSION: \"$next\"/" "$PROJECT_YML"
+    sed -i.bak "s/MARKETING_VERSION: \"[0-9][0-9.]*\"/MARKETING_VERSION: \"$next\"/" "$PROJECT_YML"
+    rm -f "$PROJECT_YML.bak"
 
     git add "$MACOS_JSON" "$PROJECT_YML"
     echo "  [version] macOS ($BUMP): $current → $next"
@@ -92,7 +93,8 @@ if [[ $BUMP_WINDOWS -eq 1 ]]; then
 
     # Sync into .csproj <Version> tag
     CSPROJ="$REPO_ROOT/src/windows-native/LanMessenger/LanMessenger.csproj"
-    sed -i '' "s|<Version>[0-9][0-9.]*</Version>|<Version>$next</Version>|" "$CSPROJ"
+    sed -i.bak "s|<Version>[0-9][0-9.]*</Version>|<Version>$next</Version>|" "$CSPROJ"
+    rm -f "$CSPROJ.bak"
 
     git add "$WIN_JSON" "$CSPROJ"
     echo "  [version] Windows ($BUMP): $current → $next"

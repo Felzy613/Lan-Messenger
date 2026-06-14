@@ -902,7 +902,7 @@ public sealed partial class AppModel : ObservableObject
                 ConfigStore.Shared.Save();
             }
             RefreshConversations();
-            if (entry.Incoming && SelectedPeerIP != ip)
+            if (entry.Incoming)
                 NotificationService.Shared.ShowMessage(entry.Sender, entry.Text);
         };
 
