@@ -217,17 +217,7 @@ struct MessageBubbleView: View {
                     NSWorkspace.shared.open(url)
                 } label: { Label("Open", systemImage: "square.and.arrow.up") }
             }
-            if onDelete != nil {
-                Divider()
-                Button(role: .destructive) { onDelete?(false) } label: {
-                    Label("Delete for Me", systemImage: "trash")
-                }
-                if !entry.incoming, entry.messageId != nil {
-                    Button(role: .destructive) { onDelete?(true) } label: {
-                        Label("Delete for Everyone", systemImage: "trash.fill")
-                    }
-                }
-            }
+            deleteMenuItems(allowDeleteForEveryone: !entry.incoming)
         }
         .alert("Cannot open file location",
                isPresented: Binding(get: { revealError != nil },
@@ -282,12 +272,7 @@ struct MessageBubbleView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(entry.text, forType: .string)
             } label: { Label("Copy", systemImage: "doc.on.doc") }
-            if onDelete != nil {
-                Divider()
-                Button(role: .destructive) { onDelete?(false) } label: {
-                    Label("Delete for Me", systemImage: "trash")
-                }
-            }
+            deleteMenuItems(allowDeleteForEveryone: false)
         }
     }
 
@@ -329,17 +314,7 @@ struct MessageBubbleView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(entry.text, forType: .string)
             } label: { Label("Copy", systemImage: "doc.on.doc") }
-            if onDelete != nil {
-                Divider()
-                Button(role: .destructive) { onDelete?(false) } label: {
-                    Label("Delete for Me", systemImage: "trash")
-                }
-                if entry.messageId != nil {
-                    Button(role: .destructive) { onDelete?(true) } label: {
-                        Label("Delete for Everyone", systemImage: "trash.fill")
-                    }
-                }
-            }
+            deleteMenuItems(allowDeleteForEveryone: true)
         }
     }
 
@@ -351,6 +326,24 @@ struct MessageBubbleView: View {
 
     private var statusIcon: some View {
         BubbleStatusView(status: entry.status)
+    }
+
+    // "Delete for Me" is always offered when a delete handler is wired up.
+    // "Delete for Everyone" additionally requires a stable messageId and is
+    // restricted by the caller to the sender's own outgoing messages.
+    @ViewBuilder
+    private func deleteMenuItems(allowDeleteForEveryone: Bool) -> some View {
+        if onDelete != nil {
+            Divider()
+            Button(role: .destructive) { onDelete?(false) } label: {
+                Label("Delete for Me", systemImage: "trash")
+            }
+            if allowDeleteForEveryone, entry.messageId != nil {
+                Button(role: .destructive) { onDelete?(true) } label: {
+                    Label("Delete for Everyone", systemImage: "trash.fill")
+                }
+            }
+        }
     }
 
     // Small "via cloud relay" badge shown when a message transited the relay Worker.
