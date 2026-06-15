@@ -278,7 +278,11 @@ public sealed partial class ChatPage : Page
         {
             for (var i = 0; i < _rows.Count; i++)
             {
-                if (!SameMessage(_rows[i], entries[i])) { prefixMatches = false; break; }
+                if (!SameMessage(_rows[i], entries[i]) || _rows[i].Deleted != entries[i].Deleted)
+                {
+                    prefixMatches = false;
+                    break;
+                }
             }
         }
 
@@ -490,9 +494,19 @@ public sealed partial class ChatPage : Page
                 var fullPath = await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync();
                 var overlay = new RegionSelectOverlayWindow(fullPath);
                 var region = await overlay.SelectAsync();
-                capturedPath = region is { } r
-                    ? await Core.Services.ScreenshotService.CropToRegionAsync(fullPath, r)
-                    : fullPath;   // no drag — use the full-display capture as-is
+                switch (region.Outcome)
+                {
+                    case RegionSelectOutcome.Region:
+                        capturedPath = await Core.Services.ScreenshotService.CropToRegionAsync(fullPath, region.Region!.Value);
+                        break;
+                    case RegionSelectOutcome.FullDisplay:
+                        capturedPath = fullPath;   // no drag — use the full-display capture as-is
+                        break;
+                    case RegionSelectOutcome.Cancelled:
+                        // User pressed Escape — abandon entirely, don't show a preview.
+                        try { File.Delete(fullPath); } catch { }
+                        return;
+                }
             }
             else
             {

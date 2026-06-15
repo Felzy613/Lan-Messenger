@@ -14,12 +14,32 @@ using Rectangle = System.Drawing.Rectangle;
 namespace LanMessenger.UI.Chat;
 
 /// <summary>
+/// Outcome of <see cref="RegionSelectOverlayWindow.SelectAsync"/>.
+/// </summary>
+public enum RegionSelectOutcome
+{
+    /// User dragged a rectangle; <see cref="RegionSelectResult.Region"/> is set.
+    Region,
+    /// User clicked without dragging — capture the whole display as-is.
+    FullDisplay,
+    /// User pressed Escape — abandon the screenshot entirely.
+    Cancelled,
+}
+
+/// <summary>
+/// Result of <see cref="RegionSelectOverlayWindow.SelectAsync"/>.
+/// </summary>
+public readonly record struct RegionSelectResult(RegionSelectOutcome Outcome, Rectangle? Region = null)
+{
+    public static readonly RegionSelectResult FullDisplay = new(RegionSelectOutcome.FullDisplay);
+    public static readonly RegionSelectResult Cancelled   = new(RegionSelectOutcome.Cancelled);
+}
+
+/// <summary>
 /// Full-screen borderless overlay over the primary display that lets the user
 /// drag a rectangle to select a screenshot region. The caller supplies the
 /// path to an already-captured full-primary-display PNG; on completion this
-/// window reports the selected rectangle in that image's pixel coordinates
-/// (or null if the user clicked without dragging / pressed Escape, meaning
-/// "use the whole display").
+/// window reports the outcome via <see cref="RegionSelectResult"/>.
 ///
 /// Scope note: this covers the primary display only (see CLAUDE.md screenshot
 /// feature notes). Multi-monitor region selection and per-window hover
@@ -27,7 +47,7 @@ namespace LanMessenger.UI.Chat;
 /// </summary>
 public sealed class RegionSelectOverlayWindow : Window
 {
-    private readonly TaskCompletionSource<Rectangle?> _result = new();
+    private readonly TaskCompletionSource<RegionSelectResult> _result = new();
 
     private readonly Grid      _root;
     private readonly Image     _background;
@@ -36,10 +56,11 @@ public sealed class RegionSelectOverlayWindow : Window
     private Point? _dragStart;
     private bool   _dragging;
 
-    // Ratio between the captured image's pixel size and this window's DIP size —
-    // used to translate pointer coordinates into image-pixel coordinates.
-    private double _scaleX = 1.0;
-    private double _scaleY = 1.0;
+    // Pixel size of the captured background image — used together with the
+    // overlay root's rendered DIP size to translate pointer coordinates (which
+    // are reported in DIPs) into image-pixel coordinates.
+    private int _imagePixelWidth;
+    private int _imagePixelHeight;
 
     public RegionSelectOverlayWindow(string backingImagePath)
     {
@@ -90,7 +111,7 @@ public sealed class RegionSelectOverlayWindow : Window
         _root.KeyboardAccelerators[0].Invoked += (_, args) =>
         {
             args.Handled = true;
-            Finish(null);
+            Finish(RegionSelectResult.Cancelled);
         };
 
         Content = _root;
@@ -109,12 +130,8 @@ public sealed class RegionSelectOverlayWindow : Window
             var bmp = new BitmapImage(new Uri(backingImagePath));
             bmp.ImageOpened += (_, _) =>
             {
-                if (bmp.PixelWidth > 0 && bmp.PixelHeight > 0)
-                {
-                    var work = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
-                    _scaleX = bmp.PixelWidth  / (double)work.Width;
-                    _scaleY = bmp.PixelHeight / (double)work.Height;
-                }
+                _imagePixelWidth  = bmp.PixelWidth;
+                _imagePixelHeight = bmp.PixelHeight;
             };
             _background.Source = bmp;
         }
@@ -135,11 +152,10 @@ public sealed class RegionSelectOverlayWindow : Window
 
     /// <summary>
     /// Shows the overlay and waits for the user to finish selecting (or cancel).
-    /// Returns the selected rectangle in image-pixel coordinates, or null if the
-    /// user pressed Escape or clicked without dragging (caller should fall back
-    /// to the full display).
+    /// See <see cref="RegionSelectResult"/> / <see cref="RegionSelectOutcome"/>
+    /// for how to interpret the result.
     /// </summary>
-    public Task<Rectangle?> SelectAsync()
+    public Task<RegionSelectResult> SelectAsync()
     {
         Activate();
         return _result.Task;
@@ -170,7 +186,7 @@ public sealed class RegionSelectOverlayWindow : Window
 
     private void RootGrid_PointerReleased(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
-        if (!_dragging || _dragStart is not { } start) { Finish(null); return; }
+        if (!_dragging || _dragStart is not { } start) { Finish(RegionSelectResult.FullDisplay); return; }
         _dragging = false;
         var end = e.GetCurrentPoint(_root).Position;
 
@@ -180,20 +196,26 @@ public sealed class RegionSelectOverlayWindow : Window
         var h = Math.Abs(end.Y - start.Y);
 
         // A tiny/no drag means "capture the whole display".
-        if (w < 4 || h < 4) { Finish(null); return; }
+        if (w < 4 || h < 4) { Finish(RegionSelectResult.FullDisplay); return; }
+
+        // _root.ActualWidth/Height are in the same DIP space as the pointer
+        // coordinates above, so scale against those rather than the work
+        // area's physical pixel size (which is off by the DPI scale factor).
+        var scaleX = _imagePixelWidth  > 0 && _root.ActualWidth  > 0 ? _imagePixelWidth  / _root.ActualWidth  : 1.0;
+        var scaleY = _imagePixelHeight > 0 && _root.ActualHeight > 0 ? _imagePixelHeight / _root.ActualHeight : 1.0;
 
         var rect = new Rectangle(
-            (int)Math.Round(x * _scaleX),
-            (int)Math.Round(y * _scaleY),
-            (int)Math.Round(w * _scaleX),
-            (int)Math.Round(h * _scaleY));
-        Finish(rect);
+            (int)Math.Round(x * scaleX),
+            (int)Math.Round(y * scaleY),
+            (int)Math.Round(w * scaleX),
+            (int)Math.Round(h * scaleY));
+        Finish(new RegionSelectResult(RegionSelectOutcome.Region, rect));
     }
 
-    private void Finish(Rectangle? rect)
+    private void Finish(RegionSelectResult result)
     {
         if (_result.Task.IsCompleted) return;
-        _result.TrySetResult(rect);
+        _result.TrySetResult(result);
         try { Close(); } catch { }
     }
 
