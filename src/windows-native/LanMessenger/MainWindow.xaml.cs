@@ -60,6 +60,9 @@ public sealed partial class MainWindow : Window
             if (e.PropertyName == nameof(AppModel.ShowMigrationPrompt) &&
                 Model.ShowMigrationPrompt)
                 ShowMigrationDialog();
+
+            if (e.PropertyName == nameof(AppModel.TotalUnreadCount))
+                UpdateTaskbarOverlay(Model.TotalUnreadCount);
         };
 
         // Intercept window close so we hide-to-tray instead of exiting (unless the
@@ -356,6 +359,117 @@ public sealed partial class MainWindow : Window
     private const int SW_RESTORE = 9;
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    // MARK: - Taskbar unread badge (ITaskbarList3 overlay icon)
+
+    private ITaskbarList3?      _taskbarList;
+    private IntPtr               _badgeIconHandle = IntPtr.Zero;
+    private bool                 _badgeOverlayShown;
+
+    // Shows a small red-dot overlay on the taskbar button when there are unread
+    // messages in any active conversation, and clears it when the count is zero.
+    private void UpdateTaskbarOverlay(int unreadCount)
+    {
+        try
+        {
+            var hwnd = WindowNative.GetWindowHandle(this);
+            if (hwnd == IntPtr.Zero) return;
+
+            _taskbarList ??= CreateTaskbarList();
+            if (_taskbarList is null) return;
+
+            var hasUnread = unreadCount > 0;
+            if (hasUnread == _badgeOverlayShown) return;
+
+            if (hasUnread)
+            {
+                if (_badgeIconHandle == IntPtr.Zero)
+                    _badgeIconHandle = LoadBadgeIcon();
+                _taskbarList.SetOverlayIcon(hwnd, _badgeIconHandle, "New messages");
+            }
+            else
+            {
+                _taskbarList.SetOverlayIcon(hwnd, IntPtr.Zero, null);
+            }
+            _badgeOverlayShown = hasUnread;
+        }
+        catch (Exception ex)
+        {
+            LanMessenger.Core.Services.LanLogger.Warn("Taskbar", $"overlay icon update failed: {ex.Message}");
+        }
+    }
+
+    private static IntPtr LoadBadgeIcon()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "BadgeDot.ico");
+        // LR_LOADFROMFILE | LR_DEFAULTSIZE — loads the icon at its natural small size.
+        return LoadImage(IntPtr.Zero, path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+    }
+
+    private static ITaskbarList3? CreateTaskbarList()
+    {
+        try
+        {
+            var clsid = new Guid("56FDF344-FD6D-11d0-958A-006008961FAC"); // CLSID_TaskbarList
+            var iid   = new Guid("EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF"); // IID_ITaskbarList3
+            var hr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iid, out var obj);
+            if (hr != 0 || obj == IntPtr.Zero) return null;
+            var taskbarList = (ITaskbarList3)Marshal.GetObjectForIUnknown(obj);
+            Marshal.Release(obj);
+            taskbarList.HrInit();
+            return taskbarList;
+        }
+        catch (Exception ex)
+        {
+            LanMessenger.Core.Services.LanLogger.Warn("Taskbar", $"CoCreateInstance(TaskbarList) failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    [DllImport("ole32.dll")]
+    private static extern int CoCreateInstance(
+        ref Guid clsid, IntPtr pUnkOuter, uint dwClsContext, ref Guid riid, out IntPtr ppv);
+
+    private const uint CLSCTX_INPROC_SERVER = 0x1;
+
+    private const uint IMAGE_ICON       = 1;
+    private const uint LR_LOADFROMFILE  = 0x00000010;
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadImage(IntPtr hinst, string lpszName, uint uType, int cxDesired, int cyDesired, uint fuLoad);
+
+    // Minimal COM interface declaration for ITaskbarList3 — only the members we use.
+    [ComImport]
+    [Guid("EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ITaskbarList3
+    {
+        // ITaskbarList
+        void HrInit();
+        void AddTab(IntPtr hwnd);
+        void DeleteTab(IntPtr hwnd);
+        void ActivateTab(IntPtr hwnd);
+        void SetActiveAlt(IntPtr hwnd);
+
+        // ITaskbarList2
+        void MarkFullscreenWindow(IntPtr hwnd, [MarshalAs(UnmanagedType.Bool)] bool fFullscreen);
+
+        // ITaskbarList3 (only the members used here — others omitted but the vtable
+        // order below must still match the real interface up to SetOverlayIcon).
+        void SetProgressValue(IntPtr hwnd, ulong ullCompleted, ulong ullTotal);
+        void SetProgressState(IntPtr hwnd, int tbpFlags);
+        void RegisterTab(IntPtr hwndTab, IntPtr hwndMDI);
+        void UnregisterTab(IntPtr hwndTab);
+        void SetTabOrder(IntPtr hwndTab, IntPtr hwndInsertBefore);
+        void SetTabActive(IntPtr hwndTab, IntPtr hwndMDI, uint tbatFlags);
+        [PreserveSig]
+        int ThumbBarAddButtons(IntPtr hwnd, uint cButtons, IntPtr pButtons);
+        [PreserveSig]
+        int ThumbBarUpdateButtons(IntPtr hwnd, uint cButtons, IntPtr pButtons);
+        void ThumbBarSetImageList(IntPtr hwnd, IntPtr himl);
+        void SetOverlayIcon(IntPtr hwnd, IntPtr hIcon, [MarshalAs(UnmanagedType.LPWStr)] string? pszDescription);
+        void SetThumbnailTooltip(IntPtr hwnd, [MarshalAs(UnmanagedType.LPWStr)] string? pszTip);
+        void SetThumbnailClip(IntPtr hwnd, IntPtr prcClip);
+    }
 
     // Minimal ICommand for the tray icon left-click binding.
     private sealed class DelegateCommand : ICommand

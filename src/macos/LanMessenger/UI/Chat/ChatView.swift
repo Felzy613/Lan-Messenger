@@ -109,7 +109,10 @@ struct ChatView: View {
                                 withAnimation { proxy.scrollTo(match.id, anchor: .center) }
                                 scrollHighlightID = match.id
                             },
-                            replyFilePath: resolvedReplyFilePath(for: entry)
+                            replyFilePath: resolvedReplyFilePath(for: entry),
+                            onDelete: { forEveryone in
+                                model.deleteMessage(entry, peerIP: peerIP, forEveryone: forEveryone)
+                            }
                         )
                         .id(entry.id)
                         .background(

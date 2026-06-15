@@ -52,6 +52,9 @@ final class AppModel: ObservableObject {
     @Published var archivedConversations: [ConversationViewModel] = []
     @Published var selectedPeerIP: String?
     @Published var messages: [String: [MessageEntry]] = [:]          // keyed by peerIP
+    // In-memory only — not persisted to ConfigStore/disk. Lets the user switch
+    // conversations without losing an in-progress, unsent draft.
+    @Published var drafts: [String: String] = [:]
     @Published var typingStates: [String: (sender: String, active: Bool)] = [:]
     @Published var activeTransfers: [String: (label: String, bytes: Int64, total: Int64)] = [:]
     @Published var showMigrationPrompt = false
@@ -390,10 +393,18 @@ final class AppModel: ObservableObject {
         archivedList.sort { ($0.lastTimestamp ?? .distantPast) > ($1.lastTimestamp ?? .distantPast) }
         conversations = active
         archivedConversations = archivedList
+
+        // Dock badge mirrors unread counts for visible (non-archived) conversations only —
+        // archived threads are intentionally out of sight and shouldn't nag the dock icon.
+        let totalUnread = active.reduce(0) { $0 + $1.unreadCount }
+        NSApp.dockTile.badgeLabel = totalUnread > 0 ? "\(totalUnread)" : nil
     }
 
     private func lastMessagePreview(_ entries: [MessageEntry]) -> String {
         guard let last = entries.last else { return "" }
+        if last.deleted {
+            return "This message was deleted"
+        }
         if last.text.hasPrefix("__FILE__:") {
             let path = String(last.text.dropFirst("__FILE__:".count))
             return "📎 \(URL(fileURLWithPath: path).lastPathComponent)"
@@ -475,6 +486,39 @@ final class AppModel: ObservableObject {
         // Kept for compatibility — delegates to markConversationRead.
         guard entry.incoming, !entry.readReceiptSent else { return }
         markConversationRead(peerIP: peerIP)
+    }
+
+    // MARK: - Message deletion
+
+    // "Delete for everyone" only applies to our own outgoing messages that have
+    // a stable messageId. "Delete for me" removes the entry locally only and
+    // never sends a packet.
+    func deleteMessage(_ entry: MessageEntry, peerIP: String, forEveryone: Bool) {
+        if forEveryone {
+            guard !entry.incoming, let messageId = entry.messageId else { return }
+            HistoryStore.shared.markDeleted(messageId: messageId, peerIP: peerIP)
+            if var entries = messages[peerIP] {
+                for i in entries.indices where entries[i].messageId == messageId {
+                    entries[i].deleted = true
+                    entries[i].text = ""
+                    entries[i].replyToMessageId = nil
+                    entries[i].replyToPreview = nil
+                    entries[i].replyToSender = nil
+                }
+                messages[peerIP] = entries
+            }
+            MessagingService.shared.sendDeleteMessage(messageId: messageId, toPeerIP: peerIP)
+            refreshConversations()
+        } else {
+            HistoryStore.shared.removeEntry(matching: entry, peerIP: peerIP)
+            if var entries = messages[peerIP] {
+                if let idx = entries.firstIndex(where: { MessageEntry.sameEntry($0, entry) }) {
+                    entries.remove(at: idx)
+                    messages[peerIP] = entries
+                }
+            }
+            refreshConversations()
+        }
     }
 
     // MARK: - Cloud relay
@@ -788,6 +832,20 @@ final class AppModel: ObservableObject {
             self.typingStates[ip] = (sender, active)
             self.refreshConversations()
         }
+        MessagingService.shared.onMessageDeleted = { [weak self] ip, messageId in
+            guard let self else { return }
+            if var entries = self.messages[ip] {
+                for i in entries.indices where entries[i].messageId == messageId {
+                    entries[i].deleted = true
+                    entries[i].text = ""
+                    entries[i].replyToMessageId = nil
+                    entries[i].replyToPreview = nil
+                    entries[i].replyToSender = nil
+                }
+                self.messages[ip] = entries
+            }
+            self.refreshConversations()
+        }
 
         FileTransferService.shared.onProgress = { [weak self] ip, label, bytes, total in
             self?.activeTransfers[ip] = (label, bytes, total)
@@ -891,7 +949,7 @@ extension AppModel: NetworkCoordinatorDelegate {
             knownPeerKeys[packet.senderIP] = key
         }
         switch packet {
-        case .text, .typing, .receipt:
+        case .text, .typing, .receipt, .delete:
             MessagingService.shared.handlePacket(packet)
         case .fileStart, .fileChunk, .fileEnd:
             FileTransferService.shared.handlePacket(packet)

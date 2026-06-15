@@ -60,6 +60,11 @@ public sealed partial class AppModel : ObservableObject
     [ObservableProperty] private UpdateInfo?                     _availableUpdate;
     [ObservableProperty] private UpdateProgress                  _updateProgress = new(UpdateProgressState.Idle);
     [ObservableProperty] private bool                            _isLocalNetworkAvailable = true;
+    [ObservableProperty] private int                             _totalUnreadCount;
+
+    // In-memory per-peer draft text for the composer. Not persisted — switching
+    // conversations without sending restores whatever was typed.
+    public Dictionary<string, string> Drafts { get; } = new();
 
     // True while the main window is visible on screen; false when hidden to tray.
     // Read receipts are only auto-sent when the window is visible so that messages
@@ -522,6 +527,7 @@ public sealed partial class AppModel : ObservableObject
             (b.LastTimestamp ?? DateTime.MinValue).CompareTo(a.LastTimestamp ?? DateTime.MinValue));
         Conversations = active;
         ArchivedConversations = arch;
+        TotalUnreadCount = active.Sum(c => c.UnreadCount);
     }
 
     private static int CountUnread(IReadOnlyList<MessageEntry> entries)
@@ -531,6 +537,7 @@ public sealed partial class AppModel : ObservableObject
     {
         if (entries.Count == 0) return "";
         var last = entries[^1];
+        if (last.Deleted) return "This message was deleted";
         if (last.Text.StartsWith("__FILE__:"))
         {
             var path = last.Text["__FILE__:".Length..];
@@ -596,6 +603,47 @@ public sealed partial class AppModel : ObservableObject
             // that have no MessageId — MarkReadReceiptSent alone misses those.
             HistoryStore.Shared.MarkAllIncomingRead(peerIP);
             HistoryStore.Shared.Save();
+            OnPropertyChanged(nameof(Messages));
+            RefreshConversations();
+        }
+    }
+
+    // Deletes a single message. "Delete for everyone" marks the entry as deleted
+    // (clearing text/reply fields) both locally and on the peer's copy via
+    // delete_message; only the sender's own outgoing messages qualify. "Delete
+    // for me" removes the entry from the local history only — no packet is sent.
+    public void DeleteMessage(MessageEntry entry, string peerIP, bool forEveryone)
+    {
+        if (forEveryone)
+        {
+            if (entry.Incoming || string.IsNullOrEmpty(entry.MessageId)) return;
+            HistoryStore.Shared.MarkDeleted(entry.MessageId, peerIP);
+            HistoryStore.Shared.Save();
+            if (Messages.TryGetValue(peerIP, out var list))
+            {
+                var e = list.FirstOrDefault(x => x.MessageId == entry.MessageId);
+                if (e is not null)
+                {
+                    e.Deleted          = true;
+                    e.Text             = "";
+                    e.ReplyToMessageId = null;
+                    e.ReplyToPreview   = null;
+                    e.ReplyToSender    = null;
+                }
+            }
+            MessagingService.Shared.SendDeleteMessage(entry.MessageId, peerIP);
+            OnPropertyChanged(nameof(Messages));
+            RefreshConversations();
+        }
+        else
+        {
+            HistoryStore.Shared.RemoveEntry(entry, peerIP);
+            HistoryStore.Shared.Save();
+            if (Messages.TryGetValue(peerIP, out var list))
+            {
+                var idx = list.FindIndex(e => MessageEntry.SameEntry(e, entry));
+                if (idx >= 0) list.RemoveAt(idx);
+            }
             OnPropertyChanged(nameof(Messages));
             RefreshConversations();
         }
@@ -873,7 +921,7 @@ public sealed partial class AppModel : ObservableObject
             TouchPeer(pkt.SenderPublicKeyB64);
             switch (pkt)
             {
-                case ValidatedText or ValidatedTyping or ValidatedReceipt:
+                case ValidatedText or ValidatedTyping or ValidatedReceipt or ValidatedDelete:
                     MessagingService.Shared.HandlePacket(pkt); break;
                 case ValidatedFileStart or ValidatedFileChunk or ValidatedFileEnd:
                     FileTransferService.Shared.HandlePacket(pkt); break;
@@ -913,6 +961,20 @@ public sealed partial class AppModel : ObservableObject
             // Targeted notification — no full Messages PropertyChanged. ChatPage
             // updates one row in place; Sidebar ignores status updates entirely.
             MessageStatusUpdated?.Invoke(ip, msgId, status);
+        };
+
+        MessagingService.Shared.OnMessageDeleted = (ip, messageId) =>
+        {
+            if (!Messages.TryGetValue(ip, out var list)) return;
+            var entry = list.FirstOrDefault(e => e.MessageId == messageId);
+            if (entry is null) return;
+            entry.Deleted          = true;
+            entry.Text             = "";
+            entry.ReplyToMessageId = null;
+            entry.ReplyToPreview   = null;
+            entry.ReplyToSender    = null;
+            OnPropertyChanged(nameof(Messages));
+            RefreshConversations();
         };
 
         MessagingService.Shared.OnTypingUpdate = (ip, sender, active) =>

@@ -29,6 +29,9 @@ struct MediaBubbleView: View {
     var onTapReplyTarget: (() -> Void)? = nil
     /// Local file path of the replied-to message (if it was a media/file message).
     var replyFilePath: String? = nil
+    /// Called when the user chooses a delete option from the context menu.
+    /// The Bool is `forEveryone` — true for "Delete for Everyone", false for "Delete for Me".
+    var onDelete: ((Bool) -> Void)? = nil
     @Environment(\.colorScheme) var colorScheme
 
     @State private var thumbnail: NSImage? = nil
@@ -230,6 +233,17 @@ struct MediaBubbleView: View {
         Button {
             NSWorkspace.shared.open(url)
         } label: { Label("Open", systemImage: "square.and.arrow.up") }
+        if onDelete != nil {
+            Divider()
+            Button(role: .destructive) { onDelete?(false) } label: {
+                Label("Delete for Me", systemImage: "trash")
+            }
+            if !entry.incoming, entry.messageId != nil {
+                Button(role: .destructive) { onDelete?(true) } label: {
+                    Label("Delete for Everyone", systemImage: "trash.fill")
+                }
+            }
+        }
     }
 
     private var missingBubble: some View {

@@ -15,6 +15,7 @@ final class MessagingService {
     var onMessageReceived: ((String, MessageEntry) -> Void)?      // peerIP, entry
     var onStatusUpdate: ((String, String, String) -> Void)?       // peerIP, messageId, status
     var onTypingUpdate: ((String, String, Bool) -> Void)?         // peerIP, senderName, active
+    var onMessageDeleted: ((String, String) -> Void)?             // peerIP, messageId
 
     private let tcpPort = 54232
     private var typingSentAt: [String: Date] = [:]
@@ -29,6 +30,7 @@ final class MessagingService {
         case .text(let pkt, let ip):    handleText(pkt, fromIP: ip)
         case .typing(let pkt, let ip):  handleTyping(pkt, fromIP: ip)
         case .receipt(let pkt, let ip): handleReceipt(pkt, fromIP: ip)
+        case .delete(let pkt, let ip):  handleDeleteMessage(pkt, fromIP: ip)
         default: break
         }
     }
@@ -160,6 +162,21 @@ final class MessagingService {
         sendJSON(packet, toIP: ip, port: tcpPort, completion: nil)
     }
 
+    // MARK: - Send delete_message ("delete for everyone" notice)
+
+    // Unencrypted "delete for everyone" notice — same shape as a receipt.
+    // Best-effort: sent over a one-shot TCP connection just like sent_receipt/read_receipt.
+    func sendDeleteMessage(messageId: String, toPeerIP ip: String) {
+        let packet: [String: Any] = [
+            "type": "delete_message",
+            "message_id": messageId,
+            "sender": ConfigStore.shared.config.username,
+            "sender_public_key_b64": KeyManager.shared.publicKeyB64,
+            "port": tcpPort,
+        ]
+        sendJSON(packet, toIP: ip, port: tcpPort, completion: nil)
+    }
+
     // MARK: - Deliver pending messages to a newly-online peer
 
     func deliverPending(toPeerIP ip: String, peerPublicKeyB64: String) {
@@ -244,6 +261,14 @@ final class MessagingService {
 
     private func handleTyping(_ pkt: TypingPacket, fromIP ip: String) {
         onTypingUpdate?(ip, pkt.sender, pkt.active)
+    }
+
+    // Applies an inbound "delete for everyone" notice: marks the matching
+    // history entry as deleted (clearing text and reply preview fields) and
+    // notifies the UI so the in-memory copy is updated to match.
+    private func handleDeleteMessage(_ pkt: ReceiptPacket, fromIP ip: String) {
+        HistoryStore.shared.markDeleted(messageId: pkt.messageId, peerIP: ip)
+        onMessageDeleted?(ip, pkt.messageId)
     }
 
     private func handleReceipt(_ pkt: ReceiptPacket, fromIP ip: String) {

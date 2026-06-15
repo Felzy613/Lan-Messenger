@@ -291,6 +291,28 @@ Same shape as `sent_receipt`, but `type` is `read_receipt`.
 `Read`. Clients should send it once per incoming message and persist
 `read_receipt_sent` to avoid duplicate receipts after restart.
 
+### delete_message
+
+Unencrypted "delete for everyone" notice. Same shape as `sent_receipt`.
+
+```json
+{
+  "type": "delete_message",
+  "message_id": "a3f1b2c4d5e6f7a8b9c0d1e2f3a4b5c6",
+  "sender": "Alice",
+  "sender_public_key_b64": "base64-public-key",
+  "port": 54232
+}
+```
+
+A sender may only request deletion of their own outgoing messages. On
+receipt, the recipient marks the matching history entry as deleted: it clears
+`text` and any reply preview fields and sets `deleted` to `true`, leaving a
+"this message was deleted" placeholder in the UI. `delete_message` is
+best-effort and unencrypted metadata only — it carries no message content.
+"Delete for me" (removing a message only from the local copy of a
+conversation) is a local-only operation and never sends a packet.
+
 ### file_start
 
 Starts an encrypted file transfer. Metadata is not encrypted.
@@ -450,7 +472,8 @@ Inner plaintext JSON:
       "read_receipt_sent": false,
       "reply_to_message_id": null,
       "reply_to_preview": null,
-      "reply_to_sender": null
+      "reply_to_sender": null,
+      "deleted": false
     }
   ]
 }
@@ -464,6 +487,9 @@ Rules:
 - Reply fields are optional and must decode cleanly if absent.
 - Status strings are UI lifecycle values: `Sending`, `Queued`, `Sent`,
   `Delivered`, `Read`, `Failed`, or empty for incoming/no-status.
+- `deleted` is optional and defaults to `false` when absent (back-compat with
+  older history files). When `true`, `text` and reply preview fields are
+  cleared and the UI renders a "this message was deleted" placeholder.
 
 ## Config Format
 

@@ -19,6 +19,19 @@ public sealed class MessageEntry
     [JsonPropertyName("reply_to_sender")]     public string? ReplyToSender    { get; set; }
     // "relay" when this message transited the cloud relay Worker; null for direct LAN delivery.
     [JsonPropertyName("delivery_path")]     public string? DeliveryPath    { get; set; }
+    // True when this message was deleted (locally or via delete_message). Text and
+    // reply preview fields are cleared; the UI renders a "deleted" placeholder.
+    [JsonPropertyName("deleted")]           public bool   Deleted          { get; set; }
+
+    // Identity comparison used by deletion/removal — prefer MessageId when both
+    // entries have one, otherwise fall back to timestamp+sender+text+direction.
+    public static bool SameEntry(MessageEntry a, MessageEntry b)
+    {
+        if (!string.IsNullOrEmpty(a.MessageId) && !string.IsNullOrEmpty(b.MessageId))
+            return a.MessageId == b.MessageId;
+        return a.Timestamp == b.Timestamp && a.Sender == b.Sender
+            && a.Text == b.Text && a.Incoming == b.Incoming;
+    }
 }
 
 // Manages reading/writing the encrypted history file.
@@ -140,6 +153,31 @@ public sealed class HistoryStore
 
     public List<MessageEntry> Entries(string peerIP) =>
         _history.TryGetValue(peerIP, out var list) ? list : [];
+
+    // Marks a message as deleted: clears its text and reply preview fields and
+    // sets Deleted = true, leaving a "this message was deleted" placeholder.
+    // Caller is responsible for persisting via Save().
+    public void MarkDeleted(string messageId, string peerIP)
+    {
+        if (!_history.TryGetValue(peerIP, out var list)) return;
+        foreach (var e in list.Where(e => e.MessageId == messageId))
+        {
+            e.Deleted          = true;
+            e.Text             = "";
+            e.ReplyToMessageId = null;
+            e.ReplyToPreview   = null;
+            e.ReplyToSender    = null;
+        }
+    }
+
+    // Removes the first entry matching `matching` (local-only "delete for me").
+    // Caller is responsible for persisting via Save().
+    public void RemoveEntry(MessageEntry matching, string peerIP)
+    {
+        if (!_history.TryGetValue(peerIP, out var list)) return;
+        var idx = list.FindIndex(e => MessageEntry.SameEntry(e, matching));
+        if (idx >= 0) list.RemoveAt(idx);
+    }
 
     // Drops all messages for a peer IP. Caller is responsible for persisting via Save().
     public void Delete(string peerIP) => _history.Remove(peerIP);

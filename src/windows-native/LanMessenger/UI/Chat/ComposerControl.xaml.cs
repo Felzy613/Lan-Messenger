@@ -22,6 +22,14 @@ public sealed partial class ComposerControl : UserControl
     private DispatcherTimer? _typingIdleTimer;
     private bool             _isAttachmentPickerOpen;
 
+    // Backing text for the composer input — used to save/restore per-conversation
+    // drafts when the user switches peers without sending.
+    public string Text
+    {
+        get => InputBox.Text;
+        set => InputBox.Text = value;
+    }
+
     public bool IsAttachmentPickerOpen
     {
         get => _isAttachmentPickerOpen;

@@ -9,13 +9,18 @@
                 MaxWidth="520"
                 HorizontalAlignment="Left">
             <Border.ContextFlyout>
-                <MenuFlyout x:Name="BubbleMenu">
-                    <MenuFlyoutItem Text="Reply" Click="ReplyMenu_Click" />
+                <MenuFlyout x:Name="BubbleMenu" Opening="BubbleMenu_Opening">
+                    <MenuFlyoutItem x:Name="ReplyMenu" Text="Reply" Click="ReplyMenu_Click" />
                     <MenuFlyoutItem Text="Copy"  Click="CopyMenu_Click" />
                     <MenuFlyoutItem x:Name="ShowInExplorerMenu"
                                     Text="Show in folder"
                                     Click="ShowInExplorerMenu_Click"
                                     Visibility="Collapsed" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="Delete for Me" Click="DeleteForMeMenu_Click" />
+                    <MenuFlyoutItem x:Name="DeleteForEveryoneMenu"
+                                    Text="Delete for Everyone"
+                                    Click="DeleteForEveryoneMenu_Click" />
                 </MenuFlyout>
             </Border.ContextFlyout>
             <StackPanel Spacing="2">

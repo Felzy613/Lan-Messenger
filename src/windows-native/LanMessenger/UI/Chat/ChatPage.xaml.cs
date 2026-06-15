@@ -29,6 +29,8 @@ public sealed class MessageRowViewModel : INotifyPropertyChanged
     public string? ReplyFilePath    { get; init; }
     /// True when this message transited the cloud relay Worker (not direct LAN delivery).
     public bool DeliveredViaRelay   { get; init; }
+    /// True when this message was deleted — the bubble renders a placeholder.
+    public bool Deleted             { get; init; }
 
     // Status is the one mutable field — checkmarks update without rebuilding the row.
     private string _status = "";
@@ -181,6 +183,18 @@ public sealed partial class ChatPage : Page
     {
         if (_model is null) return;
         var ip = _model.SelectedPeerIP;
+
+        // Save the composer's in-progress text as a draft for the conversation
+        // we're leaving, then restore (or clear) it for the new one.
+        if (_boundPeerIP is not null && _boundPeerIP != ip)
+        {
+            var draft = Composer.Text;
+            if (string.IsNullOrEmpty(draft)) _model.Drafts.Remove(_boundPeerIP);
+            else _model.Drafts[_boundPeerIP] = draft;
+        }
+        if (forceReload || _boundPeerIP != ip)
+            Composer.Text = ip is not null && _model.Drafts.TryGetValue(ip, out var d) ? d : "";
+
         _boundPeerIP = ip;
 
         // Reset reply state when switching peers.
@@ -264,7 +278,11 @@ public sealed partial class ChatPage : Page
         {
             for (var i = 0; i < _rows.Count; i++)
             {
-                if (!SameMessage(_rows[i], entries[i])) { prefixMatches = false; break; }
+                if (!SameMessage(_rows[i], entries[i]) || _rows[i].Deleted != entries[i].Deleted)
+                {
+                    prefixMatches = false;
+                    break;
+                }
             }
         }
 
@@ -363,6 +381,7 @@ public sealed partial class ChatPage : Page
             ReplyToSender     = e.ReplyToSender,
             ReplyFilePath     = replyFilePath,
             DeliveredViaRelay = e.DeliveryPath == "relay",
+            Deleted           = e.Deleted,
         };
     }
 
@@ -379,6 +398,7 @@ public sealed partial class ChatPage : Page
         if (ReplyTarget is not null) replyTo = ReplyTarget;
 
         _model.SendMessage(trimmed, _model.SelectedPeerIP, replyTo);
+        _model.Drafts.Remove(_model.SelectedPeerIP);
         SetReplyTarget(null);
     }
 
@@ -467,9 +487,33 @@ public sealed partial class ChatPage : Page
 
             // Step 2 — capture (off UI thread).
             var hwnd = picker.SelectedHwnd;
-            capturedPath = hwnd == IntPtr.Zero
-                ? await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync()
-                : await Core.Services.ScreenshotService.CaptureWindowAsync(hwnd);
+            if (hwnd == ScreenshotWindowPickerDialog.SelectRegionSentinel)
+            {
+                // Drag-to-select: capture the whole primary display first, then
+                // let the user crop it with the overlay window.
+                var fullPath = await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync();
+                var overlay = new RegionSelectOverlayWindow(fullPath);
+                var region = await overlay.SelectAsync();
+                switch (region.Outcome)
+                {
+                    case RegionSelectOutcome.Region:
+                        capturedPath = await Core.Services.ScreenshotService.CropToRegionAsync(fullPath, region.Region!.Value);
+                        break;
+                    case RegionSelectOutcome.FullDisplay:
+                        capturedPath = fullPath;   // no drag — use the full-display capture as-is
+                        break;
+                    case RegionSelectOutcome.Cancelled:
+                        // User pressed Escape — abandon entirely, don't show a preview.
+                        try { File.Delete(fullPath); } catch { }
+                        return;
+                }
+            }
+            else
+            {
+                capturedPath = hwnd == IntPtr.Zero
+                    ? await Core.Services.ScreenshotService.CapturePrimaryDisplayAsync()
+                    : await Core.Services.ScreenshotService.CaptureWindowAsync(hwnd);
+            }
 
             // Step 3 — preview: user must explicitly click Send.
             var preview = new ScreenshotPreviewDialog(capturedPath) { XamlRoot = XamlRoot };
@@ -547,4 +591,34 @@ public sealed partial class ChatPage : Page
     }
 
     private void CancelReplyBtn_Click(object sender, RoutedEventArgs e) => SetReplyTarget(null);
+
+    // MARK: - Delete
+
+    // Called by MessageBubbleControl's "Delete for me" / "Delete for everyone" menu items.
+    internal void RequestDeleteMessage(string? messageId, bool incoming, string? text, bool isFile, string filePath, string timestamp, bool forEveryone)
+    {
+        if (_model is null || _boundPeerIP is null) return;
+        if (forEveryone && incoming) return;   // can only delete-for-everyone your own messages
+
+        var entries = _model.Messages.TryGetValue(_boundPeerIP, out var list) ? list : [];
+        MessageEntry? target = null;
+        if (messageId is not null)
+            target = entries.FirstOrDefault(e => e.MessageId == messageId);
+        if (target is null)
+        {
+            // Fall back to matching by the same heuristic used elsewhere for
+            // entries without a stable MessageId (legacy file messages).
+            var rowText = isFile ? "__FILE__:" + filePath : text ?? "";
+            target = entries.FirstOrDefault(e =>
+                e.MessageId is null &&
+                e.Incoming == incoming &&
+                e.Text == rowText &&
+                FormatTimestamp(e.Timestamp) == timestamp);
+        }
+        if (target is null) return;
+
+        if (forEveryone && target.Incoming) return;
+
+        _model.DeleteMessage(target, _boundPeerIP, forEveryone);
+    }
 }

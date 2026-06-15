@@ -359,6 +359,20 @@ Read flow:
    messages.
 2. It marks `read_receipt_sent` in memory and history.
 
+Delete flow:
+
+1. "Delete for me" (any message, either direction) is local-only: the entry is
+   removed from history and the in-memory conversation; no packet is sent.
+2. "Delete for everyone" applies only to the sender's own outgoing messages
+   with a `message_id`. The local history entry is marked `deleted` (text and
+   reply-preview fields cleared) and a `delete_message` packet — same shape as
+   `sent_receipt`/`read_receipt`, unencrypted — is sent to the peer over a
+   one-shot TCP connection.
+3. On receipt, the peer marks its matching history entry `deleted` the same
+   way and the UI renders a "This message was deleted" placeholder. The
+   conversation list preview shows the same placeholder text when the last
+   message in a thread is deleted.
+
 ## Cloud Relay
 
 `RelayClient` (singleton, one per platform) provides an HTTP fallback delivery
@@ -485,6 +499,26 @@ Important files:
 - `UI/Theme.cs`: shared brushes and formatting helpers.
 
 The tray icon is always present. Closing can hide to tray based on config.
+
+`AppModel.TotalUnreadCount` is recomputed every time conversations refresh (sum
+of unread counts across active, non-archived conversations). `MainWindow`
+observes this property and toggles a small red-dot overlay on the taskbar
+button via `ITaskbarList3.SetOverlayIcon` (`Assets/BadgeDot.ico`), clearing it
+(`SetOverlayIcon(hwnd, null, null)`) once the count returns to zero.
+
+The composer keeps an in-memory per-conversation draft (`AppModel.Drafts`,
+keyed by peer IP, not persisted) so switching conversations without sending
+restores the typed text; the draft is cleared once the message is sent.
+
+Screenshot capture (`ChatPage.OnScreenshotRequested`) offers "Select region...",
+"Full Screen", or a specific window via `ScreenshotWindowPickerDialog`.
+"Select region..." captures the whole primary display first, then shows
+`RegionSelectOverlayWindow` — a borderless, topmost, full-display overlay —
+for a click-and-drag rectangle selection; the backing capture is cropped to
+that rectangle via `ScreenshotService.CropToRegionAsync`. A click without a
+drag falls back to the full-display capture. This covers the primary display
+only; multi-monitor region selection and per-window hover highlighting are
+follow-ups.
 
 ## Update Architecture
 
