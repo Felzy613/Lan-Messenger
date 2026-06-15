@@ -233,17 +233,7 @@ struct MediaBubbleView: View {
         Button {
             NSWorkspace.shared.open(url)
         } label: { Label("Open", systemImage: "square.and.arrow.up") }
-        if onDelete != nil {
-            Divider()
-            Button(role: .destructive) { onDelete?(false) } label: {
-                Label("Delete for Me", systemImage: "trash")
-            }
-            if !entry.incoming, entry.messageId != nil {
-                Button(role: .destructive) { onDelete?(true) } label: {
-                    Label("Delete for Everyone", systemImage: "trash.fill")
-                }
-            }
-        }
+        deleteMenuItems(allowDeleteForEveryone: !entry.incoming)
     }
 
     private var missingBubble: some View {
@@ -298,6 +288,24 @@ struct MediaBubbleView: View {
 
     private var statusIcon: some View {
         BubbleStatusView(status: entry.status)
+    }
+
+    // "Delete for Me" is always offered when a delete handler is wired up.
+    // "Delete for Everyone" additionally requires a stable messageId and is
+    // restricted by the caller to the sender's own outgoing messages.
+    @ViewBuilder
+    private func deleteMenuItems(allowDeleteForEveryone: Bool) -> some View {
+        if onDelete != nil {
+            Divider()
+            Button(role: .destructive) { onDelete?(false) } label: {
+                Label("Delete for Me", systemImage: "trash")
+            }
+            if allowDeleteForEveryone, entry.messageId != nil {
+                Button(role: .destructive) { onDelete?(true) } label: {
+                    Label("Delete for Everyone", systemImage: "trash.fill")
+                }
+            }
+        }
     }
 
     // MARK: - Async work
