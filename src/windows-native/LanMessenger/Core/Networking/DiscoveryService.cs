@@ -61,6 +61,7 @@ public sealed class DiscoveryService : IDisposable
     private readonly Dictionary<string, Socket> _sendSockets = [];   // keyed by interface LocalIP
     private Socket?      _recvSocket;
     private Timer?       _beaconTimer;
+    private Timer?       _healTimer;
     private CancellationTokenSource _cts = new();
     private readonly object _socketLock = new();
     private bool _running;
@@ -82,6 +83,14 @@ public sealed class DiscoveryService : IDisposable
         _monitor.Changed += OnInterfacesChanged;
 
         _beaconTimer = new Timer(_ => SendBeacon(), null, TimeSpan.Zero, TimeSpan.FromMilliseconds(IntervalMs));
+
+        // Safety-net periodic rebuild: Windows power management and NIC driver
+        // resets can silently kill UDP sockets without firing any network-change
+        // event. RebuildSockets is cheap and self-healing, so doing it every few
+        // minutes guarantees recovery even without an OS event.
+        _healTimer = new Timer(_ => { if (_running) RebuildSockets("periodic-heal"); },
+            null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+
         Task.Run(() => ReceiveLoop(_cts.Token));
 
         LanLogger.Info("Discovery",
@@ -95,6 +104,7 @@ public sealed class DiscoveryService : IDisposable
         _cts.Cancel();
         _monitor.Changed -= OnInterfacesChanged;
         _beaconTimer?.Dispose(); _beaconTimer = null;
+        _healTimer?.Dispose(); _healTimer = null;
         TeardownSockets();
         LanLogger.Info("Discovery", "stopped");
     }
@@ -418,16 +428,31 @@ public sealed class DiscoveryService : IDisposable
     private async Task ReceiveLoop(CancellationToken ct)
     {
         var buffer = new byte[8192];
+        // Tracks consecutive null-socket polls so we can self-heal when socket
+        // setup fails during a rebuild and no further network event arrives.
+        int nullSocketStrikes = 0;
+        // Cooldown: only force a rebuild from SocketException once per 10 s so
+        // a persistently-erroring socket doesn't hammer socket creation.
+        long lastErrorRebuildTick = 0;
+
         while (!ct.IsCancellationRequested && _running)
         {
             Socket? sock;
             lock (_socketLock) sock = _recvSocket;
             if (sock is null)
             {
-                // Sockets being rebuilt — wait briefly and retry.
+                nullSocketStrikes++;
+                // After ~5 s with no socket (setup failed during a rebuild and no
+                // further network-change event fired), try to rebuild ourselves.
+                if (nullSocketStrikes > 25 && _running)
+                {
+                    nullSocketStrikes = 0;
+                    RebuildSockets("null-recovery");
+                }
                 try { await Task.Delay(200, ct).ConfigureAwait(false); } catch (OperationCanceledException) { break; }
                 continue;
             }
+            nullSocketStrikes = 0;
 
             EndPoint remote = new IPEndPoint(IPAddress.Any, 0);
             int n;
@@ -443,9 +468,16 @@ public sealed class DiscoveryService : IDisposable
             catch (SocketException ex)
             {
                 // WSAECONNRESET is suppressed via SIO_UDP_CONNRESET, but other
-                // transient errors (network unreachable, interrupted) shouldn't
-                // kill the receive loop. Log once and continue.
+                // errors (network down, reset) can leave the socket permanently
+                // broken. Force a rebuild so the loop doesn't spin forever on a
+                // dead socket; the 10 s cooldown prevents hammering on hard errors.
                 LanLogger.Info("Discovery", $"recv socket error: {ex.SocketErrorCode} {ex.Message}");
+                var now = Environment.TickCount64;
+                if (now - lastErrorRebuildTick > 10_000 && _running)
+                {
+                    lastErrorRebuildTick = now;
+                    RebuildSockets("recv-error");
+                }
                 continue;
             }
             catch (Exception ex)
