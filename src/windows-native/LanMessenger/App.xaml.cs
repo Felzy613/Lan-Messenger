@@ -33,8 +33,32 @@ public partial class App : Application
         UnhandledException += (_, e) =>
         {
             e.Handled = true;
-            LogAndAlert(e.Exception);
+            LogAndAlert(e.Exception, startup: MainWindow is null);
         };
+
+        // Application.UnhandledException only covers the XAML/UI thread. Faulted
+        // fire-and-forget tasks and thread-pool callbacks otherwise die silently
+        // (or, for unobserved task exceptions, at an unpredictable GC-triggered
+        // moment). Log them so "the app just quit" reports leave a trail.
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            e.SetObserved();
+            LogException("UnobservedTaskException", e.Exception);
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is Exception ex)
+                LogException("AppDomainUnhandled", ex);
+        };
+    }
+
+    private static void LogException(string source, Exception ex)
+    {
+        try
+        {
+            LanMessenger.Core.Services.LanLogger.Error("App", $"{source}: {ex.GetType().Name} {ex.Message}", ex);
+        }
+        catch { }
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
@@ -50,7 +74,7 @@ public partial class App : Application
         }
     }
 
-    private static void LogAndAlert(Exception ex)
+    private static void LogAndAlert(Exception ex, bool startup = true)
     {
         var logPath = "";
         try
@@ -89,9 +113,11 @@ public partial class App : Application
         var inner = ex.InnerException != null ? $"\nCause: {ex.InnerException.Message}" : "";
         var hr    = $"\nHResult: 0x{ex.HResult:X8}";
         var detail = logPath.Length > 0 ? $"\n\nLog: {logPath}" : "";
+        var lead    = startup ? "LAN Messenger failed to start:" : "LAN Messenger hit an unexpected error:";
+        var caption = startup ? "LAN Messenger – Startup Error" : "LAN Messenger – Error";
         MessageBox(0,
-            $"LAN Messenger failed to start:\n\n{ex.Message}{inner}{hr}{detail}",
-            "LAN Messenger – Startup Error",
+            $"{lead}\n\n{ex.Message}{inner}{hr}{detail}",
+            caption,
             0x10 /* MB_ICONERROR */);
     }
 }

@@ -57,6 +57,10 @@ public sealed class DiscoveryService : IDisposable
     private readonly ConcurrentDictionary<string, long> _lastSeen = new();
     private const long DedupWindowMs = 1200;
 
+    // Separate, shorter throttle for discovery replies — see HandleReceived.
+    private readonly ConcurrentDictionary<string, long> _lastReplied = new();
+    private const long ReplyThrottleMs = 400;
+
     private readonly NetworkInterfaceMonitor _monitor;
     private readonly Dictionary<string, Socket> _sendSockets = [];   // keyed by interface LocalIP
     private Socket?      _recvSocket;
@@ -82,13 +86,16 @@ public sealed class DiscoveryService : IDisposable
         RebuildSockets(reason: "start");
         _monitor.Changed += OnInterfacesChanged;
 
-        _beaconTimer = new Timer(_ => SendBeacon(), null, TimeSpan.Zero, TimeSpan.FromMilliseconds(IntervalMs));
+        // Timer callbacks run on the thread pool: an escaped exception there
+        // takes down the entire process. Everything inside must be guarded.
+        _beaconTimer = new Timer(_ => Guarded(SendBeacon, "beacon"), null,
+            TimeSpan.Zero, TimeSpan.FromMilliseconds(IntervalMs));
 
         // Safety-net periodic rebuild: Windows power management and NIC driver
         // resets can silently kill UDP sockets without firing any network-change
         // event. RebuildSockets is cheap and self-healing, so doing it every few
         // minutes guarantees recovery even without an OS event.
-        _healTimer = new Timer(_ => { if (_running) RebuildSockets("periodic-heal"); },
+        _healTimer = new Timer(_ => Guarded(() => { if (_running) RebuildSockets("periodic-heal"); }, "heal"),
             null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
 
         Task.Run(() => ReceiveLoop(_cts.Token));
@@ -110,6 +117,22 @@ public sealed class DiscoveryService : IDisposable
     }
 
     public void Dispose() => Stop();
+
+    // Crash shield for thread-pool timer callbacks — an unhandled exception in
+    // a System.Threading.Timer callback terminates the process.
+    private static void Guarded(Action action, string label)
+    {
+        try { action(); }
+        catch (Exception ex)
+        {
+            LanLogger.Error("Discovery", $"{label} tick threw: {ex.GetType().Name} {ex.Message}");
+        }
+    }
+
+    // Force an immediate socket rebuild — used by the app on resume-from-sleep
+    // where the OS may have silently invalidated the sockets without firing a
+    // network-change event.
+    public void RebuildNow(string reason) => Guarded(() => RebuildSockets(reason), "rebuild");
 
     // Send a single UDP datagram (used by NetworkCoordinator for one-off unicast
     // discovery replies). Goes out the send socket on the interface that owns
@@ -301,7 +324,7 @@ public sealed class DiscoveryService : IDisposable
             return;
         }
 
-        var extras = ExtraTargets?.Invoke()?.ToList() ?? [];
+        var extras = SafeExtraTargets();
 
         lock (_socketLock)
         {
@@ -367,7 +390,7 @@ public sealed class DiscoveryService : IDisposable
             return;
         }
 
-        var extras = ExtraTargets?.Invoke()?.ToList() ?? [];
+        var extras = SafeExtraTargets();
 
         lock (_socketLock)
         {
@@ -409,6 +432,16 @@ public sealed class DiscoveryService : IDisposable
         {
             LanLogger.Info("Discovery", $"probe to {ip} failed: {ex.Message}");
         }
+    }
+
+    // The targets provider is supplied by NetworkCoordinator and reads shared
+    // UI-thread state (contact list, peer dict); this runs on a timer thread so
+    // a rare concurrent mutation must degrade to "no hints this cycle", never
+    // to an exception escaping into the timer.
+    private List<string> SafeExtraTargets()
+    {
+        try { return ExtraTargets?.Invoke()?.ToList() ?? []; }
+        catch { return []; }
     }
 
     private static void TrySend(Socket sock, byte[] data, IPAddress dest, int port, string label)
@@ -498,10 +531,46 @@ public sealed class DiscoveryService : IDisposable
         var pkt = PacketValidator.ValidateDiscovery(data, fromIP, OwnPublicKeyB64, OwnIPs);
         if (pkt is null) return;
 
+        var now = Environment.TickCount64;
+
+        // Reply to "discovery" BEFORE the beacon dedup below. A peer that has
+        // stopped hearing our beacons probes us with unicast "discovery" and
+        // decides we're offline if no reply comes back; those probes share a
+        // dedup key with the peer's regular 1.5 s beacon, so replying only
+        // after the dedup gate silently ate most probe replies and made peers
+        // flip us offline while we were alive. The reply has its own short
+        // throttle so the 2-3 duplicate copies of one beacon still produce a
+        // single reply. (Never reply to "discovery_reply" — infinite ping-pong
+        // — nor to "goodbye".)
+        if (pkt.Type == "discovery" && BuildPayload is not null)
+        {
+            if (!_lastReplied.TryGetValue(pkt.PublicKeyB64, out var lastReply) || now - lastReply >= ReplyThrottleMs)
+            {
+                _lastReplied[pkt.PublicKeyB64] = now;
+                try
+                {
+                    var src = BuildPayload();
+                    var reply = new DiscoveryPacket
+                    {
+                        Type         = "discovery_reply",
+                        Username     = src.Username,
+                        Port         = src.Port,
+                        PublicKeyB64 = src.PublicKeyB64,
+                        Ips          = src.Ips,
+                        RelayIdHash  = src.RelayIdHash,
+                    };
+                    SendUdp(JsonSerializer.SerializeToUtf8Bytes(reply), fromIP, DiscoveryPort);
+                }
+                catch (Exception ex)
+                {
+                    LanLogger.Warn("Discovery", $"reply to {fromIP} failed: {ex.Message}");
+                }
+            }
+        }
+
         // Suppress duplicate copies of the same beacon (we send to three targets per
         // interface so the receive socket sees each peer's beacon 2-3 times per cycle).
         var dedupKey = $"{pkt.PublicKeyB64}:{pkt.Type}";
-        var now = Environment.TickCount64;
         if (_lastSeen.TryGetValue(dedupKey, out var last) && now - last < DedupWindowMs)
             return;
         _lastSeen[dedupKey] = now;
@@ -518,30 +587,6 @@ public sealed class DiscoveryService : IDisposable
                 LanLogger.Warn("Discovery", $"PeerDeparted handler threw: {ex.GetType().Name} {ex.Message}");
             }
             return;
-        }
-
-        // Reply to "discovery" packets (not to "discovery_reply" — that would
-        // create an infinite ping-pong).
-        if (pkt.Type == "discovery" && BuildPayload is not null)
-        {
-            try
-            {
-                var src = BuildPayload();
-                var reply = new DiscoveryPacket
-                {
-                    Type         = "discovery_reply",
-                    Username     = src.Username,
-                    Port         = src.Port,
-                    PublicKeyB64 = src.PublicKeyB64,
-                    Ips          = src.Ips,
-                    RelayIdHash  = src.RelayIdHash,
-                };
-                SendUdp(JsonSerializer.SerializeToUtf8Bytes(reply), fromIP, DiscoveryPort);
-            }
-            catch (Exception ex)
-            {
-                LanLogger.Warn("Discovery", $"reply to {fromIP} failed: {ex.Message}");
-            }
         }
 
         LanLogger.Info("Discovery", $"rx {pkt.Type} from {fromIP} user='{pkt.Username}' port={pkt.Port}");

@@ -41,6 +41,18 @@ public sealed partial class MainWindow : Window
 
         InitializeComponent();
         Title = "LAN Messenger";
+
+        // Point the code-behind palette (bubbles, dots, check marks) at the
+        // light or dark colors. XAML colors follow ThemeDictionaries on their
+        // own; brushes assigned from C# need this explicit sync — without it,
+        // dark-mode users got white bubbles with dark-on-dark hover states.
+        if (Content is FrameworkElement root)
+        {
+            UI.Theme.Initialize(root.ActualTheme == ElementTheme.Dark);
+            root.ActualThemeChanged += (fe, _) =>
+                UI.Theme.Initialize(fe.ActualTheme == ElementTheme.Dark);
+        }
+
         Model = new AppModel(DispatcherQueue.GetForCurrentThread());
 
         var appWindow = AppWindow;

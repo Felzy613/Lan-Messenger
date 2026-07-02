@@ -27,8 +27,9 @@
 
                 <!-- Reply chip — shows a thumbnail for image/video replies, a doc
                      icon for file replies, and plain text for text replies. -->
+                <!-- Alpha-gray reads on both light and dark bubbles -->
                 <Border x:Name="ReplyChip"
-                        Background="#11000000"
+                        Background="#1A808080"
                         CornerRadius="4"
                         Padding="6,4"
                         Margin="0,0,0,4"
@@ -40,7 +41,7 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <Rectangle Grid.Column="0" Fill="#128C4E" />
+                        <Rectangle Grid.Column="0" Fill="{ThemeResource AppReplyAccentBrush}" />
                         <!-- Optional thumbnail / icon for media and file replies -->
                         <Border x:Name="ReplyChipThumbnailBorder"
                                 Grid.Column="1"
@@ -53,7 +54,7 @@
                                        Stretch="UniformToFill"
                                        Visibility="Collapsed" />
                                 <FontIcon x:Name="ReplyChipIcon"
-                                          FontFamily="Segoe MDL2 Assets"
+                                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                           FontSize="18"
                                           HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
@@ -64,7 +65,7 @@
                         <StackPanel Grid.Column="2" Spacing="0" VerticalAlignment="Center">
                             <TextBlock x:Name="ReplySender"
                                        FontSize="11" FontWeight="SemiBold"
-                                       Foreground="#128C4E" />
+                                       Foreground="{ThemeResource AppReplyAccentTextBrush}" />
                             <TextBlock x:Name="ReplyPreview"
                                        FontSize="11"
                                        Opacity="0.75"
@@ -112,7 +113,7 @@
                               Background="#000000"
                               CornerRadius="8">
                             <FontIcon Glyph="&#xE714;"
-                                      FontFamily="Segoe MDL2 Assets"
+                                      FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                       FontSize="28"
                                       Foreground="White"
                                       HorizontalAlignment="Center"
@@ -175,7 +176,7 @@
                                 Visibility="Collapsed"
                                 Opacity="0.6">
                         <FontIcon Glyph="&#xE753;"
-                                  FontFamily="Segoe MDL2 Assets"
+                                  FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                   FontSize="9" />
                         <TextBlock Text="via relay"
                                    FontSize="9" />

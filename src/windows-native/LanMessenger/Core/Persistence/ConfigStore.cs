@@ -128,12 +128,25 @@ public sealed class ConfigStore
         catch { Config = new AppConfig(); }
     }
 
+    private static readonly JsonSerializerOptions _saveOpts = new() { WriteIndented = true };
+    private readonly object _saveLock = new();
+
     public void Save()
     {
         try
         {
-            var json = JsonSerializer.Serialize(Config, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_configPath, json);
+            var json = JsonSerializer.Serialize(Config, _saveOpts);
+            // Serialize writers and replace atomically: Save() is called from
+            // both the UI thread and background tasks (update checks, pending-
+            // queue completions). Interleaved direct writes could corrupt
+            // config.json, and a corrupt config silently drops all contacts on
+            // the next launch.
+            lock (_saveLock)
+            {
+                var tmp = _configPath + ".tmp";
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, _configPath, overwrite: true);
+            }
         }
         catch { }
     }

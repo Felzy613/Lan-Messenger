@@ -43,10 +43,9 @@ public sealed partial class ConversationRowControl : UserControl
         NameText.Text        = Row.PeerName;
         PreviewText.Text     = Row.LastMessage;
         TimestampText.Text   = Row.Timestamp;
-        // Always show the dot; green when online, muted gray when offline — matches macOS sidebar
-        OnlineDot.Fill = new SolidColorBrush(Row.IsOnline
-            ? Color.FromArgb(255, 37, 211, 102)    // #25D366
-            : Color.FromArgb(115, 0, 0, 0));        // ~45% black → neutral gray over any bg
+        // Always show the dot; green when online, muted gray when offline — matches
+        // macOS sidebar. (The previous 45%-alpha black was invisible in dark mode.)
+        OnlineDot.Fill = Row.IsOnline ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
 
         if (Row.UnreadCount > 0)
         {

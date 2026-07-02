@@ -25,7 +25,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <FontIcon Grid.Column="0"
-                          FontFamily="Segoe MDL2 Assets"
+                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
                           Glyph="&#xE721;"
                           FontSize="14"
                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -51,7 +51,7 @@
                         Background="Transparent"
                         Visibility="Collapsed"
                         Click="ClearSearch_Click">
-                    <FontIcon FontFamily="Segoe MDL2 Assets"
+                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                               Glyph="&#xE711;"
                               FontSize="10"
                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -92,7 +92,7 @@
                     <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
                 </Button.Resources>
                 <StackPanel Orientation="Horizontal" Spacing="5">
-                    <FontIcon FontFamily="Segoe MDL2 Assets"
+                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                               Glyph="&#xE8FA;"
                               FontSize="11"
                               Foreground="White" />
@@ -124,7 +124,7 @@
                     VerticalAlignment="Center"
                     Spacing="10"
                     Visibility="Collapsed">
-            <FontIcon FontFamily="Segoe MDL2 Assets"
+            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                       Glyph="&#xE779;"
                       FontSize="44"
                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

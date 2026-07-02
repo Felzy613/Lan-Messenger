@@ -64,7 +64,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <FontIcon Grid.Column="0"
-                          FontFamily="Segoe MDL2 Assets"
+                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
                           Glyph="&#xE7B8;"
                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                 <StackPanel Grid.Column="1" Spacing="2">
@@ -75,7 +75,7 @@
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 </StackPanel>
                 <FontIcon Grid.Column="2"
-                          FontFamily="Segoe MDL2 Assets"
+                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
                           Glyph="&#xE76C;"
                           FontSize="12"
                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />

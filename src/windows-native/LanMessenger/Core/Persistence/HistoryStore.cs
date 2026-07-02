@@ -72,25 +72,57 @@ public sealed class HistoryStore
 
     // MARK: - Save
 
-    public async Task SaveAsync()
+    // Latest un-flushed snapshot, exchanged atomically. The snapshot is taken
+    // on the CALLING thread (the same thread that mutates _history), then
+    // encrypted and written in the background. The previous implementation
+    // serialized the live lists on a background thread — any message appended
+    // mid-serialization threw "Collection was modified", the catch swallowed
+    // it, and the save was silently lost.
+    private byte[]? _dirtySnapshot;
+
+    public Task SaveAsync()
     {
-        await _lock.WaitAsync().ConfigureAwait(false);
+        Save();
+        return FlushAsync();
+    }
+
+    // Snapshot on the caller's thread, flush in the background. Concurrent
+    // Save() bursts (a receipt storm) coalesce: each flush writes only the
+    // newest snapshot and earlier ones are skipped.
+    public void Save()
+    {
+        byte[] snapshot;
         try
         {
             var trimmed = _history.ToDictionary(
                 kv => kv.Key,
                 kv => kv.Value.TakeLast(MaxEntriesPerPeer).ToList()
             );
-            var plaintext = JsonSerializer.SerializeToUtf8Bytes(trimmed);
-            var fileJson = HistoryCrypto.EncryptHistory(plaintext, KeyManager.Shared.PrivateKey);
-            await File.WriteAllTextAsync(ConfigStore.Shared.HistoryFilePath, fileJson).ConfigureAwait(false);
+            snapshot = JsonSerializer.SerializeToUtf8Bytes(trimmed);
+        }
+        catch { return; }
+        Interlocked.Exchange(ref _dirtySnapshot, snapshot);
+        Task.Run(FlushAsync);
+    }
+
+    private async Task FlushAsync()
+    {
+        await _lock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var snapshot = Interlocked.Exchange(ref _dirtySnapshot, null);
+            if (snapshot is null) return;   // a newer flush already wrote it
+            var fileJson = HistoryCrypto.EncryptHistory(snapshot, KeyManager.Shared.PrivateKey);
+            var path = ConfigStore.Shared.HistoryFilePath;
+            // Write-to-temp + atomic replace so a crash mid-write can't leave a
+            // truncated (undecryptable) history file behind.
+            var tmp = path + ".tmp";
+            await File.WriteAllTextAsync(tmp, fileJson).ConfigureAwait(false);
+            File.Move(tmp, path, overwrite: true);
         }
         catch { }
         finally { _lock.Release(); }
     }
-
-    // Synchronous save for callers on the UI thread (fire-and-forget via Task.Run).
-    public void Save() => Task.Run(SaveAsync);
 
     // MARK: - Mutations (call from UI thread)
 

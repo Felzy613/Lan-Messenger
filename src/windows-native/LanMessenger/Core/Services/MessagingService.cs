@@ -26,6 +26,16 @@ public sealed class MessagingService
     private readonly Dictionary<string, DateTime> _typingSentAt    = [];
     private readonly Dictionary<string, bool>     _lastTypingState = [];
 
+    // Pending-queue delivery bookkeeping (UI thread only). DeliverPending is
+    // invoked on every discovery heartbeat (~1.5 s) so transiently failed
+    // messages to an online peer retry promptly instead of sitting "Queued"
+    // until the peer bounces. The in-flight set prevents double-sends while an
+    // attempt is still on the wire; the per-message attempt clock backs off
+    // retries against a persistently unreachable peer.
+    private readonly HashSet<string>              _pendingInFlight   = [];
+    private readonly Dictionary<string, DateTime> _pendingLastTry    = [];
+    private static readonly TimeSpan PendingRetryInterval = TimeSpan.FromSeconds(10);
+
     private MessagingService() { }
 
     public void SetDispatcherQueue(DispatcherQueue dq) => _dq = dq;
@@ -208,19 +218,27 @@ public sealed class MessagingService
 
     public void DeliverPending(string peerIP, string peerPublicKeyB64)
     {
+        var now = DateTime.UtcNow;
         var pending = ConfigStore.Shared.Config.PendingMessages
-            .Where(m => m.PeerPublicKeyB64 == peerPublicKeyB64).ToList();
+            .Where(m => m.PeerPublicKeyB64 == peerPublicKeyB64
+                        && !_pendingInFlight.Contains(m.MessageId)
+                        && (!_pendingLastTry.TryGetValue(m.MessageId, out var last)
+                            || now - last >= PendingRetryInterval))
+            .ToList();
         if (pending.Count == 0) return;
         LanLogger.Info("Send", $"delivering {pending.Count} pending msgs to peer={peerIP}");
 
         foreach (var msg in pending)
         {
+            _pendingInFlight.Add(msg.MessageId);
+            _pendingLastTry[msg.MessageId] = now;
             var aad = Encoding.UTF8.GetBytes(msg.MessageId);
             (string nonceB64, string ctB64) encrypted;
             try { encrypted = SessionCrypto.EncryptForPeer(KeyManager.Shared.PrivateKey, peerPublicKeyB64, Encoding.UTF8.GetBytes(msg.Text), aad); }
             catch (Exception ex)
             {
                 LanLogger.Error("Send", $"pending encrypt failed msgId={msg.MessageId}", ex);
+                _pendingInFlight.Remove(msg.MessageId);
                 continue;
             }
 
@@ -239,11 +257,15 @@ public sealed class MessagingService
             Task.Run(async () =>
             {
                 var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"pending msgId={msgId}");
-                if (!success) return;
                 // Remove only after confirmed delivery so a TCP failure doesn't
-                // silently drop the message from the queue.
+                // silently drop the message from the queue. On failure, clearing
+                // the in-flight flag lets the next heartbeat retry after the
+                // per-message backoff elapses.
                 Dispatch(() =>
                 {
+                    _pendingInFlight.Remove(msgId);
+                    if (!success) return;
+                    _pendingLastTry.Remove(msgId);
                     ApplyStatus(MessageStatus.Sent, msgId, peerIP);
                     ConfigStore.Shared.Config.PendingMessages.RemoveAll(m => m.MessageId == msgId);
                     ConfigStore.Shared.Save();
@@ -256,6 +278,17 @@ public sealed class MessagingService
 
     private void HandleText(TextPacket pkt, string ip)
     {
+        // Duplicate suppression: heartbeat-driven queue retries (and a sender
+        // whose sent_receipt got lost) can legitimately re-send a message we
+        // already have. Don't append it twice — but do re-acknowledge, because
+        // a re-send means the sender never saw our first receipt.
+        if (HistoryStore.Shared.Entries(ip).Any(e => e.MessageId == pkt.MessageId))
+        {
+            LanLogger.Info("Recv", $"duplicate text msgId={pkt.MessageId} peer={ip} — re-sending receipt only");
+            SendReceipt("sent_receipt", pkt.MessageId, ip);
+            return;
+        }
+
         var aad = Encoding.UTF8.GetBytes(pkt.MessageId);
         byte[] plaintext;
         try { plaintext = SessionCrypto.DecryptFromPeer(KeyManager.Shared.PrivateKey, pkt.SenderPublicKeyB64, pkt.Nonce, pkt.Ciphertext, aad); }
@@ -426,6 +459,18 @@ public sealed class MessagingService
     }
 
     private static async Task<bool> FireTcpAsync(byte[] frame, string ip, int port, string description)
+    {
+        // Two attempts with a short pause. A single SYN lost to Wi-Fi power
+        // save or a peer's listener mid-rebuild is common on real LANs; without
+        // the retry, one lost packet turns into a "Queued" message even though
+        // the peer is online. Retrying is safe: a failed attempt either never
+        // connected or delivered a partial frame, which the receiver discards.
+        if (await FireTcpOnceAsync(frame, ip, port, description).ConfigureAwait(false)) return true;
+        await Task.Delay(300).ConfigureAwait(false);
+        return await FireTcpOnceAsync(frame, ip, port, $"{description} (retry)").ConfigureAwait(false);
+    }
+
+    private static async Task<bool> FireTcpOnceAsync(byte[] frame, string ip, int port, string description)
     {
         // One-shot TCP per packet. We explicitly Shutdown(Send) and wait for
         // the peer's FIN with a short read before closing — without this, the

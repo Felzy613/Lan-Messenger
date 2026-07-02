@@ -57,7 +57,7 @@
                     <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                     <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
                 </Button.Resources>
-                <FontIcon FontFamily="Segoe MDL2 Assets"
+                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                           Glyph="&#xE8DA;"
                           FontSize="16"
                           Foreground="White"/>
@@ -106,7 +106,7 @@
                         VerticalAlignment="Center"
                         Spacing="16"
                         Visibility="Collapsed">
-                <FontIcon FontFamily="Segoe MDL2 Assets"
+                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                           Glyph="&#xE814;"
                           FontSize="48"
                           Foreground="#4D8696A0"/>

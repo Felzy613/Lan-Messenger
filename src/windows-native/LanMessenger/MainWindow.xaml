@@ -45,12 +45,12 @@
                             Click="NewMessageBtn_Click">
                         <Button.Resources>
                             <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
-                            <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                            <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
+                            <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
                             <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
                             <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                         </Button.Resources>
-                        <FontIcon FontFamily="Segoe MDL2 Assets"
+                        <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                   Glyph="&#xE932;"
                                   FontSize="16" />
                     </Button>
@@ -63,12 +63,12 @@
                             Click="ContactsBtn_Click">
                         <Button.Resources>
                             <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
-                            <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                            <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
+                            <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
                             <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
                             <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                         </Button.Resources>
-                        <FontIcon FontFamily="Segoe MDL2 Assets"
+                        <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                   Glyph="&#xE77B;"
                                   FontSize="16" />
                     </Button>
@@ -81,12 +81,12 @@
                             Click="SettingsBtn_Click">
                         <Button.Resources>
                             <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
-                            <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                            <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
+                            <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
                             <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
                             <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                         </Button.Resources>
-                        <FontIcon FontFamily="Segoe MDL2 Assets"
+                        <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                   Glyph="&#xE713;"
                                   FontSize="16" />
                     </Button>
@@ -96,6 +96,30 @@
             <sidebar:SidebarControl x:Name="Sidebar"
                                     Grid.Row="1" />
         </Grid>
+
+        <!-- Placeholder shown until a conversation is opened — previously this
+             was a bare blank pane. Sits UNDER the ContentControl so it is
+             covered automatically once content is set. -->
+        <StackPanel x:Name="NoConversationState"
+                    Grid.Column="1"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Spacing="10">
+            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                      Glyph="&#xE8BD;"
+                      FontSize="44"
+                      Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+            <TextBlock Text="LAN Messenger"
+                       HorizontalAlignment="Center"
+                       Style="{ThemeResource SubtitleTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <TextBlock Text="Select a conversation, or start a new one with the pencil button."
+                       HorizontalAlignment="Center"
+                       TextAlignment="Center"
+                       MaxWidth="300"
+                       TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+        </StackPanel>
 
         <!-- Content area -->
         <ContentControl x:Name="ContentFrame"

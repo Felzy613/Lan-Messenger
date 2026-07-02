@@ -18,7 +18,7 @@
             <Ellipse x:Name="OnlineDot"
                      Width="11" Height="11"
                      Fill="#25D366"
-                     Stroke="White" StrokeThickness="2"
+                     Stroke="{ThemeResource AppOnlineDotStrokeBrush}" StrokeThickness="2"
                      HorizontalAlignment="Right" VerticalAlignment="Bottom" />
         </Grid>
 
@@ -65,25 +65,25 @@
                 Click="OptionsBtn_Click"
                 VerticalAlignment="Center"
                 ToolTipService.ToolTip="Conversation options">
-            <FontIcon FontFamily="Segoe MDL2 Assets"
+            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                       Glyph="&#xE712;"
                       FontSize="14" />
             <Button.Flyout>
                 <MenuFlyout x:Name="OptionsFlyout">
                     <MenuFlyoutItem x:Name="ArchiveItem" Text="Archive" Click="Archive_Click">
                         <MenuFlyoutItem.Icon>
-                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE7B8;" />
+                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE7B8;" />
                         </MenuFlyoutItem.Icon>
                     </MenuFlyoutItem>
                     <MenuFlyoutItem x:Name="UnarchiveItem" Text="Unarchive" Click="Unarchive_Click" Visibility="Collapsed">
                         <MenuFlyoutItem.Icon>
-                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE74A;" />
+                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE74A;" />
                         </MenuFlyoutItem.Icon>
                     </MenuFlyoutItem>
                     <MenuFlyoutSeparator />
                     <MenuFlyoutItem Text="Delete conversation" Click="Delete_Click">
                         <MenuFlyoutItem.Icon>
-                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE74D;" />
+                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE74D;" />
                         </MenuFlyoutItem.Icon>
                     </MenuFlyoutItem>
                 </MenuFlyout>

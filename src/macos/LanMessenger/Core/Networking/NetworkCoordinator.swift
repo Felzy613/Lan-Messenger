@@ -26,6 +26,13 @@ final class NetworkCoordinator: NSObject {
     let network: NetworkInterfaceMonitor
     let discovery: DiscoveryService
 
+    // Extra unicast beacon targets (last-known IPs of saved contacts). Lets
+    // discovery reach peers that broadcast/multicast can't — different
+    // subnets, APs with broadcast isolation, or a peer whose beacons are
+    // firewalled while unicast works. Set by AppModel; invoked on the
+    // discovery queue.
+    var unicastHints: (() -> [String])?
+
     private var sessions: [String: PeerSession] = [:]   // keyed by peerIP
     private var listenerSocket: Int32 = -1
     private let listenerQueue = DispatchQueue(label: "com.dave.lanmessenger.listener", qos: .utility)
@@ -76,7 +83,7 @@ final class NetworkCoordinator: NSObject {
             )
         }
         discovery.extraTargets = { [weak self] in
-            self?.sessions.keys.map { $0 } ?? []
+            self?.unicastHints?() ?? []
         }
         discovery.start()
 
@@ -144,42 +151,81 @@ final class NetworkCoordinator: NSObject {
     // MARK: - TCP Listener (inbound connections)
 
     private func startTCPListener() {
-        listenerSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-        guard listenerSocket >= 0 else {
-            NetLogger.error("Net", "listener socket() failed: \(String(cString: strerror(errno)))")
+        guard let fd = Self.createListenerSocket(port: tcpPort) else {
+            NetLogger.error("Net", "listener setup failed for port \(tcpPort)")
             return
+        }
+        listenerSocket = fd
+        NetLogger.info("Net", "TCP listener bound on 0.0.0.0:\(tcpPort)")
+        runAcceptLoop()
+    }
+
+    private static func createListenerSocket(port: UInt16) -> Int32? {
+        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard fd >= 0 else {
+            NetLogger.error("Net", "listener socket() failed: \(String(cString: strerror(errno)))")
+            return nil
         }
 
         var enable: Int32 = 1
-        setsockopt(listenerSocket, SOL_SOCKET, SO_REUSEADDR, &enable, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, socklen_t(MemoryLayout<Int32>.size))
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = tcpPort.bigEndian
+        addr.sin_port = port.bigEndian
         addr.sin_addr.s_addr = INADDR_ANY
         let bindResult = withUnsafePointer(to: &addr) { ptr -> Int32 in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                Darwin.bind(listenerSocket, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                Darwin.bind(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        if bindResult != 0 {
+        guard bindResult == 0 else {
             NetLogger.error("Net", "listener bind() failed: \(String(cString: strerror(errno)))")
+            Darwin.close(fd)
+            return nil
         }
-        _ = listen(listenerSocket, 16)
-        NetLogger.info("Net", "TCP listener bound on 0.0.0.0:\(tcpPort)")
+        guard listen(fd, 16) == 0 else {
+            NetLogger.error("Net", "listener listen() failed: \(String(cString: strerror(errno)))")
+            Darwin.close(fd)
+            return nil
+        }
+        return fd
+    }
 
+    private func runAcceptLoop() {
         listenerQueue.async { [weak self] in
+            var consecutiveFailures = 0
             while self?.running == true {
+                guard let self else { break }
                 var clientAddr = sockaddr_in()
                 var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
                 let clientSocket = withUnsafeMutablePointer(to: &clientAddr) { ptr in
                     ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                        accept(self?.listenerSocket ?? -1, sockPtr, &addrLen)
+                        accept(self.listenerSocket, sockPtr, &addrLen)
                     }
                 }
-                guard clientSocket >= 0 else { continue }
+                guard clientSocket >= 0 else {
+                    // A dead listener socket (fd invalidated by a driver reset
+                    // or descriptor error) would otherwise spin this loop at
+                    // 100% CPU while silently accepting no more inbound
+                    // connections — the "can't receive anything until restart"
+                    // failure mode. Back off, then rebuild after a few misses.
+                    consecutiveFailures += 1
+                    Thread.sleep(forTimeInterval: min(Double(consecutiveFailures), 10) * 0.5)
+                    if consecutiveFailures >= 3, self.running {
+                        NetLogger.warn("Net", "accept() failing repeatedly — rebuilding listener socket")
+                        Darwin.close(self.listenerSocket)
+                        if let fresh = Self.createListenerSocket(port: self.tcpPort) {
+                            self.listenerSocket = fresh
+                            consecutiveFailures = 0
+                            NetLogger.info("Net", "TCP listener rebuilt on 0.0.0.0:\(self.tcpPort)")
+                        }
+                    }
+                    continue
+                }
+                consecutiveFailures = 0
                 let ip = String(cString: inet_ntoa(clientAddr.sin_addr))
-                self?.handleInbound(socket: clientSocket, fromIP: ip)
+                self.handleInbound(socket: clientSocket, fromIP: ip)
             }
         }
     }

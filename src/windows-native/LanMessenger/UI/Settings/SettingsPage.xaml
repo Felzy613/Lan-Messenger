@@ -136,7 +136,7 @@
                         Visibility="Collapsed">
                     <StackPanel Spacing="8">
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xEBD3;"
+                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEBD3;"
                                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                             <TextBlock x:Name="UpdateAvailableText"
                                        Style="{ThemeResource BodyStrongTextBlockStyle}" />

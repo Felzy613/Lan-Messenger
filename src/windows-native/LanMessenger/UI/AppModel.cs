@@ -157,6 +157,22 @@ public sealed partial class AppModel : ObservableObject
                 _ = FetchRelayMessagesAsync("network-up");
             }
         };
+        // Unicast beacon hints: last-known IPs of saved contacts that aren't
+        // currently online. Reaches contacts across subnets or on networks that
+        // filter broadcast/multicast — the main reason saved contacts were slow
+        // to (re)discover. Runs on the beacon timer thread; a rare concurrent
+        // contact-list mutation is absorbed by DiscoveryService's guard.
+        Coordinator.UnicastHints = () =>
+        {
+            var online = Peers.Values.Where(p => p.IsOnline).Select(p => p.IP).ToHashSet();
+            return ConfigStore.Shared.Config.Contacts
+                .Select(c => c.LastIP)
+                .Where(ip => ip.Length > 0 && !online.Contains(ip))
+                .Distinct()
+                .Take(32)
+                .ToList();
+        };
+
         NotificationService.Shared.Register();
         LoadHistory();
         StartPeerTimeoutTimer();
@@ -180,7 +196,13 @@ public sealed partial class AppModel : ObservableObject
                 _dq.TryEnqueue(() => MarkAllPeersOffline("sleep"));
                 break;
             case Microsoft.Win32.PowerModes.Resume:
-                _dq.TryEnqueue(() => Coordinator.Discovery.SendBeacon());
+                _dq.TryEnqueue(() =>
+                {
+                    // Sleep frequently invalidates UDP sockets without any
+                    // network-change event — rebuild before announcing.
+                    Coordinator.Discovery.RebuildNow("resume");
+                    Coordinator.Discovery.SendBeacon();
+                });
                 break;
         }
     }
@@ -275,21 +297,26 @@ public sealed partial class AppModel : ObservableObject
             {
                 // Same IP — a heartbeat: presence is online and the silence clock
                 // resets. Check whether the peer was offline before this beacon so
-                // we can deliver anything queued while they were unreachable.
+                // we can refresh the UI on the comeback.
                 var wasOffline = !existing.IsOnline;
                 existing.LastSeen = DateTime.UtcNow;
                 existing.Presence = PeerPresence.Online;
                 existing.KnownIPs = knownIPs;
                 if (wasOffline)
                 {
-                    LanLogger.Info("Net", $"peer {ip} ({publicKeyB64[..8]}) came back online — delivering pending queue");
+                    LanLogger.Info("Net", $"peer {ip} ({publicKeyB64[..8]}) came back online");
                     // Reassign Peers so the chat header refreshes on the comeback.
                     Peers = updated;
                     MigrateSyntheticRelayHistory(publicKeyB64, ip);
                     RefreshConversations();
-                    MessagingService.Shared.DeliverPending(ip, publicKeyB64);
-                    DeliverPendingFiles(ip, publicKeyB64);
                 }
+                // Drain queues on EVERY heartbeat, not just the offline→online
+                // transition (matches macOS). A message that failed on a
+                // transient TCP error while the peer stayed online used to sit
+                // "Queued" until the peer bounced; now the next beacon retries
+                // it. Both calls self-throttle and are no-ops with empty queues.
+                MessagingService.Shared.DeliverPending(ip, publicKeyB64);
+                DeliverPendingFiles(ip, publicKeyB64);
                 return;
             }
             // IP changed — fall through to replace the entry below.
@@ -358,11 +385,12 @@ public sealed partial class AppModel : ObservableObject
     private void EvaluatePresence()
     {
         var now = DateTime.UtcNow;
+        if (Peers.Count == 0) return;
         var contactKeys = ConfigStore.Shared.Config.Contacts.Select(c => c.PublicKeyB64).ToHashSet();
-        var probeTargets = new HashSet<string>();
+        HashSet<string>? probeTargets = null;
+        List<string>? pruneKeys = null;
         var changed = false;
 
-        var updated = new Dictionary<string, PeerInfo>(Peers);
         foreach (var (key, info) in Peers)
         {
             var decision = PresenceEvaluator.Decide(info.LastSeen, now);
@@ -373,7 +401,7 @@ public sealed partial class AppModel : ObservableObject
                 && !contactKeys.Contains(key)
                 && now - info.LastSeen > NonContactPruneAfter)
             {
-                updated.Remove(key);
+                (pruneKeys ??= []).Add(key);
                 changed = true;
                 continue;
             }
@@ -382,6 +410,7 @@ public sealed partial class AppModel : ObservableObject
             {
                 // Reconfirm via unicast before declaring offline. Probe every
                 // address the peer has advertised, not just the last one.
+                probeTargets ??= [];
                 if (info.KnownIPs.Count == 0) probeTargets.Add(info.IP);
                 else foreach (var ip in info.KnownIPs) probeTargets.Add(ip);
             }
@@ -394,10 +423,16 @@ public sealed partial class AppModel : ObservableObject
             }
         }
 
-        foreach (var ip in probeTargets) Coordinator.Probe(ip);
+        if (probeTargets is not null)
+            foreach (var ip in probeTargets) Coordinator.Probe(ip);
 
+        // Only copy the dictionary (and wake every Peers observer) when
+        // something actually changed — this ticks every second.
         if (changed)
         {
+            var updated = new Dictionary<string, PeerInfo>(Peers);
+            if (pruneKeys is not null)
+                foreach (var key in pruneKeys) updated.Remove(key);
             Peers = updated;
             RefreshConversations();
         }

@@ -51,6 +51,13 @@ final class FileTransferService {
     // intentional and safe; it must never be called from the cooperative thread pool.
     private let sendQueue  = DispatchQueue(label: "com.dave.lanmessenger.file-send", qos: .userInitiated)
 
+    // Last failed outgoing attempt per peer. retryQueue is invoked on every
+    // discovery heartbeat (~1.5 s) via deliverPendingFiles; without a cooldown,
+    // a peer that accepts UDP discovery but rejects/times out TCP would be
+    // re-attempted back-to-back with a 10 s connect-timeout each time.
+    private var lastSendFailureAt: [String: Date] = [:]
+    private let sendRetryCooldown: TimeInterval = 15
+
     private init() {}
 
     // MARK: - Receive (called from NetworkCoordinator via AppModel)
@@ -235,6 +242,7 @@ final class FileTransferService {
     private func startNextIfIdle(peerIP: String, peerPublicKeyB64: String) {
         guard !FileTransferStore.shared.activeOutgoing.contains(peerIP),
               let item = FileTransferStore.shared.outgoingQueues[peerIP]?.first else { return }
+        if let lastFail = lastSendFailureAt[peerIP], Date().timeIntervalSince(lastFail) < sendRetryCooldown { return }
 
         FileTransferStore.shared.markTransferStarted(peerIP: peerIP)
         let path     = item.path
@@ -293,6 +301,7 @@ final class FileTransferService {
                     return Double(sz) * 1000.0 / Double(durationMs)
                 }()
                 if success {
+                    self.lastSendFailureAt.removeValue(forKey: peerIP)
                     NetLogger.fileTransfer(
                         event: "complete", peer: peerIP, direction: "outgoing",
                         filename: filename, size: outgoingSize,
@@ -302,6 +311,7 @@ final class FileTransferService {
                     )
                     self.startNextIfIdle(peerIP: peerIP, peerPublicKeyB64: peerPublicKeyB64)
                 } else {
+                    self.lastSendFailureAt[peerIP] = Date()
                     NetLogger.fileTransfer(
                         event: "failed", peer: peerIP, direction: "outgoing",
                         filename: filename, size: outgoingSize,

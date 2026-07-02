@@ -18,6 +18,13 @@ public sealed class NetworkCoordinator : IDisposable
     public event Action<string, string>?          PeerDeparted;   // (publicKeyB64, fromIP)
     public event Action?                          NetworkAvailabilityChanged;
 
+    // Extra unicast beacon targets (last-known IPs of saved contacts that are
+    // not currently online). Supplied by AppModel; lets discovery reach peers
+    // that broadcast/multicast can't — different subnets, APs with broadcast
+    // isolation, or a peer whose beacons are firewalled while unicast works.
+    // Invoked on the beacon timer thread; DiscoveryService guards the call.
+    public Func<IEnumerable<string>>? UnicastHints { get; set; }
+
     public readonly NetworkInterfaceMonitor Network  = new();
     public readonly DiscoveryService        Discovery;
     private readonly Dictionary<string, PeerSession> _sessions = [];
@@ -65,7 +72,7 @@ public sealed class NetworkCoordinator : IDisposable
             // destined for us. It is SHA256(relay_id) and safe to publish.
             RelayIdHash  = LanMessenger.Core.Services.RelayClient.Shared.RelayIdHash(),
         };
-        Discovery.ExtraTargets = () => _sessions.Keys;
+        Discovery.ExtraTargets = () => UnicastHints?.Invoke() ?? [];
         Discovery.PeerDiscovered += (pkt, ip) =>
             _dispatcherQueue?.TryEnqueue(() => PeerDiscovered?.Invoke(pkt, ip));
         Discovery.PeerDeparted += (key, ip) =>
@@ -163,11 +170,13 @@ public sealed class NetworkCoordinator : IDisposable
 
     private async Task AcceptLoop(CancellationToken ct)
     {
+        var consecutiveFailures = 0;
         while (!ct.IsCancellationRequested && _running)
         {
             try
             {
                 var client = await _listener!.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+                consecutiveFailures = 0;
                 var fromIP = ((IPEndPoint)client.Client.RemoteEndPoint!).Address.ToString();
                 _ = Task.Run(() => HandleInbound(client, fromIP, ct));
             }
@@ -175,6 +184,29 @@ public sealed class NetworkCoordinator : IDisposable
             catch (Exception ex)
             {
                 LanLogger.Info("Net", $"accept failed: {ex.GetType().Name} {ex.Message}");
+                // A dead listener (driver reset, socket error) would otherwise
+                // spin this loop at 100% CPU and silently stop all inbound
+                // messaging — the "can receive nothing until app restart"
+                // failure mode. Back off, then try rebuilding the listener.
+                consecutiveFailures++;
+                try { await Task.Delay(Math.Min(consecutiveFailures, 10) * 500, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+                if (consecutiveFailures >= 3 && _running)
+                {
+                    try
+                    {
+                        try { _listener?.Stop(); } catch { }
+                        _listener = new TcpListener(IPAddress.Any, TcpPort);
+                        _listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                        _listener.Start(backlog: 16);
+                        consecutiveFailures = 0;
+                        LanLogger.Info("Net", $"TCP listener rebuilt on 0.0.0.0:{TcpPort}");
+                    }
+                    catch (Exception rebuildEx)
+                    {
+                        LanLogger.Warn("Net", $"TCP listener rebuild failed: {rebuildEx.GetType().Name} {rebuildEx.Message}");
+                    }
+                }
             }
         }
     }
@@ -185,15 +217,26 @@ public sealed class NetworkCoordinator : IDisposable
         {
             try
             {
-                // Short receive timeout so half-open / abandoned connections are
-                // released promptly — important on Windows where the system
-                // default would otherwise keep the accepted socket alive for
-                // minutes if the peer crashed mid-frame.
-                client.ReceiveTimeout = 30_000;
+                // Per-frame idle timeout so half-open / abandoned connections are
+                // released promptly. (Socket.ReceiveTimeout only applies to
+                // synchronous reads — it silently does nothing for the async
+                // reads used here, which previously left crashed-peer sockets
+                // alive indefinitely.)
                 var stream = client.GetStream();
                 while (!ct.IsCancellationRequested)
                 {
-                    byte[]? frameData = await FrameCodec.ReadFrameAsync(stream, ct).ConfigureAwait(false);
+                    using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    idleCts.CancelAfter(TimeSpan.FromSeconds(60));
+                    byte[]? frameData;
+                    try
+                    {
+                        frameData = await FrameCodec.ReadFrameAsync(stream, idleCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        LanLogger.Info("Net", $"inbound from {fromIP} idle-timed out");
+                        break;
+                    }
                     if (frameData is null) break;
 
                     var pkt = PacketValidator.Validate(frameData, fromIP, OwnPublicKeyB64);

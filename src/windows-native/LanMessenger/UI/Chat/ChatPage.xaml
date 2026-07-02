@@ -5,7 +5,7 @@
     xmlns:local="using:LanMessenger.UI.Chat"
     xmlns:ui="using:LanMessenger.UI">
 
-    <Grid Background="#E5DDD5">
+    <Grid Background="{ThemeResource AppChatBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -63,7 +63,7 @@
                   SelectionMode="None"
                   IsItemClickEnabled="False"
                   Padding="12,8"
-                  Background="#E5DDD5">
+                  Background="{ThemeResource AppChatBackgroundBrush}">
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="local:MessageRowViewModel">
                     <local:MessageBubbleControl Row="{Binding}" />
@@ -93,11 +93,11 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <Rectangle Grid.Column="0" Fill="#25D366" />
+                <Rectangle Grid.Column="0" Fill="{ThemeResource AppReplyAccentBrush}" />
                 <StackPanel Grid.Column="1" Spacing="1">
                     <TextBlock x:Name="ReplyBannerWho"
                                FontSize="11" FontWeight="SemiBold"
-                               Foreground="#128C4E" />
+                               Foreground="{ThemeResource AppReplyAccentTextBrush}" />
                     <TextBlock x:Name="ReplyBannerPreview"
                                FontSize="12"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"

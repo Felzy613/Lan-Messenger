@@ -21,6 +21,15 @@ final class MessagingService {
     private var typingSentAt: [String: Date] = [:]
     private var lastTypingState: [String: Bool] = [:]
 
+    // Pending-queue delivery bookkeeping. deliverPending is invoked on every
+    // discovery heartbeat (~1.5 s), not just the offline→online transition, so
+    // a still-in-flight send must not be re-fired every cycle. The in-flight
+    // set prevents concurrent duplicate sends; the per-message attempt clock
+    // backs off retries against a persistently unreachable peer.
+    private var pendingInFlight: Set<String> = []
+    private var pendingLastTry: [String: Date] = [:]
+    private let pendingRetryInterval: TimeInterval = 10
+
     private init() {}
 
     // MARK: - Receive
@@ -180,17 +189,28 @@ final class MessagingService {
     // MARK: - Deliver pending messages to a newly-online peer
 
     func deliverPending(toPeerIP ip: String, peerPublicKeyB64: String) {
-        let toDeliver = ConfigStore.shared.config.pendingMessages.filter { $0.peerPublicKeyB64 == peerPublicKeyB64 }
+        let now = Date()
+        let toDeliver = ConfigStore.shared.config.pendingMessages.filter { msg in
+            guard msg.peerPublicKeyB64 == peerPublicKeyB64, !pendingInFlight.contains(msg.messageId) else { return false }
+            if let last = pendingLastTry[msg.messageId], now.timeIntervalSince(last) < pendingRetryInterval { return false }
+            return true
+        }
         guard !toDeliver.isEmpty else { return }
 
         for msg in toDeliver {
+            pendingInFlight.insert(msg.messageId)
+            pendingLastTry[msg.messageId] = now
+
             let aad = Data(msg.messageId.utf8)
             guard let (nonceB64, ctB64) = try? SessionCrypto.encryptForPeer(
                 myPrivate: KeyManager.shared.privateKey,
                 peerPublicKeyB64: peerPublicKeyB64,
                 plaintext: Data(msg.text.utf8),
                 aad: aad
-            ) else { continue }
+            ) else {
+                pendingInFlight.remove(msg.messageId)
+                continue
+            }
 
             let packet: [String: Any] = [
                 "type": "text",
@@ -204,8 +224,13 @@ final class MessagingService {
             ]
             let msgId = msg.messageId
             sendJSON(packet, toIP: ip, port: tcpPort) { [weak self] success in
+                guard let self else { return }
+                // Clearing in-flight on failure lets the next heartbeat retry
+                // after the per-message backoff elapses.
+                self.pendingInFlight.remove(msgId)
                 guard success else { return }
-                self?.updateStatus("Sent", forMessageId: msgId, peerIP: ip)
+                self.pendingLastTry.removeValue(forKey: msgId)
+                self.updateStatus("Sent", forMessageId: msgId, peerIP: ip)
                 // Remove only after confirmed delivery so a TCP failure doesn't
                 // silently drop the message from the queue.
                 ConfigStore.shared.config.pendingMessages.removeAll { $0.messageId == msgId }
@@ -217,6 +242,16 @@ final class MessagingService {
     // MARK: - Private receive handlers
 
     private func handleText(_ pkt: TextPacket, fromIP ip: String) {
+        // Duplicate suppression: heartbeat-driven queue retries (and a sender
+        // whose sent_receipt got lost) can legitimately re-send a message we
+        // already have. Don't append it twice — but do re-acknowledge, because
+        // a re-send means the sender never saw our first receipt.
+        if HistoryStore.shared.entries(forPeerIP: ip).contains(where: { $0.messageId == pkt.messageId }) {
+            NetLogger.info("Recv", "duplicate text msgId=\(pkt.messageId) peer=\(ip) — re-sending receipt only")
+            sendReceipt(type: "sent_receipt", messageId: pkt.messageId, toPeerIP: ip)
+            return
+        }
+
         let aad = Data(pkt.messageId.utf8)
         guard let plaintext = try? SessionCrypto.decryptFromPeer(
             myPrivate: KeyManager.shared.privateKey,

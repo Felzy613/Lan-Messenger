@@ -78,10 +78,11 @@ internal sealed class ScreenshotWindowPickerDialog : ContentDialog
 
     private static Grid BuildRow(string icon, string title, string subtitle, WindowEntry tag)
     {
-        var iconBlock = new TextBlock
+        // FontIcon's default font is SymbolThemeFontFamily — Segoe Fluent Icons
+        // on Windows 11, Segoe MDL2 Assets on Windows 10.
+        var iconBlock = new FontIcon
         {
-            FontFamily          = new FontFamily("Segoe MDL2 Assets"),
-            Text                = icon,
+            Glyph               = icon,
             FontSize            = 18,
             VerticalAlignment   = VerticalAlignment.Center,
             Foreground          = Application.Current.Resources.TryGetValue(

@@ -238,13 +238,11 @@ public sealed partial class ChatPage : Page
         var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
         var online = peer?.IsOnline ?? false;
         // Inline dot after the name: green when online, gray when offline (matches macOS header)
-        HeaderNameDot.Fill = new SolidColorBrush(online
-            ? Color.FromArgb(255, 37, 211, 102)   // #25D366
-            : Color.FromArgb(255, 160, 160, 160)); // gray
+        HeaderNameDot.Fill = online ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
 
         var typing = _model.TypingStates.TryGetValue(ip, out var t) ? t : default;
         HeaderSubtext.Text = typing.Active
-            ? "typing..."
+            ? "typing…"
             : (online ? "Online" : "Offline");
     }
 

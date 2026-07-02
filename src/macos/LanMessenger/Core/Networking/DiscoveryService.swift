@@ -53,6 +53,10 @@ final class DiscoveryService {
     private var lastSeen: [String: Date] = [:]
     private let dedupWindow: TimeInterval = 1.2
 
+    // Separate, shorter throttle for discovery replies — see handleReceivedData.
+    private var lastReplied: [String: Date] = [:]
+    private let replyThrottle: TimeInterval = 0.4
+
     private var sendSockets: [String: Int32] = [:]   // keyed by interface localIP
     private var recvSocket: Int32 = -1
     private var sendTimer: DispatchSourceTimer?
@@ -382,10 +386,39 @@ final class DiscoveryService {
             ownIPs: ownIPs
         ) else { return }
 
+        let now = Date()
+
+        // Reply to "discovery" BEFORE the beacon dedup below. A peer that has
+        // stopped hearing our beacons probes us with a unicast "discovery" and
+        // concludes we're offline if no reply comes back; those probes share a
+        // dedup key with the peer's regular 1.5 s beacon, so replying only
+        // after the dedup gate silently ate most probe replies and made peers
+        // flip us offline while we were alive. The reply has its own short
+        // throttle so the 2-3 duplicate copies of one beacon still produce a
+        // single reply. (Never reply to "discovery_reply" — infinite ping-pong
+        // — nor to "goodbye".)
+        if pkt.type == "discovery", let replyPayload = buildPayload?() {
+            let dueForReply = lastReplied[pkt.publicKeyB64].map { now.timeIntervalSince($0) >= replyThrottle } ?? true
+            if dueForReply {
+                lastReplied[pkt.publicKeyB64] = now
+                if let replyData = try? JSONEncoder().encode(
+                    DiscoveryPacket(
+                        type: "discovery_reply",
+                        username: replyPayload.username,
+                        port: replyPayload.port,
+                        publicKeyB64: replyPayload.publicKeyB64,
+                        ips: replyPayload.ips,
+                        relayIdHash: replyPayload.relayIdHash
+                    )
+                ) {
+                    sendUDP(data: replyData, toIP: fromIP, port: discoveryPort)
+                }
+            }
+        }
+
         // Suppress duplicate copies of the same beacon (we send to three targets per
         // interface so the receive socket sees each peer's beacon 2-3 times per cycle).
         let dedupKey = "\(pkt.publicKeyB64):\(pkt.type)"
-        let now = Date()
         if let last = lastSeen[dedupKey], now.timeIntervalSince(last) < dedupWindow {
             return
         }
@@ -401,23 +434,6 @@ final class DiscoveryService {
                 self.delegate?.discoveryService(self, didReceiveGoodbyeFrom: pkt.publicKeyB64, fromIP: fromIP)
             }
             return
-        }
-
-        // Reply to "discovery" packets (not to "discovery_reply" — that would
-        // create an infinite ping-pong).
-        if pkt.type == "discovery", let replyPayload = buildPayload?() {
-            if let replyData = try? JSONEncoder().encode(
-                DiscoveryPacket(
-                    type: "discovery_reply",
-                    username: replyPayload.username,
-                    port: replyPayload.port,
-                    publicKeyB64: replyPayload.publicKeyB64,
-                    ips: replyPayload.ips,
-                    relayIdHash: replyPayload.relayIdHash
-                )
-            ) {
-                sendUDP(data: replyData, toIP: fromIP, port: discoveryPort)
-            }
         }
 
         NetLogger.info("Discovery", "rx \(pkt.type) from \(fromIP) user='\(pkt.username)' port=\(pkt.port)")

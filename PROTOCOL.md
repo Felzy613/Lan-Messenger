@@ -246,6 +246,13 @@ On successful decrypt, the receiver appends history and sends `sent_receipt`.
 When the user opens the conversation, the receiver sends `read_receipt` for
 incoming unread messages.
 
+Senders may legitimately re-send the same `text` packet (queue retries after a
+transient TCP failure, or a lost `sent_receipt`). Receivers SHOULD treat a
+`message_id` that already exists in the conversation's history as a duplicate:
+do not append it again, but do re-send `sent_receipt` — a re-send implies the
+sender never saw the first acknowledgement. Both native clients implement this;
+a future client without duplicate suppression may show a retried message twice.
+
 ### typing
 
 Unencrypted typing indicator.

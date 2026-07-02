@@ -105,6 +105,25 @@ final class AppModel: ObservableObject {
                 ConfigStore.shared.save()
             }
         }
+        // Unicast beacon hints: last-known IPs of saved contacts. Reaches
+        // contacts across subnets or on networks that filter broadcast/
+        // multicast — the main reason saved contacts were slow to
+        // (re)discover. Runs on the discovery queue; ConfigStore is a plain
+        // (non-actor) singleton already read cross-thread elsewhere (e.g.
+        // discovery.buildPayload), so no actor-isolation hop is needed here.
+        coordinator.unicastHints = {
+            var seen = Set<String>()
+            var ips: [String] = []
+            for contact in ConfigStore.shared.config.contacts {
+                let ip = contact.lastIP
+                guard !ip.isEmpty, !seen.contains(ip) else { continue }
+                seen.insert(ip)
+                ips.append(ip)
+                if ips.count >= 32 { break }
+            }
+            return ips
+        }
+
         coordinator.start()
         isLocalNetworkAvailable = coordinator.isLocalNetworkAvailable
         NotificationService.shared.requestAuthorization()

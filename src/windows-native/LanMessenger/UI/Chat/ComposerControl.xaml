@@ -26,13 +26,13 @@
                 Click="AttachBtn_Click">
             <Button.Resources>
                 <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
-                <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
+                <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
                 <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
             </Button.Resources>
-            <FontIcon FontFamily="Segoe MDL2 Assets"
+            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                       Glyph="&#xE723;"
                       FontSize="16"
                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -53,15 +53,15 @@
                 Click="ScreenshotBtn_Click">
             <Button.Resources>
                 <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#18000000"/>
-                <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#28000000"/>
+                <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
+                <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
                 <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
             </Button.Resources>
             <Grid>
                 <FontIcon x:Name="ScreenshotIcon"
-                          FontFamily="Segoe MDL2 Assets"
+                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
                           Glyph="&#xE722;"
                           FontSize="16"
                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -123,7 +123,7 @@
                 <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
             </Button.Resources>
-            <FontIcon FontFamily="Segoe MDL2 Assets"
+            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                       Glyph="&#xE74A;"
                       FontSize="14"
                       Foreground="White" />

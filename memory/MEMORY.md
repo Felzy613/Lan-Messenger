@@ -3,6 +3,9 @@
 Repo-local memory for LAN Messenger. These notes are documentation for future
 sessions and should stay aligned with the current native app tree.
 
+- [Windows reliability + UI audit](windows-reliability-audit.md) — 2026-07-01 full Windows audit: TCP retry + heartbeat-driven pending redelivery, probe-reply-before-dedup presence fix, timer crash shields, atomic history/config saves, dark mode + Fluent icons.
+- [macOS reliability fixes](macos-reliability-fixes.md) — 2026-07-01 ported the Windows audit's macOS-side bugs: presence probe-reply-before-dedup, message dedup + pending in-flight guard, TCP accept-loop spin, dead discovery unicast hints, file-retry cooldown. Also documents a local Keychain test hang (not a code bug — skip that one test on this dev machine).
+
 - [Relay system audit & hardening](relay-system-audit.md) — All relay bugs fixed 2026-05-29; delivery-mode tracking, offline-only gating, UI indicator, receipt for relay messages, synthetic IP migration, Worker hardening.
 
 - [LAN Messenger Native Rewrite](project_native_rewrite.md) - Current native

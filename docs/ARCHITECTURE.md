@@ -340,18 +340,29 @@ Send flow:
 2. Append outgoing history entry with `Sending`.
 3. Encrypt text with `message_id` AAD.
 4. Build `text` packet with optional reply metadata.
-5. Send a one-shot TCP frame.
+5. Send a one-shot TCP frame. On Windows the one-shot send makes two
+   attempts (a short pause between them) before it is considered failed —
+   a single lost SYN no longer strands the message.
 6. Mark `Sent` or queue pending and mark `Queued`.
 7. If the peer's `relay_id_hash` is known and the send failed, **also POST the
    ciphertext to the cloud relay Worker** so delivery can proceed even if this
    device goes offline before the peer reconnects.
 
+Queued messages are retried on every discovery heartbeat from the peer, not
+only on the offline→online transition, so a transient TCP failure against an
+online peer self-heals within a beacon interval. Both platforms guard this
+with a per-message in-flight set and a retry backoff (~10 s) so heartbeat-
+driven retries can't produce duplicate concurrent sends or connect-timeout
+pileups.
+
 Receive flow:
 
-1. Decrypt with `message_id` AAD.
-2. Append incoming history entry.
-3. Clear typing state.
-4. Send `sent_receipt`.
+1. If `message_id` already exists in history, treat as a duplicate from a
+   sender retry: re-send `sent_receipt` and stop.
+2. Decrypt with `message_id` AAD.
+3. Append incoming history entry.
+4. Clear typing state.
+5. Send `sent_receipt`.
 
 Read flow:
 

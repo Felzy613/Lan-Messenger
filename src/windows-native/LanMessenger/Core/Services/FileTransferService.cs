@@ -50,6 +50,13 @@ public sealed class FileTransferService
     // duration_ms and bytes_per_sec for the "complete" structured log event.
     private readonly Dictionary<TransferKey, DateTime> _incomingStartTimes = [];
 
+    // Last failed outgoing attempt per peer (UI thread only). RetryQueue is now
+    // driven by every discovery heartbeat (~1.5 s); without a cooldown, a peer
+    // that accepts UDP but not TCP would be re-attempted back-to-back with a
+    // 10 s connect timeout each time.
+    private readonly Dictionary<string, DateTime> _lastSendFailureAt = [];
+    private static readonly TimeSpan SendRetryCooldown = TimeSpan.FromSeconds(15);
+
     private FileTransferService() { }
 
     public void SetDispatcherQueue(DispatcherQueue dq) => _dq = dq;
@@ -246,6 +253,8 @@ public sealed class FileTransferService
     {
         if (FileTransferStore.Shared.ActiveOutgoing.Contains(peerIP)) return;
         if (!FileTransferStore.Shared.OutgoingQueues.TryGetValue(peerIP, out var q) || q.Count == 0) return;
+        if (_lastSendFailureAt.TryGetValue(peerIP, out var lastFail)
+            && DateTime.UtcNow - lastFail < SendRetryCooldown) return;
         var item = q.Peek();
 
         FileTransferStore.Shared.MarkTransferStarted(peerIP);
@@ -270,6 +279,7 @@ public sealed class FileTransferService
                     : null;
                 if (success)
                 {
+                    _lastSendFailureAt.Remove(peerIP);
                     LanLogger.FileTransfer(
                         "complete", peer: peerIP, direction: "outgoing",
                         filename: item.Filename, size: outgoingSize,
@@ -281,6 +291,7 @@ public sealed class FileTransferService
                 }
                 else
                 {
+                    _lastSendFailureAt[peerIP] = DateTime.UtcNow;
                     LanLogger.FileTransfer(
                         "failed", peer: peerIP, direction: "outgoing",
                         filename: item.Filename, size: outgoingSize,
@@ -409,6 +420,21 @@ public sealed class FileTransferService
                 ["sender"] = myName, ["sender_public_key_b64"] = myKey, ["port"] = TcpPort,
             };
             await stream.WriteAsync(FrameCodec.EncodeDict(endPacket)).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+
+            // Graceful close — same treatment as text sends (FireTcpAsync).
+            // Without the half-close + drain, Dispose can RST the connection
+            // while file_end (and the last chunks) are still in the kernel send
+            // buffer, so the receiver never finalizes the transfer. This was a
+            // major source of "file sends randomly fail to macOS".
+            tcp.LingerState = new LingerOption(true, 2);
+            try { tcp.Client.Shutdown(SocketShutdown.Send); } catch { }
+            var drainBuf = new byte[1];
+            using (var drainCts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            {
+                try { await stream.ReadAsync(drainBuf.AsMemory(0, 1), drainCts.Token).ConfigureAwait(false); }
+                catch { /* timeout or peer reset — data is already flushed */ }
+            }
 
             Dispatch(() =>
             {

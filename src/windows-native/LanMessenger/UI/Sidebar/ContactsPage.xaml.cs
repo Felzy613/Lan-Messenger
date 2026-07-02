@@ -240,7 +240,7 @@ public sealed partial class ContactsPage : Page
         {
             Text = "Edit...",
             Tag  = vm.PublicKeyB64,
-            Icon = new FontIcon { FontFamily = new FontFamily("Segoe MDL2 Assets"), Glyph = "\uE70F" },
+            Icon = new FontIcon { Glyph = "\uE70F" },
         };
         editItem.Click += EditBtn_Click;
 
@@ -248,7 +248,7 @@ public sealed partial class ContactsPage : Page
         {
             Text = "Remove",
             Tag  = vm.PublicKeyB64,
-            Icon = new FontIcon { FontFamily = new FontFamily("Segoe MDL2 Assets"), Glyph = "\uE74D" },
+            Icon = new FontIcon { Glyph = "\uE74D" },
         };
         deleteItem.Click += DeleteBtn_Click;
 
@@ -267,7 +267,6 @@ public sealed partial class ContactsPage : Page
             Flyout          = flyout,
             Content         = new FontIcon
             {
-                FontFamily = new FontFamily("Segoe MDL2 Assets"),
                 Glyph      = "\uE712",
                 FontSize   = 14,
             },
