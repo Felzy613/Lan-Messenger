@@ -124,7 +124,7 @@ actor RelayClient {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             NetLogger.info("Relay", "store msgId=\(messageId) → HTTP \(code)")
         } catch {
-            NetLogger.info("Relay", "store msgId=\(messageId) failed: \(error.localizedDescription)")
+            NetLogger.warn("Relay", "store msgId=\(messageId) failed: \(error.localizedDescription)")
         }
     }
 
@@ -146,14 +146,14 @@ actor RelayClient {
             let (data, resp) = try await session.data(from: url)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             guard code == 200 else {
-                NetLogger.info("Relay", "fetchPending → HTTP \(code)")
+                NetLogger.warn("Relay", "fetchPending → HTTP \(code)")
                 return []
             }
             let msgs = try JSONDecoder().decode([RelayPendingMessage].self, from: data)
             NetLogger.info("Relay", "fetchPending → \(msgs.count) message(s)")
             return msgs
         } catch {
-            NetLogger.info("Relay", "fetchPending failed: \(error.localizedDescription)")
+            NetLogger.warn("Relay", "fetchPending failed: \(error.localizedDescription)")
             return []
         }
     }
@@ -182,7 +182,7 @@ actor RelayClient {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             NetLogger.info("Relay", "delete msgId=\(messageId) → HTTP \(code)")
         } catch {
-            NetLogger.info("Relay", "delete msgId=\(messageId) failed: \(error.localizedDescription)")
+            NetLogger.warn("Relay", "delete msgId=\(messageId) failed: \(error.localizedDescription)")
         }
     }
 }

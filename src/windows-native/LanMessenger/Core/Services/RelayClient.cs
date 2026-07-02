@@ -118,7 +118,7 @@ public sealed class RelayClient
         }
         catch (Exception ex)
         {
-            LanLogger.Info("Relay", $"store msgId={messageId} failed: {ex.Message}");
+            LanLogger.Warn("Relay", $"store msgId={messageId} failed: {ex.Message}");
         }
     }
 
@@ -136,7 +136,7 @@ public sealed class RelayClient
             using var resp = await _http.GetAsync(url);
             if (!resp.IsSuccessStatusCode)
             {
-                LanLogger.Info("Relay", $"fetchPending → HTTP {(int)resp.StatusCode}");
+                LanLogger.Warn("Relay", $"fetchPending → HTTP {(int)resp.StatusCode}");
                 return [];
             }
             var msgs = await resp.Content.ReadFromJsonAsync<List<RelayPendingMessage>>()
@@ -146,7 +146,7 @@ public sealed class RelayClient
         }
         catch (Exception ex)
         {
-            LanLogger.Info("Relay", $"fetchPending failed: {ex.Message}");
+            LanLogger.Warn("Relay", $"fetchPending failed: {ex.Message}");
             return [];
         }
     }
@@ -167,7 +167,7 @@ public sealed class RelayClient
         }
         catch (Exception ex)
         {
-            LanLogger.Info("Relay", $"delete msgId={messageId} failed: {ex.Message}");
+            LanLogger.Warn("Relay", $"delete msgId={messageId} failed: {ex.Message}");
         }
     }
 }
