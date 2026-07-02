@@ -179,7 +179,7 @@ public sealed class NotificationService
         if (_useClassicToast) { ShowClassic(from, body); return; }
         try
         {
-            var builder = new AppNotificationBuilder().AddText(from).AddText(body);
+            var builder = MakeBuilder().AddText(from).AddText(body);
             AppNotificationManager.Default.Show(builder.BuildNotification());
         }
         catch (Exception ex)
@@ -197,7 +197,7 @@ public sealed class NotificationService
         if (_useClassicToast) { ShowClassic(from, body); return; }
         try
         {
-            var builder = new AppNotificationBuilder().AddText(from).AddText(body);
+            var builder = MakeBuilder().AddText(from).AddText(body);
             AppNotificationManager.Default.Show(builder.BuildNotification());
         }
         catch (Exception ex)
@@ -206,6 +206,19 @@ public sealed class NotificationService
             _useClassicToast = true;
             ShowClassic(from, body);
         }
+    }
+
+    // "Urgent" is the only scenario that both (a) pops the banner even while
+    // our own window has focus and (b) breaks through Focus Assist/Do Not
+    // Disturb, without the caveats of "reminder" (silently dropped unless it
+    // has a background-activating button) or "alarm" (loops ringtone audio).
+    // See toast schema docs for the scenario attribute.
+    private static AppNotificationBuilder MakeBuilder()
+    {
+        var builder = new AppNotificationBuilder();
+        if (AppNotificationBuilder.IsUrgentScenarioSupported())
+            builder.SetScenario(AppNotificationScenario.Urgent);
+        return builder;
     }
 
     // Writes the registry key that both notification managers need to resolve
@@ -294,6 +307,10 @@ public sealed class NotificationService
             var nodes = xml.GetElementsByTagName("text");
             nodes[0].AppendChild(xml.CreateTextNode(heading));
             nodes[1].AppendChild(xml.CreateTextNode(body));
+            // Same reasoning as MakeBuilder(): force the popup even while our
+            // window has focus and break through Focus Assist.
+            var toastElement = (XmlElement)xml.GetElementsByTagName("toast")[0]!;
+            toastElement.SetAttribute("scenario", "urgent");
             ToastNotificationManager.CreateToastNotifier(AumId)
                                     .Show(new ToastNotification(xml));
         }
