@@ -422,7 +422,9 @@ recipient's X25519 key. Cloudflare cannot read message content. Metadata
 call times out (6-second connect / 10-second total), the relay path is silently
 skipped and the app behaves identically to before this feature was added.
 
-**Worker endpoint:** `https://lan-messenger-relay.davefelzy20.workers.dev`
+**Worker endpoint:** `https://lan-messenger-relay.shoparmorex.com` (Workers Custom
+Domain; the shared `workers.dev` subdomain is avoided because Cloudflare's
+account-wide Bot Fight Mode cannot be exempted per hostname on it)
 **KV namespace:** `lan-messenger-relay` (TTL 72 h per message)
 
 ## File Transfer Service

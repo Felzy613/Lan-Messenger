@@ -634,7 +634,7 @@ relay_id      = SHA256(private_key_bytes || "relay-v1")   [private, never transm
 relay_id_hash = SHA256(relay_id)                           [published in discovery]
 ```
 
-**Cloud Relay REST API** (Cloudflare Worker at `https://lan-messenger-relay.davefelzy20.workers.dev`):
+**Cloud Relay REST API** (Cloudflare Worker at `https://lan-messenger-relay.shoparmorex.com`):
 
 | Method | Path | Purpose |
 |---|---|---|
