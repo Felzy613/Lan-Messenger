@@ -43,12 +43,37 @@ struct PendingMessageConfig: Codable {
     var peerUsername: String
     var text: String
     var timestamp: Double
+    // True once the cloud relay Worker has confirmed (`{"ok":true}`) that this
+    // message was stored. Drives the outbox retry loop in MessagingService:
+    // entries still `false` get their store attempt retried on the relay poll
+    // timer until this flips true or the entry is removed (delivered directly).
+    var relayStored: Bool
 
     enum CodingKeys: String, CodingKey {
         case messageId = "message_id"
         case peerPublicKeyB64 = "peer_public_key_b64"
         case peerUsername = "peer_username"
         case text, timestamp
+        case relayStored = "relay_stored"
+    }
+
+    init(messageId: String, peerPublicKeyB64: String, peerUsername: String, text: String, timestamp: Double, relayStored: Bool = false) {
+        self.messageId = messageId
+        self.peerPublicKeyB64 = peerPublicKeyB64
+        self.peerUsername = peerUsername
+        self.text = text
+        self.timestamp = timestamp
+        self.relayStored = relayStored
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        messageId = try c.decode(String.self, forKey: .messageId)
+        peerPublicKeyB64 = try c.decode(String.self, forKey: .peerPublicKeyB64)
+        peerUsername = try c.decode(String.self, forKey: .peerUsername)
+        text = try c.decode(String.self, forKey: .text)
+        timestamp = try c.decode(Double.self, forKey: .timestamp)
+        relayStored = try c.decodeIfPresent(Bool.self, forKey: .relayStored) ?? false
     }
 }
 

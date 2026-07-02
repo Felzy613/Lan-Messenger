@@ -206,19 +206,23 @@ final class HistoryStore {
         if changed { history[ip] = entries }
     }
 
-    // Marks a message entry as having transited the cloud relay.
-    // Called for outgoing messages when TCP fails and relay upload is attempted,
-    // and for incoming messages when they arrive via relay.
-    func markRelayDelivery(messageId: String, peerIP: String) {
-        guard var entries = history[peerIP] else { return }
-        var changed = false
-        for i in entries.indices where entries[i].messageId == messageId {
-            if entries[i].deliveryPath != "relay" {
-                entries[i].deliveryPath = "relay"
-                changed = true
+    // Marks a message entry as having transited the cloud relay. Called once
+    // the Worker has *confirmed* an outgoing message was stored (see
+    // MessagingService.markRelayStored). Scans every bucket rather than
+    // taking a peerIP — an outgoing message's bucket is known at send time,
+    // but retries of a failed store (fired from the relay-outbox retry loop,
+    // which only knows the messageId) need to find it without re-resolving
+    // an IP that may have changed since the message was queued.
+    func markRelayDelivery(messageId: String) {
+        for (ip, entries) in history {
+            guard let idx = entries.firstIndex(where: { $0.messageId == messageId }) else { continue }
+            if entries[idx].deliveryPath != "relay" {
+                var updated = entries
+                updated[idx].deliveryPath = "relay"
+                history[ip] = updated
             }
+            return
         }
-        if changed { history[peerIP] = entries }
     }
 
     // Rank-aware status update — never downgrades a delivered/read message back
@@ -243,6 +247,18 @@ final class HistoryStore {
 
     func entries(forPeerIP ip: String) -> [MessageEntry] {
         history[ip] ?? []
+    }
+
+    // Scans every peer bucket, not just one IP. Relay messages are dispatched
+    // through an `ip` that's re-resolved from ephemeral state (live peers,
+    // contacts, session cache) on every poll and can legitimately point at a
+    // different bucket than where an earlier delivery of the same message_id
+    // landed (e.g. macOS purges offline peers from `peers`). A per-IP dedup
+    // check misses that case and re-appends the message; this doesn't.
+    func containsMessageId(_ messageId: String) -> Bool {
+        history.values.contains { entries in
+            entries.contains { $0.messageId == messageId }
+        }
     }
 
     // Marks the entry identified by messageId as deleted: clears text and reply
@@ -287,7 +303,18 @@ final class HistoryStore {
     func migrate(fromIP: String, toIP: String) {
         guard fromIP != toIP, let oldEntries = history.removeValue(forKey: fromIP) else { return }
         let existing = history[toIP] ?? []
-        let merged = (existing + oldEntries).sorted { $0.timestamp < $1.timestamp }
+        let merged = Self.dedupByMessageId(existing + oldEntries).sorted { $0.timestamp < $1.timestamp }
         history[toIP] = Array(merged.suffix(Self.maxEntriesPerPeer))
+    }
+
+    // Keeps the first occurrence of each messageId; entries with no messageId
+    // (file transfers, legacy migrated history) are never considered
+    // duplicates of each other and are all kept.
+    private static func dedupByMessageId(_ entries: [MessageEntry]) -> [MessageEntry] {
+        var seen = Set<String>()
+        return entries.filter { entry in
+            guard let id = entry.messageId else { return true }
+            return seen.insert(id).inserted
+        }
     }
 }

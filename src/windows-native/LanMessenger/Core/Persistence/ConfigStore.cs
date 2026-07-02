@@ -22,6 +22,13 @@ public sealed class PendingMessageConfig
     [JsonPropertyName("peer_username")]      public string PeerUsername     { get; set; } = "";
     [JsonPropertyName("text")]               public string Text             { get; set; } = "";
     [JsonPropertyName("timestamp")]          public double Timestamp        { get; set; }
+    // True once the cloud relay Worker has confirmed (`{"ok":true}`) that this
+    // message was stored. Drives the outbox retry loop in MessagingService:
+    // entries still false get their store attempt retried on the relay poll
+    // timer until this flips true or the entry is removed (delivered directly).
+    // System.Text.Json tolerates the missing key in previously-queued JSON on
+    // disk and defaults to false.
+    [JsonPropertyName("relay_stored")]       public bool   RelayStored      { get; set; }
 }
 
 // File queued for an offline peer; delivered when the peer reappears.

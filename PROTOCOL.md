@@ -614,6 +614,19 @@ If the sender knows the peer's `relay_id_hash` (received in a prior discovery
 packet) the encrypted ciphertext is **also posted** to the cloud relay Worker
 immediately after being placed in the local queue.
 
+The store attempt is **retried until confirmed**, not fire-and-forget. Each
+`PendingMessageConfig`/pending-message entry carries a `relay_stored` flag
+(`false` until the Worker responds `{"ok":true}`). A poll timer (the same one
+that drains the inbox, every 30s) retries the store for every pending entry
+that is still `!relayStored`, re-encrypting fresh each attempt (new nonce per
+try, same pattern as the direct-LAN retry). This is what protects against a
+message never arriving at all: a transient network blip, a Worker cold start,
+or a momentarily full inbox on the first attempt no longer strands the
+message — it gets picked back up on the next poll. The UI's "via relay"
+badge is driven by this same confirmation, not by the initial (unconfirmed)
+attempt, so it now appears within the store round-trip instead of only after
+a full history reload.
+
 When any client starts up, it fetches its own pending messages from the Worker:
 
 ```
@@ -623,6 +636,24 @@ App start -> RelayClient.fetchPending(relay_id)
   -> MessagingService decrypts each (same AES-GCM path as LAN delivery)
   -> RelayClient.delete(message_id) to clean up
 ```
+
+Incoming relay messages are deduplicated **globally by `message_id`** across
+the whole local history (all peer-IP buckets), not just the IP bucket the
+message happens to resolve to on that particular poll. Peer IP resolution
+for a relay sender is ephemeral — it depends on live discovery state,
+contacts, and session caches, which can change between polls (e.g. macOS
+purges offline peers) — so a per-IP check can miss an earlier delivery
+filed under a different bucket and re-append the message. If the client
+already has the `message_id` anywhere in history, it does not reprocess or
+re-append it; it only issues the mailbox `DELETE` cleanup. History
+migration (moving a synthetic `relay-{keyPrefix}` bucket to a peer's real IP
+once discovered) also dedupes by `message_id` when merging, as defense in
+depth.
+
+If a message is delivered directly over the LAN (`deliverPending` succeeds)
+after it was already confirmed-stored on the relay, the client best-effort
+`DELETE`s the relay copy immediately, so it doesn't linger for the recipient
+to fetch as a redundant (though now-deduplicated) delivery.
 
 This allows Bob to receive messages from Alice even if Alice's machine was
 off-network at the time Bob came back online.

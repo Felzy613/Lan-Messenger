@@ -21,6 +21,12 @@ public sealed class MessagingService
     public Action<string, string, string>?    OnStatusUpdate    { get; set; }  // peerIP, messageId, status
     public Action<string, string, bool>?      OnTypingUpdate    { get; set; }  // peerIP, senderName, active
     public Action<string, string>?            OnMessageDeleted  { get; set; }  // peerIP, messageId
+    // Fired once the cloud relay Worker confirms an outgoing message was
+    // actually stored — not when the upload is merely attempted. Lets the UI
+    // show the "via relay" badge promptly instead of only after the
+    // recipient later retrieves the message (which is what a full history
+    // reload previously depended on).
+    public Action<string>?                    OnDeliveryPathUpdate { get; set; } // messageId
 
     private const int TcpPort = 54232;
     private readonly Dictionary<string, DateTime> _typingSentAt    = [];
@@ -35,6 +41,12 @@ public sealed class MessagingService
     private readonly HashSet<string>              _pendingInFlight   = [];
     private readonly Dictionary<string, DateTime> _pendingLastTry    = [];
     private static readonly TimeSpan PendingRetryInterval = TimeSpan.FromSeconds(10);
+
+    // Cloud-relay outbox retry bookkeeping — kept separate from the local TCP
+    // retry state above so the two transports retry independently and never
+    // block each other.
+    private readonly HashSet<string>              _relayOutboxInFlight = [];
+    private readonly Dictionary<string, DateTime> _relayOutboxLastTry  = [];
 
     private MessagingService() { }
 
@@ -113,8 +125,6 @@ public sealed class MessagingService
             if (replyTo.Sender is not null) packet["reply_to_sender"] = replyTo.Sender;
         }
 
-        var capturedNonce = encrypted.Value.nonceB64;
-        var capturedCt    = encrypted.Value.ctB64;
         Task.Run(async () =>
         {
             var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"text msgId={messageId}");
@@ -129,8 +139,7 @@ public sealed class MessagingService
             Dispatch(() =>
             {
                 var status = success ? MessageStatus.Sent : MessageStatus.Queued;
-                if (!success) QueuePending(messageId, peerIP, text, peerPublicKeyB64, peerRelayIdHash,
-                                           capturedCt, capturedNonce, timestamp);
+                if (!success) QueuePending(messageId, text, peerPublicKeyB64, peerRelayIdHash, timestamp);
                 // ApplyStatus persists when the rank check passes; nothing else
                 // to save here. Crucially, if a "Delivered" receipt already
                 // arrived between the WriteAsync and this dispatch, the rank
@@ -267,8 +276,17 @@ public sealed class MessagingService
                     if (!success) return;
                     _pendingLastTry.Remove(msgId);
                     ApplyStatus(MessageStatus.Sent, msgId, peerIP);
+                    // Note whether this message had already landed on the relay
+                    // before removing it from the queue — if so, clean up the
+                    // Worker copy now that direct LAN delivery beat it there.
+                    // Best-effort: even if this fails, the global dedup in
+                    // HandleRelayMessage prevents a stale mailbox copy from
+                    // ever showing up as a duplicate.
+                    var wasRelayStored = ConfigStore.Shared.Config.PendingMessages
+                        .FirstOrDefault(m => m.MessageId == msgId)?.RelayStored ?? false;
                     ConfigStore.Shared.Config.PendingMessages.RemoveAll(m => m.MessageId == msgId);
                     ConfigStore.Shared.Save();
+                    if (wasRelayStored) _ = RelayClient.Shared.DeleteAsync(msgId);
                 });
             });
         }
@@ -374,12 +392,9 @@ public sealed class MessagingService
 
     private void QueuePending(
         string messageId,
-        string peerIP,
         string text,
         string peerPublicKeyB64,
         string? peerRelayIdHash,
-        string ciphertextB64,
-        string nonceB64,
         double timestamp)
     {
         var username = ConfigStore.Shared.Config.Contacts
@@ -401,10 +416,81 @@ public sealed class MessagingService
             LanLogger.Info("Relay", $"skip store msgId={messageId} — peer online or has no relay_id_hash; message queued locally only");
             return;
         }
+        RetryRelayStore(messageId, peerRelayIdHash);
+    }
 
-        LanLogger.Info("Relay", $"store msgId={messageId} peer={peerPublicKeyB64[..Math.Min(8, peerPublicKeyB64.Length)]} — uploading to cloud relay mailbox");
-        HistoryStore.Shared.MarkRelayDelivery(messageId, peerIP);
-        _ = RelayClient.Shared.StoreAsync(peerRelayIdHash, messageId, ciphertextB64, nonceB64, timestamp);
+    // MARK: - Cloud relay outbox retry
+
+    /// Attempts (or retries) uploading a queued message to the cloud relay
+    /// Worker. Re-encrypts fresh on every call — a new nonce per attempt,
+    /// same pattern as DeliverPending's direct-TCP retries — since the
+    /// pending queue only persists plaintext. Backed off per-message so a
+    /// persistently unreachable Worker doesn't get hammered; the in-flight
+    /// guard prevents a concurrent duplicate attempt for the same message.
+    /// The relay poll timer calls this for every not-yet-confirmed pending
+    /// message (see AppModel.RetryRelayOutbox) so a store that failed on
+    /// the first attempt — transient network blip, Worker cold start, a
+    /// full inbox — eventually gets through instead of being lost forever.
+    public void RetryRelayStore(string messageId, string peerRelayIdHash)
+    {
+        if (_relayOutboxInFlight.Contains(messageId)) return;
+        if (_relayOutboxLastTry.TryGetValue(messageId, out var last)
+            && DateTime.UtcNow - last < PendingRetryInterval) return;
+
+        var msg = ConfigStore.Shared.Config.PendingMessages.FirstOrDefault(m => m.MessageId == messageId);
+        if (msg is null || msg.RelayStored) return;
+
+        _relayOutboxInFlight.Add(messageId);
+        _relayOutboxLastTry[messageId] = DateTime.UtcNow;
+
+        var aad = Encoding.UTF8.GetBytes(messageId);
+        (string nonceB64, string ctB64) encrypted;
+        try
+        {
+            encrypted = SessionCrypto.EncryptForPeer(
+                KeyManager.Shared.PrivateKey, msg.PeerPublicKeyB64,
+                Encoding.UTF8.GetBytes(msg.Text), aad);
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Error("Relay", $"retry encrypt failed msgId={messageId}", ex);
+            _relayOutboxInFlight.Remove(messageId);
+            return;
+        }
+
+        LanLogger.Info("Relay", $"store msgId={messageId} peer={msg.PeerPublicKeyB64[..Math.Min(8, msg.PeerPublicKeyB64.Length)]} — uploading to cloud relay mailbox");
+        Task.Run(async () =>
+        {
+            var confirmed = await RelayClient.Shared.StoreAsync(
+                peerRelayIdHash, messageId, encrypted.ctB64, encrypted.nonceB64, msg.Timestamp);
+            Dispatch(() =>
+            {
+                _relayOutboxInFlight.Remove(messageId);
+                if (!confirmed)
+                {
+                    LanLogger.Warn("Relay", $"store msgId={messageId} not confirmed by Worker — will retry");
+                    return;
+                }
+                _relayOutboxLastTry.Remove(messageId);
+                MarkRelayStored(messageId);
+            });
+        });
+    }
+
+    /// Called once the Worker has confirmed a store. Flips the persisted
+    /// RelayStored flag (so the outbox retry loop stops retrying it), marks
+    /// the history entry, and notifies the UI immediately.
+    private void MarkRelayStored(string messageId)
+    {
+        var pending = ConfigStore.Shared.Config.PendingMessages.FirstOrDefault(m => m.MessageId == messageId);
+        if (pending is not null)
+        {
+            pending.RelayStored = true;
+            ConfigStore.Shared.Save();
+        }
+        HistoryStore.Shared.MarkRelayDelivery(messageId);
+        HistoryStore.Shared.Save();
+        OnDeliveryPathUpdate?.Invoke(messageId);
     }
 
     // MARK: - Handle relay-delivered messages (from cloud Worker)
@@ -413,6 +499,19 @@ public sealed class MessagingService
     /// Call from AppModel after FetchPendingAsync().
     public void HandleRelayMessage(RelayPendingMessage msg, string fromStoredIP)
     {
+        // Global dedup: this message's MessageId may already be filed under a
+        // *different* IP bucket than fromStoredIP resolves to on this poll —
+        // peer IP resolution depends on ephemeral state (live peers, contacts,
+        // session cache) that can change between polls. A per-IP check here
+        // would miss that and re-append the message. If we already have it,
+        // just clean up the mailbox so it doesn't linger for the full TTL.
+        if (HistoryStore.Shared.ContainsMessageId(msg.MessageId))
+        {
+            LanLogger.Info("Relay", $"duplicate relay msg {msg.MessageId} — already in history, deleting from mailbox only");
+            _ = RelayClient.Shared.DeleteAsync(msg.MessageId);
+            return;
+        }
+
         var aad = Encoding.UTF8.GetBytes(msg.MessageId);
         byte[] plaintext;
         try
@@ -428,10 +527,6 @@ public sealed class MessagingService
         }
 
         var text = Encoding.UTF8.GetString(plaintext);
-
-        // Deduplicate: skip if we already have this message in history.
-        if (HistoryStore.Shared.Entries(fromStoredIP).Any(e => e.MessageId == msg.MessageId))
-            return;
 
         var entry = new MessageEntry
         {

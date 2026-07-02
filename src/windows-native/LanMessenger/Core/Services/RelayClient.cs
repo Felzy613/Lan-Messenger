@@ -89,16 +89,24 @@ public sealed class RelayClient
 
     // MARK: - Store a message for an offline peer
 
+    private sealed class RelayOkResponse
+    {
+        [JsonPropertyName("ok")] public bool Ok { get; set; }
+    }
+
     /// Posts an encrypted message to the relay Worker mailbox for peerRelayIdHash.
-    /// Fire-and-forget: call after a message has been placed in the local queue.
-    public async Task StoreAsync(
+    /// Returns true only when the Worker confirms the message was actually
+    /// stored (`{"ok":true}` in the JSON body) — a 2xx with an unparseable or
+    /// falsy body does not count as success. Callers use this to decide
+    /// whether to mark the message as relay-delivered and whether to retry.
+    public async Task<bool> StoreAsync(
         string peerRelayIdHash,
         string messageId,
         string ciphertextB64,
         string nonceB64,
         double timestamp)
     {
-        if (WorkerBaseUri is null || string.IsNullOrEmpty(peerRelayIdHash)) return;
+        if (WorkerBaseUri is null || string.IsNullOrEmpty(peerRelayIdHash)) return false;
         try
         {
             var body = new RelayStoreRequest
@@ -114,11 +122,23 @@ public sealed class RelayClient
             };
             using var resp = await _http.PostAsJsonAsync(
                 new Uri(WorkerBaseUri, "store"), body);
-            LanLogger.Info("Relay", $"store msgId={messageId} → HTTP {(int)resp.StatusCode}");
+            var confirmed = false;
+            if (resp.IsSuccessStatusCode)
+            {
+                try
+                {
+                    var parsed = await resp.Content.ReadFromJsonAsync<RelayOkResponse>();
+                    confirmed = parsed?.Ok == true;
+                }
+                catch { /* unparseable body — treat as not confirmed */ }
+            }
+            LanLogger.Info("Relay", $"store msgId={messageId} → HTTP {(int)resp.StatusCode} confirmed={confirmed}");
+            return confirmed;
         }
         catch (Exception ex)
         {
             LanLogger.Warn("Relay", $"store msgId={messageId} failed: {ex.Message}");
+            return false;
         }
     }
 

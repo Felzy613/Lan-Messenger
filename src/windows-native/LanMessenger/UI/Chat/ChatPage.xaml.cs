@@ -27,17 +27,26 @@ public sealed class MessageRowViewModel : INotifyPropertyChanged
     /// Local file path of the replied-to media/file message, if any. Resolved
     /// from conversation history at map time; null for text replies.
     public string? ReplyFilePath    { get; init; }
-    /// True when this message transited the cloud relay Worker (not direct LAN delivery).
-    public bool DeliveredViaRelay   { get; init; }
     /// True when this message was deleted — the bubble renders a placeholder.
     public bool Deleted             { get; init; }
 
-    // Status is the one mutable field — checkmarks update without rebuilding the row.
+    // Status and DeliveredViaRelay are mutable — checkmarks and the relay
+    // badge update in place without rebuilding the row. DeliveredViaRelay
+    // starts false and flips true once the cloud relay Worker confirms an
+    // outgoing message's upload (see AppModel.MessageDeliveryPathUpdated) —
+    // previously that only ever showed up after the next full history reload.
     private string _status = "";
     public string Status
     {
         get => _status;
         set { if (_status != value) { _status = value; PropertyChanged?.Invoke(this, new(nameof(Status))); } }
+    }
+
+    private bool _deliveredViaRelay;
+    public bool DeliveredViaRelay
+    {
+        get => _deliveredViaRelay;
+        set { if (_deliveredViaRelay != value) { _deliveredViaRelay = value; PropertyChanged?.Invoke(this, new(nameof(DeliveredViaRelay))); } }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -59,6 +68,7 @@ public sealed partial class ChatPage : Page
             {
                 _model.PropertyChanged    -= OnModelPropertyChanged;
                 _model.MessageStatusUpdated -= OnMessageStatusUpdated;
+                _model.MessageDeliveryPathUpdated -= OnMessageDeliveryPathUpdated;
                 Composer.Send             -= OnSend;
                 Composer.TypingChanged    -= OnTyping;
                 Composer.AttachRequested  -= OnAttachRequested;
@@ -70,6 +80,7 @@ public sealed partial class ChatPage : Page
             {
                 _model.PropertyChanged    += OnModelPropertyChanged;
                 _model.MessageStatusUpdated += OnMessageStatusUpdated;
+                _model.MessageDeliveryPathUpdated += OnMessageDeliveryPathUpdated;
                 Composer.Send             += OnSend;
                 Composer.TypingChanged    += OnTyping;
                 Composer.AttachRequested  += OnAttachRequested;
@@ -77,6 +88,21 @@ public sealed partial class ChatPage : Page
                 Composer.ScreenshotRequested += OnScreenshotRequested;
                 RefreshForSelectedPeer(forceReload: true);
             }
+        }
+    }
+
+    // Direct row update — mirrors OnMessageStatusUpdated. The relay outbox
+    // retry only knows the messageId (not which peer/IP it belongs to), so
+    // this just scans the currently-bound conversation's rows; if the
+    // message belongs to a different conversation, there's simply no match
+    // and this is a no-op (the row will show the badge correctly whenever
+    // that conversation is next opened, since AppModel already patched the
+    // underlying MessageEntry).
+    private void OnMessageDeliveryPathUpdated(string msgId)
+    {
+        foreach (var row in _rows)
+        {
+            if (row.MessageId == msgId) { row.DeliveredViaRelay = true; break; }
         }
     }
 

@@ -46,6 +46,8 @@ public sealed partial class MessageBubbleControl : UserControl
     {
         if (e.PropertyName == nameof(MessageRowViewModel.Status))
             UpdateStatusGlyph();
+        else if (e.PropertyName == nameof(MessageRowViewModel.DeliveredViaRelay))
+            UpdateRelayBadge();
     }
 
     private void Refresh()
@@ -152,8 +154,14 @@ public sealed partial class MessageBubbleControl : UserControl
             ReplyChipThumbnailBorder.Visibility = Visibility.Collapsed;
         }
 
-        RelayBadge.Visibility = Row.DeliveredViaRelay ? Visibility.Visible : Visibility.Collapsed;
+        UpdateRelayBadge();
         UpdateStatusGlyph();
+    }
+
+    private void UpdateRelayBadge()
+    {
+        if (Row is null || Row.Deleted) return;
+        RelayBadge.Visibility = Row.DeliveredViaRelay ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // Segoe MDL2 glyphs used for reply chip icons.

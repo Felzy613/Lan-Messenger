@@ -16,6 +16,12 @@ final class MessagingService {
     var onStatusUpdate: ((String, String, String) -> Void)?       // peerIP, messageId, status
     var onTypingUpdate: ((String, String, Bool) -> Void)?         // peerIP, senderName, active
     var onMessageDeleted: ((String, String) -> Void)?             // peerIP, messageId
+    // Fired once the cloud relay Worker confirms an outgoing message was
+    // actually stored — not when the upload is merely attempted. Lets the UI
+    // show the "via relay" badge promptly instead of only after the
+    // recipient later retrieves the message (which is what a full history
+    // reload previously depended on).
+    var onDeliveryPathUpdate: ((String) -> Void)?                  // messageId
 
     private let tcpPort = 54232
     private var typingSentAt: [String: Date] = [:]
@@ -29,6 +35,12 @@ final class MessagingService {
     private var pendingInFlight: Set<String> = []
     private var pendingLastTry: [String: Date] = [:]
     private let pendingRetryInterval: TimeInterval = 10
+
+    // Cloud-relay outbox retry bookkeeping — kept separate from the local TCP
+    // retry state above so the two transports retry independently and never
+    // block each other.
+    private var relayOutboxInFlight: Set<String> = []
+    private var relayOutboxLastTry: [String: Date] = [:]
 
     private init() {}
 
@@ -103,8 +115,6 @@ final class MessagingService {
             if let s = replySender { packet["reply_to_sender"] = s }
         }
 
-        let capturedNonce = nonceB64
-        let capturedCt    = ctB64
         sendJSON(packet, toIP: ip, port: tcpPort) { [weak self] success in
             guard let self else { return }
             let status = success ? "Sent" : "Queued"
@@ -114,12 +124,9 @@ final class MessagingService {
                 NetLogger.info("Send", "TCP failed msgId=\(messageId) peer=\(ip) — queueing locally and falling back to relay")
                 self.queuePendingMessage(
                     messageId: messageId,
-                    peerIP: ip,
                     text: text,
                     peerPublicKeyB64: peerPublicKeyB64,
                     peerRelayIdHash: peerRelayIdHash,
-                    ciphertextB64: capturedCt,
-                    nonceB64: capturedNonce,
                     timestamp: timestamp
                 )
             }
@@ -231,10 +238,21 @@ final class MessagingService {
                 guard success else { return }
                 self.pendingLastTry.removeValue(forKey: msgId)
                 self.updateStatus("Sent", forMessageId: msgId, peerIP: ip)
+                // Note whether this message had already landed on the relay
+                // before removing it from the queue — if so, clean up the
+                // Worker copy now that direct LAN delivery beat it there.
+                // Best-effort: even if this fails, the global dedup in
+                // handleRelayMessage prevents a stale mailbox copy from ever
+                // showing up as a duplicate.
+                let wasRelayStored = ConfigStore.shared.config.pendingMessages
+                    .first(where: { $0.messageId == msgId })?.relayStored ?? false
                 // Remove only after confirmed delivery so a TCP failure doesn't
                 // silently drop the message from the queue.
                 ConfigStore.shared.config.pendingMessages.removeAll { $0.messageId == msgId }
                 ConfigStore.shared.save()
+                if wasRelayStored {
+                    Task { await RelayClient.shared.delete(messageId: msgId) }
+                }
             }
         }
     }
@@ -329,12 +347,9 @@ final class MessagingService {
 
     private func queuePendingMessage(
         messageId: String,
-        peerIP: String,
         text: String,
         peerPublicKeyB64: String,
         peerRelayIdHash: String?,
-        ciphertextB64: String,
-        nonceB64: String,
         timestamp: Double
     ) {
         let username = ConfigStore.shared.config.contacts.first { $0.publicKeyB64 == peerPublicKeyB64 }?.username ?? "Unknown"
@@ -354,18 +369,72 @@ final class MessagingService {
             NetLogger.info("Relay", "skip store msgId=\(messageId) — peer online or has no relay_id_hash; message queued locally only")
             return
         }
+        retryRelayStore(messageId: messageId, peerRelayIdHash: hash)
+    }
 
-        NetLogger.info("Relay", "store msgId=\(messageId) peer=\(peerPublicKeyB64.prefix(8)) — uploading to cloud relay mailbox")
-        HistoryStore.shared.markRelayDelivery(messageId: messageId, peerIP: peerIP)
-        Task {
-            await RelayClient.shared.store(
-                peerRelayIdHash: hash,
-                messageId: messageId,
-                ciphertextB64: ciphertextB64,
-                nonceB64: nonceB64,
-                timestamp: timestamp
-            )
+    // MARK: - Cloud relay outbox retry
+
+    /// Attempts (or retries) uploading a queued message to the cloud relay
+    /// Worker. Re-encrypts fresh on every call — a new nonce per attempt,
+    /// same pattern as deliverPending's direct-TCP retries — since the
+    /// pending queue only persists plaintext. Backed off per-message so a
+    /// persistently unreachable Worker doesn't get hammered; the in-flight
+    /// guard prevents a concurrent duplicate attempt for the same message.
+    /// The relay poll timer calls this for every not-yet-confirmed pending
+    /// message (see AppModel.retryRelayOutbox) so a store that failed on
+    /// the first attempt — transient network blip, Worker cold start, a
+    /// full inbox — eventually gets through instead of being lost forever.
+    func retryRelayStore(messageId: String, peerRelayIdHash: String) {
+        guard !relayOutboxInFlight.contains(messageId) else { return }
+        if let last = relayOutboxLastTry[messageId], Date().timeIntervalSince(last) < pendingRetryInterval { return }
+        guard let msg = ConfigStore.shared.config.pendingMessages.first(where: { $0.messageId == messageId }),
+              !msg.relayStored else { return }
+
+        relayOutboxInFlight.insert(messageId)
+        relayOutboxLastTry[messageId] = Date()
+
+        let aad = Data(messageId.utf8)
+        guard let (nonceB64, ctB64) = try? SessionCrypto.encryptForPeer(
+            myPrivate: KeyManager.shared.privateKey,
+            peerPublicKeyB64: msg.peerPublicKeyB64,
+            plaintext: Data(msg.text.utf8),
+            aad: aad
+        ) else {
+            relayOutboxInFlight.remove(messageId)
+            return
         }
+
+        NetLogger.info("Relay", "store msgId=\(messageId) peer=\(msg.peerPublicKeyB64.prefix(8)) — uploading to cloud relay mailbox")
+        Task { [weak self] in
+            guard let self else { return }
+            let confirmed = await RelayClient.shared.store(
+                peerRelayIdHash: peerRelayIdHash,
+                messageId: messageId,
+                ciphertextB64: ctB64,
+                nonceB64: nonceB64,
+                timestamp: msg.timestamp
+            )
+            self.relayOutboxInFlight.remove(messageId)
+            guard confirmed else {
+                NetLogger.warn("Relay", "store msgId=\(messageId) not confirmed by Worker — will retry")
+                return
+            }
+            self.relayOutboxLastTry.removeValue(forKey: messageId)
+            self.markRelayStored(messageId: messageId)
+        }
+    }
+
+    /// Called once the Worker has confirmed a store. Flips the persisted
+    /// `relayStored` flag (so the outbox retry loop stops retrying it),
+    /// marks the history entry, and notifies the UI immediately.
+    private func markRelayStored(messageId: String) {
+        if let idx = ConfigStore.shared.config.pendingMessages.firstIndex(where: { $0.messageId == messageId }) {
+            ConfigStore.shared.config.pendingMessages[idx].relayStored = true
+            ConfigStore.shared.save()
+        }
+        HistoryStore.shared.markRelayDelivery(messageId: messageId)
+        HistoryStore.shared.save()
+        onDeliveryPathUpdate?(messageId)
     }
 
     // MARK: - Handle relay-delivered messages (from cloud Worker)
@@ -374,6 +443,18 @@ final class MessagingService {
     /// The ciphertext was produced by the sender and is decoded here exactly
     /// like a normal LAN text packet. Call from AppModel after fetchPending().
     func handleRelayMessage(_ msg: RelayPendingMessage, fromStoredIP ip: String) {
+        // Global dedup: this message's messageId may already be filed under a
+        // *different* IP bucket than `ip` resolves to on this poll — peer IP
+        // resolution depends on ephemeral state (live peers, contacts,
+        // session cache) that can change between polls. A per-IP check here
+        // would miss that and re-append the message. If we already have it,
+        // just clean up the mailbox so it doesn't linger for the full TTL.
+        if HistoryStore.shared.containsMessageId(msg.messageId) {
+            NetLogger.info("Relay", "duplicate relay msg \(msg.messageId) — already in history, deleting from mailbox only")
+            Task { await RelayClient.shared.delete(messageId: msg.messageId) }
+            return
+        }
+
         let aad = Data(msg.messageId.utf8)
         guard let plaintext = try? SessionCrypto.decryptFromPeer(
             myPrivate: KeyManager.shared.privateKey,
@@ -386,11 +467,6 @@ final class MessagingService {
             return
         }
         let text = String(data: plaintext, encoding: .utf8) ?? ""
-
-        // Deduplicate: don't re-add if we already have this message in history.
-        if HistoryStore.shared.entries(forPeerIP: ip).contains(where: { $0.messageId == msg.messageId }) {
-            return
-        }
 
         let entry = MessageEntry(
             sender: msg.senderUsername,

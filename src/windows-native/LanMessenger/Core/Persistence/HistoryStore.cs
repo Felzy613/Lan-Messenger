@@ -152,15 +152,32 @@ public sealed class HistoryStore
             e.ReadReceiptSent = true;
     }
 
-    // Marks a message entry as having transited the cloud relay.
-    // Called for outgoing messages when TCP fails and relay upload is attempted,
-    // and for incoming messages when they arrive via relay.
-    public void MarkRelayDelivery(string messageId, string peerIP)
+    // Marks a message entry as having transited the cloud relay. Called once
+    // the Worker has *confirmed* an outgoing message was stored (see
+    // MessagingService.MarkRelayStored). Scans every bucket rather than
+    // taking a peerIP — an outgoing message's bucket is known at send time,
+    // but retries of a failed store (fired from the relay-outbox retry loop,
+    // which only knows the messageId) need to find it without re-resolving
+    // an IP that may have changed since the message was queued.
+    public void MarkRelayDelivery(string messageId)
     {
-        if (!_history.TryGetValue(peerIP, out var list)) return;
-        foreach (var e in list.Where(e => e.MessageId == messageId && e.DeliveryPath != "relay"))
-            e.DeliveryPath = "relay";
+        foreach (var list in _history.Values)
+        {
+            var entry = list.FirstOrDefault(e => e.MessageId == messageId);
+            if (entry is null) continue;
+            entry.DeliveryPath = "relay";
+            return;
+        }
     }
+
+    // Scans every peer bucket, not just one IP. Relay messages are dispatched
+    // through an IP that's re-resolved from ephemeral state (live peers,
+    // contacts, session cache) on every poll and can legitimately point at a
+    // different bucket than where an earlier delivery of the same message_id
+    // landed. A per-IP dedup check misses that case and re-appends the
+    // message; this doesn't.
+    public bool ContainsMessageId(string messageId) =>
+        _history.Values.Any(list => list.Any(e => e.MessageId == messageId));
 
     // Rank-aware status update — never downgrades a delivered/read message back
     // to "Sent". Without this guard, the late "Sent" dispatch from the sender's
@@ -222,9 +239,18 @@ public sealed class HistoryStore
         if (!_history.TryGetValue(fromIP, out var old)) return;
         _history.Remove(fromIP);
         var existing = _history.TryGetValue(toIP, out var cur) ? cur : [];
-        var merged = existing.Concat(old).OrderBy(e => e.Timestamp).ToList();
+        var merged = DedupByMessageId(existing.Concat(old)).OrderBy(e => e.Timestamp).ToList();
         if (merged.Count > MaxEntriesPerPeer)
             merged = merged.TakeLast(MaxEntriesPerPeer).ToList();
         _history[toIP] = merged;
+    }
+
+    // Keeps the first occurrence of each MessageId; entries with no MessageId
+    // (file transfers, legacy migrated history) are never considered
+    // duplicates of each other and are all kept.
+    private static List<MessageEntry> DedupByMessageId(IEnumerable<MessageEntry> entries)
+    {
+        var seen = new HashSet<string>();
+        return entries.Where(e => e.MessageId is null || seen.Add(e.MessageId)).ToList();
     }
 }

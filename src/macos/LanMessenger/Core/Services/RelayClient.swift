@@ -91,16 +91,20 @@ actor RelayClient {
     // MARK: - Store a message for an offline peer
 
     /// Posts an encrypted message to the relay Worker mailbox for `peerRelayIdHash`.
-    /// Call this fire-and-forget after a message has been placed in the local queue.
+    /// Returns true only when the Worker confirms the message was actually
+    /// stored (`{"ok":true}` in the JSON body) — a 2xx with an unparseable or
+    /// falsy body does not count as success. Callers use this to decide
+    /// whether to mark the message as relay-delivered and whether to retry.
+    @discardableResult
     func store(
         peerRelayIdHash: String,
         messageId: String,
         ciphertextB64: String,
         nonceB64: String,
         timestamp: Double
-    ) async {
-        guard let base = workerURL else { return }
-        guard !peerRelayIdHash.isEmpty else { return }
+    ) async -> Bool {
+        guard let base = workerURL else { return false }
+        guard !peerRelayIdHash.isEmpty else { return false }
 
         let body = RelayStoreRequest(
             relayIdHash: peerRelayIdHash,
@@ -113,19 +117,27 @@ actor RelayClient {
             ttlS: 72 * 3600
         )
 
-        guard let data = try? JSONEncoder().encode(body) else { return }
+        guard let data = try? JSONEncoder().encode(body) else { return false }
         var req = URLRequest(url: base.appendingPathComponent("store"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = data
 
         do {
-            let (_, resp) = try await session.data(for: req)
+            let (respData, resp) = try await session.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            NetLogger.info("Relay", "store msgId=\(messageId) → HTTP \(code)")
+            let confirmed = (200...299).contains(code) && Self.parseOk(respData)
+            NetLogger.info("Relay", "store msgId=\(messageId) → HTTP \(code) confirmed=\(confirmed)")
+            return confirmed
         } catch {
             NetLogger.warn("Relay", "store msgId=\(messageId) failed: \(error.localizedDescription)")
+            return false
         }
+    }
+
+    private static func parseOk(_ data: Data) -> Bool {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return (obj["ok"] as? Bool) == true
     }
 
     // MARK: - Fetch pending messages for this device

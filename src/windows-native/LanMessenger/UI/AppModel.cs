@@ -77,6 +77,13 @@ public sealed partial class AppModel : ObservableObject
     // reads the whole dictionary.
     public event Action<string, string, string>? MessageStatusUpdated;
 
+    // Fires once the cloud relay Worker confirms an outgoing message was
+    // actually stored — not when the upload is merely attempted. Lets
+    // ChatPage show the "via relay" badge promptly instead of only after the
+    // recipient later retrieves the message (which is what a full history
+    // reload previously depended on).
+    public event Action<string>? MessageDeliveryPathUpdated;
+
     public readonly NetworkCoordinator Coordinator = new();
     private DispatcherQueue _dq;
     private DispatcherTimer? _peerTimeoutTimer;
@@ -771,9 +778,34 @@ public sealed partial class AppModel : ObservableObject
     private void StartRelayPolling()
     {
         _ = FetchRelayMessagesAsync("startup");
+        RetryRelayOutbox();
         _relayPollTimer = new DispatcherTimer { Interval = RelayPollInterval };
-        _relayPollTimer.Tick += (_, _) => _ = FetchRelayMessagesAsync("poll");
+        _relayPollTimer.Tick += (_, _) =>
+        {
+            _ = FetchRelayMessagesAsync("poll");
+            RetryRelayOutbox();
+        };
         _relayPollTimer.Start();
+    }
+
+    /// Retries the cloud-relay upload for any locally-queued message whose
+    /// store was never confirmed by the Worker (transient failure, cold
+    /// start, a momentarily full inbox, etc). Runs on the same cadence as
+    /// the inbox poll so a message that failed to upload isn't stuck relying
+    /// solely on both peers later being on the LAN simultaneously.
+    private void RetryRelayOutbox()
+    {
+        var unconfirmed = ConfigStore.Shared.Config.PendingMessages.Where(m => !m.RelayStored).ToList();
+        foreach (var msg in unconfirmed)
+        {
+            // Same relay-hash resolution as SendMessage: prefer the live
+            // session cache, fall back to the contact's persisted hash.
+            _peerRelayIdHashes.TryGetValue(msg.PeerPublicKeyB64, out var hash);
+            hash ??= ConfigStore.Shared.Config.Contacts
+                .FirstOrDefault(c => c.PublicKeyB64 == msg.PeerPublicKeyB64)?.RelayIdHash;
+            if (string.IsNullOrEmpty(hash)) continue;
+            MessagingService.Shared.RetryRelayStore(msg.MessageId, hash);
+        }
     }
 
     /// Fetches messages waiting in the cloud relay Worker mailbox and dispatches
@@ -996,6 +1028,20 @@ public sealed partial class AppModel : ObservableObject
             // Targeted notification — no full Messages PropertyChanged. ChatPage
             // updates one row in place; Sidebar ignores status updates entirely.
             MessageStatusUpdated?.Invoke(ip, msgId, status);
+        };
+
+        MessagingService.Shared.OnDeliveryPathUpdate = msgId =>
+        {
+            // The message's IP bucket isn't known to the caller (a relay
+            // outbox retry only has the messageId), so scan for it.
+            foreach (var list in Messages.Values)
+            {
+                var entry = list.FirstOrDefault(e => e.MessageId == msgId);
+                if (entry is null) continue;
+                entry.DeliveryPath = "relay";
+                break;
+            }
+            MessageDeliveryPathUpdated?.Invoke(msgId);
         };
 
         MessagingService.Shared.OnMessageDeleted = (ip, messageId) =>

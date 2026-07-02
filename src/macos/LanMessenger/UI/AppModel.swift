@@ -548,11 +548,31 @@ final class AppModel: ObservableObject {
     /// the LAN window) deliver promptly without requiring a restart.
     private func startRelayPolling() {
         fetchRelayMessages(reason: "startup")
+        retryRelayOutbox()
         relayPollTimer?.invalidate()
         relayPollTimer = Timer.scheduledTimer(withTimeInterval: relayPollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.fetchRelayMessages(reason: "poll")
+                self?.retryRelayOutbox()
             }
+        }
+    }
+
+    /// Retries the cloud-relay upload for any locally-queued message whose
+    /// store was never confirmed by the Worker (transient failure, cold
+    /// start, a momentarily full inbox, etc). Runs on the same cadence as
+    /// the inbox poll so a message that failed to upload isn't stuck relying
+    /// solely on both peers later being on the LAN simultaneously.
+    private func retryRelayOutbox() {
+        let unconfirmed = ConfigStore.shared.config.pendingMessages.filter { !$0.relayStored }
+        guard !unconfirmed.isEmpty else { return }
+        for msg in unconfirmed {
+            // Same relay-hash resolution as sendMessage: prefer the live
+            // session cache, fall back to the contact's persisted hash.
+            let hash = peerRelayIdHashes[msg.peerPublicKeyB64]
+                ?? ConfigStore.shared.config.contacts.first(where: { $0.publicKeyB64 == msg.peerPublicKeyB64 })?.relayIdHash
+            guard let hash, !hash.isEmpty else { continue }
+            MessagingService.shared.retryRelayStore(messageId: msg.messageId, peerRelayIdHash: hash)
         }
     }
 
@@ -844,6 +864,19 @@ final class AppModel: ObservableObject {
                     }
                 }
                 self.messages[ip] = entries
+            }
+        }
+        MessagingService.shared.onDeliveryPathUpdate = { [weak self] msgId in
+            guard let self else { return }
+            // The message's IP bucket isn't known to the caller (a relay
+            // outbox retry only has the messageId), so scan for it — the
+            // same messages dict is already keyed by IP, mirroring HistoryStore.
+            for (ip, entries) in self.messages {
+                guard let idx = entries.firstIndex(where: { $0.messageId == msgId }) else { continue }
+                var updated = entries
+                updated[idx].deliveryPath = "relay"
+                self.messages[ip] = updated
+                break
             }
         }
         MessagingService.shared.onTypingUpdate = { [weak self] ip, sender, active in
