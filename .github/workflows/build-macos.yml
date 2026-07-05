@@ -335,6 +335,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: write
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -391,3 +392,16 @@ jobs:
             --notes-file /tmp/release-notes.md \
             "${ASSETS[@]}"
           echo "::notice::Published $TAG with ${#ASSETS[@]} asset(s)"
+
+      # Assets are already attached to the GitHub Release above — the Actions
+      # artifact copy is redundant CI byproduct. Delete it immediately instead
+      # of waiting out retention-days, so build artifacts never accumulate
+      # against the account-wide Actions storage quota.
+      - name: Delete build artifact (already published to release)
+        if: always()
+        run: |
+          gh api "repos/${{ github.repository }}/actions/artifacts?name=macos-build-${{ github.run_id }}" \
+            --jq '.artifacts[].id' | while read -r id; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" && \
+              echo "Deleted artifact $id" || echo "::warning::Failed to delete artifact $id"
+          done
