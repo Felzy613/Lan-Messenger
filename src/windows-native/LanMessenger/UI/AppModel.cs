@@ -71,6 +71,15 @@ public sealed partial class AppModel : ObservableObject
     // arriving after the user hides the window are not silently marked read.
     public bool IsWindowVisible { get; set; } = true;
 
+    // True while the main window is the focused foreground window. Combined with
+    // IsWindowVisible to decide whether to show a toast: a notification for an
+    // incoming message/file is only suppressed when the window is both open and
+    // focused, so it still shows while minimized, hidden to tray, or in the
+    // background behind another app.
+    public bool IsWindowFocused { get; set; } = true;
+
+    private bool ShouldShowNotification => !(IsWindowVisible && IsWindowFocused);
+
     // Fires when a single message's status changes (Sent / Delivered / Read).
     // ChatPage listens to update one row in place — far cheaper than firing
     // Messages PropertyChanged, which would re-evaluate every observer that
@@ -1017,7 +1026,7 @@ public sealed partial class AppModel : ObservableObject
                 ConfigStore.Shared.Save();
             }
             RefreshConversations();
-            if (entry.Incoming)
+            if (entry.Incoming && ShouldShowNotification)
                 NotificationService.Shared.ShowMessage(entry.Sender, entry.Text);
         };
 
@@ -1105,7 +1114,8 @@ public sealed partial class AppModel : ObservableObject
 
         FileTransferService.Shared.OnIncomingFile = (ip, sender, transferId, path) =>
         {
-            NotificationService.Shared.ShowFileReceived(sender, Path.GetFileName(path));
+            if (ShouldShowNotification)
+                NotificationService.Shared.ShowFileReceived(sender, Path.GetFileName(path));
             var entry = new MessageEntry
             {
                 Sender = sender, Text = $"__FILE__:{path}", Incoming = true,

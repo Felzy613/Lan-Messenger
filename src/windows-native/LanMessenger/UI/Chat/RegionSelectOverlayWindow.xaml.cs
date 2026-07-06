@@ -163,6 +163,11 @@ public sealed class RegionSelectOverlayWindow : Window
 
     private void RootGrid_PointerPressed(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
+        // Explicit capture — without it, PointerMoved/PointerReleased can be
+        // routed to whatever child (background image vs. selection rectangle)
+        // ends up under the cursor as the drag progresses, which was causing
+        // drags to be lost and every capture to fall back to FullDisplay.
+        _root.CapturePointer(e.Pointer);
         _dragStart = e.GetCurrentPoint(_root).Position;
         _dragging  = true;
         _selectionRect.Visibility = Visibility.Visible;
@@ -186,6 +191,7 @@ public sealed class RegionSelectOverlayWindow : Window
 
     private void RootGrid_PointerReleased(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
+        _root.ReleasePointerCapture(e.Pointer);
         if (!_dragging || _dragStart is not { } start) { Finish(RegionSelectResult.FullDisplay); return; }
         _dragging = false;
         var end = e.GetCurrentPoint(_root).Position;

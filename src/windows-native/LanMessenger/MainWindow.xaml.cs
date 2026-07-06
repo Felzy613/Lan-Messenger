@@ -83,7 +83,13 @@ public sealed partial class MainWindow : Window
         // too late to cancel.
         appWindow.Closing += OnAppWindowClosing;
         appWindow.Changed += OnAppWindowChanged;
+        Activated += OnWindowActivated;
     }
+
+    // Tracks focus so notifications only suppress while the window is both
+    // open and the active foreground window (see AppModel.IsWindowFocused).
+    private void OnWindowActivated(object sender, WindowActivatedEventArgs args) =>
+        Model.IsWindowFocused = args.WindowActivationState != WindowActivationState.Deactivated;
 
     // Reuse a single ChatPage instance — re-binding `Model` would also re-fire OnPropertyChanged,
     // so we only assign it once. ChatPage observes SelectedPeerIP itself.
