@@ -133,8 +133,11 @@ struct LanMessengerApp: App {
             }
         }
 
-        MenuBarExtra("LAN Messenger", systemImage: "message.fill") {
+        MenuBarExtra {
             TrayMenuView()
+                .environmentObject(appModel)
+        } label: {
+            MenuBarIcon()
                 .environmentObject(appModel)
         }
         .menuBarExtraStyle(.menu)
@@ -197,6 +200,30 @@ struct ContentView: View {
 }
 
 // MARK: - Menu bar extra
+
+// Custom label so we can overlay a small red dot on the glyph when there are
+// unread messages — MenuBarExtra's plain `systemImage:` initializer has no way
+// to composite a badge onto the status item icon.
+struct MenuBarIcon: View {
+    @EnvironmentObject var model: AppModel
+
+    private var hasUnread: Bool {
+        model.conversations.contains { $0.unreadCount > 0 }
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Image(systemName: "message.fill")
+            if hasUnread {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 7, height: 7)
+                    .offset(x: 3, y: -3)
+            }
+        }
+        .accessibilityLabel(Text("LAN Messenger"))
+    }
+}
 
 struct TrayMenuView: View {
     @EnvironmentObject var model: AppModel
