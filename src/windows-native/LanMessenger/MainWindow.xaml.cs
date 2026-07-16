@@ -7,6 +7,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Input;
 using WinRT.Interop;
@@ -439,7 +440,9 @@ public sealed partial class MainWindow : Window
     {
         var hasUnread = unreadCount > 0;
         if (hasUnread == _trayBadgeShown) return;
-        TrayIcon.IconSource = hasUnread ? "Assets/icon_unread.ico" : "Assets/icon.ico";
+        var iconFile = hasUnread ? "icon_unread.ico" : "icon.ico";
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", iconFile);
+        TrayIcon.IconSource = new BitmapImage(new Uri(path));
         _trayBadgeShown = hasUnread;
     }
 
