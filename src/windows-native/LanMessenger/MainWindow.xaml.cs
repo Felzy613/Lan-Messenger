@@ -74,7 +74,10 @@ public sealed partial class MainWindow : Window
                 ShowMigrationDialog();
 
             if (e.PropertyName == nameof(AppModel.TotalUnreadCount))
+            {
                 UpdateTaskbarOverlay(Model.TotalUnreadCount);
+                UpdateTrayIcon(Model.TotalUnreadCount);
+            }
         };
 
         // Intercept window close so we hide-to-tray instead of exiting (unless the
@@ -422,6 +425,22 @@ public sealed partial class MainWindow : Window
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "BadgeDot.ico");
         // LR_LOADFROMFILE | LR_DEFAULTSIZE — loads the icon at its natural small size.
         return LoadImage(IntPtr.Zero, path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+    }
+
+    // MARK: - System tray icon unread badge
+
+    private bool _trayBadgeShown;
+
+    // Swaps the notification-area icon to a red-dot-badged variant when there are
+    // unread messages. Unlike the taskbar overlay, TaskbarIcon has no separate
+    // overlay slot, so the badge is baked into a second .ico asset (icon_unread.ico)
+    // and IconSource is swapped between it and the plain icon.ico.
+    private void UpdateTrayIcon(int unreadCount)
+    {
+        var hasUnread = unreadCount > 0;
+        if (hasUnread == _trayBadgeShown) return;
+        TrayIcon.IconSource = hasUnread ? "Assets/icon_unread.ico" : "Assets/icon.ico";
+        _trayBadgeShown = hasUnread;
     }
 
     private static ITaskbarList3? CreateTaskbarList()

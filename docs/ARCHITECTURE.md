@@ -515,9 +515,13 @@ The tray icon is always present. Closing can hide to tray based on config.
 
 `AppModel.TotalUnreadCount` is recomputed every time conversations refresh (sum
 of unread counts across active, non-archived conversations). `MainWindow`
-observes this property and toggles a small red-dot overlay on the taskbar
-button via `ITaskbarList3.SetOverlayIcon` (`Assets/BadgeDot.ico`), clearing it
-(`SetOverlayIcon(hwnd, null, null)`) once the count returns to zero.
+observes this property and toggles two unread indicators in lockstep:
+a small red-dot overlay on the taskbar button via `ITaskbarList3.SetOverlayIcon`
+(`Assets/BadgeDot.ico`), cleared (`SetOverlayIcon(hwnd, null, null)`) once the
+count returns to zero; and the system tray icon itself, swapped between
+`Assets/icon.ico` and a pre-composited `Assets/icon_unread.ico` (the app icon
+with a baked-in red dot) via `TrayIcon.IconSource`, since `TaskbarIcon` has no
+separate overlay slot for the notification-area icon.
 
 The composer keeps an in-memory per-conversation draft (`AppModel.Drafts`,
 keyed by peer IP, not persisted) so switching conversations without sending

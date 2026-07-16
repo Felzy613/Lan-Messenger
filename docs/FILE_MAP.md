@@ -201,7 +201,7 @@ state for the app.
 | `src/windows-native/LanMessenger/App.xaml` | WinUI application resource root. |
 | `src/windows-native/LanMessenger/App.xaml.cs` | WinUI app startup, binding/resource diagnostics, unhandled exception capture, crash log and message box. |
 | `src/windows-native/LanMessenger/MainWindow.xaml` | Main shell layout, sidebar/content columns, toolbar buttons, and tray icon. |
-| `src/windows-native/LanMessenger/MainWindow.xaml.cs` | Window shell behavior, dialog orchestration, chat/archive page reuse, migration dialog, tray lifecycle, and the taskbar unread-count overlay icon (`ITaskbarList3.SetOverlayIcon`, driven by `AppModel.TotalUnreadCount`). |
+| `src/windows-native/LanMessenger/MainWindow.xaml.cs` | Window shell behavior, dialog orchestration, chat/archive page reuse, migration dialog, tray lifecycle, the taskbar unread-count overlay icon (`ITaskbarList3.SetOverlayIcon`), and the tray icon's red-dot badge swap (`TrayIcon.IconSource`) — both driven by `AppModel.TotalUnreadCount`. |
 
 ## Windows Assets
 
@@ -212,6 +212,7 @@ state for the app.
 | `src/windows-native/LanMessenger/Assets/icon_64.png` | 64px PNG icon asset. |
 | `src/windows-native/LanMessenger/Assets/icon_256.png` | 256px PNG icon asset. |
 | `src/windows-native/LanMessenger/Assets/BadgeDot.ico` | Small red-dot overlay icon shown on the taskbar button (via `ITaskbarList3.SetOverlayIcon`) when there are unread messages in any active conversation. |
+| `src/windows-native/LanMessenger/Assets/icon_unread.ico` | `icon.ico` with a red-dot badge pre-composited into the corner; swapped in for the system tray icon (`TrayIcon.IconSource`) when there are unread messages. |
 
 ## Windows Protocol Layer
 
