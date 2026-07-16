@@ -108,6 +108,13 @@ public sealed partial class AppModel : ObservableObject
     // Used to upload queued messages to the cloud relay mailbox of offline peers.
     private readonly Dictionary<string, string> _peerRelayIdHashes = [];   // keyed by peerPublicKeyB64
 
+    // Session cache of peerIP -> senderPublicKeyB64, populated from ANY inbound
+    // packet (not just discovery). Lets us reply to a peer whose beacon we never
+    // received — e.g. discovery is one-way/blocked on this machine's network
+    // profile but the peer's direct TCP connection still got through — and to
+    // unsaved contacts generally. Mirrors macOS's knownPeerKeys.
+    private readonly Dictionary<string, string> _knownPeerKeys = [];   // keyed by peerIP
+
     // Bursts of incoming packets (a chatty room, an active file transfer, a peer
     // typing fast) can produce many RefreshConversations calls per frame. Each
     // one rebuilds the entire Conversations list and re-binds every sidebar row.
@@ -601,10 +608,12 @@ public sealed partial class AppModel : ObservableObject
 
     public void SendMessage(string text, string peerIP, MessageEntry? replyTo = null)
     {
-        // Find the public key either from currently-online peers, or fall back to saved contacts
-        // (so we can still queue messages to offline contacts).
+        // Find the public key either from currently-online peers, or fall back to saved
+        // contacts, or to the session cache of any peer we've ever received a packet
+        // from (so we can still queue messages to offline / unsaved contacts).
         var publicKey = PeerByIP(peerIP)?.PublicKeyB64
-            ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64;
+            ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
+            ?? _knownPeerKeys.GetValueOrDefault(peerIP);
         if (publicKey is null) return;
         // Relay is ONLY used when the peer is confirmed offline. If the peer is
         // currently online and TCP fails, that is a transient error — queue locally
@@ -712,7 +721,8 @@ public sealed partial class AppModel : ObservableObject
 
         var peer = PeerByIP(peerIP);
         var publicKey = peer?.PublicKeyB64
-            ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64;
+            ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
+            ?? _knownPeerKeys.GetValueOrDefault(peerIP);
         if (publicKey is null)
         {
             LanLogger.Warn("Attachment", $"Cannot send file because no public key is available for {peerIP}.");
@@ -846,6 +856,7 @@ public sealed partial class AppModel : ObservableObject
                     var ip = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == msg.SenderPublicKeyB64)?.IP
                           ?? ConfigStore.Shared.Config.Contacts
                                  .FirstOrDefault(c => c.PublicKeyB64 == msg.SenderPublicKeyB64)?.LastIP
+                          ?? _knownPeerKeys.FirstOrDefault(kv => kv.Value == msg.SenderPublicKeyB64).Key
                           ?? $"relay-{msg.SenderPublicKeyB64[..Math.Min(8, msg.SenderPublicKeyB64.Length)]}";
                     MessagingService.Shared.HandleRelayMessage(msg, ip);
                 }
@@ -995,6 +1006,10 @@ public sealed partial class AppModel : ObservableObject
             // Refresh LastSeen for the sender so TCP activity (text, typing,
             // receipts, file chunks) keeps them marked online — mirrors macOS touchPeer.
             TouchPeer(pkt.SenderPublicKeyB64);
+            // Cache ip -> publicKeyB64 so replies work even for unsaved / offline
+            // contacts, or when this machine's own discovery reception is broken.
+            if (!string.IsNullOrEmpty(pkt.SenderPublicKeyB64))
+                _knownPeerKeys[pkt.SenderIP] = pkt.SenderPublicKeyB64;
             switch (pkt)
             {
                 case ValidatedText or ValidatedTyping or ValidatedReceipt or ValidatedDelete:
