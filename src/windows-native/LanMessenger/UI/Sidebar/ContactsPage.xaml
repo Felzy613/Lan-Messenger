@@ -9,6 +9,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -59,54 +60,43 @@
             </Grid>
         </Border>
 
-        <!-- Summary bar: "N contacts · M online" on the left, green "New contact" on the right -->
-        <Grid Grid.Row="1"
-              Padding="16,4,12,8">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-
-            <TextBlock x:Name="SummaryText"
-                       Grid.Column="0"
-                       Style="{ThemeResource CaptionTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       VerticalAlignment="Center" />
-
-            <Button Grid.Column="1"
-                    x:Name="NewContactBtn"
-                    Padding="10,5"
-                    CornerRadius="6"
-                    BorderThickness="0"
-                    Click="AddFromPeers_Click"
-                    ToolTipService.ToolTip="Find peers on your network and add them as contacts">
-                <Button.Resources>
-                    <SolidColorBrush x:Key="ButtonBackground"             Color="#25D366"/>
-                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#1EBE5D"/>
-                    <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#1AAD54"/>
-                    <SolidColorBrush x:Key="ButtonForeground"             Color="White"/>
-                    <SolidColorBrush x:Key="ButtonForegroundPointerOver"  Color="White"/>
-                    <SolidColorBrush x:Key="ButtonForegroundPressed"      Color="White"/>
-                    <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
-                    <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
-                    <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
-                </Button.Resources>
-                <StackPanel Orientation="Horizontal" Spacing="5">
+        <!-- New contact — full-width row, matching macOS's placement/style. -->
+        <Button Grid.Row="1"
+                x:Name="NewContactBtn"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Left"
+                Padding="16,8"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="AddFromPeers_Click"
+                ToolTipService.ToolTip="Find peers on your network and add them as contacts">
+            <StackPanel Orientation="Horizontal" Spacing="14">
+                <Grid Width="44" Height="44">
+                    <Ellipse Fill="#25D366" />
                     <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                               Glyph="&#xE8FA;"
-                              FontSize="11"
-                              Foreground="White" />
-                    <TextBlock Text="New contact"
-                               FontSize="12"
-                               Foreground="White" />
-                </StackPanel>
-            </Button>
-        </Grid>
+                              FontSize="18"
+                              Foreground="White"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center" />
+                </Grid>
+                <TextBlock Text="New contact"
+                           VerticalAlignment="Center"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            </StackPanel>
+        </Button>
 
-        <!-- Contact list — items are built programmatically so we can insert
-             section headers (Online / Offline) without a CollectionViewSource. -->
+        <Rectangle Grid.Row="2"
+                   Height="1"
+                   Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
+                   Margin="16,4,16,0" />
+
+        <!-- Contact list — one flat "Contacts" section, matching macOS (no
+             Online/Offline split). Items are built programmatically so a
+             single section-header item can be inserted without a
+             CollectionViewSource. -->
         <ListView x:Name="ContactsList"
-                  Grid.Row="2"
+                  Grid.Row="3"
                   SelectionMode="None">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
@@ -119,7 +109,7 @@
 
         <!-- Empty state: no contacts, or no search matches -->
         <StackPanel x:Name="EmptyState"
-                    Grid.Row="2"
+                    Grid.Row="3"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
                     Spacing="10"

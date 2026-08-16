@@ -86,9 +86,11 @@ public sealed partial class ContactsPage : Page
         }
     }
 
-    // Raised for actions that need their own ContentDialog. The Contacts page
-    // is hosted inside a ContentDialog and WinUI 3 forbids a second one on
-    // the same XamlRoot, so MainWindow closes Contacts before opening the next.
+    // Raised for actions that switch the hosting ContactsDialog to a different
+    // state (Find Contacts / Edit / Delete) — see ContactsDialog.cs. This page
+    // is one of several content states swapped inside a single persistent
+    // dialog, so these are just "please switch state" signals, not requests
+    // to open another dialog.
     public event Action? SearchLanRequested;
     public event Action<string>? EditContactRequested;
     public event Action<string>? DeleteContactRequested;
@@ -127,9 +129,8 @@ public sealed partial class ContactsPage : Page
         ApplyFilter();
     }
 
-    // Rebuilds the ListView contents, grouping into Online / Offline sections.
-    // Section headers are TextBlock items interleaved with contact-row Grids so
-    // that a single ListView can show both without a CollectionViewSource.
+    // Rebuilds the ListView contents — one flat "Contacts" section, matching
+    // macOS (no Online/Offline split; each row still shows its own status).
     private void ApplyFilter()
     {
         var query    = SearchBox?.Text.Trim() ?? "";
@@ -139,35 +140,20 @@ public sealed partial class ContactsPage : Page
                   r.Username.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                   r.LastIP.Contains(query,   StringComparison.OrdinalIgnoreCase)).ToList();
 
-        var online  = filtered.Where(r =>  r.IsOnline).OrderBy(r => r.Username).ToList();
-        var offline = filtered.Where(r => !r.IsOnline).OrderBy(r => r.Username).ToList();
+        var sorted = filtered.OrderBy(r => r.Username, StringComparer.OrdinalIgnoreCase).ToList();
 
         ContactsList.Items.Clear();
 
-        if (online.Count > 0)
+        if (sorted.Count > 0)
         {
-            ContactsList.Items.Add(MakeSectionHeader($"Online — {online.Count}"));
-            foreach (var vm in online) ContactsList.Items.Add(MakeContactRow(vm));
+            ContactsList.Items.Add(MakeSectionHeader("Contacts"));
+            foreach (var vm in sorted) ContactsList.Items.Add(MakeContactRow(vm));
         }
 
-        if (offline.Count > 0)
-        {
-            if (online.Count > 0) ContactsList.Items.Add(MakeDivider());
-            ContactsList.Items.Add(MakeSectionHeader($"Offline — {offline.Count}"));
-            foreach (var vm in offline) ContactsList.Items.Add(MakeContactRow(vm));
-        }
-
-        var hasResults = online.Count + offline.Count > 0;
+        var hasResults = sorted.Count > 0;
         EmptyState.Visibility    = hasResults ? Visibility.Collapsed : Visibility.Visible;
         EmptyTitle.Text          = string.IsNullOrEmpty(query) ? "No saved contacts" : "No matches";
         EmptySubtitle.Visibility = string.IsNullOrEmpty(query) ? Visibility.Visible : Visibility.Collapsed;
-
-        // Summary line above the list.
-        var total       = _allRows.Count;
-        var onlineCount = _allRows.Count(r => r.IsOnline);
-        SummaryText.Text = total == 0 ? ""
-            : $"{total} contact{(total == 1 ? "" : "s")}" +
-              (onlineCount > 0 ? $" · {onlineCount} online" : "");
     }
 
     // ── Row / section builders ───────────────────────────────────────────────
@@ -180,17 +166,6 @@ public sealed partial class ContactsPage : Page
             Style    = TryGetStyle("CaptionTextBlockStyle"),
             Foreground = TryGetBrush("TextFillColorSecondaryBrush"),
             Margin   = new Thickness(16, 8, 16, 4),
-        };
-    }
-
-    private static UIElement MakeDivider()
-    {
-        return new Rectangle
-        {
-            Height  = 1,
-            Fill    = TryGetBrush("DividerStrokeColorDefaultBrush")
-                      ?? new SolidColorBrush(Color.FromArgb(40, 0, 0, 0)),
-            Margin  = new Thickness(16, 4, 16, 0),
         };
     }
 
@@ -326,12 +301,5 @@ public sealed partial class ContactsPage : Page
         EditContactRequested?.Invoke(keyB64);
     }
 
-    private void AddFromPeers_Click(object sender, RoutedEventArgs e)
-    {
-        // The peer picker is a ContentDialog and this page is itself hosted in
-        // a ContentDialog — WinUI 3 throws 0x80000019 if we try to open one
-        // here. MainWindow listens for this event, hides the outer dialog,
-        // opens the picker, and runs the naming flow.
-        SearchLanRequested?.Invoke();
-    }
+    private void AddFromPeers_Click(object sender, RoutedEventArgs e) => SearchLanRequested?.Invoke();
 }

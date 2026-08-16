@@ -107,128 +107,18 @@ public sealed partial class MainWindow : Window
             ContentFrame.Content = _chatPage;
     }
 
+    // Contacts, Find Contacts, Name/Edit/Delete are all states of one
+    // persistent ContactsDialog instance — see ContactsDialog.cs for why
+    // (WinUI 3 only allows one ContentDialog open per XamlRoot at a time;
+    // this used to be four separate dialogs hidden/reopened around each
+    // other, which was a recurring source of crashes and refresh bugs).
     private async void ShowContactsPage()
     {
         if (_activeDialog is not null) return;
-        var page = new ContactsPage { Model = Model };
-        var dialog = new ContentDialog
-        {
-            Title             = "Contacts",
-            PrimaryButtonText = "Done",
-            DefaultButton     = ContentDialogButton.Primary,
-            Content           = page,
-            XamlRoot          = Content.XamlRoot,
-        };
-        // The "Search LAN" flow can't open its own ContentDialog while this
-        // one is up (WinUI 3 allows only one per XamlRoot). Hide ourselves,
-        // run the picker + naming dialogs in sequence, then reopen Contacts
-        // so the user lands back on the updated list.
-        page.SearchLanRequested += () => RunSearchLanFlowAsync(dialog);
-        page.EditContactRequested += key => RunEditContactFlowAsync(dialog, key);
-        page.DeleteContactRequested += key => RunDeleteContactFlowAsync(dialog, key);
+        var dialog = new ContactsDialog(Model) { XamlRoot = Content.XamlRoot };
         _activeDialog = dialog;
         try { await dialog.ShowAsync(); }
         finally { if (ReferenceEquals(_activeDialog, dialog)) _activeDialog = null; }
-    }
-
-    private async void RunEditContactFlowAsync(ContentDialog contactsDialog, string publicKeyB64)
-    {
-        contactsDialog.Hide();
-        _activeDialog = null;
-
-        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
-        if (contact is null)
-        {
-            ShowContactsPage();
-            return;
-        }
-
-        var editor = new ContactEditorDialog(contact) { XamlRoot = Content.XamlRoot };
-        _activeDialog = editor;
-        try
-        {
-            var result = await editor.ShowAsync();
-            if (result == ContentDialogResult.Primary)
-                Model.UpdateContact(publicKeyB64, editor.NameValue, editor.PhotoB64Value);
-        }
-        finally { if (ReferenceEquals(_activeDialog, editor)) _activeDialog = null; }
-
-        ShowContactsPage();
-    }
-
-    private async void RunDeleteContactFlowAsync(ContentDialog contactsDialog, string publicKeyB64)
-    {
-        contactsDialog.Hide();
-        _activeDialog = null;
-
-        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
-        var dialog = new ContentDialog
-        {
-            Title             = "Remove contact?",
-            Content           = $"Remove {contact?.Username ?? "contact"} and delete the conversation?",
-            PrimaryButtonText = "Remove",
-            CloseButtonText   = "Cancel",
-            DefaultButton     = ContentDialogButton.Close,
-            XamlRoot          = Content.XamlRoot,
-        };
-
-        _activeDialog = dialog;
-        try
-        {
-            var result = await dialog.ShowAsync();
-            if (result == ContentDialogResult.Primary)
-                Model.DeleteContact(publicKeyB64);
-        }
-        finally { if (ReferenceEquals(_activeDialog, dialog)) _activeDialog = null; }
-
-        ShowContactsPage();
-    }
-
-    private async void RunSearchLanFlowAsync(ContentDialog contactsDialog)
-    {
-        // Closing the outer dialog frees the XamlRoot for the picker. ShowAsync
-        // on contactsDialog will resume on the awaiter in ShowContactsPage —
-        // we deliberately don't reopen until the picker (and any subsequent
-        // naming dialogs) have fully closed.
-        contactsDialog.Hide();
-        _activeDialog = null;
-
-        var picker = new PeerPickerDialog(Model) { XamlRoot = Content.XamlRoot };
-        _activeDialog = picker;
-        IReadOnlyList<PeerInfo> selected;
-        try
-        {
-            var result = await picker.ShowAsync();
-            if (result != ContentDialogResult.Primary)
-            {
-                _activeDialog = null;
-                ShowContactsPage();
-                return;
-            }
-            selected = picker.SelectedPeers;
-        }
-        finally { if (ReferenceEquals(_activeDialog, picker)) _activeDialog = null; }
-
-        foreach (var peer in selected)
-        {
-            var nameDialog = new NameContactDialog(peer) { XamlRoot = Content.XamlRoot };
-            _activeDialog = nameDialog;
-            try
-            {
-                var nameResult = await nameDialog.ShowAsync();
-                var finalName = peer.Username;
-                if (nameResult == ContentDialogResult.Primary)
-                {
-                    var entered = nameDialog.NameValue;
-                    if (!string.IsNullOrWhiteSpace(entered)) finalName = entered.Trim();
-                }
-                Model.AddContact(peer.PublicKeyB64, finalName, peer.IP);
-            }
-            finally { if (ReferenceEquals(_activeDialog, nameDialog)) _activeDialog = null; }
-        }
-
-        // Reopen the Contacts dialog so the user sees the new contacts inline.
-        ShowContactsPage();
     }
 
     private async void ShowSettingsPage()
