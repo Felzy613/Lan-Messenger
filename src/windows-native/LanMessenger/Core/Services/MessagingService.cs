@@ -27,6 +27,12 @@ public sealed class MessagingService
     // recipient later retrieves the message (which is what a full history
     // reload previously depended on).
     public Action<string>?                    OnDeliveryPathUpdate { get; set; } // messageId
+    // Fired whenever a direct outbound TCP send actually lands — a completed
+    // handshake + write is at least as strong proof of reachability as an
+    // inbound discovery beacon. Lets AppModel mark the peer online even when
+    // this machine's discovery reception is broken/firewalled, instead of
+    // presence depending solely on inbound traffic.
+    public Action<string>?                    OnPeerReachable      { get; set; } // peerIP
 
     private const int TcpPort = 54232;
     private readonly Dictionary<string, DateTime> _typingSentAt    = [];
@@ -553,16 +559,25 @@ public sealed class MessagingService
         _ = RelayClient.Shared.DeleteAsync(msg.MessageId);
     }
 
-    private static async Task<bool> FireTcpAsync(byte[] frame, string ip, int port, string description)
+    private async Task<bool> FireTcpAsync(byte[] frame, string ip, int port, string description)
     {
         // Two attempts with a short pause. A single SYN lost to Wi-Fi power
         // save or a peer's listener mid-rebuild is common on real LANs; without
         // the retry, one lost packet turns into a "Queued" message even though
         // the peer is online. Retrying is safe: a failed attempt either never
         // connected or delivered a partial frame, which the receiver discards.
-        if (await FireTcpOnceAsync(frame, ip, port, description).ConfigureAwait(false)) return true;
+        if (await FireTcpOnceAsync(frame, ip, port, description).ConfigureAwait(false))
+        {
+            Dispatch(() => OnPeerReachable?.Invoke(ip));
+            return true;
+        }
         await Task.Delay(300).ConfigureAwait(false);
-        return await FireTcpOnceAsync(frame, ip, port, $"{description} (retry)").ConfigureAwait(false);
+        if (await FireTcpOnceAsync(frame, ip, port, $"{description} (retry)").ConfigureAwait(false))
+        {
+            Dispatch(() => OnPeerReachable?.Invoke(ip));
+            return true;
+        }
+        return false;
     }
 
     private static async Task<bool> FireTcpOnceAsync(byte[] frame, string ip, int port, string description)

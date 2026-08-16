@@ -200,6 +200,15 @@ needed to queue/relay), so callers that need reachability test `IsOnline`/
 `isOnline` rather than mere presence in the map. The cloud relay carries messages
 only and never participates in presence.
 
+Windows also treats a successful *outbound* TCP send (`OnPeerReachable` on
+`MessagingService`/`FileTransferService`) as a heartbeat, synthesizing a live
+peer entry from saved contact/session-cache data if one doesn't exist yet. This
+covers machines where discovery *reception* is broken (multicast/UDP blocked, a
+Hyper-V/WSL virtual adapter confusing the Windows Firewall network-profile
+classification) but direct TCP delivery still works — otherwise presence
+flickers offline during any lull between exchanges even though the peer is
+reachable the whole time. See [PROTOCOL.md](../PROTOCOL.md#presence).
+
 ### Network Coordinator
 
 `NetworkCoordinator` owns the high-level network lifecycle:

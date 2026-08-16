@@ -115,6 +115,14 @@ public sealed partial class AppModel : ObservableObject
     // unsaved contacts generally. Mirrors macOS's knownPeerKeys.
     private readonly Dictionary<string, string> _knownPeerKeys = [];   // keyed by peerIP
 
+    // File sends attempted before this machine had learned the peer's public
+    // key — most commonly the first few seconds after app startup, before any
+    // discovery beacon or inbound packet has arrived. Rather than silently
+    // dropping the send (the previous behavior — no bubble, no error, file
+    // never leaves the machine), stash it here and flush it the moment
+    // _knownPeerKeys resolves that IP.
+    private readonly Dictionary<string, List<string>> _pendingKeylessFiles = [];   // keyed by peerIP
+
     // Bursts of incoming packets (a chatty room, an active file transfer, a peer
     // typing fast) can produce many RefreshConversations calls per frame. Each
     // one rebuilds the entire Conversations list and re-binds every sidebar row.
@@ -387,6 +395,44 @@ public sealed partial class AppModel : ObservableObject
             Peers = new Dictionary<string, PeerInfo>(current);
             RefreshConversations();
         }
+    }
+
+    // A completed outbound TCP send (message or file) is unambiguous proof a
+    // peer is reachable right now — at least as strong as a discovery beacon.
+    // Without this, presence depended solely on inbound traffic, so a peer
+    // whose beacons this machine can't receive (broken multicast reception,
+    // firewalled UDP, a Hyper-V/WSL virtual adapter confusing the Windows
+    // Firewall network-profile — outbound TCP is unaffected by any of that)
+    // would flicker offline during any lull between exchanges even though
+    // direct delivery kept succeeding the whole time.
+    private void MarkPeerReachable(string peerIP)
+    {
+        var existing = PeerByIP(peerIP);
+        if (existing is not null)
+        {
+            TouchPeer(existing.PublicKeyB64);
+            return;
+        }
+        // Not in the live peer dict at all (never discovered this session via
+        // UDP) — synthesize a minimal online entry from what we already know,
+        // same shape UpsertPeer builds for a fresh discovery, so the sidebar
+        // dot reflects reality immediately instead of waiting for a beacon
+        // that may never arrive.
+        var publicKey = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
+            ?? _knownPeerKeys.GetValueOrDefault(peerIP);
+        if (publicKey is null) return;
+        var username = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKey)?.Username ?? "Unknown";
+        var updated = new Dictionary<string, PeerInfo>(Peers)
+        {
+            [publicKey] = new PeerInfo
+            {
+                IP = peerIP, Username = username, Port = 54232,
+                PublicKeyB64 = publicKey, LastSeen = DateTime.UtcNow,
+                Presence = PeerPresence.Online, KnownIPs = [peerIP],
+            }
+        };
+        Peers = updated;
+        RefreshConversations();
     }
 
     // How long a non-contact peer may sit offline before it is dropped from the
@@ -725,8 +771,15 @@ public sealed partial class AppModel : ObservableObject
             ?? _knownPeerKeys.GetValueOrDefault(peerIP);
         if (publicKey is null)
         {
-            LanLogger.Warn("Attachment", $"Cannot send file because no public key is available for {peerIP}.");
-            return false;
+            // This machine hasn't learned the peer's public key yet (e.g. sent
+            // right after app startup, before a discovery beacon or any inbound
+            // packet has arrived). Defer instead of dropping — WireDelegates
+            // flushes this the moment _knownPeerKeys resolves the IP.
+            LanLogger.Warn("Attachment", $"Peer public key not yet known for {peerIP} — deferring send of \"{Path.GetFileName(filePath)}\".");
+            if (!_pendingKeylessFiles.TryGetValue(peerIP, out var deferred))
+                deferred = _pendingKeylessFiles[peerIP] = [];
+            deferred.Add(filePath);
+            return true;
         }
 
         // Stream immediately only when the peer is actually online. Offline peers
@@ -1001,6 +1054,9 @@ public sealed partial class AppModel : ObservableObject
         MessagingService.Shared.SetDispatcherQueue(_dq);
         FileTransferService.Shared.SetDispatcherQueue(_dq);
 
+        MessagingService.Shared.OnPeerReachable    = MarkPeerReachable;
+        FileTransferService.Shared.OnPeerReachable = MarkPeerReachable;
+
         Coordinator.PacketReceived += pkt =>
         {
             // Refresh LastSeen for the sender so TCP activity (text, typing,
@@ -1009,7 +1065,12 @@ public sealed partial class AppModel : ObservableObject
             // Cache ip -> publicKeyB64 so replies work even for unsaved / offline
             // contacts, or when this machine's own discovery reception is broken.
             if (!string.IsNullOrEmpty(pkt.SenderPublicKeyB64))
+            {
                 _knownPeerKeys[pkt.SenderIP] = pkt.SenderPublicKeyB64;
+                // Flush any file sends that arrived before we knew this peer's key.
+                if (_pendingKeylessFiles.Remove(pkt.SenderIP, out var deferredFiles))
+                    foreach (var path in deferredFiles) SendFile(path, pkt.SenderIP);
+            }
             switch (pkt)
             {
                 case ValidatedText or ValidatedTyping or ValidatedReceipt or ValidatedDelete:
@@ -1098,6 +1159,15 @@ public sealed partial class AppModel : ObservableObject
             {
                 [ip] = (label, bytes, total)
             };
+            ActiveTransfers = updated;
+        };
+
+        FileTransferService.Shared.OnError = (ip, _) =>
+        {
+            // Clear the in-progress banner so the UI doesn't stay stuck mid-progress
+            // (was previously never wired up — mirrors macOS's onError handler).
+            var updated = new Dictionary<string, (string, long, long)>(ActiveTransfers);
+            updated.Remove(ip);
             ActiveTransfers = updated;
         };
 

@@ -31,6 +31,9 @@ public sealed class FileTransferService
     public Action<string, string, string, string?>?  OnComplete     { get; set; }  // peerIP, label, transferId, localPath (sender only)
     public Action<string, string>?                   OnError        { get; set; }  // peerIP, message
     public Action<string, string, string, string>?   OnIncomingFile { get; set; }  // peerIP, sender, transferId, finalPath
+    // Fired the moment an outgoing transfer's TCP connect succeeds — proof of
+    // reachability, same purpose as MessagingService.OnPeerReachable.
+    public Action<string>?                           OnPeerReachable { get; set; }  // peerIP
 
     private DispatcherQueue? _dq;
     private const int ChunkSize = 64 * 1024; // 64 KiB
@@ -357,6 +360,7 @@ public sealed class FileTransferService
             await tcp.ConnectAsync(peerIP, TcpPort)
                      .WaitAsync(TimeSpan.FromSeconds(10))
                      .ConfigureAwait(false);
+            Dispatch(() => OnPeerReachable?.Invoke(peerIP));
 
             // Disable Nagle's algorithm — reduces latency on the final small frame.
             tcp.NoDelay = true;

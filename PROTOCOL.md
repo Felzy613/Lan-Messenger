@@ -155,6 +155,14 @@ Inputs:
 - **Liveness probe** — when a peer goes quiet, the observer unicasts a
   `discovery` to each address the peer has advertised (its `ips`) to reconfirm it
   before declaring it offline.
+- **Outbound reachability** (Windows) — a successful outbound TCP send (message
+  or file) to a peer refreshes its `last_seen` and marks it online, same as an
+  inbound heartbeat. A completed connect + write is at least as strong evidence
+  of reachability as an inbound packet, and this catches the case where this
+  machine's own discovery *reception* is broken or firewalled (multicast/UDP
+  blocked, a virtual adapter confusing the network-profile classification) while
+  outbound TCP still works fine — without it, presence depended solely on
+  inbound traffic and would flicker offline during any lull between exchanges.
 
 State, evaluated about once per second against `now - last_seen`:
 
