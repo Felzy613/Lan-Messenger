@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ui="using:LanMessenger.UI">
 
-    <Grid Padding="4,6" ColumnSpacing="10">
+    <Grid Padding="4,6" ColumnSpacing="10" Height="72">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
@@ -30,6 +30,8 @@
             <TextBlock x:Name="PreviewText"
                        Style="{ThemeResource CaptionTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"
+                       MaxLines="2"
                        TextTrimming="CharacterEllipsis" />
         </StackPanel>
 

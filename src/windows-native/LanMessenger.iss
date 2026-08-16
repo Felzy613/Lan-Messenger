@@ -53,6 +53,14 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing Visual C++ runtime..."; Flags: waituntilterminated; Check: not IsVCRedistInstalled
 ; Firewall rules — allow inbound UDP 54231 (discovery) and TCP 54232 (messaging).
 ; The installer runs elevated, so netsh succeeds. Scoped to private/domain profiles only.
+; Auto-updates re-run this same installer silently (see UpdateService.cs), so these
+; rules get refreshed on every update too, not just a fresh install — but
+; "add rule" always creates a NEW rule even when one with that name already exists,
+; it never replaces. Without the delete first, every single update piled up another
+; duplicate pair of rules forever; delete-then-add keeps it at exactly one pair,
+; current for this install's {app} path, no matter how many updates have run.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LAN Messenger Discovery"""; Flags: runhidden; StatusMsg: "Configuring firewall...";
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LAN Messenger Messaging"""; Flags: runhidden; StatusMsg: "Configuring firewall...";
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LAN Messenger Discovery"" dir=in action=allow protocol=UDP localport=54231 profile=private,domain program=""{app}\{#MyAppExeName}"""; Flags: runhidden; StatusMsg: "Configuring firewall...";
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LAN Messenger Messaging"" dir=in action=allow protocol=TCP localport=54232 profile=private,domain program=""{app}\{#MyAppExeName}"""; Flags: runhidden; StatusMsg: "Configuring firewall...";
 ; Two launch entries:

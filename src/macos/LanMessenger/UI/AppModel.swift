@@ -428,7 +428,15 @@ final class AppModel: ObservableObject {
             let path = String(last.text.dropFirst("__FILE__:".count))
             return "📎 \(URL(fileURLWithPath: path).lastPathComponent)"
         }
-        return last.text
+        return Self.collapsedWhitespace(last.text)
+    }
+
+    // Collapses newlines and runs of whitespace so a multi-line message renders
+    // as a short single-paragraph preview in the sidebar instead of stretching
+    // the row to match the message's original line count.
+    private static func collapsedWhitespace(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isNewline || $0 == " " || $0 == "\t" })
+            .joined(separator: " ")
     }
 
     private func touchPeer(publicKeyB64: String) {

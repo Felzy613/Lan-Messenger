@@ -18,6 +18,7 @@ struct ConversationRowView: View {
                 HStack {
                     Text(conv.peerName)
                         .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1)
                     Spacer()
                     if let ts = conv.lastTimestamp {
                         Text(Theme.formatTimestamp(ts))
@@ -25,7 +26,7 @@ struct ConversationRowView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                HStack {
+                HStack(alignment: .top) {
                     if conv.isTyping {
                         Text("typing…")
                             .font(.system(size: 13))
@@ -35,7 +36,8 @@ struct ConversationRowView: View {
                         Text(conv.lastMessage.isEmpty ? " " : conv.lastMessage)
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
                     }
                     Spacer()
                     if conv.unreadCount > 0 {
@@ -79,6 +81,7 @@ struct ConversationRowView: View {
             }
         }
         .padding(.vertical, 4)
+        .frame(height: 72)
         .confirmationDialog(
             "Delete this conversation?",
             isPresented: $confirmDelete,

@@ -264,7 +264,9 @@ Installer behavior:
 - Offers startup entry.
 - Installs VC++ redistributable if needed.
 - Adds firewall allow rules for UDP 54231 and TCP 54232 on private/domain
-  profiles.
+  profiles, deleting any existing same-named rule first so the silent
+  updater's re-run of this installer refreshes the pair instead of piling up
+  a new duplicate on every update.
 - Starts the app after install and relaunches during silent updater installs.
 - Removes firewall rules on uninstall.
 

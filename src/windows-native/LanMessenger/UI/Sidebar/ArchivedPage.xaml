@@ -63,6 +63,8 @@
                             <TextBlock Text="{x:Bind LastMessage, Mode=OneWay}"
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       TextWrapping="Wrap"
+                                       MaxLines="2"
                                        TextTrimming="CharacterEllipsis" />
                         </StackPanel>
                         <Button Grid.Column="2" Content="Open"

@@ -647,8 +647,14 @@ public sealed partial class AppModel : ObservableObject
             var path = last.Text["__FILE__:".Length..];
             return "📎 " + Path.GetFileName(path);
         }
-        return last.Text;
+        return CollapseWhitespace(last.Text);
     }
+
+    // Collapses newlines and runs of whitespace so a multi-line message renders
+    // as a short single-paragraph preview in the sidebar instead of stretching
+    // the row to match the message's original line count.
+    private static string CollapseWhitespace(string text) =>
+        string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
     // MARK: - Messaging
 
