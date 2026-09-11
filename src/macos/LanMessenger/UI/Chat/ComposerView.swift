@@ -306,10 +306,14 @@ struct ComposerTextEditor: NSViewRepresentable {
         tv.autoresizingMask = [NSView.AutoresizingMask.width]
         tv.minSize = NSSize(width: 0, height: 0)
         tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        // NSTextView registers for file drags and inserts the dropped path as
-        // literal text. Unregister so a file dropped on the composer falls
-        // through to ChatView's drop target and is sent as an attachment.
-        tv.unregisterDraggedTypes()
+        // NSTextView registers for file drags itself and inserts the dropped
+        // path as literal text. unregisterDraggedTypes() does NOT hold: AppKit
+        // recomputes the text view's drag registration whenever it recomputes
+        // editability or moves between windows, silently putting file-URL back.
+        // So the text view owns the drop instead of trying to opt out of it —
+        // see PastingTextView's dragging overrides.
+        tv.registerForDraggedTypes([.fileURL])
+        tv.onDropAttachments = { paths in onPasteAttachments(paths) }
 
         scrollView.documentView = tv
         return scrollView
@@ -318,6 +322,7 @@ struct ComposerTextEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let tv = scrollView.documentView as? PastingTextView else { return }
         tv.onPasteAttachments = { paths in onPasteAttachments(paths) }
+        tv.onDropAttachments  = { paths in onPasteAttachments(paths) }
         if tv.string != text {
             tv.string = text
             context.coordinator.invalidateHeight(tv)
@@ -368,6 +373,36 @@ struct ComposerTextEditor: NSViewRepresentable {
 /// path (or nothing at all) into the draft.
 final class PastingTextView: NSTextView {
     var onPasteAttachments: ([String]) -> Void = { _ in }
+    /// Files dropped directly onto the text area. Handled here rather than
+    /// letting the drop fall through to ChatView: AppKit picks a single drag
+    /// destination by hit-testing, and a text view that declines does not
+    /// reliably hand the drop to an ancestor.
+    var onDropAttachments: ([String]) -> Void = { _ in }
+
+    // MARK: - File drops
+
+    private func droppedPaths(_ sender: NSDraggingInfo) -> [String] {
+        AttachmentPasteboard.fileURLs(on: sender.draggingPasteboard).map(\.path)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedPaths(sender).isEmpty ? super.draggingEntered(sender) : .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedPaths(sender).isEmpty ? super.draggingUpdated(sender) : .copy
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        droppedPaths(sender).isEmpty ? super.prepareForDragOperation(sender) : true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let paths = droppedPaths(sender)
+        guard !paths.isEmpty else { return super.performDragOperation(sender) }
+        onDropAttachments(paths)
+        return true
+    }
 
     override func paste(_ sender: Any?) {
         handlePaste { super.paste(sender) }

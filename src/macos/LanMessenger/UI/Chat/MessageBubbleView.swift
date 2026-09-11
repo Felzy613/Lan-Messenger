@@ -193,15 +193,6 @@ struct MessageBubbleView: View {
                         topTrailingRadius: 16
                     ))
         .frame(maxWidth: 320)
-        // Same drag-out affordance as the media bubbles. Gated on fileExists so
-        // a bubble whose file was moved or deleted doesn't start a drag that
-        // delivers nothing.
-        .onDrag {
-            guard fileExists, let provider = AttachmentPasteboard.outgoingProvider(forFileAt: path) else {
-                return NSItemProvider()
-            }
-            return provider
-        }
         .task(id: path) {
             // Check file existence off the main thread so the view body stays non-blocking.
             let result = await Task.detached(priority: .utility) {
@@ -229,6 +220,17 @@ struct MessageBubbleView: View {
                 } label: { Label("Open", systemImage: "square.and.arrow.up") }
             }
             deleteMenuItems(allowDeleteForEveryone: !entry.incoming)
+        }
+        // Same drag-out affordance as the media bubbles, and the same ordering
+        // requirement: .onDrag must wrap .contextMenu, not the reverse, or the
+        // context-menu wrapper owns the mouse-down and no drag ever starts.
+        // Gated on fileExists so a bubble whose file was moved or deleted
+        // doesn't start a drag that delivers nothing.
+        .onDrag {
+            guard fileExists, let provider = AttachmentPasteboard.outgoingProvider(forFileAt: path) else {
+                return NSItemProvider()
+            }
+            return provider
         }
         .alert("Cannot open file location",
                isPresented: Binding(get: { revealError != nil },

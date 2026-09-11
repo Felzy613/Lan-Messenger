@@ -112,12 +112,16 @@ struct MediaBubbleView: View {
                             topTrailingRadius: 16
                         ))
             .frame(maxWidth: maxBubbleWidth + 12)
-            // Drag the bubble straight out to Finder, Mail, or any app that
-            // takes a file. NSItemProvider(contentsOf:) hands over a real file
-            // promise, so the receiving app copies the attachment rather than
-            // getting a path string.
-            .onDrag { AttachmentPasteboard.outgoingProvider(forFileAt: path) ?? NSItemProvider() }
             .contextMenu { bubbleContextMenu }
+            // Drag the bubble straight out to Finder, Mail, or any app that
+            // takes a file. NSItemProvider(contentsOf:) hands over the real
+            // file, so the receiving app copies the attachment rather than
+            // getting a path string.
+            //
+            // Must sit OUTSIDE .contextMenu: applied the other way round the
+            // context-menu wrapper owns the mouse-down and the drag never
+            // starts.
+            .onDrag { AttachmentPasteboard.outgoingProvider(forFileAt: path) ?? NSItemProvider() }
         }
     }
 
@@ -138,9 +142,11 @@ struct MediaBubbleView: View {
 
     @ViewBuilder
     private var mediaTile: some View {
-        Button {
-            openPreviewPanel()
-        } label: {
+        // Deliberately a tap gesture rather than a Button: a Button's press
+        // gesture claims the mouse-down and the drag that follows never reaches
+        // the .onDrag below it, so the bubble could not be dragged out at all.
+        // onTapGesture composes with the drag — click opens, movement drags.
+        Group {
             ZStack(alignment: .bottomTrailing) {
                 // tileContent already carries an explicit fixed frame (either the
                 // pre-computed thumbnailDisplaySize for loaded images, or the
@@ -159,7 +165,8 @@ struct MediaBubbleView: View {
                 }
             }
         }
-        .buttonStyle(MediaTilePressStyle())
+        .contentShape(Rectangle())
+        .onTapGesture { openPreviewPanel() }
         .help(kind == .video ? "Play \(filename)" : "Open \(filename)")
     }
 
@@ -419,17 +426,6 @@ struct MediaBubbleView: View {
               let ph    = props[kCGImagePropertyPixelHeight] as? Int
         else { return .zero }
         return CGSize(width: CGFloat(pw), height: CGFloat(ph))
-    }
-}
-
-// MARK: - Press style
-
-private struct MediaTilePressStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.85 : 1.0)
-            .scaleEffect(configuration.isPressed ? 0.99 : 1.0)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
 
