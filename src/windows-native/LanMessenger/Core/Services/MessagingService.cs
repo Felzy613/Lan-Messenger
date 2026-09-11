@@ -215,8 +215,14 @@ public sealed class MessagingService
 
     // "Delete for everyone" — best-effort, unencrypted notice that the sender's
     // own outgoing message should be marked deleted on the receiver's side too.
-    public void SendDeleteMessage(string messageId, string peerIP)
+    public void SendDeleteMessage(string messageId, string peerIP,
+                                  string? peerPublicKeyB64 = null,
+                                  string? peerRelayIdHash = null)
     {
+        // Drop the queued copy too — delivering a message the sender has since
+        // deleted would be worse than not delivering it at all.
+        DropPendingMessage(messageId);
+
         var packet = new Dictionary<string, object?>
         {
             ["type"]                  = "delete_message",
@@ -228,8 +234,28 @@ public sealed class MessagingService
         Task.Run(async () =>
         {
             var ok = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"delete_message msgId={messageId}");
-            if (!ok) LanLogger.Warn("Delete", $"failed to send delete_message msgId={messageId} peer={peerIP}");
+            if (ok)
+            {
+                LanLogger.Info("Delete", $"delivered delete msgId={messageId} peer={peerIP}");
+                return;
+            }
+            LanLogger.Info("Delete", $"delete not delivered over LAN msgId={messageId} peer={peerIP} — trying relay");
+            if (string.IsNullOrEmpty(peerPublicKeyB64)) return;
+            await SendRelayControlAsync(
+                new RelayControlEnvelope(RelayControlOp.Delete, messageId, null,
+                                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0),
+                peerPublicKeyB64, peerRelayIdHash);
         });
+    }
+
+    /// Removes a still-undelivered message from the local pending queue.
+    private static void DropPendingMessage(string messageId)
+    {
+        var pending = ConfigStore.Shared.Config.PendingMessages;
+        var removed = pending.RemoveAll(m => m.MessageId == messageId);
+        if (removed == 0) return;
+        ConfigStore.Shared.Save();
+        LanLogger.Info("Delete", $"dropped queued msgId={messageId} before delivery");
     }
 
     // MARK: - Send edit_message
@@ -244,7 +270,8 @@ public sealed class MessagingService
     /// as the message's first and only version.
     /// </summary>
     public void SendEditMessage(string messageId, string newText, string peerIP,
-                                string peerPublicKeyB64, double editedAt)
+                                string peerPublicKeyB64, double editedAt,
+                                string? peerRelayIdHash = null)
     {
         RewritePendingMessage(messageId, newText);
 
@@ -278,10 +305,61 @@ public sealed class MessagingService
         Task.Run(async () =>
         {
             var ok = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"edit_message msgId={messageId}");
-            LanLogger.Info("Edit", ok
-                ? $"delivered edit msgId={messageId} peer={peerIP}"
-                : $"edit not delivered msgId={messageId} peer={peerIP} — peer keeps the previous text");
+            if (ok)
+            {
+                LanLogger.Info("Edit", $"delivered edit msgId={messageId} peer={peerIP}");
+                return;
+            }
+            LanLogger.Info("Edit", $"edit not delivered over LAN msgId={messageId} peer={peerIP} — trying relay");
+            await SendRelayControlAsync(
+                new RelayControlEnvelope(RelayControlOp.Edit, messageId, newText, editedAt),
+                peerPublicKeyB64, peerRelayIdHash);
         });
+    }
+
+    // MARK: - Relay control records (offline edit / delete)
+
+    /// <summary>
+    /// Carries an edit or delete to a peer who isn't reachable on the LAN, by
+    /// dropping an encrypted control record in their relay mailbox. They apply
+    /// it on their next poll. No-op when the relay isn't configured for this
+    /// peer — the change then stays local, as it did before.
+    ///
+    /// The record gets its own fresh id rather than the target's: the Worker
+    /// dedups /store by message_id and answers a repeat with
+    /// {ok:true,duplicate:true}, so re-posting under the original's id would be
+    /// dropped while reporting success.
+    /// </summary>
+    private static async Task SendRelayControlAsync(RelayControlEnvelope envelope,
+                                                    string peerPublicKeyB64,
+                                                    string? peerRelayIdHash)
+    {
+        if (string.IsNullOrEmpty(peerRelayIdHash))
+        {
+            LanLogger.Info("Relay", $"skip {envelope.Op} control for target={envelope.Target} — peer has no relay_id_hash");
+            return;
+        }
+
+        var recordId = RelayControlEnvelope.NewRecordId();
+        (string nonceB64, string ctB64) encrypted;
+        try
+        {
+            encrypted = SessionCrypto.EncryptForPeer(
+                KeyManager.Shared.PrivateKey, peerPublicKeyB64,
+                Encoding.UTF8.GetBytes(envelope.Encoded()),
+                Encoding.UTF8.GetBytes(recordId));
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Relay", $"encrypt failed for {envelope.Op} control target={envelope.Target}: {ex.Message}");
+            return;
+        }
+
+        var ok = await RelayClient.Shared.StoreAsync(
+            peerRelayIdHash, recordId, encrypted.ctB64, encrypted.nonceB64, envelope.At);
+        LanLogger.Info("Relay", ok
+            ? $"stored {envelope.Op} control record={recordId} target={envelope.Target}"
+            : $"failed to store {envelope.Op} control target={envelope.Target}");
     }
 
     /// <summary>
@@ -294,11 +372,12 @@ public sealed class MessagingService
         var target = pending.FirstOrDefault(m => m.MessageId == messageId);
         if (target is null) return;
         target.Text = newText;
-        // The relay copy holds the pre-edit ciphertext. Clearing the flag makes
-        // the outbox re-upload the edited text under the same message id; a
-        // stale relay copy would otherwise win the race and deliver the
-        // original.
-        target.RelayStored = false;
+        // Deliberately NOT clearing RelayStored to force a re-upload: the Worker
+        // dedups /store on message_id and answers a repeat with
+        // {ok:true,duplicate:true}, so the re-upload would be discarded while
+        // reporting success and the peer would still get the original text. A
+        // relay copy is superseded by an edit control record instead (see
+        // SendRelayControlAsync).
         ConfigStore.Shared.Save();
         LanLogger.Info("Edit", $"rewrote queued msgId={messageId} before delivery");
     }
@@ -441,7 +520,11 @@ public sealed class MessagingService
     private void HandleDeleteMessage(ReceiptPacket pkt, string ip)
     {
         LanLogger.Info("Recv", $"delete_message msgId={pkt.MessageId} peer={ip}");
-        HistoryStore.Shared.MarkDeleted(pkt.MessageId, ip);
+        if (!HistoryStore.Shared.MarkDeleted(pkt.MessageId, ip, requireIncoming: true))
+        {
+            LanLogger.Info("Delete", $"ignored inbound delete msgId={pkt.MessageId} peer={ip} — no deletable incoming message");
+            return;
+        }
         HistoryStore.Shared.Save();
         Dispatch(() => OnMessageDeleted?.Invoke(ip, pkt.MessageId));
     }
@@ -475,6 +558,39 @@ public sealed class MessagingService
         HistoryStore.Shared.Save();
         LanLogger.Info("Recv", $"edit_message applied msgId={pkt.MessageId} peer={ip}");
         Dispatch(() => OnMessageEdited?.Invoke(ip, pkt.MessageId, newText, pkt.Timestamp));
+    }
+
+    /// <summary>
+    /// Applies a relay control record. Routed through the same HistoryStore
+    /// entry points as the LAN edit_message / delete_message packets, so the
+    /// requireIncoming gate applies identically: a peer can only edit or delete
+    /// their own messages, never ours.
+    /// </summary>
+    private void ApplyRelayControl(RelayControlEnvelope envelope, string ip)
+    {
+        if (envelope.Op == RelayControlOp.Edit)
+        {
+            var newText = envelope.Text ?? "";
+            if (!HistoryStore.Shared.ApplyEdit(envelope.Target, ip, newText, envelope.At, requireIncoming: true))
+            {
+                LanLogger.Info("Relay", $"ignored relayed edit target={envelope.Target} peer={ip} — no editable incoming message");
+                return;
+            }
+            HistoryStore.Shared.Save();
+            LanLogger.Info("Relay", $"applied relayed edit target={envelope.Target} peer={ip}");
+            Dispatch(() => OnMessageEdited?.Invoke(ip, envelope.Target, newText, envelope.At));
+        }
+        else
+        {
+            if (!HistoryStore.Shared.MarkDeleted(envelope.Target, ip, requireIncoming: true))
+            {
+                LanLogger.Info("Relay", $"ignored relayed delete target={envelope.Target} peer={ip} — no deletable incoming message");
+                return;
+            }
+            HistoryStore.Shared.Save();
+            LanLogger.Info("Relay", $"applied relayed delete target={envelope.Target} peer={ip}");
+            Dispatch(() => OnMessageDeleted?.Invoke(ip, envelope.Target));
+        }
     }
 
     private void HandleReceipt(ReceiptPacket pkt, string ip)
@@ -638,6 +754,18 @@ public sealed class MessagingService
         }
 
         var text = Encoding.UTF8.GetString(plaintext);
+
+        // A control record carries an edit or delete the sender made while we
+        // were offline. It is never a chat message and must not become a bubble.
+        var control = RelayControlEnvelope.Decode(text);
+        if (control is not null)
+        {
+            ApplyRelayControl(control, fromStoredIP);
+            // Applied or refused, the record is spent: leaving it would replay
+            // on every poll until the Worker's 72-hour TTL expires it.
+            _ = RelayClient.Shared.DeleteAsync(msg.MessageId);
+            return;
+        }
 
         var entry = new MessageEntry
         {

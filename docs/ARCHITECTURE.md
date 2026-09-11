@@ -588,11 +588,22 @@ the original `text` (AAD = the original `message_id`).
   out; the in-progress draft that edit mode displaced is restored.
 - Edited bubbles render an "edited" marker next to the timestamp. `timestamp`
   keeps the original send time, so the message stays where it was in the thread.
-- Delivery is best-effort — one TCP write, no retry — with one exception: if the
-  original is still in the pending queue, the queued text is rewritten (and its
-  `relay_stored` flag cleared) so the peer receives the edited version as the
-  message's only version. An edit made while the peer is offline and the
-  original already delivered does not reach them.
+- The LAN write is best-effort — one TCP write, no retry. When it fails, the
+  edit (or delete) is carried through the cloud relay as a **control record**:
+  an ordinary relay record whose plaintext is a control envelope rather than a
+  chat body, stored under its own fresh `message_id`. The peer applies it on
+  their next poll. The Worker is unchanged and still sees only ciphertext — it
+  cannot tell a control record from a message, and never learns which message
+  was edited. See PROTOCOL.md → Relay Control Records.
+- The fresh id matters: the Worker dedups `/store` by `message_id` and answers a
+  repeat with `{ok:true,duplicate:true}`, so re-posting an edited body under the
+  original's id is silently discarded while reporting success. That is also why
+  an edit does *not* clear the queued message's `relay_stored` flag — doing so
+  looks like it re-uploads the new text and does not.
+- If the original is still in the sender's pending queue, its text is rewritten
+  in place as well, so a later direct delivery carries the edited version.
+- With no `relay_id_hash` for the peer and a failed TCP write, the change stays
+  local and the peer keeps the original text.
 
 ## Attachment Entry Points
 

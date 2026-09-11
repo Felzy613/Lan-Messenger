@@ -738,7 +738,7 @@ public sealed partial class AppModel : ObservableObject
         if (forEveryone)
         {
             if (entry.Incoming || string.IsNullOrEmpty(entry.MessageId)) return;
-            HistoryStore.Shared.MarkDeleted(entry.MessageId, peerIP);
+            HistoryStore.Shared.MarkDeleted(entry.MessageId, peerIP, requireIncoming: false);
             HistoryStore.Shared.Save();
             if (Messages.TryGetValue(peerIP, out var list))
             {
@@ -752,7 +752,12 @@ public sealed partial class AppModel : ObservableObject
                     e.ReplyToSender    = null;
                 }
             }
-            MessagingService.Shared.SendDeleteMessage(entry.MessageId, peerIP);
+            var deleteKey = PeerByIP(peerIP)?.PublicKeyB64
+                ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
+                ?? _knownPeerKeys.GetValueOrDefault(peerIP);
+            MessagingService.Shared.SendDeleteMessage(
+                entry.MessageId, peerIP, deleteKey,
+                deleteKey is null ? null : RelayIdHashForPeerKey(deleteKey));
             OnPropertyChanged(nameof(Messages));
             RefreshConversations();
         }
@@ -813,7 +818,8 @@ public sealed partial class AppModel : ObservableObject
                   ?? _knownPeerKeys.GetValueOrDefault(peerIP);
         if (!string.IsNullOrEmpty(key))
         {
-            MessagingService.Shared.SendEditMessage(entry.MessageId, trimmed, peerIP, key, editedAt);
+            MessagingService.Shared.SendEditMessage(entry.MessageId, trimmed, peerIP, key, editedAt,
+                                                    RelayIdHashForPeerKey(key));
         }
         else
         {
@@ -824,6 +830,20 @@ public sealed partial class AppModel : ObservableObject
         RefreshConversations();
         return true;
     }
+
+    /// <summary>
+    /// The peer's relay mailbox address, from the live session cache or the
+    /// saved contact.
+    ///
+    /// Unlike SendMessage, this is not gated on the peer being offline. A new
+    /// message that fails a TCP write stays in the pending queue and retries;
+    /// an edit or delete has no queue, so it is simply lost if the one write
+    /// fails. Both operations are idempotent, so a relay copy that turns out to
+    /// be redundant costs nothing.
+    /// </summary>
+    private string? RelayIdHashForPeerKey(string key) =>
+        _peerRelayIdHashes.GetValueOrDefault(key)
+        ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == key)?.RelayIdHash;
 
     // Queue or send a file. If the peer is offline, the path is persisted in
     // config and retried whenever the peer comes back online.

@@ -211,17 +211,27 @@ public sealed class HistoryStore
     // Marks a message as deleted: clears its text and reply preview fields and
     // sets Deleted = true, leaving a "this message was deleted" placeholder.
     // Caller is responsible for persisting via Save().
-    public void MarkDeleted(string messageId, string peerIP)
+    /// <summary>
+    /// <paramref name="requireIncoming"/> is the same security gate ApplyEdit
+    /// uses, and for the same reason: a peer knows the message_id of everything
+    /// we sent them, so an inbound delete naming one of OUR outgoing messages
+    /// must be refused rather than allowed to blank what we said. Inbound
+    /// notices pass true; our own "delete for everyone" passes false.
+    /// </summary>
+    public bool MarkDeleted(string messageId, string peerIP, bool requireIncoming)
     {
-        if (!_history.TryGetValue(peerIP, out var list)) return;
-        foreach (var e in list.Where(e => e.MessageId == messageId))
+        if (!_history.TryGetValue(peerIP, out var list)) return false;
+        var changed = false;
+        foreach (var e in list.Where(e => e.MessageId == messageId && e.Incoming == requireIncoming))
         {
+            changed            = true;
             e.Deleted          = true;
             e.Text             = "";
             e.ReplyToMessageId = null;
             e.ReplyToPreview   = null;
             e.ReplyToSender    = null;
         }
+        return changed;
     }
 
     /// <summary>

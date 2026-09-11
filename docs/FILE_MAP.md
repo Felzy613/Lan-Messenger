@@ -156,6 +156,7 @@ state for the app.
 | `src/macos/LanMessenger/Core/Services/LoginItemService.swift` | macOS 13+ launch-at-login management through `SMAppService.mainApp`. |
 | `src/macos/LanMessenger/Core/Services/NetLogger.swift` | Structured network logger to app-data log file and `os_log`. |
 | `src/macos/LanMessenger/Core/Services/DockPolicyGuard.swift` | Keeps Dock presence in sync with `hide_from_dock`. AppKit promotes an `.accessory` process back to `.regular` on its own and emits no notification for it, so the guard re-asserts the preference on activation/window-key notifications plus a 3 s tick. Single owner of the activation policy; reads/writes `NSApp` through injected closures so the correction logic is testable. |
+| `src/macos/LanMessenger/Core/Services/RelayControl.swift` | Control envelope that carries an edit or delete through the relay mailbox when the peer is off-LAN: `__CTRL__:` marker, encode/decode, target validation, and fresh-record-id generation. |
 | `src/macos/LanMessenger/Core/Services/AttachmentStore.swift` | Durable on-disk home for attachments the app generates itself (screen captures, pasted bitmaps): directory resolution honouring `screenshot_dir`, filename timestamps, and collision-free naming. Not the system temp directory — history stores absolute paths. |
 | `src/macos/LanMessenger/Core/Services/AttachmentPasteboard.swift` | Reads attachments off `NSPasteboard` (⌘V) and off drag-and-drop item providers; writes pasted bitmaps to disk; builds the `NSItemProvider` used when dragging an attachment out of a bubble. `decide` holds the files-beat-bitmap, bitmap-only-without-text paste precedence. |
 | `src/macos/LanMessenger/Core/Services/ScreenshotService.swift` | Screenshot capture: `captureInteractive()` launches `/usr/sbin/screencapture -i` for a native drag-to-select-region/click-a-window overlay (primary flow); `capturePrimaryDisplay`/`getShareableWindows`/`captureWindow` are ScreenCaptureKit-based alternatives retained but no longer wired into the composer. All paths write a PNG to a temp dir and return the path for the existing file-transfer pipeline. |
@@ -189,6 +190,7 @@ state for the app.
 | `src/macos/LanMessengerTests/DiscoveryServiceQueueTests.swift` | Guards the discovery threading invariant: the blocking receive loop must not starve the beacon timer or socket rebuild. |
 | `src/macos/LanMessenger/Core/Services/CrashReporter.swift` | Uncaught-exception and fatal-signal handlers; abnormal-termination marker. |
 | `src/macos/LanMessengerTests/FrameCodecTests.swift` | Frame codec and known frame tests. |
+| `src/macos/LanMessengerTests/RelayControlTests.swift` | Relay control envelope round-trip and rejection rules, plus the inbound-delete security gate. |
 | `src/macos/LanMessengerTests/MessageEditTests.swift` | Message-edit rules: the requireIncoming security gate, attachments/deleted messages being uneditable, history back-compat, and `edit_message` packet validation. |
 | `src/macos/LanMessengerTests/HistoryStoreTests.swift` | History encryption, cap, wrong-key, and known history vector tests. |
 | `src/macos/LanMessengerTests/MessageStatusTests.swift` | Monotonic status behavior tests. |
@@ -267,6 +269,7 @@ state for the app.
 | `src/windows-native/LanMessenger/Core/Services/UpdateService.cs` | GitHub release checks, EXE download, SHA256 verification, elevated silent installer handoff, and exit. |
 | `src/windows-native/LanMessenger/Core/Services/LanLogger.cs` | Structured log writer under `%APPDATA%\LanMessenger\Logs`. |
 | `src/windows-native/LanMessenger/Core/Services/CryptoRuntimeDiagnostics.cs` | One-time diagnostics for libsodium and VC++ runtime DLL availability. |
+| `src/windows-native/LanMessenger/Core/Services/RelayControl.cs` | Control envelope that carries an edit or delete through the relay mailbox when the peer is off-LAN: `__CTRL__:` marker, encode/decode, target validation, and fresh-record-id generation. |
 | `src/windows-native/LanMessenger/Core/Services/ClipboardAttachments.cs` | Decides what Ctrl+V in the composer means (files beat a bitmap; a bitmap only wins with no text alongside) and names pasted-image files. WinRT-free so the precedence rules compile and test off Windows. |
 | `src/windows-native/LanMessenger/Core/Services/PastedImageWriter.cs` | Decodes a clipboard bitmap and re-encodes it as PNG into the configured screenshot folder, returning the path for the existing file-transfer pipeline. |
 | `src/windows-native/LanMessenger/Core/Services/ScreenshotService.cs` | Primary-display and per-window capture via GDI `CopyFromScreen`/`PrintWindow`; `CropToRegionAsync` crops a captured PNG to a pixel rectangle for the drag-to-select-region flow. Writes PNG to `%TEMP%\LanMessenger-Screenshots` and returns the path for the existing file-transfer pipeline. |
@@ -312,6 +315,7 @@ state for the app.
 | `src/windows-native/LanMessenger.Tests/ConfigStoreTests.cs` | Config and filename sanitization tests. |
 | `src/windows-native/LanMessenger.Tests/CryptoTests.cs` | Session/history crypto round trips and known vector tests. |
 | `src/windows-native/LanMessenger.Tests/FrameCodecTests.cs` | Frame codec and known frame tests. |
+| `src/windows-native/LanMessenger.Tests/RelayControlTests.cs` | Relay control envelope round-trip, cross-platform decode, and rejection rules. |
 | `src/windows-native/LanMessenger.Tests/MessageEditTests.cs` | Message-edit rules: the requireIncoming security gate, attachments/deleted messages being uneditable, history back-compat, and `edit_message` packet validation. |
 | `src/windows-native/LanMessenger.Tests/HistoryStoreTests.cs` | History encryption, cap, wrong-key, and known history vector tests. |
 | `src/windows-native/LanMessenger.Tests/MessageStatusTests.cs` | Monotonic status behavior tests. |

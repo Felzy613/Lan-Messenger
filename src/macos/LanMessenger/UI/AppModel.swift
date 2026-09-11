@@ -536,7 +536,7 @@ final class AppModel: ObservableObject {
     func deleteMessage(_ entry: MessageEntry, peerIP: String, forEveryone: Bool) {
         if forEveryone {
             guard !entry.incoming, let messageId = entry.messageId else { return }
-            HistoryStore.shared.markDeleted(messageId: messageId, peerIP: peerIP)
+            HistoryStore.shared.markDeleted(messageId: messageId, peerIP: peerIP, requireIncoming: false)
             if var entries = messages[peerIP] {
                 for i in entries.indices where entries[i].messageId == messageId {
                     entries[i].deleted = true
@@ -547,7 +547,15 @@ final class AppModel: ObservableObject {
                 }
                 messages[peerIP] = entries
             }
-            MessagingService.shared.sendDeleteMessage(messageId: messageId, toPeerIP: peerIP)
+            let key = peerByIP(peerIP)?.publicKeyB64
+                ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == peerIP })?.publicKeyB64
+                ?? knownPeerKeys[peerIP]
+            MessagingService.shared.sendDeleteMessage(
+                messageId: messageId,
+                toPeerIP: peerIP,
+                peerPublicKeyB64: key,
+                peerRelayIdHash: key.map { relayIdHash(forPeerKey: $0) } ?? nil
+            )
             refreshConversations()
         } else {
             HistoryStore.shared.removeEntry(matching: entry, peerIP: peerIP)
@@ -610,6 +618,7 @@ final class AppModel: ObservableObject {
                 newText: trimmed,
                 toPeerIP: peerIP,
                 peerPublicKeyB64: key,
+                peerRelayIdHash: relayIdHash(forPeerKey: key),
                 editedAt: editedAt
             )
         } else {
@@ -617,6 +626,19 @@ final class AppModel: ObservableObject {
         }
         refreshConversations()
         return true
+    }
+
+    /// The peer's relay mailbox address, from the live session cache or the
+    /// saved contact.
+    ///
+    /// Unlike `sendMessage`, this is not gated on the peer being offline. A new
+    /// message that fails a TCP write stays in the pending queue and retries;
+    /// an edit or delete has no queue, so it is simply lost if the one write
+    /// fails. Both operations are idempotent, so a relay copy that turns out to
+    /// be redundant costs nothing.
+    private func relayIdHash(forPeerKey key: String) -> String? {
+        peerRelayIdHashes[key]
+            ?? ConfigStore.shared.config.contacts.first(where: { $0.publicKeyB64 == key })?.relayIdHash
     }
 
     // MARK: - Cloud relay

@@ -231,6 +231,13 @@ Edit extension:
 - Attachments (`__FILE__:` text) and deleted messages are never editable.
 - Older clients reject `edit_message` as an unknown type and keep showing the
   original text.
+- When the LAN write fails, edits and deletes fall back to a relay **control
+  record** — an ordinary relay record whose plaintext is `__CTRL__:{json}`.
+  It MUST use a fresh `message_id`, never the target's: the Worker dedups
+  `/store` by `message_id` and answers a repeat with
+  `{"ok":true,"duplicate":true}`, so a re-post under the original's id is
+  discarded while reporting success. The Worker itself needs no changes and
+  learns nothing.
 
 ## Platform-Specific Gotchas
 
@@ -372,8 +379,13 @@ Use the smallest sufficient set for the change:
 - Do not write generated attachments (screenshots, pasted images) to the system
   temp directory. History stores absolute paths, and temp is swept between
   reboots, so the bubble becomes "File no longer available" the next day.
-- Do not let an inbound `edit_message` rewrite one of our own outgoing
-  messages. The peer knows every `message_id` we ever sent them, so without the
+- Do not assume re-posting to the relay under an existing `message_id` replaces
+  anything. The Worker dedups and returns `{"ok":true,"duplicate":true}`, which
+  every client treats as a successful store — so the stale copy stays and the
+  peer receives the superseded text. Supersede a relay copy with a *new* record
+  (a control record), never by re-uploading the old id.
+- Do not let an inbound `edit_message` or `delete_message` rewrite or blank one
+  of our own outgoing messages. The peer knows every `message_id` we ever sent them, so without the
   `requireIncoming` gate in `HistoryStore.applyEdit`/`ApplyEdit` a peer can
   silently rewrite what we said in our own transcript. Covered by
   `MessageEditTests`.

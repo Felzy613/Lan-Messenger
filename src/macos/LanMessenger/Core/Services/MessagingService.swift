@@ -184,7 +184,10 @@ final class MessagingService {
 
     // Unencrypted "delete for everyone" notice — same shape as a receipt.
     // Best-effort: sent over a one-shot TCP connection just like sent_receipt/read_receipt.
-    func sendDeleteMessage(messageId: String, toPeerIP ip: String) {
+    func sendDeleteMessage(messageId: String,
+                           toPeerIP ip: String,
+                           peerPublicKeyB64: String? = nil,
+                           peerRelayIdHash: String? = nil) {
         let packet: [String: Any] = [
             "type": "delete_message",
             "message_id": messageId,
@@ -192,7 +195,32 @@ final class MessagingService {
             "sender_public_key_b64": KeyManager.shared.publicKeyB64,
             "port": tcpPort,
         ]
-        sendJSON(packet, toIP: ip, port: tcpPort, completion: nil)
+        // Drop the queued copy too — delivering a message the sender has since
+        // deleted would be worse than not delivering it at all.
+        dropPendingMessage(messageId: messageId)
+        sendJSON(packet, toIP: ip, port: tcpPort) { [weak self] success in
+            if success {
+                NetLogger.info("Delete", "delivered delete msgId=\(messageId) peer=\(ip)")
+                return
+            }
+            NetLogger.info("Delete", "delete not delivered over LAN msgId=\(messageId) peer=\(ip) — trying relay")
+            guard let key = peerPublicKeyB64 else { return }
+            self?.sendRelayControl(
+                RelayControlEnvelope(op: .delete, target: messageId, text: nil,
+                                     at: Date().timeIntervalSince1970),
+                peerPublicKeyB64: key,
+                peerRelayIdHash: peerRelayIdHash
+            )
+        }
+    }
+
+    /// Removes a still-undelivered message from the local pending queue.
+    private func dropPendingMessage(messageId: String) {
+        let before = ConfigStore.shared.config.pendingMessages.count
+        ConfigStore.shared.config.pendingMessages.removeAll { $0.messageId == messageId }
+        guard ConfigStore.shared.config.pendingMessages.count != before else { return }
+        ConfigStore.shared.save()
+        NetLogger.info("Delete", "dropped queued msgId=\(messageId) before delivery")
     }
 
     // MARK: - Send edit_message
@@ -210,6 +238,7 @@ final class MessagingService {
                          newText: String,
                          toPeerIP ip: String,
                          peerPublicKeyB64: String,
+                         peerRelayIdHash: String? = nil,
                          editedAt: Double) {
         rewritePendingMessage(messageId: messageId, newText: newText)
 
@@ -236,12 +265,61 @@ final class MessagingService {
             "nonce": nonceB64,
             "ciphertext": ctB64,
         ]
-        sendJSON(packet, toIP: ip, port: tcpPort) { success in
+        sendJSON(packet, toIP: ip, port: tcpPort) { [weak self] success in
             if success {
                 NetLogger.info("Edit", "delivered edit msgId=\(messageId) peer=\(ip)")
-            } else {
-                NetLogger.info("Edit", "edit not delivered msgId=\(messageId) peer=\(ip) — peer keeps the previous text")
+                return
             }
+            NetLogger.info("Edit", "edit not delivered over LAN msgId=\(messageId) peer=\(ip) — trying relay")
+            self?.sendRelayControl(
+                RelayControlEnvelope(op: .edit, target: messageId, text: newText, at: editedAt),
+                peerPublicKeyB64: peerPublicKeyB64,
+                peerRelayIdHash: peerRelayIdHash
+            )
+        }
+    }
+
+    // MARK: - Relay control records (offline edit / delete)
+
+    /// Carries an edit or delete to a peer who isn't reachable on the LAN, by
+    /// dropping an encrypted control record in their relay mailbox. They apply
+    /// it on their next poll. No-op when the relay isn't configured for this
+    /// peer — the change then stays local, as it did before.
+    ///
+    /// The record gets its own fresh id rather than the target's: the Worker
+    /// dedups `/store` by `message_id` and answers a repeat with
+    /// `{ok:true,duplicate:true}`, so re-posting under the original's id would
+    /// be dropped while reporting success.
+    private func sendRelayControl(_ envelope: RelayControlEnvelope,
+                                  peerPublicKeyB64: String,
+                                  peerRelayIdHash: String?) {
+        guard let hash = peerRelayIdHash, !hash.isEmpty else {
+            NetLogger.info("Relay", "skip \(envelope.op.rawValue) control for target=\(envelope.target) — peer has no relay_id_hash")
+            return
+        }
+        let recordId = RelayControlEnvelope.newRecordId()
+        let plaintext = envelope.encoded()
+        guard let (nonceB64, ctB64) = try? SessionCrypto.encryptForPeer(
+            myPrivate: KeyManager.shared.privateKey,
+            peerPublicKeyB64: peerPublicKeyB64,
+            plaintext: Data(plaintext.utf8),
+            aad: Data(recordId.utf8)
+        ) else {
+            NetLogger.warn("Relay", "encrypt failed for \(envelope.op.rawValue) control target=\(envelope.target)")
+            return
+        }
+
+        Task {
+            let ok = await RelayClient.shared.store(
+                peerRelayIdHash: hash,
+                messageId: recordId,
+                ciphertextB64: ctB64,
+                nonceB64: nonceB64,
+                timestamp: envelope.at
+            )
+            NetLogger.info("Relay", ok
+                ? "stored \(envelope.op.rawValue) control record=\(recordId) target=\(envelope.target)"
+                : "failed to store \(envelope.op.rawValue) control target=\(envelope.target)")
         }
     }
 
@@ -251,11 +329,12 @@ final class MessagingService {
         var pending = ConfigStore.shared.config.pendingMessages
         guard let idx = pending.firstIndex(where: { $0.messageId == messageId }) else { return }
         pending[idx].text = newText
-        // The relay copy holds the pre-edit ciphertext. Clearing the flag makes
-        // the outbox re-upload the edited text under the same message id; a
-        // stale relay copy would otherwise win the race and deliver the
-        // original after the peer had already been shown nothing.
-        pending[idx].relayStored = false
+        // Deliberately NOT clearing relayStored to force a re-upload: the Worker
+        // dedups /store on message_id and answers a repeat with
+        // {ok:true,duplicate:true}, so the re-upload would be discarded while
+        // reporting success and the peer would still get the original text. A
+        // relay copy is superseded by an edit control record instead (see
+        // sendRelayControl).
         ConfigStore.shared.config.pendingMessages = pending
         ConfigStore.shared.save()
         NetLogger.info("Edit", "rewrote queued msgId=\(messageId) before delivery")
@@ -388,7 +467,10 @@ final class MessagingService {
     // history entry as deleted (clearing text and reply preview fields) and
     // notifies the UI so the in-memory copy is updated to match.
     private func handleDeleteMessage(_ pkt: ReceiptPacket, fromIP ip: String) {
-        HistoryStore.shared.markDeleted(messageId: pkt.messageId, peerIP: ip)
+        guard HistoryStore.shared.markDeleted(messageId: pkt.messageId, peerIP: ip, requireIncoming: true) else {
+            NetLogger.info("Delete", "ignored inbound delete msgId=\(pkt.messageId) peer=\(ip) — no deletable incoming message")
+            return
+        }
         onMessageDeleted?(ip, pkt.messageId)
     }
 
@@ -422,6 +504,34 @@ final class MessagingService {
         }
         NetLogger.info("Recv", "edit_message applied msgId=\(pkt.messageId) peer=\(ip)")
         onMessageEdited?(ip, pkt.messageId, newText, pkt.timestamp)
+    }
+
+    /// Applies a relay control record. Routed through the same HistoryStore
+    /// entry points as the LAN `edit_message` / `delete_message` packets, so the
+    /// `requireIncoming` gate applies identically: a peer can only edit or
+    /// delete their own messages, never ours.
+    private func applyRelayControl(_ envelope: RelayControlEnvelope, fromIP ip: String) {
+        switch envelope.op {
+        case .edit:
+            guard let newText = envelope.text,
+                  HistoryStore.shared.applyEdit(
+                    messageId: envelope.target, peerIP: ip, newText: newText,
+                    editedAt: envelope.at, requireIncoming: true) else {
+                NetLogger.info("Relay", "ignored relayed edit target=\(envelope.target) peer=\(ip) — no editable incoming message")
+                return
+            }
+            NetLogger.info("Relay", "applied relayed edit target=\(envelope.target) peer=\(ip)")
+            onMessageEdited?(ip, envelope.target, newText, envelope.at)
+
+        case .delete:
+            guard HistoryStore.shared.markDeleted(
+                    messageId: envelope.target, peerIP: ip, requireIncoming: true) else {
+                NetLogger.info("Relay", "ignored relayed delete target=\(envelope.target) peer=\(ip) — no deletable incoming message")
+                return
+            }
+            NetLogger.info("Relay", "applied relayed delete target=\(envelope.target) peer=\(ip)")
+            onMessageDeleted?(ip, envelope.target)
+        }
     }
 
     private func handleReceipt(_ pkt: ReceiptPacket, fromIP ip: String) {
@@ -567,6 +677,16 @@ final class MessagingService {
             return
         }
         let text = String(data: plaintext, encoding: .utf8) ?? ""
+
+        // A control record carries an edit or delete the sender made while we
+        // were offline. It is never a chat message and must not become a bubble.
+        if let envelope = RelayControlEnvelope.decode(text) {
+            applyRelayControl(envelope, fromIP: ip)
+            // Applied or refused, the record is spent: leaving it would replay
+            // on every poll until the Worker's 72-hour TTL expires it.
+            Task { await RelayClient.shared.delete(messageId: msg.messageId) }
+            return
+        }
 
         let entry = MessageEntry(
             sender: msg.senderUsername,

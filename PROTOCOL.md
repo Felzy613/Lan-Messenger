@@ -323,8 +323,17 @@ Unencrypted "delete for everyone" notice. Same shape as `sent_receipt`.
 A sender may only request deletion of their own outgoing messages. On
 receipt, the recipient marks the matching history entry as deleted: it clears
 `text` and any reply preview fields and sets `deleted` to `true`, leaving a
-"this message was deleted" placeholder in the UI. `delete_message` is
-best-effort and unencrypted metadata only — it carries no message content.
+"this message was deleted" placeholder in the UI. `delete_message` carries no
+message content, so it is sent unencrypted.
+
+A receiver applies it only to an entry that is **incoming from that peer** —
+the same gate `edit_message` uses, and for the same reason: the peer knows the
+`message_id` of every message we sent them, so a `delete_message` naming one of
+our own outgoing messages must be refused rather than allowed to blank what we
+said.
+
+Like `edit_message`, the LAN write is best-effort and falls back to a relay
+control record when it fails.
 "Delete for me" (removing a message only from the local copy of a
 conversation) is a local-only operation and never sends a packet.
 
@@ -364,12 +373,15 @@ On success the entry's `text` is replaced and `edited` / `edited_at` are set.
 Reply metadata on the original is left as-is — an edit changes the body, not
 what the message was replying to.
 
-Like `delete_message`, `edit_message` is best-effort: it is written over a
-one-shot TCP connection with no queue or retry, so an edit made while the peer
-is offline does not reach them. The one exception is an original that is still
-sitting in the sender's pending-message queue: that queued copy is rewritten in
-place, so when it finally delivers, the peer receives the edited text as the
-message's first and only version.
+`edit_message` itself is best-effort: one TCP write, no queue or retry. When
+that write fails the edit is carried through the cloud relay instead, as a
+control record (see Relay Control Records), so a peer who was offline applies it
+on their next poll. An original still sitting in the sender's pending-message
+queue is additionally rewritten in place, so when it finally delivers, the peer
+receives the edited text as the message's first and only version.
+
+If the peer has no `relay_id_hash` and the TCP write fails, the edit stays
+local — the peer keeps the original text.
 
 Clients that do not implement `edit_message` reject it as an unknown type and
 keep showing the original text, which stays consistent with what was sent.
@@ -739,6 +751,46 @@ Messages expire automatically after 72 hours (KV TTL). The relay cannot read
 message contents — it only stores ciphertext already encrypted to the recipient's
 X25519 key. The relay is entirely optional: clients that omit `relay_id_hash` from
 discovery packets gracefully degrade to LAN-only delivery.
+
+#### Relay Control Records (offline edit / delete)
+
+`edit_message` and `delete_message` are LAN-only, one-shot TCP writes. When the
+peer isn't reachable, the same two operations are carried through the relay
+mailbox instead, as a **control record**: an ordinary relay record whose
+decrypted plaintext is a control envelope rather than a chat body.
+
+```text
+__CTRL__:{"op":"edit","target":"<original message_id>","text":"<new body>","at":1715000123.456}
+__CTRL__:{"op":"delete","target":"<original message_id>","at":1715000123.456}
+```
+
+Rules:
+
+- The record is stored under **its own fresh `message_id`**, never the target's.
+  The Worker dedups `/store` by `message_id` and answers a repeat with
+  `{"ok":true,"duplicate":true}` — so re-posting under the original's id would
+  be silently discarded while reporting success. A fresh id also means this
+  works whether or not the original is still sitting in the mailbox.
+- The envelope is encrypted exactly like a text message, AAD = the record's own
+  fresh id. The Worker is unchanged and still sees only ciphertext: it cannot
+  tell a control record from a chat message, and never learns which message was
+  edited or deleted.
+- `at` is when the edit/delete was made. `target` must be a well-formed
+  `message_id` (32 lowercase hex); anything else is dropped before it reaches
+  the history store. An `edit` with an empty `text` is rejected — blanking a
+  message is what `delete` is for.
+- On receipt the envelope is applied through the same history entry points as
+  the LAN packets, so the "incoming from that peer only" gate applies
+  identically. The record is then `DELETE`d from the mailbox whether it applied
+  or not — a spent record would otherwise replay on every poll until its TTL.
+- Records are returned by `/pending` in insertion order, so an original and a
+  later edit of it arrive in the right order.
+- A client older than 1.7 does not recognise the marker and renders the envelope
+  as a literal chat message. Both ends need 1.7+ for relayed edits and deletes.
+
+A "delete for everyone" also drops the message from the sender's own pending
+queue: delivering a message the sender has since deleted is worse than not
+delivering it at all.
 
 ### Text Receive
 

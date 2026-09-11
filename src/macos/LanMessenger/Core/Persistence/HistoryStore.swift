@@ -277,10 +277,18 @@ final class HistoryStore {
     // preview fields, leaving a "this message was deleted" placeholder. Used for
     // both "delete for everyone" (our own outgoing message) and inbound
     // delete_message notices from a peer.
-    func markDeleted(messageId: String, peerIP: String) {
-        guard var entries = history[peerIP] else { return }
+    //
+    // `requireIncoming` is the same security gate applyEdit uses, and for the
+    // same reason: a peer knows the message_id of everything we sent them, so
+    // an inbound delete naming one of OUR outgoing messages must be refused
+    // rather than allowed to blank what we said. Inbound notices pass true; our
+    // own "delete for everyone" passes false.
+    @discardableResult
+    func markDeleted(messageId: String, peerIP: String, requireIncoming: Bool) -> Bool {
+        guard var entries = history[peerIP] else { return false }
         var changed = false
         for i in entries.indices where entries[i].messageId == messageId {
+            if entries[i].incoming != requireIncoming { continue }
             entries[i].deleted = true
             entries[i].text = ""
             entries[i].replyToMessageId = nil
@@ -292,6 +300,7 @@ final class HistoryStore {
             history[peerIP] = entries
             save()
         }
+        return changed
     }
 
     /// Replaces the text of the entry identified by `messageId`, marking it
