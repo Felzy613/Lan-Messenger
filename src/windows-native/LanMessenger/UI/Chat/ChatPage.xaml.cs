@@ -237,6 +237,12 @@ public sealed partial class ChatPage : Page
         if (_model is null) return;
         var ip = _model.SelectedPeerIP;
 
+        // Leave edit mode BEFORE the draft save below. While editing,
+        // Composer.Text holds an already-sent message; saving that as the
+        // outgoing conversation's draft would resurrect a sent message as an
+        // unsent one. SetEditTarget(null) puts the real in-progress draft back.
+        SetEditTarget(null);
+
         // Save the composer's in-progress text as a draft for the conversation
         // we're leaving, then restore (or clear) it for the new one.
         if (_boundPeerIP is not null && _boundPeerIP != ip)
@@ -251,7 +257,6 @@ public sealed partial class ChatPage : Page
         _boundPeerIP = ip;
 
         // Reset reply state when switching peers.
-        SetEditTarget(null);
         SetReplyTarget(null);
 
         UpdateHeaderName();
@@ -460,8 +465,7 @@ public sealed partial class ChatPage : Page
                 Composer.Text = trimmed;
                 return;
             }
-            Composer.IsEditing = false;
-            SetEditTarget(null);   // restores _draftBeforeEdit
+            SetEditTarget(null);   // restores _draftBeforeEdit and the send glyph
             return;
         }
 
@@ -740,6 +744,7 @@ public sealed partial class ChatPage : Page
                 _draftBeforeEdit = "";
             }
             EditTarget = null;
+            Composer.IsEditing = false;   // restore the send glyph on every exit path
             if (ReplyTarget is null) ReplyBanner.Visibility = Visibility.Collapsed;
             return;
         }
