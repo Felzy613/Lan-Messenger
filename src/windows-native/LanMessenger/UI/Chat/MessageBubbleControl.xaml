@@ -3,15 +3,24 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid x:Name="RootGrid" Padding="0,2">
+        <!-- CanDrag is switched on in Refresh() for file bubbles whose file is
+             still on disk, so an attachment can be dragged straight out to
+             Explorer, Outlook, or anything else that takes a file. -->
         <Border x:Name="Bubble"
                 CornerRadius="16"
                 Padding="10,7,10,6"
                 MaxWidth="520"
-                HorizontalAlignment="Left">
+                HorizontalAlignment="Left"
+                CanDrag="False"
+                DragStarting="Bubble_DragStarting">
             <Border.ContextFlyout>
                 <MenuFlyout x:Name="BubbleMenu" Opening="BubbleMenu_Opening">
                     <MenuFlyoutItem x:Name="ReplyMenu" Text="Reply" Click="ReplyMenu_Click" />
                     <MenuFlyoutItem Text="Copy"  Click="CopyMenu_Click" />
+                    <MenuFlyoutItem x:Name="EditMenu"
+                                    Text="Edit"
+                                    Click="EditMenu_Click"
+                                    Visibility="Collapsed" />
                     <MenuFlyoutItem x:Name="ShowInExplorerMenu"
                                     Text="Show in folder"
                                     Click="ShowInExplorerMenu_Click"
@@ -166,6 +175,13 @@
                             Spacing="4"
                             HorizontalAlignment="Right"
                             Margin="0,2,0,0">
+                    <!-- "edited" marker — shown for messages whose sender
+                         replaced the text after sending. -->
+                    <TextBlock x:Name="EditedText"
+                               Text="edited"
+                               FontSize="10"
+                               Opacity="0.45"
+                               Visibility="Collapsed" />
                     <TextBlock x:Name="TimestampText"
                                FontSize="10"
                                Opacity="0.55" />

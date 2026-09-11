@@ -21,6 +21,8 @@ public sealed class MessagingService
     public Action<string, string, string>?    OnStatusUpdate    { get; set; }  // peerIP, messageId, status
     public Action<string, string, bool>?      OnTypingUpdate    { get; set; }  // peerIP, senderName, active
     public Action<string, string>?            OnMessageDeleted  { get; set; }  // peerIP, messageId
+    // peerIP, messageId, newText, editedAt
+    public Action<string, string, string, double>? OnMessageEdited { get; set; }
     // Fired once the cloud relay Worker confirms an outgoing message was
     // actually stored — not when the upload is merely attempted. Lets the UI
     // show the "via relay" badge promptly instead of only after the
@@ -68,6 +70,7 @@ public sealed class MessagingService
             case ValidatedTyping t: HandleTyping(t.Packet,  t.SenderIP); break;
             case ValidatedReceipt r: HandleReceipt(r.Packet, r.SenderIP); break;
             case ValidatedDelete d: HandleDeleteMessage(d.Packet, d.SenderIP); break;
+            case ValidatedEdit   e: HandleEditMessage(e.Packet,   e.SenderIP); break;
         }
     }
 
@@ -229,6 +232,77 @@ public sealed class MessagingService
         });
     }
 
+    // MARK: - Send edit_message
+
+    /// <summary>
+    /// Sends replacement text for a message we already sent.
+    ///
+    /// Best-effort in the same sense as delete_message — one TCP write, no
+    /// queue and no retry — with one important exception: if the original is
+    /// still sitting in the pending queue (it never reached the peer), the
+    /// queued copy is rewritten so the edit is what eventually gets delivered,
+    /// as the message's first and only version.
+    /// </summary>
+    public void SendEditMessage(string messageId, string newText, string peerIP,
+                                string peerPublicKeyB64, double editedAt)
+    {
+        RewritePendingMessage(messageId, newText);
+
+        // AAD is the ORIGINAL message_id, exactly as for the `text` packet that
+        // carried the first version.
+        var aad = Encoding.UTF8.GetBytes(messageId);
+        (string nonceB64, string ctB64) encrypted;
+        try
+        {
+            encrypted = SessionCrypto.EncryptForPeer(
+                KeyManager.Shared.PrivateKey, peerPublicKeyB64,
+                Encoding.UTF8.GetBytes(newText), aad);
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Error("Edit", $"encrypt failed msgId={messageId} peer={peerIP}", ex);
+            return;
+        }
+
+        var packet = new Dictionary<string, object?>
+        {
+            ["type"]                  = "edit_message",
+            ["message_id"]            = messageId,
+            ["timestamp"]             = editedAt,
+            ["sender"]                = ConfigStore.Shared.Config.Username,
+            ["sender_public_key_b64"] = KeyManager.Shared.PublicKeyB64,
+            ["port"]                  = TcpPort,
+            ["nonce"]                 = encrypted.nonceB64,
+            ["ciphertext"]            = encrypted.ctB64,
+        };
+        Task.Run(async () =>
+        {
+            var ok = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"edit_message msgId={messageId}");
+            LanLogger.Info("Edit", ok
+                ? $"delivered edit msgId={messageId} peer={peerIP}"
+                : $"edit not delivered msgId={messageId} peer={peerIP} — peer keeps the previous text");
+        });
+    }
+
+    /// <summary>
+    /// Rewrites a still-undelivered queued message so the peer receives the
+    /// edited text rather than the superseded original.
+    /// </summary>
+    private static void RewritePendingMessage(string messageId, string newText)
+    {
+        var pending = ConfigStore.Shared.Config.PendingMessages;
+        var target = pending.FirstOrDefault(m => m.MessageId == messageId);
+        if (target is null) return;
+        target.Text = newText;
+        // The relay copy holds the pre-edit ciphertext. Clearing the flag makes
+        // the outbox re-upload the edited text under the same message id; a
+        // stale relay copy would otherwise win the race and deliver the
+        // original.
+        target.RelayStored = false;
+        ConfigStore.Shared.Save();
+        LanLogger.Info("Edit", $"rewrote queued msgId={messageId} before delivery");
+    }
+
     // MARK: - Deliver pending messages for a newly-online peer
 
     public void DeliverPending(string peerIP, string peerPublicKeyB64)
@@ -370,6 +444,37 @@ public sealed class MessagingService
         HistoryStore.Shared.MarkDeleted(pkt.MessageId, ip);
         HistoryStore.Shared.Save();
         Dispatch(() => OnMessageDeleted?.Invoke(ip, pkt.MessageId));
+    }
+
+    // Applies an inbound edit: replaces the stored text of the peer's own
+    // earlier message. HistoryStore.ApplyEdit enforces that only an *incoming*
+    // entry can be rewritten — the peer knows the message_id of everything we
+    // sent them, so an edit naming one of our outgoing messages is refused.
+    private void HandleEditMessage(TextPacket pkt, string ip)
+    {
+        var aad = Encoding.UTF8.GetBytes(pkt.MessageId);
+        byte[] plaintext;
+        try
+        {
+            plaintext = SessionCrypto.DecryptFromPeer(
+                KeyManager.Shared.PrivateKey, pkt.SenderPublicKeyB64,
+                pkt.Nonce, pkt.Ciphertext, aad);
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Edit", $"decrypt failed for inbound edit msgId={pkt.MessageId} peer={ip}: {ex.Message}");
+            return;
+        }
+
+        var newText = Encoding.UTF8.GetString(plaintext);
+        if (!HistoryStore.Shared.ApplyEdit(pkt.MessageId, ip, newText, pkt.Timestamp, requireIncoming: true))
+        {
+            LanLogger.Info("Edit", $"ignored inbound edit msgId={pkt.MessageId} peer={ip} — no editable incoming message");
+            return;
+        }
+        HistoryStore.Shared.Save();
+        LanLogger.Info("Recv", $"edit_message applied msgId={pkt.MessageId} peer={ip}");
+        Dispatch(() => OnMessageEdited?.Invoke(ip, pkt.MessageId, newText, pkt.Timestamp));
     }
 
     private void HandleReceipt(ReceiptPacket pkt, string ip)

@@ -217,6 +217,21 @@ Reply extension:
   `reply_to_sender` on `text` packets and history entries.
 - These fields are optional and unencrypted metadata. Older clients ignore them.
 
+Edit extension:
+
+- Native clients may send `edit_message`, an encrypted replacement body for a
+  message already sent. It is shaped like `text`, but `message_id` names the
+  ORIGINAL message and the AAD is that same original id.
+- History entries gain `edited` (bool, default false) and `edited_at` (optional
+  float). `timestamp` keeps the original send time so an edit never moves a
+  message in the thread.
+- A receiver applies an edit only to a message that is *incoming from that
+  peer*. The peer knows the `message_id` of everything we sent them, so an edit
+  naming one of our own outgoing messages must be refused.
+- Attachments (`__FILE__:` text) and deleted messages are never editable.
+- Older clients reject `edit_message` as an unknown type and keep showing the
+  original text.
+
 ## Platform-Specific Gotchas
 
 ### macOS
@@ -329,4 +344,42 @@ Use the smallest sufficient set for the change:
   bug report.
 - Do not remove SHA256 sidecar support from updaters; combined releases may only
   expose installer assets while sidecars live on per-platform releases.
+- Do not make the only capture of SwiftUI's `openWindow` action live in
+  `ContentView`. If the app relaunches with its window scene unmaterialised —
+  a login-item start, or a restore of a session whose window was closed with the
+  red X — `ContentView` never appears, the action stays nil, and the Dock icon
+  becomes inert: every click runs `showMainWindow()`, finds no window to raise
+  and no action to create one, and returns. The `MenuBarExtra` label always
+  renders, so it must keep capturing it too.
+- Do not treat the Dock activation policy as set-once. AppKit promotes an
+  `.accessory` process back to `.regular` by itself (window-scene creation,
+  modal panels, updater relaunch) and posts no notification for it, so a stray
+  Dock icon reappears for a user who switched it off. `DockPolicyGuard` owns the
+  policy and re-asserts it; route changes through it rather than calling
+  `NSApp.setActivationPolicy` directly.
+- Do not add a `DllImport` whose managed method name isn't the real exported
+  entry point (or set `EntryPoint` explicitly). The failure is
+  `EntryPointNotFoundException` at the first call, not at load, so it looks fine
+  until the feature runs — `SetForegroundWindowInternal` in the screenshot
+  region overlay crashed the app the moment the overlay opened. Nothing that
+  runs inside a WinUI event handler may throw.
+- Do not shrink the attachment drop target back to the composer strip, and keep
+  every attachment route (picker, screenshot, drop, paste, drag-out) converging
+  on `sendFile`/`SendFile` so queueing, offline persistence, and history stay
+  identical. Paste precedence is files → bitmap-without-text → text; treating a
+  bitmap that arrives alongside text as an attachment breaks ordinary text
+  pasting from browsers, Word, and Outlook.
+- Do not write generated attachments (screenshots, pasted images) to the system
+  temp directory. History stores absolute paths, and temp is swept between
+  reboots, so the bubble becomes "File no longer available" the next day.
+- Do not let an inbound `edit_message` rewrite one of our own outgoing
+  messages. The peer knows every `message_id` we ever sent them, so without the
+  `requireIncoming` gate in `HistoryStore.applyEdit`/`ApplyEdit` a peer can
+  silently rewrite what we said in our own transcript. Covered by
+  `MessageEditTests`.
+- Do not make release-notes generation fall back silently. The changelog
+  boundary must be a ref git can resolve — not an unpublished draft's tag, and
+  not the release currently being built — and a failure must warn and fall back
+  rather than emit "no user-facing changes", which is indistinguishable from a
+  genuinely empty release. That bug shipped empty notes for every pre-release.
 - Do not treat generated Xcode project files as source.

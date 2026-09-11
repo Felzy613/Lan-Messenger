@@ -16,6 +16,7 @@ final class MessagingService {
     var onStatusUpdate: ((String, String, String) -> Void)?       // peerIP, messageId, status
     var onTypingUpdate: ((String, String, Bool) -> Void)?         // peerIP, senderName, active
     var onMessageDeleted: ((String, String) -> Void)?             // peerIP, messageId
+    var onMessageEdited: ((String, String, String, Double) -> Void)?  // peerIP, messageId, newText, editedAt
     // Fired once the cloud relay Worker confirms an outgoing message was
     // actually stored — not when the upload is merely attempted. Lets the UI
     // show the "via relay" badge promptly instead of only after the
@@ -52,6 +53,7 @@ final class MessagingService {
         case .typing(let pkt, let ip):  handleTyping(pkt, fromIP: ip)
         case .receipt(let pkt, let ip): handleReceipt(pkt, fromIP: ip)
         case .delete(let pkt, let ip):  handleDeleteMessage(pkt, fromIP: ip)
+        case .edit(let pkt, let ip):    handleEditMessage(pkt, fromIP: ip)
         default: break
         }
     }
@@ -193,6 +195,72 @@ final class MessagingService {
         sendJSON(packet, toIP: ip, port: tcpPort, completion: nil)
     }
 
+    // MARK: - Send edit_message
+
+    /// Sends replacement text for a message we already sent.
+    ///
+    /// Best-effort in the same sense as `delete_message` — one TCP write, no
+    /// queue and no retry — with one important exception: if the original is
+    /// still sitting in the pending queue (it never reached the peer), the
+    /// queued copy is rewritten so the edit is what eventually gets delivered,
+    /// as the message's first and only version.
+    ///
+    /// Returns nothing; the caller has already applied the edit locally.
+    func sendEditMessage(messageId: String,
+                         newText: String,
+                         toPeerIP ip: String,
+                         peerPublicKeyB64: String,
+                         editedAt: Double) {
+        rewritePendingMessage(messageId: messageId, newText: newText)
+
+        // AAD is the ORIGINAL message_id, exactly as for the `text` packet that
+        // carried the first version.
+        let aad = Data(messageId.utf8)
+        guard let (nonceB64, ctB64) = try? SessionCrypto.encryptForPeer(
+            myPrivate: KeyManager.shared.privateKey,
+            peerPublicKeyB64: peerPublicKeyB64,
+            plaintext: Data(newText.utf8),
+            aad: aad
+        ) else {
+            NetLogger.warn("Edit", "encrypt failed msgId=\(messageId) peer=\(ip)")
+            return
+        }
+
+        let packet: [String: Any] = [
+            "type": "edit_message",
+            "message_id": messageId,
+            "timestamp": editedAt,
+            "sender": ConfigStore.shared.config.username,
+            "sender_public_key_b64": KeyManager.shared.publicKeyB64,
+            "port": tcpPort,
+            "nonce": nonceB64,
+            "ciphertext": ctB64,
+        ]
+        sendJSON(packet, toIP: ip, port: tcpPort) { success in
+            if success {
+                NetLogger.info("Edit", "delivered edit msgId=\(messageId) peer=\(ip)")
+            } else {
+                NetLogger.info("Edit", "edit not delivered msgId=\(messageId) peer=\(ip) — peer keeps the previous text")
+            }
+        }
+    }
+
+    /// Rewrites a still-undelivered queued message so the peer receives the
+    /// edited text rather than the superseded original.
+    private func rewritePendingMessage(messageId: String, newText: String) {
+        var pending = ConfigStore.shared.config.pendingMessages
+        guard let idx = pending.firstIndex(where: { $0.messageId == messageId }) else { return }
+        pending[idx].text = newText
+        // The relay copy holds the pre-edit ciphertext. Clearing the flag makes
+        // the outbox re-upload the edited text under the same message id; a
+        // stale relay copy would otherwise win the race and deliver the
+        // original after the peer had already been shown nothing.
+        pending[idx].relayStored = false
+        ConfigStore.shared.config.pendingMessages = pending
+        ConfigStore.shared.save()
+        NetLogger.info("Edit", "rewrote queued msgId=\(messageId) before delivery")
+    }
+
     // MARK: - Deliver pending messages to a newly-online peer
 
     func deliverPending(toPeerIP ip: String, peerPublicKeyB64: String) {
@@ -322,6 +390,38 @@ final class MessagingService {
     private func handleDeleteMessage(_ pkt: ReceiptPacket, fromIP ip: String) {
         HistoryStore.shared.markDeleted(messageId: pkt.messageId, peerIP: ip)
         onMessageDeleted?(ip, pkt.messageId)
+    }
+
+    // Applies an inbound edit: replaces the stored text of the peer's own
+    // earlier message. HistoryStore.applyEdit enforces that only an *incoming*
+    // entry can be rewritten — the peer knows the message_id of everything we
+    // sent them, so an edit naming one of our outgoing messages is refused.
+    private func handleEditMessage(_ pkt: TextPacket, fromIP ip: String) {
+        let aad = Data(pkt.messageId.utf8)
+        guard let plaintext = try? SessionCrypto.decryptFromPeer(
+            myPrivate: KeyManager.shared.privateKey,
+            peerPublicKeyB64: pkt.senderPublicKeyB64,
+            nonceB64: pkt.nonce,
+            ciphertextB64: pkt.ciphertext,
+            aad: aad
+        ) else {
+            NetLogger.warn("Edit", "decrypt failed for inbound edit msgId=\(pkt.messageId) peer=\(ip)")
+            return
+        }
+        let newText = String(data: plaintext, encoding: .utf8) ?? ""
+
+        guard HistoryStore.shared.applyEdit(
+            messageId: pkt.messageId,
+            peerIP: ip,
+            newText: newText,
+            editedAt: pkt.timestamp,
+            requireIncoming: true
+        ) else {
+            NetLogger.info("Edit", "ignored inbound edit msgId=\(pkt.messageId) peer=\(ip) — no editable incoming message")
+            return
+        }
+        NetLogger.info("Recv", "edit_message applied msgId=\(pkt.messageId) peer=\(ip)")
+        onMessageEdited?(ip, pkt.messageId, newText, pkt.timestamp)
     }
 
     private func handleReceipt(_ pkt: ReceiptPacket, fromIP ip: String) {

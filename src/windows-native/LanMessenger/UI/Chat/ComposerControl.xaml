@@ -1,10 +1,10 @@
 <UserControl
     x:Class="LanMessenger.UI.Chat.ComposerControl"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    AllowDrop="True"
-    DragOver="OnDragOver"
-    Drop="OnDrop">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- File drops are owned by ChatPage, which covers the whole thread. A
+         second drop target here would either double-send the file or shadow the
+         page's drop affordance on this strip. -->
     <Grid Padding="10,8" ColumnSpacing="8"
           Background="{ThemeResource LayerFillColorDefaultBrush}">
         <Grid.ColumnDefinitions>
@@ -81,6 +81,7 @@
                 CornerRadius="20"
                 Padding="12,4">
             <TextBox x:Name="InputBox"
+                     AllowDrop="False"
                      PlaceholderText="Message"
                      AcceptsReturn="False"
                      TextWrapping="Wrap"
@@ -91,7 +92,8 @@
                      VerticalContentAlignment="Center"
                      ScrollViewer.VerticalScrollBarVisibility="Auto"
                      KeyDown="InputBox_KeyDown"
-                     TextChanged="InputBox_TextChanged">
+                     TextChanged="InputBox_TextChanged"
+                     Paste="InputBox_Paste">
                 <!-- Suppress TextBox's own focus/hover chrome so the outer Border stays visible -->
                 <TextBox.Resources>
                     <SolidColorBrush x:Key="TextControlBorderBrushFocused"      Color="Transparent"/>
@@ -123,7 +125,8 @@
                 <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
             </Button.Resources>
-            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+            <FontIcon x:Name="SendIcon"
+                      FontFamily="{ThemeResource SymbolThemeFontFamily}"
                       Glyph="&#xE74A;"
                       FontSize="14"
                       Foreground="White" />

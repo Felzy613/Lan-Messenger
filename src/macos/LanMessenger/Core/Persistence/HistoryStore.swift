@@ -33,6 +33,11 @@ struct MessageEntry: Codable, Identifiable {
     // remotely, or "delete for everyone"). When true, `text` and reply preview
     // fields are cleared and the UI renders a "this message was deleted" placeholder.
     var deleted: Bool
+    // True when the sender has replaced this message's text after sending it.
+    // `timestamp` keeps the ORIGINAL send time so an edit doesn't move the
+    // message in the thread; `editedAt` records when the edit happened.
+    var edited: Bool
+    var editedAt: Double?
 
     enum CodingKeys: String, CodingKey {
         case sender, text, incoming, timestamp, status
@@ -43,13 +48,16 @@ struct MessageEntry: Codable, Identifiable {
         case replyToSender = "reply_to_sender"
         case deliveryPath = "delivery_path"
         case deleted
+        case edited
+        case editedAt = "edited_at"
         // _stableId is intentionally excluded — it is a session-only value, never persisted.
     }
 
     init(sender: String, text: String, incoming: Bool, timestamp: Double,
          messageId: String?, status: String, readReceiptSent: Bool,
          replyToMessageId: String? = nil, replyToPreview: String? = nil,
-         replyToSender: String? = nil, deliveryPath: String? = nil, deleted: Bool = false) {
+         replyToSender: String? = nil, deliveryPath: String? = nil, deleted: Bool = false,
+         edited: Bool = false, editedAt: Double? = nil) {
         self.sender = sender
         self.text = text
         self.incoming = incoming
@@ -62,6 +70,8 @@ struct MessageEntry: Codable, Identifiable {
         self.replyToSender = replyToSender
         self.deliveryPath = deliveryPath
         self.deleted = deleted
+        self.edited = edited
+        self.editedAt = editedAt
         self._stableId = UUID().uuidString  // generated once; stable for lifetime of this instance
     }
 
@@ -79,6 +89,8 @@ struct MessageEntry: Codable, Identifiable {
         replyToSender = try c.decodeIfPresent(String.self, forKey: .replyToSender)
         deliveryPath = try c.decodeIfPresent(String.self, forKey: .deliveryPath)
         deleted = try c.decodeIfPresent(Bool.self, forKey: .deleted) ?? false
+        edited = try c.decodeIfPresent(Bool.self, forKey: .edited) ?? false
+        editedAt = try c.decodeIfPresent(Double.self, forKey: .editedAt)
         _stableId = UUID().uuidString  // generated once at decode time; stable for the session
     }
 
@@ -280,6 +292,42 @@ final class HistoryStore {
             history[peerIP] = entries
             save()
         }
+    }
+
+    /// Replaces the text of the entry identified by `messageId`, marking it
+    /// edited. Returns true when an entry was actually changed.
+    ///
+    /// `requireIncoming` is the security gate, and it is not optional: a peer
+    /// knows the `message_id` of every message we ever sent them, so an inbound
+    /// `edit_message` naming one of OUR outgoing messages must be refused
+    /// rather than allowed to rewrite what we said. Inbound edits pass true;
+    /// our own edits of our own messages pass false.
+    ///
+    /// Attachments and already-deleted messages are never editable —
+    /// `__FILE__:` text is a local path, not a body the peer can replace.
+    @discardableResult
+    func applyEdit(messageId: String,
+                   peerIP: String,
+                   newText: String,
+                   editedAt: Double,
+                   requireIncoming: Bool) -> Bool {
+        guard var entries = history[peerIP] else { return false }
+        var changed = false
+        for i in entries.indices where entries[i].messageId == messageId {
+            let e = entries[i]
+            if e.incoming != requireIncoming { continue }
+            if e.deleted { continue }
+            if e.text.hasPrefix("__FILE__:") { continue }
+            entries[i].text = newText
+            entries[i].edited = true
+            entries[i].editedAt = editedAt
+            changed = true
+        }
+        if changed {
+            history[peerIP] = entries
+            save()
+        }
+        return changed
     }
 
     // Removes the first entry matching `entry` via sameEntry — used for

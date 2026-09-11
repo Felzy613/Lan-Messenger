@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.UI;
 
 namespace LanMessenger.UI.Chat;
@@ -15,7 +16,6 @@ namespace LanMessenger.UI.Chat;
 public sealed class MessageRowViewModel : INotifyPropertyChanged
 {
     public string  Sender    { get; init; } = "";
-    public string  Text      { get; init; } = "";
     public bool    Incoming  { get; init; }
     public string  Timestamp { get; init; } = "";
     public bool    IsFile    { get; init; }
@@ -40,6 +40,23 @@ public sealed class MessageRowViewModel : INotifyPropertyChanged
     {
         get => _status;
         set { if (_status != value) { _status = value; PropertyChanged?.Invoke(this, new(nameof(Status))); } }
+    }
+
+    // Text and Edited are mutable for the same reason Status is: an inbound
+    // edit_message rewrites an existing message in place. Rebuilding the whole
+    // row list to show one changed body would throw away scroll position.
+    private string _text = "";
+    public string Text
+    {
+        get => _text;
+        set { if (_text != value) { _text = value; PropertyChanged?.Invoke(this, new(nameof(Text))); } }
+    }
+
+    private bool _edited;
+    public bool Edited
+    {
+        get => _edited;
+        set { if (_edited != value) { _edited = value; PropertyChanged?.Invoke(this, new(nameof(Edited))); } }
     }
 
     private bool _deliveredViaRelay;
@@ -72,7 +89,8 @@ public sealed partial class ChatPage : Page
                 Composer.Send             -= OnSend;
                 Composer.TypingChanged    -= OnTyping;
                 Composer.AttachRequested  -= OnAttachRequested;
-                Composer.FilesDropped     -= OnFilesDropped;
+                Composer.FilesPasted      -= SendAttachments;
+                Composer.CancelRequested  -= OnComposerCancel;
                 Composer.ScreenshotRequested -= OnScreenshotRequested;
             }
             _model = value;
@@ -84,7 +102,9 @@ public sealed partial class ChatPage : Page
                 Composer.Send             += OnSend;
                 Composer.TypingChanged    += OnTyping;
                 Composer.AttachRequested  += OnAttachRequested;
-                Composer.FilesDropped     += OnFilesDropped;
+                // A pasted attachment takes exactly the same route as a dropped one.
+                Composer.FilesPasted      += SendAttachments;
+                Composer.CancelRequested  += OnComposerCancel;
                 Composer.ScreenshotRequested += OnScreenshotRequested;
                 RefreshForSelectedPeer(forceReload: true);
             }
@@ -142,6 +162,13 @@ public sealed partial class ChatPage : Page
     };
 
     public MessageEntry? ReplyTarget { get; private set; }
+    /// Non-null while the composer is editing an already-sent message instead
+    /// of writing a new one.
+    public MessageEntry? EditTarget { get; private set; }
+    /// The in-progress draft that edit mode displaced, restored on cancel or
+    /// after the edit is sent — entering edit mode must not eat what the user
+    /// had already typed.
+    private string _draftBeforeEdit = "";
 
     public ChatPage()
     {
@@ -224,6 +251,7 @@ public sealed partial class ChatPage : Page
         _boundPeerIP = ip;
 
         // Reset reply state when switching peers.
+        SetEditTarget(null);
         SetReplyTarget(null);
 
         UpdateHeaderName();
@@ -312,9 +340,13 @@ public sealed partial class ChatPage : Page
 
         if (prefixMatches)
         {
-            // Update statuses for existing rows in place.
+            // Update statuses — and edited bodies — for existing rows in place.
             for (var i = 0; i < _rows.Count; i++)
+            {
                 _rows[i].Status = MapStatus(entries[i].Status);
+                _rows[i].Text   = FormatRowText(entries[i]);
+                _rows[i].Edited = entries[i].Edited;
+            }
 
             // Append new ones.
             var wasAtBottom = IsScrolledToBottom();
@@ -406,6 +438,7 @@ public sealed partial class ChatPage : Page
             ReplyFilePath     = replyFilePath,
             DeliveredViaRelay = e.DeliveryPath == "relay",
             Deleted           = e.Deleted,
+            Edited            = e.Edited,
         };
     }
 
@@ -417,6 +450,21 @@ public sealed partial class ChatPage : Page
         var trimmed = text.Trim();
         if (trimmed.Length == 0) return;
 
+        if (EditTarget is { } editing)
+        {
+            // Leave the composer in edit mode if the message turned out not to
+            // be editable, rather than silently discarding what was typed.
+            if (!_model.EditMessage(editing, trimmed, _model.SelectedPeerIP))
+            {
+                LanLogger.Warn("Edit", "message no longer editable — keeping composer in edit mode");
+                Composer.Text = trimmed;
+                return;
+            }
+            Composer.IsEditing = false;
+            SetEditTarget(null);   // restores _draftBeforeEdit
+            return;
+        }
+
         // If we're replying, find the original entry in the model's message list.
         MessageEntry? replyTo = null;
         if (ReplyTarget is not null) replyTo = ReplyTarget;
@@ -424,6 +472,12 @@ public sealed partial class ChatPage : Page
         _model.SendMessage(trimmed, _model.SelectedPeerIP, replyTo);
         _model.Drafts.Remove(_model.SelectedPeerIP);
         SetReplyTarget(null);
+    }
+
+    private void OnComposerCancel()
+    {
+        if (EditTarget is not null) SetEditTarget(null);
+        else if (ReplyTarget is not null) SetReplyTarget(null);
     }
 
     private void OnTyping(bool active)
@@ -479,11 +533,72 @@ public sealed partial class ChatPage : Page
         }
     }
 
-    private void OnFilesDropped(IReadOnlyList<string> paths)
+    /// The single exit for every attachment route into this page — page drop,
+    /// composer paste, and (via ChatPage's own picker/screenshot flows) the
+    /// paperclip and camera buttons.
+    private void SendAttachments(IReadOnlyList<string> paths)
     {
         if (_model is null || _model.SelectedPeerIP is null) return;
+        LanLogger.Info("Attachment", $"sending {paths.Count} attachment(s) to {_model.SelectedPeerIP}");
         foreach (var p in paths)
             _model.SendFile(p, _model.SelectedPeerIP);
+    }
+
+    // ── Thread-wide file drop ────────────────────────────────────────────────
+
+    private void Page_DragOver(object sender, DragEventArgs e)
+    {
+        if (_model?.SelectedPeerIP is null) return;
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+
+        e.AcceptedOperation = DataPackageOperation.Copy;
+        // Suppress the shell's own "Copy to ..." caption, which names the app
+        // rather than the person the file is about to be sent to. Null for drag
+        // sources that don't offer an overridable UI — checked, not assumed:
+        // an exception out of a drag handler takes the process down.
+        if (e.DragUIOverride is { } ui) ui.IsCaptionVisible = false;
+        e.Handled = true;
+        ShowDropOverlay(true);
+    }
+
+    private void Page_DragLeave(object sender, DragEventArgs e) => ShowDropOverlay(false);
+
+    private async void Page_Drop(object sender, DragEventArgs e)
+    {
+        ShowDropOverlay(false);
+        if (_model?.SelectedPeerIP is null) return;
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+        e.Handled = true;
+
+        // The DataView is only guaranteed to outlive the handler if a deferral
+        // is held — GetStorageItemsAsync yields, so take one.
+        var deferral = e.GetDeferral();
+        try
+        {
+            var items = await e.DataView.GetStorageItemsAsync();
+            var paths = items.OfType<Windows.Storage.IStorageFile>()
+                             .Select(f => f.Path)
+                             .Where(p => !string.IsNullOrEmpty(p))
+                             .ToList();
+            if (paths.Count > 0) SendAttachments(paths);
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Attachment", $"drop failed: {ex.Message}");
+        }
+        finally
+        {
+            deferral.Complete();
+        }
+    }
+
+    private void ShowDropOverlay(bool visible)
+    {
+        if (visible)
+        {
+            DropOverlayText.Text = $"Drop to send to {HeaderName.Text}";
+        }
+        DropOverlay.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>
@@ -594,15 +709,58 @@ public sealed partial class ChatPage : Page
 
     public void SetReplyTarget(MessageEntry? entry)
     {
+        if (entry is not null) SetEditTarget(null);
         ReplyTarget = entry;
         if (entry is null)
         {
-            ReplyBanner.Visibility = Visibility.Collapsed;
+            if (EditTarget is null) ReplyBanner.Visibility = Visibility.Collapsed;
             return;
         }
         ReplyBanner.Visibility = Visibility.Visible;
         ReplyBannerWho.Text     = "Replying to " + (entry.Incoming ? entry.Sender : "yourself");
         ReplyBannerPreview.Text = LanMessenger.Core.Services.MessagingService.ReplyPreviewText(entry);
+    }
+
+    // MARK: - Edit target
+
+    /// Swaps the composer into (or out of) edit mode. The banner is shared with
+    /// reply mode — the two are mutually exclusive, so one strip serves both.
+    public void SetEditTarget(MessageEntry? entry)
+    {
+        if (entry is not null && ReplyTarget is not null)
+        {
+            ReplyTarget = null;   // direct, not via SetReplyTarget: avoid mutual recursion
+        }
+
+        if (entry is null)
+        {
+            if (EditTarget is not null)
+            {
+                Composer.Text = _draftBeforeEdit;
+                _draftBeforeEdit = "";
+            }
+            EditTarget = null;
+            if (ReplyTarget is null) ReplyBanner.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (EditTarget is null) _draftBeforeEdit = Composer.Text;
+        EditTarget = entry;
+        Composer.Text = entry.Text;
+        Composer.IsEditing = true;
+        ReplyBanner.Visibility  = Visibility.Visible;
+        ReplyBannerWho.Text     = "Editing message";
+        ReplyBannerPreview.Text = LanMessenger.Core.Services.MessagingService.ReplyPreviewText(entry);
+    }
+
+    // Called by MessageBubbleControl's "Edit" menu item.
+    internal void RequestEditMessage(string? messageId)
+    {
+        if (_model is null || _boundPeerIP is null || messageId is null) return;
+        var entries = _model.Messages.TryGetValue(_boundPeerIP, out var list) ? list : [];
+        var target = entries.FirstOrDefault(e => e.MessageId == messageId);
+        if (target is null) return;
+        SetEditTarget(target);
     }
 
     // Called by MessageBubbleControl via its RequestReply event hook.
@@ -614,7 +772,11 @@ public sealed partial class ChatPage : Page
         SetReplyTarget(target);
     }
 
-    private void CancelReplyBtn_Click(object sender, RoutedEventArgs e) => SetReplyTarget(null);
+    private void CancelReplyBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (EditTarget is not null) SetEditTarget(null);
+        else SetReplyTarget(null);
+    }
 
     // MARK: - Delete
 

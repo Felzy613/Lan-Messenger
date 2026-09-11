@@ -184,16 +184,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // Called when the user toggles "Hide from Dock" in Settings. DockPolicyGuard
+    // owns the policy so the toggle and the drift watchdog can't disagree about
+    // what the current preference is.
     func applyDockPolicy() {
-        let target: NSApplication.ActivationPolicy = ConfigStore.shared.config.hideFromDock ? .accessory : .regular
-        guard NSApp.activationPolicy() != target else { return }
-        NSApp.setActivationPolicy(target)
-        if target == .regular {
-            NSApp.activate(ignoringOtherApps: true)
-            for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
-                w.makeKeyAndOrderFront(nil)
-                break
-            }
+        let changed = DockPolicyGuard.shared.reassert()
+        guard changed, !ConfigStore.shared.config.hideFromDock else { return }
+        // Going .accessory → .regular drops the app out of the foreground on
+        // some macOS releases; pull the window back so the toggle doesn't look
+        // like it dismissed the app.
+        NSApp.activate(ignoringOtherApps: true)
+        for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
+            w.makeKeyAndOrderFront(nil)
+            break
         }
     }
 
@@ -558,6 +561,64 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Message editing
+
+    /// Replaces the text of one of our own outgoing messages, locally and on
+    /// the peer. Returns false when the message isn't editable, so the caller
+    /// can leave the composer in edit mode rather than silently dropping it.
+    ///
+    /// Only our own outgoing text messages qualify: an attachment's `text` is a
+    /// local file path, not a body, and a deleted message has no body left.
+    @discardableResult
+    func editMessage(_ entry: MessageEntry, newText: String, peerIP: String) -> Bool {
+        guard !entry.incoming, let messageId = entry.messageId else { return false }
+        guard !entry.deleted, !entry.text.hasPrefix("__FILE__:") else { return false }
+
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        // A no-op edit still costs a packet and adds an "(edited)" marker the
+        // user didn't ask for.
+        guard trimmed != entry.text else { return true }
+
+        let editedAt = Date().timeIntervalSince1970
+        guard HistoryStore.shared.applyEdit(
+            messageId: messageId,
+            peerIP: peerIP,
+            newText: trimmed,
+            editedAt: editedAt,
+            requireIncoming: false
+        ) else { return false }
+
+        if var entries = messages[peerIP] {
+            for i in entries.indices where entries[i].messageId == messageId {
+                entries[i].text = trimmed
+                entries[i].edited = true
+                entries[i].editedAt = editedAt
+            }
+            messages[peerIP] = entries
+        }
+
+        // Same key resolution as sendMessage — an offline peer still has a
+        // known key, and the queued-message rewrite inside sendEditMessage is
+        // the part that matters while they're away.
+        let publicKey: String? = peerByIP(peerIP)?.publicKeyB64
+            ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == peerIP })?.publicKeyB64
+            ?? knownPeerKeys[peerIP]
+        if let key = publicKey {
+            MessagingService.shared.sendEditMessage(
+                messageId: messageId,
+                newText: trimmed,
+                toPeerIP: peerIP,
+                peerPublicKeyB64: key,
+                editedAt: editedAt
+            )
+        } else {
+            NetLogger.warn("Edit", "no public key for peer=\(peerIP) — edit applied locally only")
+        }
+        refreshConversations()
+        return true
+    }
+
     // MARK: - Cloud relay
 
     /// Starts both an immediate relay fetch and a recurring poll. The poll keeps
@@ -917,6 +978,21 @@ final class AppModel: ObservableObject {
             self.refreshConversations()
         }
 
+        // Inbound edit already applied to HistoryStore by MessagingService;
+        // mirror it into the in-memory copy the UI renders from.
+        MessagingService.shared.onMessageEdited = { [weak self] ip, messageId, newText, editedAt in
+            guard let self else { return }
+            if var entries = self.messages[ip] {
+                for i in entries.indices where entries[i].messageId == messageId {
+                    entries[i].text = newText
+                    entries[i].edited = true
+                    entries[i].editedAt = editedAt
+                }
+                self.messages[ip] = entries
+            }
+            self.refreshConversations()
+        }
+
         FileTransferService.shared.onProgress = { [weak self] ip, label, bytes, total in
             self?.activeTransfers[ip] = (label, bytes, total)
         }
@@ -1019,7 +1095,7 @@ extension AppModel: NetworkCoordinatorDelegate {
             knownPeerKeys[packet.senderIP] = key
         }
         switch packet {
-        case .text, .typing, .receipt, .delete:
+        case .text, .typing, .receipt, .delete, .edit:
             MessagingService.shared.handlePacket(packet)
         case .fileStart, .fileChunk, .fileEnd:
             FileTransferService.shared.handlePacket(packet)

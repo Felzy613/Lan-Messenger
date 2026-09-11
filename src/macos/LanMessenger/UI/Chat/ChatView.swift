@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     @EnvironmentObject var model: AppModel
@@ -7,7 +8,12 @@ struct ChatView: View {
     @Environment(\.controlActiveState) var controlActiveState
 
     @State private var replyTarget: MessageEntry? = nil
+    /// Non-nil while the composer is editing an already-sent message instead of
+    /// writing a new one.
+    @State private var editTarget: MessageEntry? = nil
     @State private var scrollHighlightID: String? = nil
+    /// True while a file drag is hovering anywhere over the thread.
+    @State private var isDropTargeted = false
 
     private var conv: ConversationViewModel? {
         model.conversations.first { $0.peerIP == peerIP }
@@ -34,22 +40,69 @@ struct ChatView: View {
                     total: transfer.total
                 )
             }
-            if let reply = replyTarget {
+            if let editing = editTarget {
+                editBanner(for: editing)
+                    .transition(.opacity)
+            } else if let reply = replyTarget {
                 replyBanner(for: reply)
                     .transition(.opacity)
             }
             Divider()
-            ComposerView(peerIP: peerIP, replyTarget: $replyTarget)
+            ComposerView(peerIP: peerIP, replyTarget: $replyTarget, editTarget: $editTarget)
                 .environmentObject(model)
                 .background(.bar)
         }
         .background(Theme.chatBackground(colorScheme))
+        // The whole thread is the drop target, not just the composer strip.
+        // Aiming at a 48 pt-tall bar at the bottom of the window is the kind of
+        // thing you only get right on the second try; dropping anywhere on the
+        // conversation you are looking at is what every other messenger does.
+        .onDrop(of: AttachmentPasteboard.dropTypes, isTargeted: $isDropTargeted) { providers in
+            handleDrop(providers)
+        }
+        .overlay { if isDropTargeted { dropOverlay } }
         // controlActiveState is .key/.active when the window is on screen,
         // .inactive when minimized or the app is backgrounded. Only send read
         // receipts when the user can actually see the thread.
         .onAppear { if controlActiveState != .inactive { markRead() } }
         .onChange(of: entries.count) { _ in if controlActiveState != .inactive { markRead() } }
         .onChange(of: controlActiveState) { state in if state != .inactive { markRead() } }
+    }
+
+    // MARK: - Drag and drop
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        let fileURLType = UTType.fileURL.identifier
+        guard providers.contains(where: { $0.hasItemConformingToTypeIdentifier(fileURLType) }) else {
+            return false
+        }
+        AttachmentPasteboard.loadDroppedPaths(from: providers) { paths in
+            NetLogger.ui(event: "attachment_dropped", peer: peerIP, detail: "\(paths.count) file(s)")
+            for path in paths {
+                model.sendFile(path: path, toPeerIP: peerIP)
+            }
+        }
+        return true
+    }
+
+    private var dropOverlay: some View {
+        ZStack {
+            Theme.accent.opacity(0.08)
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Theme.accent,
+                              style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                .padding(10)
+            VStack(spacing: 8) {
+                Image(systemName: "paperclip.circle.fill")
+                    .font(.system(size: 38))
+                    .foregroundStyle(Theme.accent)
+                Text("Drop to send to \(conv?.peerName ?? peerIP)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .allowsHitTesting(false)
+        .transition(.opacity)
     }
 
     // MARK: - Header
@@ -102,7 +155,7 @@ struct ChatView: View {
                         MessageBubbleView(
                             entry: entry,
                             isFirstInRun: entry.incoming != prevIncoming,
-                            onReply: { withAnimation { replyTarget = entry } },
+                            onReply: { withAnimation { editTarget = nil; replyTarget = entry } },
                             onTapReplyTarget: {
                                 guard let targetId = entry.replyToMessageId,
                                       let match = entries.first(where: { $0.messageId == targetId }) else { return }
@@ -112,7 +165,8 @@ struct ChatView: View {
                             replyFilePath: resolvedReplyFilePath(for: entry),
                             onDelete: { forEveryone in
                                 model.deleteMessage(entry, peerIP: peerIP, forEveryone: forEveryone)
-                            }
+                            },
+                            onEdit: { withAnimation { replyTarget = nil; editTarget = entry } }
                         )
                         .id(entry.id)
                         .background(
@@ -167,6 +221,36 @@ struct ChatView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    // MARK: - Edit banner above composer
+
+    private func editBanner(for entry: MessageEntry) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Rectangle().fill(Theme.accent).frame(width: 3, height: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Editing message")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                Text(MessagingService.replyPreviewText(for: entry))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Button {
+                withAnimation { editTarget = nil }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel editing (Esc)")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)

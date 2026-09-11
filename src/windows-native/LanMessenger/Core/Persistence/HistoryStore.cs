@@ -22,6 +22,11 @@ public sealed class MessageEntry
     // True when this message was deleted (locally or via delete_message). Text and
     // reply preview fields are cleared; the UI renders a "deleted" placeholder.
     [JsonPropertyName("deleted")]           public bool   Deleted          { get; set; }
+    // True when the sender replaced this message's text after sending it.
+    // Timestamp keeps the ORIGINAL send time so an edit doesn't move the
+    // message in the thread; EditedAt records when the edit happened.
+    [JsonPropertyName("edited")]            public bool   Edited           { get; set; }
+    [JsonPropertyName("edited_at")]         public double? EditedAt        { get; set; }
 
     // Identity comparison used by deletion/removal — prefer MessageId when both
     // entries have one, otherwise fall back to timestamp+sender+text+direction.
@@ -217,6 +222,37 @@ public sealed class HistoryStore
             e.ReplyToPreview   = null;
             e.ReplyToSender    = null;
         }
+    }
+
+    /// <summary>
+    /// Replaces the text of the entry identified by <paramref name="messageId"/>,
+    /// marking it edited. Returns true when an entry was actually changed.
+    /// Caller is responsible for persisting via Save().
+    ///
+    /// <paramref name="requireIncoming"/> is the security gate, and it is not
+    /// optional: a peer knows the message_id of every message we ever sent
+    /// them, so an inbound edit_message naming one of OUR outgoing messages
+    /// must be refused rather than allowed to rewrite what we said. Inbound
+    /// edits pass true; our own edits of our own messages pass false.
+    ///
+    /// Attachments and already-deleted messages are never editable — a
+    /// "__FILE__:" text is a local path, not a body the peer can replace.
+    /// </summary>
+    public bool ApplyEdit(string messageId, string peerIP, string newText, double editedAt, bool requireIncoming)
+    {
+        if (!_history.TryGetValue(peerIP, out var list)) return false;
+        var changed = false;
+        foreach (var e in list.Where(e => e.MessageId == messageId))
+        {
+            if (e.Incoming != requireIncoming) continue;
+            if (e.Deleted) continue;
+            if (e.Text.StartsWith("__FILE__:", StringComparison.Ordinal)) continue;
+            e.Text     = newText;
+            e.Edited   = true;
+            e.EditedAt = editedAt;
+            changed = true;
+        }
+        return changed;
     }
 
     // Removes the first entry matching `matching` (local-only "delete for me").

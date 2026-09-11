@@ -10,6 +10,7 @@ enum PacketType: String, Codable {
     case sentReceipt = "sent_receipt"
     case readReceipt = "read_receipt"
     case deleteMessage = "delete_message"
+    case editMessage = "edit_message"
     case fileStart = "file_start"
     case fileChunk = "file_chunk"
     case fileEnd = "file_end"
@@ -202,6 +203,9 @@ enum ValidatedPacket {
     case typing(TypingPacket, senderIP: String)
     case receipt(ReceiptPacket, senderIP: String)
     case delete(ReceiptPacket, senderIP: String)
+    // edit_message reuses TextPacket: identical shape, but `messageId` names the
+    // ORIGINAL message rather than a new one. See PROTOCOL.md → edit_message.
+    case edit(TextPacket, senderIP: String)
     case fileStart(FileStartPacket, senderIP: String)
     case fileChunk(FileChunkPacket, senderIP: String)
     case fileEnd(FileEndPacket, senderIP: String)
@@ -213,6 +217,7 @@ enum ValidatedPacket {
         case .typing(let p, _):    return p.senderPublicKeyB64
         case .receipt(let p, _):   return p.senderPublicKeyB64
         case .delete(let p, _):    return p.senderPublicKeyB64
+        case .edit(let p, _):      return p.senderPublicKeyB64
         case .fileStart(let p, _): return p.senderPublicKeyB64
         case .fileChunk(let p, _): return p.senderPublicKeyB64
         case .fileEnd(let p, _):   return p.senderPublicKeyB64
@@ -223,6 +228,7 @@ enum ValidatedPacket {
     var senderIP: String {
         switch self {
         case .text(_, let ip), .typing(_, let ip), .receipt(_, let ip), .delete(_, let ip),
+             .edit(_, let ip),
              .fileStart(_, let ip), .fileChunk(_, let ip), .fileEnd(_, let ip),
              .discovery(_, let ip):
             return ip

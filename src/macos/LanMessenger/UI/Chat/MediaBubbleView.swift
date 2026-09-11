@@ -112,6 +112,11 @@ struct MediaBubbleView: View {
                             topTrailingRadius: 16
                         ))
             .frame(maxWidth: maxBubbleWidth + 12)
+            // Drag the bubble straight out to Finder, Mail, or any app that
+            // takes a file. NSItemProvider(contentsOf:) hands over a real file
+            // promise, so the receiving app copies the attachment rather than
+            // getting a path string.
+            .onDrag { AttachmentPasteboard.outgoingProvider(forFileAt: path) ?? NSItemProvider() }
             .contextMenu { bubbleContextMenu }
         }
     }

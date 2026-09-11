@@ -48,6 +48,11 @@ public sealed partial class MessageBubbleControl : UserControl
             UpdateStatusGlyph();
         else if (e.PropertyName == nameof(MessageRowViewModel.DeliveredViaRelay))
             UpdateRelayBadge();
+        // An inbound edit rewrites the body of a row that is already on screen;
+        // a full Refresh is what re-renders the text and the "edited" marker.
+        else if (e.PropertyName is nameof(MessageRowViewModel.Text)
+                                or nameof(MessageRowViewModel.Edited))
+            Refresh();
     }
 
     private void Refresh()
@@ -56,6 +61,10 @@ public sealed partial class MessageBubbleControl : UserControl
 
         _mediaKind = Row.IsFile ? MediaTypes.Classify(Row.FilePath) : MediaKind.Other;
         _fileExists = Row.IsFile && !string.IsNullOrEmpty(Row.FilePath) && File.Exists(Row.FilePath);
+        // Only offer drag-out for an attachment that still exists — a drag that
+        // delivers nothing is worse than no drag at all. Reset on every Refresh
+        // because ListView recycles these controls across rows.
+        Bubble.CanDrag = _fileExists && !Row.Deleted;
 
         TimestampText.Text = Row.Timestamp;
 
@@ -66,6 +75,7 @@ public sealed partial class MessageBubbleControl : UserControl
         FileActions.Visibility     = Visibility.Collapsed;
         FileMissingText.Visibility = Visibility.Collapsed;
         ShowInExplorerMenu.Visibility = Visibility.Collapsed;
+        EditedText.Visibility = Row.Edited && !Row.Deleted ? Visibility.Visible : Visibility.Collapsed;
         MessageText.Text = "";
         MessageText.Visibility = Visibility.Visible;
         MessageText.FontStyle = Windows.UI.Text.FontStyle.Normal;
@@ -310,6 +320,40 @@ public sealed partial class MessageBubbleControl : UserControl
     private async void ShowInExplorerMenu_Click(object sender, RoutedEventArgs e) =>
         await RevealInExplorerAsync();
 
+    /// <summary>
+    /// Hands the attachment to the drop target as a real file, so Explorer and
+    /// Outlook copy the file itself rather than receiving a path string.
+    /// </summary>
+    private async void Bubble_DragStarting(UIElement sender, DragStartingEventArgs args)
+    {
+        var path = Row?.FilePath;
+        if (Row is null || !Row.IsFile || string.IsNullOrEmpty(path) || !File.Exists(path))
+        {
+            args.Cancel = true;
+            return;
+        }
+
+        // StorageFile.GetFileFromPathAsync is async, and the drag starts the
+        // moment this handler returns — without the deferral the data package
+        // would still be empty when the shell reads it.
+        var deferral = args.GetDeferral();
+        try
+        {
+            var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(path);
+            args.Data.SetStorageItems(new[] { file });
+            args.Data.RequestedOperation = DataPackageOperation.Copy;
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("MessageBubble", $"drag out failed for {path}: {ex.Message}");
+            args.Cancel = true;
+        }
+        finally
+        {
+            deferral.Complete();
+        }
+    }
+
     private async void MediaTile_Tapped(object sender, TappedRoutedEventArgs e)
     {
         if (Row?.FilePath is not { Length: > 0 } path || !File.Exists(path))
@@ -372,6 +416,13 @@ public sealed partial class MessageBubbleControl : UserControl
         chatPage?.RequestReplyTo(Row?.MessageId);
     }
 
+    private void EditMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (Row is null || Row.Incoming || Row.Deleted || Row.IsFile) return;
+        var chatPage = FindParent<ChatPage>();
+        chatPage?.RequestEditMessage(Row.MessageId);
+    }
+
     private void CopyMenu_Click(object sender, RoutedEventArgs e)
     {
         if (Row is null) return;
@@ -385,6 +436,12 @@ public sealed partial class MessageBubbleControl : UserControl
         if (Row is null) return;
         var deleted = Row.Deleted;
         ReplyMenu.Visibility = deleted ? Visibility.Collapsed : Visibility.Visible;
+        // Only our own outgoing text messages can be edited. An attachment's
+        // text is a local file path rather than a body, and a deleted message
+        // has no body left to replace.
+        EditMenu.Visibility = (!deleted && !Row.Incoming && !Row.IsFile
+                               && !string.IsNullOrEmpty(Row.MessageId))
+            ? Visibility.Visible : Visibility.Collapsed;
         // Copy is already hidden implicitly by being meaningless on a placeholder,
         // but leave it visible — it just copies the empty deleted text.
         DeleteForEveryoneMenu.Visibility = (!deleted && !Row.Incoming) ? Visibility.Visible : Visibility.Collapsed;

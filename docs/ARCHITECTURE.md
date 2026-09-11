@@ -95,14 +95,21 @@ Use [FILE_MAP.md](FILE_MAP.md) for the detailed inventory.
 1. `LanMessengerApp` creates `AppModel` as a `@StateObject`.
 2. `LanMessengerAppDelegate.applicationWillFinishLaunching` applies the
    persisted dock policy before SwiftUI creates windows.
-3. `AppModel.init` wires service delegates and calls `start`.
-4. `start` sets a non-default username from `NSFullUserName`, starts networking,
+3. `LanMessengerAppDelegate.applicationDidFinishLaunching` starts
+   `DockPolicyGuard` and calls `WindowController.showMainWindow()`, which
+   surfaces the main window and pulls the app to the front. Without the explicit
+   surface, a launch lands behind whatever was already on screen, and a launch at
+   login can come up with the `Window` scene never materialised at all.
+4. `AppModel.init` wires service delegates and calls `start`.
+5. `start` sets a non-default username from `NSFullUserName`, starts networking,
    requests notification permission, loads history, starts timers, checks legacy
    migration, applies dock/login-item policy, and schedules update checks.
-5. The main `Window` hosts `ContentView`, which contains `NavigationSplitView`
+6. The main `Window` hosts `ContentView`, which contains `NavigationSplitView`
    with `SidebarView` and `ChatView`.
-6. `MenuBarExtra` remains available after the main window closes and can reopen
-   the app.
+7. `MenuBarExtra` remains available after the main window closes and can reopen
+   the app. Both `ContentView` and the `MenuBarExtra` label capture SwiftUI's
+   `openWindow` action into `WindowController`; the menu-bar copy is the one
+   that always runs, because the status item renders even when no window does.
 
 ### Windows
 
@@ -516,6 +523,15 @@ Important files:
 The app can hide from the Dock and live in the menu bar. Closing the last window
 does not terminate the app.
 
+Dock presence is not a one-shot setting. AppKit promotes an `.accessory` process
+back to `.regular` on its own — materialising a `Window` scene, running a modal
+panel, being re-activated after the updater relaunches the bundle — and there is
+no notification for "the activation policy changed". `DockPolicyGuard`
+(`Core/Services/DockPolicyGuard.swift`) re-asserts the `hide_from_dock`
+preference on app-activation and window-key notifications plus a 3 s safety-net
+tick, and is the single owner of the policy: the Settings toggle
+(`AppModel.applyDockPolicy`) and `WindowController` both go through it.
+
 ### Windows UI
 
 Important files:
@@ -554,6 +570,62 @@ that rectangle via `ScreenshotService.CropToRegionAsync`. A click without a
 drag falls back to the full-display capture. This covers the primary display
 only; multi-monitor region selection and per-window hover highlighting are
 follow-ups.
+
+## Message Editing
+
+A sender can replace the body of a text message they already sent. The flow
+mirrors "delete for everyone": the local copy is updated first, then an
+`edit_message` packet carries the new body to the peer, encrypted exactly like
+the original `text` (AAD = the original `message_id`).
+
+- `HistoryStore.applyEdit` / `ApplyEdit` is the single choke point on both
+  platforms and holds all the rules: only text messages, never attachments or
+  deleted messages, and — the security-relevant one — an inbound edit may only
+  rewrite a message that came *from* that peer. See PROTOCOL.md → edit_message.
+- The composer doubles as the editor. Picking "Edit" loads the message into the
+  composer, swaps the send glyph for a checkmark, and shows the banner strip
+  (shared with reply mode, which it is mutually exclusive with). Escape backs
+  out; the in-progress draft that edit mode displaced is restored.
+- Edited bubbles render an "edited" marker next to the timestamp. `timestamp`
+  keeps the original send time, so the message stays where it was in the thread.
+- Delivery is best-effort — one TCP write, no retry — with one exception: if the
+  original is still in the pending queue, the queued text is rewritten (and its
+  `relay_stored` flag cleared) so the peer receives the edited version as the
+  message's only version. An edit made while the peer is offline and the
+  original already delivered does not reach them.
+
+## Attachment Entry Points
+
+Every route into an attachment converges on the same call — `sendFile` on macOS,
+`SendFile` on Windows — so queueing, offline persistence, and history all behave
+identically no matter how the file arrived:
+
+- **File picker** — the paperclip button.
+- **Screenshot** — capture flow above.
+- **Drag and drop** — the drop target is the whole conversation, not just the
+  composer strip. macOS: `ChatView.onDrop` with a dashed-border overlay;
+  Windows: `AllowDrop` on the `ChatPage` root grid with the `DropOverlay`
+  border. `ComposerView`'s `NSTextView` calls `unregisterDraggedTypes()` so a
+  file dropped on the text area is sent rather than inserted as a path string.
+- **Paste** — Ctrl/Cmd+V with files or a bitmap on the clipboard. The
+  precedence is shared across platforms (`AttachmentPasteboard.decide` /
+  `ClipboardAttachments.Decide`): files beat a bitmap, and a bitmap only wins
+  when there is no text to paste instead. That last rule keeps ordinary text
+  pastes working from browsers, Word, and Outlook, which put an image flavour on
+  the clipboard alongside their text.
+- **Drag out** — an attachment bubble whose file still exists is itself a drag
+  source, so a received or sent file can be dragged into Finder/Explorer, a mail
+  compose window, or any other app. macOS uses `.onDrag` with
+  `NSItemProvider(contentsOf:)`; Windows sets `Border.CanDrag` and fills the data
+  package with a `StorageFile` under a `DragStarting` deferral. Both hand over a
+  real file rather than a path string.
+
+A pasted bitmap has no file of its own, so it is written to the configured
+screenshot folder (`screenshot_dir`, default
+`~/Downloads/LAN Messenger Screenshots`) as `Pasted image <timestamp>.png`.
+Deliberately not the system temp directory: history stores absolute paths, and
+temp is swept between reboots, which turns the bubble into "File no longer
+available" a day later.
 
 ## Update Architecture
 

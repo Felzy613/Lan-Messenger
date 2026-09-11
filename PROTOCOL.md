@@ -328,6 +328,52 @@ best-effort and unencrypted metadata only — it carries no message content.
 "Delete for me" (removing a message only from the local copy of a
 conversation) is a local-only operation and never sends a packet.
 
+### edit_message
+
+Encrypted replacement text for a message the sender already sent. Shaped like a
+`text` packet, but `message_id` is the id of the **original** message rather
+than a new one.
+
+```json
+{
+  "type": "edit_message",
+  "message_id": "a3f1b2c4d5e6f7a8b9c0d1e2f3a4b5c6",
+  "timestamp": 1715000123.456,
+  "sender": "Alice",
+  "sender_public_key_b64": "base64-public-key",
+  "port": 54232,
+  "nonce": "base64-12-byte-nonce",
+  "ciphertext": "base64-ciphertext-plus-tag"
+}
+```
+
+`timestamp` is when the edit was made, not when the original was sent; the
+original's timestamp is left untouched so the message keeps its place in the
+thread. Encryption is identical to `text` — X25519/HKDF/AES-GCM with the AAD set
+to the raw UTF-8 `message_id`, which here is the original message's id.
+
+A receiver applies the edit only to an entry that is **incoming from that
+peer**. This is a security rule, not a tidiness one: the peer already knows the
+`message_id` of every message we sent them, so an `edit_message` naming one of
+our own outgoing messages must be rejected rather than allowed to rewrite what
+we said. Attachments (`text` values with the `__FILE__:` prefix) and messages
+already marked `deleted` are never editable. An `edit_message` for an unknown
+`message_id` is dropped.
+
+On success the entry's `text` is replaced and `edited` / `edited_at` are set.
+Reply metadata on the original is left as-is — an edit changes the body, not
+what the message was replying to.
+
+Like `delete_message`, `edit_message` is best-effort: it is written over a
+one-shot TCP connection with no queue or retry, so an edit made while the peer
+is offline does not reach them. The one exception is an original that is still
+sitting in the sender's pending-message queue: that queued copy is rewritten in
+place, so when it finally delivers, the peer receives the edited text as the
+message's first and only version.
+
+Clients that do not implement `edit_message` reject it as an unknown type and
+keep showing the original text, which stays consistent with what was sent.
+
 ### file_start
 
 Starts an encrypted file transfer. Metadata is not encrypted.
@@ -488,7 +534,9 @@ Inner plaintext JSON:
       "reply_to_message_id": null,
       "reply_to_preview": null,
       "reply_to_sender": null,
-      "deleted": false
+      "deleted": false,
+      "edited": false,
+      "edited_at": null
     }
   ]
 }
@@ -505,6 +553,12 @@ Rules:
 - `deleted` is optional and defaults to `false` when absent (back-compat with
   older history files). When `true`, `text` and reply preview fields are
   cleared and the UI renders a "this message was deleted" placeholder.
+- `edited` is optional and defaults to `false`; `edited_at` is optional and is
+  the Unix timestamp of the most recent edit. Both must decode cleanly when
+  absent. `timestamp` continues to hold the original send time, so an edited
+  message keeps its position in the thread. When `edited` is `true` the UI
+  appends an "(edited)" marker; only the latest text is retained — history
+  keeps no revision list.
 
 ## Config Format
 

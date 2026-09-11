@@ -13,6 +13,8 @@ struct MessageBubbleView: View {
     /// Called when the user chooses a delete option from the context menu.
     /// The Bool is `forEveryone` — true for "Delete for Everyone", false for "Delete for Me".
     var onDelete: ((Bool) -> Void)? = nil
+    /// Called when the user picks "Edit" — the composer takes over from there.
+    var onEdit: (() -> Void)? = nil
     @Environment(\.colorScheme) var colorScheme
     // Tracks whether the received file still exists on disk (checked asynchronously).
     @State private var fileExists = false
@@ -191,6 +193,15 @@ struct MessageBubbleView: View {
                         topTrailingRadius: 16
                     ))
         .frame(maxWidth: 320)
+        // Same drag-out affordance as the media bubbles. Gated on fileExists so
+        // a bubble whose file was moved or deleted doesn't start a drag that
+        // delivers nothing.
+        .onDrag {
+            guard fileExists, let provider = AttachmentPasteboard.outgoingProvider(forFileAt: path) else {
+                return NSItemProvider()
+            }
+            return provider
+        }
         .task(id: path) {
             // Check file existence off the main thread so the view body stays non-blocking.
             let result = await Task.detached(priority: .utility) {
@@ -245,6 +256,7 @@ struct MessageBubbleView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                 HStack(spacing: 4) {
+                    editedMarker
                     Text(formattedTime)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -288,6 +300,7 @@ struct MessageBubbleView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 4) {
                 Spacer(minLength: 0)
+                editedMarker
                 Text(formattedTime)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -314,11 +327,41 @@ struct MessageBubbleView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(entry.text, forType: .string)
             } label: { Label("Copy", systemImage: "doc.on.doc") }
+            if canEdit {
+                Button { onEdit?() } label: { Label("Edit", systemImage: "pencil") }
+            }
             deleteMenuItems(allowDeleteForEveryone: true)
         }
     }
 
     // MARK: - Helpers
+
+    /// Only our own outgoing text messages can be edited. An attachment's text
+    /// is a local file path rather than a body, and a deleted message has no
+    /// body left to replace.
+    private var canEdit: Bool {
+        onEdit != nil
+            && !entry.incoming
+            && !entry.deleted
+            && entry.messageId != nil
+            && filePath == nil
+    }
+
+    @ViewBuilder
+    private var editedMarker: some View {
+        if entry.edited && !entry.deleted {
+            Text("edited")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .help(editedTooltip)
+        }
+    }
+
+    private var editedTooltip: String {
+        guard let at = entry.editedAt else { return "This message was edited" }
+        let when = Date(timeIntervalSince1970: at).formatted(.dateTime.hour().minute())
+        return "Edited at \(when)"
+    }
 
     private var formattedTime: String {
         Date(timeIntervalSince1970: entry.timestamp).formatted(.dateTime.hour().minute())

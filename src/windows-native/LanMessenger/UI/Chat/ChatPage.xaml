@@ -5,7 +5,14 @@
     xmlns:local="using:LanMessenger.UI.Chat"
     xmlns:ui="using:LanMessenger.UI">
 
-    <Grid Background="{ThemeResource AppChatBackgroundBrush}">
+    <!-- The whole thread is the drop target, not just the composer strip:
+         aiming at a 48 px bar at the bottom of the window is the kind of thing
+         you only get right on the second try. -->
+    <Grid Background="{ThemeResource AppChatBackgroundBrush}"
+          AllowDrop="True"
+          DragOver="Page_DragOver"
+          DragLeave="Page_DragLeave"
+          Drop="Page_Drop">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -79,7 +86,7 @@
             </ListView.ItemContainerStyle>
         </ListView>
 
-        <!-- Reply banner (shown when replying) -->
+        <!-- Reply banner (shown when replying, or when editing a sent message) -->
         <Border x:Name="ReplyBanner"
                 Grid.Row="3"
                 Background="{ThemeResource LayerFillColorDefaultBrush}"
@@ -119,5 +126,31 @@
                                Grid.Row="4"
                                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                                BorderThickness="0,1,0,0" />
+
+        <!-- Drop affordance. Spans every row and ignores hit-testing so it
+             never intercepts the drop it is advertising. -->
+        <Border x:Name="DropOverlay"
+                Grid.Row="0" Grid.RowSpan="5"
+                Background="#1425D366"
+                BorderBrush="#25D366"
+                BorderThickness="2"
+                CornerRadius="12"
+                Margin="8"
+                IsHitTestVisible="False"
+                Visibility="Collapsed">
+            <StackPanel HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Spacing="8">
+                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                          Glyph="&#xE723;"
+                          FontSize="34"
+                          Foreground="#25D366" />
+                <TextBlock x:Name="DropOverlayText"
+                           FontSize="13"
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+        </Border>
     </Grid>
 </Page>

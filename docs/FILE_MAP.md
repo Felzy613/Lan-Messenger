@@ -155,6 +155,9 @@ state for the app.
 | `src/macos/LanMessenger/Core/Services/UpdateService.swift` | GitHub release checks, ZIP download, SHA256 verification, extraction, helper script install, and relaunch. |
 | `src/macos/LanMessenger/Core/Services/LoginItemService.swift` | macOS 13+ launch-at-login management through `SMAppService.mainApp`. |
 | `src/macos/LanMessenger/Core/Services/NetLogger.swift` | Structured network logger to app-data log file and `os_log`. |
+| `src/macos/LanMessenger/Core/Services/DockPolicyGuard.swift` | Keeps Dock presence in sync with `hide_from_dock`. AppKit promotes an `.accessory` process back to `.regular` on its own and emits no notification for it, so the guard re-asserts the preference on activation/window-key notifications plus a 3 s tick. Single owner of the activation policy; reads/writes `NSApp` through injected closures so the correction logic is testable. |
+| `src/macos/LanMessenger/Core/Services/AttachmentStore.swift` | Durable on-disk home for attachments the app generates itself (screen captures, pasted bitmaps): directory resolution honouring `screenshot_dir`, filename timestamps, and collision-free naming. Not the system temp directory — history stores absolute paths. |
+| `src/macos/LanMessenger/Core/Services/AttachmentPasteboard.swift` | Reads attachments off `NSPasteboard` (⌘V) and off drag-and-drop item providers; writes pasted bitmaps to disk; builds the `NSItemProvider` used when dragging an attachment out of a bubble. `decide` holds the files-beat-bitmap, bitmap-only-without-text paste precedence. |
 | `src/macos/LanMessenger/Core/Services/ScreenshotService.swift` | Screenshot capture: `captureInteractive()` launches `/usr/sbin/screencapture -i` for a native drag-to-select-region/click-a-window overlay (primary flow); `capturePrimaryDisplay`/`getShareableWindows`/`captureWindow` are ScreenCaptureKit-based alternatives retained but no longer wired into the composer. All paths write a PNG to a temp dir and return the path for the existing file-transfer pipeline. |
 
 ## macOS UI
@@ -167,10 +170,10 @@ state for the app.
 | `src/macos/LanMessenger/UI/Sidebar/SidebarView.swift` | Conversation list, toolbar buttons, empty state, new-message picker, archive sheet. |
 | `src/macos/LanMessenger/UI/Sidebar/ConversationRowView.swift` | Sidebar row rendering: avatar, preview, timestamp, unread count, typing, online state. |
 | `src/macos/LanMessenger/UI/Sidebar/ContactsView.swift` | Contacts sheet, search, add-from-LAN scanner, contact editor, contact photos, naming flow. |
-| `src/macos/LanMessenger/UI/Chat/ChatView.swift` | Chat detail view, header, message list, reply banner, transfer banner, read marking. |
-| `src/macos/LanMessenger/UI/Chat/ComposerView.swift` | NSTextView-backed composer, Return-to-send, Shift+Return newline, drag/drop, file picker, per-conversation draft restore, and screenshot capture button (`screencapture -i` interactive overlay). `WindowPickerView`/`ScreenshotPreviewView` remain defined here; the window-picker sheet is no longer shown. |
-| `src/macos/LanMessenger/UI/Chat/MessageBubbleView.swift` | Text/file bubble rendering, status icons, reply chips, copy/show/delete context menus, and "This message was deleted" placeholder; delegates to `MediaBubbleView` for image and video attachments. |
-| `src/macos/LanMessenger/UI/Chat/MediaBubbleView.swift` | Inline image and video bubbles with async thumbnail decode (NSImage / AVAssetImageGenerator), an in-memory `ThumbnailCache`, and a modal preview sheet hosting `NSImageView`/`VideoPlayer`. |
+| `src/macos/LanMessenger/UI/Chat/ChatView.swift` | Chat detail view, header, message list, reply banner, transfer banner, read marking, and the thread-wide file drop target (`onDrop` + dashed-border overlay) that sends dropped files as attachments. |
+| `src/macos/LanMessenger/UI/Chat/ComposerView.swift` | `PastingTextView` (NSTextView subclass) composer, Return-to-send, Shift+Return newline, ⌘V paste-to-attach, file picker, per-conversation draft restore, and screenshot capture button (`screencapture -i` interactive overlay). `WindowPickerView`/`ScreenshotPreviewView` remain defined here; the window-picker sheet is no longer shown. |
+| `src/macos/LanMessenger/UI/Chat/MessageBubbleView.swift` | Text/file bubble rendering, status icons, reply chips, copy/show/delete context menus, drag-out of the attached file, and "This message was deleted" placeholder; delegates to `MediaBubbleView` for image and video attachments. |
+| `src/macos/LanMessenger/UI/Chat/MediaBubbleView.swift` | Inline image and video bubbles with async thumbnail decode (NSImage / AVAssetImageGenerator), an in-memory `ThumbnailCache`, drag-out of the attached file, and a modal preview sheet hosting `NSImageView`/`VideoPlayer`. |
 | `src/macos/LanMessenger/UI/Chat/MediaTypes.swift` | Extension-based image/video classification (`MediaKind`) and `FinderReveal` helper that opens Finder with the file selected off the main thread. |
 | `src/macos/LanMessenger/UI/Chat/FileTransferBannerView.swift` | In-chat transfer progress banner. |
 | `src/macos/LanMessenger/UI/Settings/SettingsView.swift` | Identity, dock/menu-bar behavior, login item, inbox, update source/check/install, about section. |
@@ -179,11 +182,14 @@ state for the app.
 
 | Path | Purpose |
 |---|---|
+| `src/macos/LanMessengerTests/AttachmentPasteboardTests.swift` | Paste precedence (files vs bitmap vs text), pasted-bitmap flavour/extension choice, drag item-provider decoding, and `AttachmentStore` naming/placement. |
 | `src/macos/LanMessengerTests/ConfigStoreTests.swift` | Config and filename sanitization tests. |
+| `src/macos/LanMessengerTests/DockPolicyGuardTests.swift` | Guards the Dock-presence invariant: an AppKit promotion back to `.regular` must be corrected, and a policy that already matches must be left alone. |
 | `src/macos/LanMessengerTests/CryptoTests.swift` | Session/history crypto round trips and known vector tests. |
 | `src/macos/LanMessengerTests/DiscoveryServiceQueueTests.swift` | Guards the discovery threading invariant: the blocking receive loop must not starve the beacon timer or socket rebuild. |
 | `src/macos/LanMessenger/Core/Services/CrashReporter.swift` | Uncaught-exception and fatal-signal handlers; abnormal-termination marker. |
 | `src/macos/LanMessengerTests/FrameCodecTests.swift` | Frame codec and known frame tests. |
+| `src/macos/LanMessengerTests/MessageEditTests.swift` | Message-edit rules: the requireIncoming security gate, attachments/deleted messages being uneditable, history back-compat, and `edit_message` packet validation. |
 | `src/macos/LanMessengerTests/HistoryStoreTests.swift` | History encryption, cap, wrong-key, and known history vector tests. |
 | `src/macos/LanMessengerTests/MessageStatusTests.swift` | Monotonic status behavior tests. |
 | `src/macos/LanMessengerTests/NetworkInterfaceMonitorTests.swift` | Adapter filtering, broadcast, lifecycle, and observer tests. |
@@ -261,6 +267,8 @@ state for the app.
 | `src/windows-native/LanMessenger/Core/Services/UpdateService.cs` | GitHub release checks, EXE download, SHA256 verification, elevated silent installer handoff, and exit. |
 | `src/windows-native/LanMessenger/Core/Services/LanLogger.cs` | Structured log writer under `%APPDATA%\LanMessenger\Logs`. |
 | `src/windows-native/LanMessenger/Core/Services/CryptoRuntimeDiagnostics.cs` | One-time diagnostics for libsodium and VC++ runtime DLL availability. |
+| `src/windows-native/LanMessenger/Core/Services/ClipboardAttachments.cs` | Decides what Ctrl+V in the composer means (files beat a bitmap; a bitmap only wins with no text alongside) and names pasted-image files. WinRT-free so the precedence rules compile and test off Windows. |
+| `src/windows-native/LanMessenger/Core/Services/PastedImageWriter.cs` | Decodes a clipboard bitmap and re-encodes it as PNG into the configured screenshot folder, returning the path for the existing file-transfer pipeline. |
 | `src/windows-native/LanMessenger/Core/Services/ScreenshotService.cs` | Primary-display and per-window capture via GDI `CopyFromScreen`/`PrintWindow`; `CropToRegionAsync` crops a captured PNG to a pixel rectangle for the drag-to-select-region flow. Writes PNG to `%TEMP%\LanMessenger-Screenshots` and returns the path for the existing file-transfer pipeline. |
 
 ## Windows UI
@@ -281,13 +289,13 @@ state for the app.
 | `src/windows-native/LanMessenger/UI/Sidebar/ArchivedPage.xaml.cs` | Archived list binding and open/back events. |
 | `src/windows-native/LanMessenger/UI/Sidebar/ContactEditorDialog.cs` | Contact editor, peer picker, naming dialog, and new-message dialog implementations. |
 | `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml` | Chat page XAML. |
-| `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml.cs` | Chat binding, selected peer handling, read receipts, messages, reply behavior, transfers, per-conversation draft save/restore (`AppModel.Drafts`), message deletion (`RequestDeleteMessage`), and the screenshot capture flow including drag-to-select-region. |
-| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml` | Composer XAML with text entry, send, attachment, screenshot, and drop target UI. |
-| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml.cs` | Composer key handling, typing callbacks, send callbacks, file drop/picker, screenshot-request event, and a `Text` property used to save/restore per-conversation drafts. |
+| `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml.cs` | Chat binding, selected peer handling, read receipts, messages, reply behavior, transfers, per-conversation draft save/restore (`AppModel.Drafts`), message deletion (`RequestDeleteMessage`), the page-wide file drop target (`Page_DragOver`/`Page_Drop` + `DropOverlay`), and the screenshot capture flow including drag-to-select-region. |
+| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml` | Composer XAML with text entry, send, attachment, and screenshot UI. File drops belong to `ChatPage`, which covers the whole thread; `InputBox` pins `AllowDrop="False"` so the TextBox can't claim one. |
+| `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml.cs` | Composer key handling, typing callbacks, send callbacks, file picker request, Ctrl+V paste-to-attach (`FilesPasted`), screenshot-request event, and a `Text` property used to save/restore per-conversation drafts. |
 | `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml` | Message/file bubble XAML including the inline image tile, video poster tile, document action row, and the "Delete for Me" / "Delete for Everyone" context-menu items. |
-| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml.cs` | Bubble rendering, inline media branching, "Open" / "Show in folder" actions, status visuals, reply interactions, modal preview launch, the "deleted message" placeholder, and delete-menu click handlers. |
+| `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml.cs` | Bubble rendering, inline media branching, "Open" / "Show in folder" actions, status visuals, reply interactions, modal preview launch, drag-out of the attached file (`CanDrag` + `DragStarting`), the "deleted message" placeholder, and delete-menu click handlers. |
 | `src/windows-native/LanMessenger/UI/Chat/ScreenshotDialogs.cs` | `ScreenshotWindowPickerDialog` (choose "Select region...", a window, or full screen) and `ScreenshotPreviewDialog` (send/cancel preview). |
-| `src/windows-native/LanMessenger/UI/Chat/RegionSelectOverlayWindow.xaml.cs` | Full-screen borderless overlay over the primary display for drag-to-select-region screenshot capture; crops the pre-captured backing bitmap to the dragged rectangle. Primary-display only — multi-monitor and per-window hover highlighting are follow-ups. |
+| `src/windows-native/LanMessenger/UI/Chat/RegionSelectOverlayWindow.xaml.cs` | Full-screen borderless overlay over the primary display for drag-to-select-region screenshot capture; crops the pre-captured backing bitmap to the dragged rectangle. Code-only window — there is no matching `.xaml`. Primary-display only — multi-monitor and per-window hover highlighting are follow-ups. |
 | `src/windows-native/LanMessenger/UI/Chat/MediaTypes.cs` | Extension-based image/video classification (`MediaKind`) and `FileReveal` helper that calls `explorer.exe /select` off the UI thread. |
 | `src/windows-native/LanMessenger/UI/Chat/MediaPreviewDialog.xaml` | Modal media viewer XAML (image / `MediaPlayerElement`). |
 | `src/windows-native/LanMessenger/UI/Chat/MediaPreviewDialog.xaml.cs` | Modal viewer code-behind: lazy media-source binding, transport-control teardown on close, and "Show in folder" primary-button handling. |
@@ -300,9 +308,11 @@ state for the app.
 
 | Path | Purpose |
 |---|---|
+| `src/windows-native/LanMessenger.Tests/ClipboardAttachmentsTests.cs` | Ctrl+V paste precedence and pasted-image filename safety. |
 | `src/windows-native/LanMessenger.Tests/ConfigStoreTests.cs` | Config and filename sanitization tests. |
 | `src/windows-native/LanMessenger.Tests/CryptoTests.cs` | Session/history crypto round trips and known vector tests. |
 | `src/windows-native/LanMessenger.Tests/FrameCodecTests.cs` | Frame codec and known frame tests. |
+| `src/windows-native/LanMessenger.Tests/MessageEditTests.cs` | Message-edit rules: the requireIncoming security gate, attachments/deleted messages being uneditable, history back-compat, and `edit_message` packet validation. |
 | `src/windows-native/LanMessenger.Tests/HistoryStoreTests.cs` | History encryption, cap, wrong-key, and known history vector tests. |
 | `src/windows-native/LanMessenger.Tests/MessageStatusTests.cs` | Monotonic status behavior tests. |
 | `src/windows-native/LanMessenger.Tests/NetworkInterfaceMonitorTests.cs` | Adapter filtering and broadcast tests. |

@@ -116,6 +116,15 @@ public sealed class ValidatedDelete(ReceiptPacket packet, string senderIP) : Val
     public override string? SenderPublicKeyB64 { get; } = packet.SenderPublicKeyB64;
 }
 
+// edit_message reuses TextPacket: identical shape, but MessageId names the
+// ORIGINAL message rather than a new one. See PROTOCOL.md -> edit_message.
+public sealed class ValidatedEdit(TextPacket packet, string senderIP) : ValidatedPacket
+{
+    public TextPacket Packet { get; } = packet;
+    public override string  SenderIP           { get; } = senderIP;
+    public override string? SenderPublicKeyB64 { get; } = packet.SenderPublicKeyB64;
+}
+
 public sealed class ValidatedFileStart(FileStartPacket packet, string senderIP) : ValidatedPacket
 {
     public FileStartPacket Packet { get; } = packet;

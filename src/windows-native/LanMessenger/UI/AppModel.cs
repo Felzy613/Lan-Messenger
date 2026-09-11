@@ -770,6 +770,61 @@ public sealed partial class AppModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Replaces the text of one of our own outgoing messages, locally and on
+    /// the peer. Returns false when the message isn't editable, so the caller
+    /// can leave the composer in edit mode rather than silently dropping it.
+    ///
+    /// Only our own outgoing text messages qualify: an attachment's Text is a
+    /// local file path, not a body, and a deleted message has no body left.
+    /// </summary>
+    public bool EditMessage(MessageEntry entry, string newText, string peerIP)
+    {
+        if (entry.Incoming || string.IsNullOrEmpty(entry.MessageId)) return false;
+        if (entry.Deleted || entry.Text.StartsWith("__FILE__:", StringComparison.Ordinal)) return false;
+
+        var trimmed = newText.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return false;
+        // A no-op edit still costs a packet and adds an "(edited)" marker the
+        // user didn't ask for.
+        if (trimmed == entry.Text) return true;
+
+        var editedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+        if (!HistoryStore.Shared.ApplyEdit(entry.MessageId, peerIP, trimmed, editedAt, requireIncoming: false))
+            return false;
+        HistoryStore.Shared.Save();
+
+        if (Messages.TryGetValue(peerIP, out var list))
+        {
+            var e = list.FirstOrDefault(x => x.MessageId == entry.MessageId);
+            if (e is not null)
+            {
+                e.Text     = trimmed;
+                e.Edited   = true;
+                e.EditedAt = editedAt;
+            }
+        }
+
+        // Same key resolution as SendMessage — an offline peer still has a
+        // known key, and the queued-message rewrite inside SendEditMessage is
+        // the part that matters while they're away.
+        var key = PeerByIP(peerIP)?.PublicKeyB64
+                  ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
+                  ?? _knownPeerKeys.GetValueOrDefault(peerIP);
+        if (!string.IsNullOrEmpty(key))
+        {
+            MessagingService.Shared.SendEditMessage(entry.MessageId, trimmed, peerIP, key, editedAt);
+        }
+        else
+        {
+            LanLogger.Warn("Edit", $"no public key for peer={peerIP} — edit applied locally only");
+        }
+
+        OnPropertyChanged(nameof(Messages));
+        RefreshConversations();
+        return true;
+    }
+
     // Queue or send a file. If the peer is offline, the path is persisted in
     // config and retried whenever the peer comes back online.
     public bool SendFile(string filePath, string peerIP)
@@ -1154,6 +1209,20 @@ public sealed partial class AppModel : ObservableObject
             entry.ReplyToMessageId = null;
             entry.ReplyToPreview   = null;
             entry.ReplyToSender    = null;
+            OnPropertyChanged(nameof(Messages));
+            RefreshConversations();
+        };
+
+        // Inbound edit already applied to HistoryStore by MessagingService;
+        // mirror it into the in-memory copy the UI renders from.
+        MessagingService.Shared.OnMessageEdited = (ip, messageId, newText, editedAt) =>
+        {
+            if (!Messages.TryGetValue(ip, out var list)) return;
+            var entry = list.FirstOrDefault(e => e.MessageId == messageId);
+            if (entry is null) return;
+            entry.Text     = newText;
+            entry.Edited   = true;
+            entry.EditedAt = editedAt;
             OnPropertyChanged(nameof(Messages));
             RefreshConversations();
         };

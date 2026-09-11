@@ -80,6 +80,18 @@ enum PacketValidator {
             }
             return .success(.delete(pkt, senderIP: senderIP))
 
+        case .editMessage:
+            // Same shape as `text` — the payload is the replacement body,
+            // encrypted with the original message_id as AAD.
+            guard let d = data, let pkt = try? JSONDecoder().decode(TextPacket.self, from: d) else {
+                return .failure(.missingRequiredField("edit_message fields"))
+            }
+            guard !pkt.messageId.isEmpty else {
+                return .failure(.missingRequiredField("edit_message message_id"))
+            }
+            guard validateNonce(pkt.nonce) else { return .failure(.invalidNonce) }
+            return .success(.edit(pkt, senderIP: senderIP))
+
         case .fileStart:
             guard let d = data, let pkt = try? JSONDecoder().decode(FileStartPacket.self, from: d) else {
                 return .failure(.missingRequiredField("file_start fields"))

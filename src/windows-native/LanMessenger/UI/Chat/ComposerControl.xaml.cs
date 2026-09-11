@@ -1,3 +1,4 @@
+using LanMessenger.Core.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -11,8 +12,12 @@ public sealed partial class ComposerControl : UserControl
     public event Action<string>?                 Send;
     public event Action<bool>?                   TypingChanged;
     public event Action?                         AttachRequested;
-    public event Action<IReadOnlyList<string>>?  FilesDropped;
+    /// Raised when Ctrl+V carried files or a bitmap rather than text.
+    /// File *drops* are handled by ChatPage, which covers the whole thread.
+    public event Action<IReadOnlyList<string>>?  FilesPasted;
     public event Action?                         ScreenshotRequested;
+    /// Raised on Escape — ChatPage uses it to back out of edit/reply mode.
+    public event Action?                         CancelRequested;
 
     private DateTime         _lastTypingSent = DateTime.MinValue;
     private bool             _typingActive;
@@ -40,6 +45,21 @@ public sealed partial class ComposerControl : UserControl
         }
     }
 
+    /// True while the composer is editing an already-sent message. Swaps the
+    /// send glyph for a checkmark so the button doesn't read as "send a new
+    /// message" while it is actually saving an edit.
+    private bool _isEditing;
+    public bool IsEditing
+    {
+        get => _isEditing;
+        set
+        {
+            _isEditing = value;
+            SendIcon.Glyph = value ? "\uE73E" : "\uE74A";   // Checkmark : Send
+            ToolTipService.SetToolTip(SendBtn, value ? "Save edit" : "Send");
+        }
+    }
+
     public ComposerControl()
     {
         InitializeComponent();
@@ -51,6 +71,14 @@ public sealed partial class ComposerControl : UserControl
 
     private void InputBox_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // Escape backs out of edit or reply mode. Editing shows an already-sent
+        // message in the composer, so there has to be a way out that doesn't send.
+        if (e.Key == VirtualKey.Escape)
+        {
+            e.Handled = true;
+            CancelRequested?.Invoke();
+            return;
+        }
         if (e.Key != VirtualKey.Enter) return;
 
         var shift = (Microsoft.UI.Input.InputKeyboardSource
@@ -140,20 +168,57 @@ public sealed partial class ComposerControl : UserControl
         ScreenshotRequested?.Invoke();
     }
 
-    private void OnDragOver(object sender, DragEventArgs e)
+    /// <summary>
+    /// Ctrl+V with files or a screenshot on the clipboard sends them as
+    /// attachments instead of pasting a path (or nothing at all) into the draft.
+    /// Plain text falls through to the TextBox untouched — see
+    /// <see cref="ClipboardAttachments.Decide"/> for the precedence rules.
+    /// </summary>
+    private async void InputBox_Paste(object sender, TextControlPasteEventArgs e)
     {
-        if (e.DataView.Contains(StandardDataFormats.StorageItems))
+        DataPackageView view;
+        try
         {
-            e.AcceptedOperation = DataPackageOperation.Copy;
-            e.Handled = true;
+            view = Clipboard.GetContent();
         }
-    }
+        catch (Exception ex)
+        {
+            // Another process can hold the clipboard open; let the TextBox try.
+            LanLogger.Warn("Paste", $"clipboard read failed: {ex.Message}");
+            return;
+        }
 
-    private async void OnDrop(object sender, DragEventArgs e)
-    {
-        if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
-        var items = await e.DataView.GetStorageItemsAsync();
-        var paths = items.OfType<Windows.Storage.IStorageFile>().Select(f => f.Path).ToList();
-        if (paths.Count > 0) FilesDropped?.Invoke(paths);
+        var hasStorageItems = view.Contains(StandardDataFormats.StorageItems);
+        var hasBitmap       = view.Contains(StandardDataFormats.Bitmap);
+        var hasText         = view.Contains(StandardDataFormats.Text);
+        var action = ClipboardAttachments.Decide(hasStorageItems, hasBitmap, hasText);
+        if (action == PasteAction.InsertText) return;
+
+        // Must be set before the first await: once this handler yields, the
+        // TextBox has already decided whether to insert the clipboard text.
+        e.Handled = true;
+
+        try
+        {
+            if (action == PasteAction.AttachFiles)
+            {
+                var items = await view.GetStorageItemsAsync();
+                var paths = items.OfType<Windows.Storage.IStorageFile>()
+                                 .Select(f => f.Path)
+                                 .Where(p => !string.IsNullOrEmpty(p))
+                                 .ToList();
+                if (paths.Count > 0) FilesPasted?.Invoke(paths);
+            }
+            else
+            {
+                var reference = await view.GetBitmapAsync();
+                var path = await PastedImageWriter.SavePngAsync(reference);
+                if (path is not null) FilesPasted?.Invoke(new[] { path });
+            }
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Paste", $"pasting attachment failed: {ex.Message}");
+        }
     }
 }

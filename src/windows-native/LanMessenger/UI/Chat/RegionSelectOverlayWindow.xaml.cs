@@ -98,7 +98,14 @@ public sealed class RegionSelectOverlayWindow : Window
             },
         };
 
-        _root = new Grid { Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors.Transparent) };
+        // IsTabStop makes the root focusable so the Escape accelerator below
+        // actually receives keyboard input — an unfocusable root swallows Esc
+        // and leaves the user stuck on a full-screen overlay.
+        _root = new Grid
+        {
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors.Transparent),
+            IsTabStop  = true,
+        };
         _root.Children.Add(_background);
         _root.Children.Add(dim);
         _root.Children.Add(_selectionRect);
@@ -143,11 +150,16 @@ public sealed class RegionSelectOverlayWindow : Window
         var display = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
         AppWindow.MoveAndResize(display.OuterBounds);
 
-        Activated += (_, _) =>
-        {
-            var hwnd = WindowNative.GetWindowHandle(this);
-            SetForegroundWindowInternal(hwnd);
-        };
+        // Raise the overlay above whatever the user was looking at. This runs on
+        // every activation, so it must never throw: an exception escaping a
+        // WinUI event handler takes the whole process down, and this handler is
+        // the first thing that runs when the overlay appears.
+        Activated += OnOverlayActivated;
+
+        // Any other route out of the overlay (Alt+F4, a shell close) must still
+        // complete the awaiting task, or the composer's screenshot button stays
+        // stuck in its busy state for the rest of the session.
+        Closed += (_, _) => Finish(RegionSelectResult.Cancelled);
     }
 
     /// <summary>
@@ -222,9 +234,29 @@ public sealed class RegionSelectOverlayWindow : Window
     {
         if (_result.Task.IsCompleted) return;
         _result.TrySetResult(result);
+        Activated -= OnOverlayActivated;
         try { Close(); } catch { }
     }
 
+    private void OnOverlayActivated(object sender, WindowActivatedEventArgs args)
+    {
+        if (args.WindowActivationState == WindowActivationState.Deactivated) return;
+        try
+        {
+            SetForegroundWindow(WindowNative.GetWindowHandle(this));
+            _root.Focus(FocusState.Programmatic);
+        }
+        catch (Exception ex)
+        {
+            // Foregrounding is a nicety — the overlay is already always-on-top.
+            LanLogger.Warn("Screenshot", $"region overlay foreground failed: {ex.Message}");
+        }
+    }
+
+    // user32 exports SetForegroundWindow. An earlier revision declared this as
+    // "SetForegroundWindowInternal", which is not an exported entry point, so
+    // the first activation threw EntryPointNotFoundException on the UI thread
+    // and crashed the app the moment the region overlay opened.
     [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool SetForegroundWindowInternal(IntPtr hWnd);
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

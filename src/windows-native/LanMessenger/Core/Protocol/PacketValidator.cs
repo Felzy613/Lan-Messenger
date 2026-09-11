@@ -50,6 +50,15 @@ public static class PacketValidator
                     if (pkt is null || string.IsNullOrEmpty(pkt.MessageId)) return null;
                     return new ValidatedDelete(pkt, senderIP);
                 }
+                case "edit_message":
+                {
+                    // Same shape as `text` — the payload is the replacement
+                    // body, encrypted with the original message_id as AAD.
+                    var pkt = JsonSerializer.Deserialize<TextPacket>(data);
+                    if (pkt is null || string.IsNullOrEmpty(pkt.MessageId)) return null;
+                    if (!ValidateNonce(pkt.Nonce)) return null;
+                    return new ValidatedEdit(pkt, senderIP);
+                }
                 case "file_start":
                 {
                     var pkt = JsonSerializer.Deserialize<FileStartPacket>(data);

@@ -427,26 +427,11 @@ enum ScreenshotService {
     // maintenance, so absolute paths stored in chat history would become invalid
     // after a restart, showing "File no longer available".
     nonisolated private static func tempScreenshotDirectory(customPath: String = "") throws -> URL {
-        let fm = FileManager.default
-        let base: URL
-        if !customPath.isEmpty {
-            base = URL(fileURLWithPath: customPath)
-        } else {
-            let downloads = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first
-                ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            base = downloads.appendingPathComponent("LAN Messenger Screenshots", isDirectory: true)
-        }
-        if !fm.fileExists(atPath: base.path) {
-            try fm.createDirectory(at: base, withIntermediateDirectories: true)
-        }
-        return base
+        try AttachmentStore.directory(customPath: customPath)
     }
 
     nonisolated private static func filenameTimestamp() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        f.locale = Locale(identifier: "en_US_POSIX")
-        return f.string(from: Date())
+        AttachmentStore.timestampComponent()
     }
 }
 

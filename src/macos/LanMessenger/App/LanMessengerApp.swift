@@ -20,7 +20,22 @@ final class LanMessengerAppDelegate: NSObject, NSApplicationDelegate {
         NetLogger.ui(event: "app_launch")
 
         let hideFromDock = ConfigStore.shared.config.hideFromDock
-        NSApp.setActivationPolicy(hideFromDock ? .accessory : .regular)
+        NSApp.setActivationPolicy(DockPolicyGuard.desiredPolicy(hideFromDock: hideFromDock))
+    }
+
+    // Two things have to happen once AppKit is up, and neither can be left to
+    // SwiftUI's defaults:
+    //
+    //  1. Surface the main window and pull the app to the front. A plain launch
+    //     otherwise lands *behind* whatever was already on screen, and a launch
+    //     at login can come up with the Window scene never materialised at all —
+    //     which used to be unrecoverable, because `showMainWindow()` had no
+    //     window to raise and no captured `openWindow` action to create one.
+    //  2. Start the Dock-policy guard, so an AppKit promotion back to .regular
+    //     can't leave a Dock icon on screen the user has switched off.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DockPolicyGuard.shared.start()
+        WindowController.showMainWindow()
     }
 
     // Don't quit when the last window closes — we live in the menu bar.
@@ -55,6 +70,12 @@ final class LanMessengerAppDelegate: NSObject, NSApplicationDelegate {
 enum WindowController {
     static var openWindow: ((String) -> Void)?
 
+    /// SwiftUI's main window, as opposed to the MenuBarExtra's status-item
+    /// window and any media-preview panel.
+    private static func isMainWindow(_ w: NSWindow) -> Bool {
+        w.canBecomeMain && !(w is NSPanel)
+    }
+
     static func showMainWindow() {
         // Only promote to .regular (dock visible) if the user has chosen to show
         // the dock icon. When hideFromDock is true, stay in .accessory mode —
@@ -64,9 +85,12 @@ enum WindowController {
         }
         NSApp.activate(ignoringOtherApps: true)
 
-        // Bring any existing main window to the front right away.
+        // Bring any existing main window to the front right away. A miniaturised
+        // window needs deminiaturize() first — makeKeyAndOrderFront alone leaves
+        // it in the Dock, which reads to the user as "clicking does nothing".
         var foundExisting = false
-        for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
+        for w in NSApp.windows where isMainWindow(w) {
+            if w.isMiniaturized { w.deminiaturize(nil) }
             w.makeKeyAndOrderFront(nil)
             foundExisting = true
             break
@@ -74,32 +98,50 @@ enum WindowController {
 
         // Also ask SwiftUI to open/resurface the window scene so a fresh window
         // is created if the previous one was destroyed via the red-X button.
-        if let open = openWindow {
-            open("main")
-        }
+        requestSwiftUIWindow(retries: 40)
 
         // When no window existed, SwiftUI creates one asynchronously.  Poll for
-        // it over the next ~400 ms and raise it once it appears so it lands on
+        // it over the next ~2 s and raise it once it appears so it lands on
         // top rather than behind the previously-active app.
         if !foundExisting {
-            bringNewWindowToFront(retries: 8)
+            bringNewWindowToFront(retries: 40)
         }
 
         // SwiftUI's Window scene can implicitly promote the app to .regular as
         // a side effect of materializing/activating its window, independent of
-        // the explicit policy call above. Re-assert .accessory afterwards so a
-        // stray Dock icon doesn't reappear when the user has hidden it.
+        // the explicit policy call above. Re-assert the preference afterwards so
+        // a stray Dock icon doesn't reappear when the user has hidden it.
         reassertDockPolicy()
+    }
+
+    /// Invokes the captured `openWindow` action, waiting for it if the scene
+    /// that publishes it hasn't rendered yet.
+    ///
+    /// `openWindow` is a SwiftUI environment value, so it can only be captured
+    /// from inside a View. At a cold launch — and especially a launch at login,
+    /// where the main window may never be materialised — no view has rendered
+    /// yet, so the action is still nil. Giving up at that point is what left the
+    /// app permanently windowless: the Dock icon was live but every click ran
+    /// this code, found nothing to open, and returned.
+    private static func requestSwiftUIWindow(retries: Int) {
+        if let open = openWindow {
+            open("main")
+            return
+        }
+        guard retries > 0 else {
+            NetLogger.ui(event: "window_open_unavailable")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            requestSwiftUIWindow(retries: retries - 1)
+        }
     }
 
     // Re-applies the user's dock preference after window operations that might
     // have caused AppKit to implicitly change the activation policy.
     private static func reassertDockPolicy() {
-        guard ConfigStore.shared.config.hideFromDock else { return }
         DispatchQueue.main.async {
-            if NSApp.activationPolicy() != .accessory {
-                NSApp.setActivationPolicy(.accessory)
-            }
+            DockPolicyGuard.shared.reassert()
         }
     }
 
@@ -107,7 +149,8 @@ enum WindowController {
     private static func bringNewWindowToFront(retries: Int) {
         guard retries > 0 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            for w in NSApp.windows where w.canBecomeMain && !(w is NSPanel) {
+            for w in NSApp.windows where isMainWindow(w) {
+                if w.isMiniaturized { w.deminiaturize(nil) }
                 w.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
                 reassertDockPolicy()
@@ -147,6 +190,11 @@ struct LanMessengerApp: App {
         } label: {
             MenuBarIcon()
                 .environmentObject(appModel)
+                // The status-item label always renders, even when the main
+                // window scene never materialises. Capturing `openWindow` here
+                // as well as in ContentView is what guarantees there is always
+                // a way back to a window.
+                .captureOpenWindow()
         }
         .menuBarExtraStyle(.menu)
     }
@@ -154,6 +202,13 @@ struct LanMessengerApp: App {
 
 // Captures the SwiftUI openWindow action once the root view appears so the
 // menu-bar tray and AppDelegate can re-surface the main window.
+//
+// Applied to both the main window's root view and the MenuBarExtra label. The
+// main window's copy is the one that never runs when it matters: if the app
+// relaunches with its window scene unmaterialised (a login-item start, or a
+// restore of a session whose window had been closed with the red X), ContentView
+// never appears and the action stays nil — leaving the Dock icon live but inert.
+// The status-item label always renders, so it always supplies the action.
 private struct CaptureOpenWindow: ViewModifier {
     @Environment(\.openWindow) private var openWindow
     func body(content: Content) -> some View {
@@ -162,7 +217,7 @@ private struct CaptureOpenWindow: ViewModifier {
         }
     }
 }
-private extension View {
+extension View {
     func captureOpenWindow() -> some View { modifier(CaptureOpenWindow()) }
 }
 

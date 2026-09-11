@@ -1,14 +1,19 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import AppKit
 
 struct ComposerView: View {
     @EnvironmentObject var model: AppModel
     let peerIP: String
     @Binding var replyTarget: MessageEntry?
+    /// Non-nil while editing an already-sent message. The composer swaps its
+    /// draft for that message's text and Send applies the edit.
+    @Binding var editTarget: MessageEntry?
 
     @State private var draft = ""
-    @State private var isDragTargeted = false
+    /// The in-progress draft that edit mode displaced, restored on cancel or
+    /// after the edit is sent — entering edit mode must not eat what the user
+    /// had already typed.
+    @State private var draftBeforeEdit = ""
     @State private var measuredHeight: CGFloat = 36
     @State private var typingTimer: Task<Void, Never>?
 
@@ -71,23 +76,16 @@ struct ComposerView: View {
                         .allowsHitTesting(false)
                 }
 
-                ComposerTextEditor(text: $draft, contentHeight: $measuredHeight, onSubmit: send)
+                // File drops are handled by ChatView, which covers the whole
+                // thread rather than just this strip.
+                ComposerTextEditor(text: $draft,
+                                   contentHeight: $measuredHeight,
+                                   onSubmit: send,
+                                   onCancel: cancelComposerMode,
+                                   onPasteAttachments: sendPastedAttachments)
             }
             .frame(height: clampedHeight)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18)
-                    .stroke(isDragTargeted ? Theme.accent : Color.clear, lineWidth: 2)
-            )
-            .onDrop(of: [.fileURL], isTargeted: $isDragTargeted) { providers in
-                guard let provider = providers.first else { return false }
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    guard let data = item as? Data,
-                          let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                    DispatchQueue.main.async { model.sendFile(path: url.path, toPeerIP: peerIP) }
-                }
-                return true
-            }
             .onChange(of: draft) { newValue in
                 typingTimer?.cancel()
                 if newValue.isEmpty {
@@ -100,14 +98,30 @@ struct ComposerView: View {
                         model.sendTyping(false, toPeerIP: peerIP)
                     }
                 }
-                model.drafts[peerIP] = newValue.isEmpty ? nil : newValue
+                // While editing, the composer is showing someone's already-sent
+                // message — persisting that as the draft would resurrect it as
+                // an unsent message the next time the conversation is opened.
+                if editTarget == nil {
+                    model.drafts[peerIP] = newValue.isEmpty ? nil : newValue
+                }
+            }
+            // Keyed on id rather than the entry: MessageEntry isn't Equatable,
+            // and the id is what changes when a different message is picked.
+            .onChange(of: editTarget?.id) { _ in
+                if let target = editTarget {
+                    draftBeforeEdit = draft
+                    draft = target.text
+                } else {
+                    draft = draftBeforeEdit
+                    draftBeforeEdit = ""
+                }
             }
             .onAppear {
                 draft = model.drafts[peerIP] ?? ""
             }
 
             Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill")
+                Image(systemName: editTarget == nil ? "arrow.up.circle.fill" : "checkmark.circle.fill")
                     .font(.system(size: 28))
                     .foregroundStyle(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                      ? AnyShapeStyle(.tertiary)
@@ -116,6 +130,7 @@ struct ComposerView: View {
             .buttonStyle(.plain)
             .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .padding(.bottom, 2)
+            .help(editTarget == nil ? "Send" : "Save edit")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -192,11 +207,44 @@ struct ComposerView: View {
         guard !trimmed.isEmpty else { return }
         typingTimer?.cancel()
         typingTimer = nil
+
+        if let target = editTarget {
+            // Leave the composer in edit mode if the message turned out not to
+            // be editable, rather than silently discarding what was typed.
+            guard model.editMessage(target, newText: trimmed, peerIP: peerIP) else {
+                NetLogger.warn("Edit", "message no longer editable — keeping composer in edit mode")
+                return
+            }
+            editTarget = nil        // onChange restores draftBeforeEdit
+            model.sendTyping(false, toPeerIP: peerIP)
+            return
+        }
+
         model.sendMessage(trimmed, toPeerIP: peerIP, replyTo: replyTarget)
         draft = ""
         model.drafts[peerIP] = nil
         replyTarget = nil
         model.sendTyping(false, toPeerIP: peerIP)
+    }
+
+    /// Escape backs out of edit or reply mode. Editing shows an already-sent
+    /// message in the composer, so there has to be a way out that doesn't send.
+    private func cancelComposerMode() {
+        if editTarget != nil {
+            withAnimation { editTarget = nil }   // onChange restores draftBeforeEdit
+        } else if replyTarget != nil {
+            withAnimation { replyTarget = nil }
+        }
+    }
+
+    /// ⌘V in the composer carried files or a bitmap rather than text.
+    /// Routed through `sendFile` exactly like a drop or the file picker.
+    private func sendPastedAttachments(_ paths: [String]) {
+        guard !paths.isEmpty else { return }
+        NetLogger.ui(event: "attachment_pasted_send", peer: peerIP, detail: "\(paths.count) file(s)")
+        for path in paths {
+            model.sendFile(path: path, toPeerIP: peerIP)
+        }
     }
 
     private func openFilePicker() {
@@ -219,10 +267,33 @@ struct ComposerTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var contentHeight: CGFloat
     var onSubmit: () -> Void
+    /// Called on Escape — backs out of edit/reply mode.
+    var onCancel: () -> Void = { }
+    /// Called when a paste carried attachments instead of text. See
+    /// `AttachmentPasteboard.decide` for the precedence rules.
+    var onPasteAttachments: ([String]) -> Void = { _ in }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        guard let tv = scrollView.documentView as? NSTextView else { return scrollView }
+        // Assembled by hand rather than with NSTextView.scrollableTextView()
+        // because the text view has to be our own subclass — intercepting ⌘V
+        // needs an override, the delegate protocol has no paste hook.
+        //
+        // NSTextView.init(frame:) builds and owns its own text storage /
+        // layout manager / container. Wiring that stack up manually instead
+        // would leave the storage unreferenced — AppKit's ownership there runs
+        // storage → layoutManager → container, not the other way round.
+        let scrollView = NSScrollView()
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.autoresizingMask = [.width, .height]
+
+        let tv = PastingTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 36))
+        tv.onPasteAttachments = { paths in onPasteAttachments(paths) }
+        tv.textContainer?.widthTracksTextView = true
+        tv.textContainer?.containerSize = NSSize(width: 100, height: CGFloat.greatestFiniteMagnitude)
         tv.isRichText = false
         tv.font = .systemFont(ofSize: 14)
         tv.delegate = context.coordinator
@@ -230,14 +301,23 @@ struct ComposerTextEditor: NSViewRepresentable {
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
         tv.drawsBackground = false
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.autohidesScrollers = true
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [NSView.AutoresizingMask.width]
+        tv.minSize = NSSize(width: 0, height: 0)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        // NSTextView registers for file drags and inserts the dropped path as
+        // literal text. Unregister so a file dropped on the composer falls
+        // through to ChatView's drop target and is sent as an attachment.
+        tv.unregisterDraggedTypes()
+
+        scrollView.documentView = tv
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let tv = scrollView.documentView as? NSTextView else { return }
+        guard let tv = scrollView.documentView as? PastingTextView else { return }
+        tv.onPasteAttachments = { paths in onPasteAttachments(paths) }
         if tv.string != text {
             tv.string = text
             context.coordinator.invalidateHeight(tv)
@@ -267,6 +347,10 @@ struct ComposerTextEditor: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                parent.onCancel()
+                return true
+            }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                     textView.insertNewlineIgnoringFieldEditor(nil)
@@ -276,6 +360,53 @@ struct ComposerTextEditor: NSViewRepresentable {
                 return true
             }
             return false
+        }
+    }
+}
+
+/// NSTextView that sends copied files and screenshots instead of pasting their
+/// path (or nothing at all) into the draft.
+final class PastingTextView: NSTextView {
+    var onPasteAttachments: ([String]) -> Void = { _ in }
+
+    override func paste(_ sender: Any?) {
+        handlePaste { super.paste(sender) }
+    }
+
+    // ⌘⇧V and the Edit menu's "Paste and Match Style" land here; an attachment
+    // has no style to match, so treat it identically.
+    override func pasteAsPlainText(_ sender: Any?) {
+        handlePaste { super.pasteAsPlainText(sender) }
+    }
+
+    /// `insertText` falls back to AppKit so the user always gets *some* paste
+    /// rather than a swallowed keystroke.
+    private func handlePaste(fallback: () -> Void) {
+        let pasteboard = NSPasteboard.general
+        switch AttachmentPasteboard.action(for: pasteboard) {
+        case .insertText:
+            fallback()
+
+        case .attachFiles:
+            let paths = AttachmentPasteboard.fileURLs(on: pasteboard).map(\.path)
+            if paths.isEmpty { fallback() } else { onPasteAttachments(paths) }
+
+        case .attachImage:
+            // NSPasteboard is main-thread-only, so the bytes come out here —
+            // but transcoding a 4K bitmap to PNG is hundreds of milliseconds,
+            // and that does not belong on the main thread.
+            guard let payload = AttachmentPasteboard.imagePayload(on: pasteboard) else {
+                fallback()
+                return
+            }
+            let directory = ConfigStore.shared.config.screenshotDir
+            let handler = onPasteAttachments
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let path = AttachmentPasteboard.writeImage(data: payload.data,
+                                                                 type: payload.type,
+                                                                 customDirectory: directory) else { return }
+                DispatchQueue.main.async { handler([path]) }
+            }
         }
     }
 }
