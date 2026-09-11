@@ -47,8 +47,10 @@ namespace LanMessenger.Core.Services;
 // ------
 // • All disk I/O is wrapped in try/catch so a full disk, locked file, or
 //   read-only profile can never crash the app.
-// • Debug-level events are gated by AppConfig.VerboseLogging so high-rate
-//   per-chunk events don't fill the rotation budget.
+// • Debug-level events always write. There is deliberately no verbose toggle:
+//   a diagnostic level that is off by default is off exactly when a user hits
+//   the bug you needed it for, and every incident then starts with "turn on
+//   logging and try to reproduce". Volume is bounded by rotation instead.
 // • Mirrors to Debug.Write so devs see live output without opening files.
 public static class LanLogger
 {
@@ -65,6 +67,8 @@ public static class LanLogger
         Crypto,     // crypto/handshakes → crypto.log
         UI,         // UI state changes  → ui.log
         Retry,      // retries/recovery  → retry.log
+        Update,     // update checks     → update.log
+        Crash,      // fatal diagnostics → crash.log
     }
 
     private static string ChannelPrefix(LogChannel ch) => ch switch
@@ -77,6 +81,8 @@ public static class LanLogger
         LogChannel.Crypto     => "crypto",
         LogChannel.UI         => "ui",
         LogChannel.Retry      => "retry",
+        LogChannel.Update     => "update",
+        LogChannel.Crash      => "crash",
         _                     => "client",
     };
 
@@ -122,7 +128,6 @@ public static class LanLogger
 
     public static void Debug(string category, string message)
     {
-        if (!IsVerboseEnabled()) return;
         Write("DEBUG", category, message, LogChannel.App);
     }
 
@@ -316,6 +321,86 @@ public static class LanLogger
         Write(level, "Retry", Format(kv), LogChannel.Retry);
     }
 
+    /// <summary>
+    /// Records an update-check / download / install event (→ update.log).
+    /// <c>event_</c> examples: "check", "up_to_date", "available", "download",
+    /// "verify_failed", "install", "failed".
+    /// </summary>
+    public static void Update(
+        string  event_,
+        string? channel        = null,
+        string? currentVersion = null,
+        string? latestVersion  = null,
+        string? url            = null,
+        int?    httpStatus     = null,
+        long?   bytes          = null,
+        int?    durationMs     = null,
+        string? reason         = null)
+    {
+        var kv = new List<(string, string)> { ("event", event_) };
+        if (channel is not null)        kv.Add(("channel", channel));
+        if (currentVersion is not null) kv.Add(("current", currentVersion));
+        if (latestVersion is not null)  kv.Add(("latest",  latestVersion));
+        if (url is not null)            kv.Add(("url",     url));
+        if (httpStatus.HasValue)        kv.Add(("http",    httpStatus.Value.ToString(CultureInfo.InvariantCulture)));
+        if (bytes.HasValue)             kv.Add(("bytes",   bytes.Value.ToString(CultureInfo.InvariantCulture)));
+        if (durationMs.HasValue)        kv.Add(("ms",      durationMs.Value.ToString(CultureInfo.InvariantCulture)));
+        if (reason is not null)         kv.Add(("reason",  Quote(reason)));
+        var level = event_ is "failed" or "verify_failed" ? "ERROR" : "INFO";
+        Write(level, "Update", Format(kv), LogChannel.Update);
+    }
+
+    /// <summary>
+    /// Records a backend/server call — cloud relay, GitHub release API, any
+    /// outbound HTTP (→ client.log). <c>event_</c> examples: "request",
+    /// "response", "failed", "timeout".
+    /// </summary>
+    public static void Backend(
+        string  event_,
+        string  service,
+        string? operation  = null,
+        int?    httpStatus = null,
+        int?    durationMs = null,
+        int?    count      = null,
+        string? reason     = null)
+    {
+        var kv = new List<(string, string)> { ("event", event_), ("service", service) };
+        if (operation is not null) kv.Add(("op",     operation));
+        if (httpStatus.HasValue)   kv.Add(("http",   httpStatus.Value.ToString(CultureInfo.InvariantCulture)));
+        if (durationMs.HasValue)   kv.Add(("ms",     durationMs.Value.ToString(CultureInfo.InvariantCulture)));
+        if (count.HasValue)        kv.Add(("count",  count.Value.ToString(CultureInfo.InvariantCulture)));
+        if (reason is not null)    kv.Add(("reason", Quote(reason)));
+        var level = event_ is "failed" or "timeout" ? "ERROR" : "INFO";
+        Write(level, "Backend", Format(kv), LogChannel.App);
+    }
+
+    /// <summary>
+    /// Records a fatal or near-fatal diagnostic (→ crash.log and client.log).
+    /// Flushed synchronously: the process is usually seconds from death and a
+    /// buffered write would never reach disk.
+    /// </summary>
+    public static void Crash(
+        string  event_,
+        string? name   = null,
+        string? reason = null,
+        string? stack  = null)
+    {
+        var kv = new List<(string, string)> { ("event", event_) };
+        if (name is not null)   kv.Add(("name",   Quote(name)));
+        if (reason is not null) kv.Add(("reason", Quote(reason)));
+        var line = Format(kv);
+        if (!string.IsNullOrWhiteSpace(stack))
+        {
+            var indented = string.Join("\n", stack
+                .Replace("\r\n", "\n")
+                .Split('\n')
+                .Select(l => "    " + l.TrimEnd()));
+            line += "\n" + indented;
+        }
+        Write("CRIT", "Crash", line, LogChannel.Crash);
+        Write("CRIT", "Crash", line, LogChannel.App);
+    }
+
     // ── File-bundle export ────────────────────────────────────────────────────────
 
     /// <summary>
@@ -388,12 +473,6 @@ public static class LanLogger
     }
 
     // ── Internals ─────────────────────────────────────────────────────────────────
-
-    private static bool IsVerboseEnabled()
-    {
-        try { return ConfigStore.Shared.Config.VerboseLogging; }
-        catch { return false; }
-    }
 
     private static void Write(string level, string category, string message, LogChannel channel)
     {

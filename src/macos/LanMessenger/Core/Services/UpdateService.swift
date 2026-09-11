@@ -510,20 +510,11 @@ final class UpdateService {
     }
 
     private func log(_ message: String) {
-        let ts = ISO8601DateFormatter().string(from: Date())
-        let line = "[UpdateService \(ts)] \(message)\n"
-        if let data = line.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: logFileURL.path),
-               let handle = try? FileHandle(forWritingTo: logFileURL) {
-                defer { try? handle.close() }
-                _ = try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
-            } else {
-                try? data.write(to: logFileURL)
-            }
-        }
-        #if DEBUG
-        print(line, terminator: "")
-        #endif
+        // Route through NetLogger's `update` channel rather than writing the
+        // file by hand. The hand-rolled path had no rotation (it grew forever)
+        // and, because `update.log` was not a known channel, "Export Logs" left
+        // it out of the bundle entirely — update failures were invisible in
+        // every support report.
+        NetLogger.update(event: "log", reason: message)
     }
 }

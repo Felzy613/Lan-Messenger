@@ -27,7 +27,6 @@ public sealed class LanLoggerTests
     private string _tempDir = "";
     private long   _originalMaxBytes;
     private int    _originalMaxArchives;
-    private bool   _originalVerbose;
 
     [TestInitialize]
     public void Setup()
@@ -38,7 +37,6 @@ public sealed class LanLoggerTests
         LanLogger._TestResetHeaderFlag();
         _originalMaxBytes    = LanLogger.MaxBytes;
         _originalMaxArchives = LanLogger.MaxArchives;
-        _originalVerbose     = ConfigStore.Shared.Config.VerboseLogging;
     }
 
     [TestCleanup]
@@ -48,7 +46,6 @@ public sealed class LanLoggerTests
         LanLogger.MaxArchives = _originalMaxArchives;
         LanLogger.TestLogDirectoryOverride = null;
         LanLogger._TestResetHeaderFlag();
-        ConfigStore.Shared.Config.VerboseLogging = _originalVerbose;
         try { Directory.Delete(_tempDir, recursive: true); }
         catch { /* may already be deleted */ }
     }
@@ -91,20 +88,17 @@ public sealed class LanLoggerTests
             StringAssert.Contains(body, $"] {lvl} L:", $"level token \"{lvl}\" missing");
     }
 
-    // ── Verbose gating ────────────────────────────────────────────────────────────
+    // ── Verbose level ─────────────────────────────────────────────────────────────
 
+    // There is deliberately no verbose toggle: a diagnostic level that is off by
+    // default is off exactly when the user hits the bug you needed it for.
     [TestMethod]
-    public void DebugIsGatedByVerboseFlag()
+    public void DebugAlwaysWritesWithoutAToggle()
     {
-        ConfigStore.Shared.Config.VerboseLogging = false;
-        LanLogger.Debug("Verbose", "should NOT appear");
-        Assert.IsFalse(File.Exists(LanLogger.LogPath),
-            "no log file should be created when verbose is off and only debug is written");
-
-        ConfigStore.Shared.Config.VerboseLogging = true;
         LanLogger.Debug("Verbose", "should appear");
         var body = File.ReadAllText(LanLogger.LogPath);
-        StringAssert.Contains(body, "Verbose: should appear");
+        StringAssert.Contains(body, "Verbose: should appear",
+            "Debug() must write unconditionally — no verbose gate");
     }
 
     // ── Structured events (per-channel routing) ───────────────────────────────────
@@ -301,6 +295,8 @@ public sealed class LanLoggerTests
         LanLogger.Crypto("key_generated");
         LanLogger.UI("window_shown");
         LanLogger.Retry("retry", subsystem: "Transfer", attempt: 1);
+        LanLogger.Update("check", currentVersion: "1.0.0");
+        LanLogger.Crash("unhandled_exception", name: "InvalidOperationException");
 
         var paths = LanLogger.ArchivedLogPaths();
         var names = paths.Select(Path.GetFileName).ToHashSet();
@@ -308,7 +304,8 @@ public sealed class LanLoggerTests
         foreach (var expected in new[]
         {
             "client.log", "transfer.log", "screenshot.log",
-            "peer.log", "discovery.log", "crypto.log", "ui.log", "retry.log"
+            "peer.log", "discovery.log", "crypto.log", "ui.log", "retry.log",
+            "update.log", "crash.log"
         })
         {
             Assert.IsTrue(names.Contains(expected),

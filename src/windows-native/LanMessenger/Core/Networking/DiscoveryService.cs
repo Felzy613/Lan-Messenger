@@ -70,6 +70,22 @@ public sealed class DiscoveryService : IDisposable
     private readonly object _socketLock = new();
     private bool _running;
 
+    // Bumped on every socket rebuild. A rebuild closes the receive socket out
+    // from under the in-flight ReceiveFromAsync, which surfaces as an
+    // OperationAborted SocketException. Without this counter the loop treated
+    // its own teardown as a spontaneous socket fault, logged it at error level,
+    // and kicked off a *second* rebuild — so every 5-minute periodic heal
+    // produced a duplicate rebuild and a scary-looking error pair in the log.
+    private long _socketGeneration;
+
+    // Health counters — see EmitHealthSummary. Mirrors the macOS implementation
+    // so a support bundle from either platform greps the same way.
+    private readonly object _countersLock = new();
+    private long _txBeacons, _txReplies, _txFailures;
+    private readonly Dictionary<string, long> _rxByType = [];
+    private Timer? _healthTimer;
+    private const int HealthIntervalMs = 60_000;
+
     public DiscoveryService(NetworkInterfaceMonitor monitor)
     {
         _monitor = monitor;
@@ -98,6 +114,9 @@ public sealed class DiscoveryService : IDisposable
         _healTimer = new Timer(_ => Guarded(() => { if (_running) RebuildSockets("periodic-heal"); }, "heal"),
             null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
 
+        _healthTimer = new Timer(_ => Guarded(EmitHealthSummary, "health"), null,
+            TimeSpan.FromMilliseconds(HealthIntervalMs), TimeSpan.FromMilliseconds(HealthIntervalMs));
+
         Task.Run(() => ReceiveLoop(_cts.Token));
 
         LanLogger.Info("Discovery",
@@ -112,6 +131,7 @@ public sealed class DiscoveryService : IDisposable
         _monitor.Changed -= OnInterfacesChanged;
         _beaconTimer?.Dispose(); _beaconTimer = null;
         _healTimer?.Dispose(); _healTimer = null;
+        _healthTimer?.Dispose(); _healthTimer = null;
         TeardownSockets();
         LanLogger.Info("Discovery", "stopped");
     }
@@ -153,11 +173,34 @@ public sealed class DiscoveryService : IDisposable
             return;
         }
 
+        CountTx(beacon: false);
         try { socket.SendTo(data, new IPEndPoint(dest, port)); }
         catch (Exception ex)
         {
+            CountTxFailure();
             LanLogger.Warn("Discovery", $"SendUdp to {toIP}:{port} failed: {ex.GetType().Name} {ex.Message}");
         }
+    }
+
+    // True when `dest` is worth attempting from the interface bound to `localIP`:
+    // either they share a subnet, or no interface at all owns that subnet (in
+    // which case the hint is a genuine cross-subnet guess and every interface is
+    // a fair attempt). Interfaces on unrelated private ranges — virtual switches
+    // especially — are skipped, because those sends can only ever fail.
+    private bool CanReachFrom(IPAddress dest, string localIP)
+    {
+        var destBytes = dest.GetAddressBytes();
+        NetworkAdapterSnapshot? owner = null;
+        foreach (var adapter in _monitor.Adapters)
+        {
+            if (SameSubnet(destBytes, adapter.LocalIP.GetAddressBytes(), adapter.SubnetMask.GetAddressBytes()))
+            {
+                owner = adapter;
+                break;
+            }
+        }
+        if (owner is null) return true;                       // cross-subnet hint: try everywhere
+        return owner.LocalIP.ToString() == localIP;           // otherwise only the owning interface
     }
 
     private Socket? PickSocketForTarget(IPAddress dest)
@@ -197,6 +240,7 @@ public sealed class DiscoveryService : IDisposable
         if (!_running && reason != "start") return;
         lock (_socketLock)
         {
+            Interlocked.Increment(ref _socketGeneration);
             TeardownSocketsLocked();
             SetupReceiveSocketLocked();
             SetupSendSocketsLocked();
@@ -333,6 +377,7 @@ public sealed class DiscoveryService : IDisposable
                 // No interfaces yet — common during boot or after net loss.
                 return;
             }
+            CountTx(beacon: true);
 
             foreach (var (localIP, sock) in _sendSockets)
             {
@@ -352,9 +397,16 @@ public sealed class DiscoveryService : IDisposable
 
                 // Unicast hints (last-known IPs of known peers / contacts) help
                 // cross-subnet reach where multicast/broadcast can't bridge.
+                //
+                // Only emit a hint through an interface that can plausibly route
+                // it. Fanning every hint out of every socket meant a machine with
+                // a Hyper-V/WSL virtual switch logged a guaranteed "unreachable
+                // network" failure for each LAN peer every 1.5 s — thousands of
+                // lines an hour that say nothing, drowning the real events.
                 foreach (var target in extras)
                 {
                     if (!IPAddress.TryParse(target, out var ip)) continue;
+                    if (!CanReachFrom(ip, localIP)) continue;
                     TrySend(sock, data, ip, DiscoveryPort, "unicast");
                 }
             }
@@ -408,6 +460,7 @@ public sealed class DiscoveryService : IDisposable
                     foreach (var target in extras)
                     {
                         if (!IPAddress.TryParse(target, out var ip)) continue;
+                        if (!CanReachFrom(ip, localIP)) continue;
                         TrySend(sock, data, ip, DiscoveryPort, "goodbye-unicast");
                     }
                 }
@@ -444,15 +497,92 @@ public sealed class DiscoveryService : IDisposable
         catch { return []; }
     }
 
-    private static void TrySend(Socket sock, byte[] data, IPAddress dest, int port, string label)
+    // Instance method (not static) so it can record the failure counter that
+    // feeds the per-minute health summary.
+    private void TrySend(Socket sock, byte[] data, IPAddress dest, int port, string label)
     {
         try { sock.SendTo(data, new IPEndPoint(dest, port)); }
         catch (Exception ex)
         {
+            CountTxFailure();
             // Don't spam — broadcast/multicast failures are noisy on locked-down
             // networks. Demote to debug-tier (Info) to leave a trail without
             // burying the actually-useful log lines.
             LanLogger.Info("Discovery", $"send {label} to {dest}:{port} via {sock.LocalEndPoint} failed: {ex.Message}");
+        }
+    }
+
+    // MARK: - Health summary
+
+    // One summary line per minute. This exists because of a real incident: the
+    // macOS peer stopped transmitting beacons entirely while still answering
+    // probes, and nothing in either log said so — confirming it meant hand-
+    // counting tens of thousands of lines across two machines. tx_beacons=0 or
+    // rx=[none] now names that failure in one greppable line.
+    private void EmitHealthSummary()
+    {
+        if (!_running) return;
+
+        long beacons, replies, failures;
+        Dictionary<string, long> rx;
+        lock (_countersLock)
+        {
+            beacons = _txBeacons; replies = _txReplies; failures = _txFailures;
+            rx = new Dictionary<string, long>(_rxByType);
+            _txBeacons = 0; _txReplies = 0; _txFailures = 0;
+            _rxByType.Clear();
+        }
+
+        int sendCount;
+        bool haveRecv;
+        lock (_socketLock)
+        {
+            sendCount = _sendSockets.Count;
+            haveRecv  = _recvSocket is not null;
+        }
+
+        var rxDesc = rx.Count == 0
+            ? "none"
+            : string.Join(",", rx.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value}"));
+
+        LanLogger.Info("Discovery",
+            $"health window={HealthIntervalMs / 1000}s tx_beacons={beacons} tx_replies={replies} " +
+            $"tx_failures={failures} rx=[{rxDesc}] send_sockets={sendCount} " +
+            $"recv_socket={(haveRecv ? 1 : 0)} interfaces={_monitor.Adapters.Count}");
+
+        if (beacons == 0)
+        {
+            LanLogger.Warn("Discovery",
+                $"health: no beacons transmitted in the last {HealthIntervalMs / 1000}s — " +
+                "beacon timer stalled or no usable interface");
+        }
+        if (rx.Count == 0 && sendCount > 0)
+        {
+            LanLogger.Warn("Discovery",
+                $"health: no discovery packets received in the last {HealthIntervalMs / 1000}s — " +
+                $"inbound UDP {DiscoveryPort} may be blocked by the firewall");
+        }
+    }
+
+    private void CountTx(bool beacon)
+    {
+        lock (_countersLock)
+        {
+            if (beacon) _txBeacons++; else _txReplies++;
+        }
+    }
+
+    private void CountTxFailure()
+    {
+        lock (_countersLock) _txFailures++;
+    }
+
+    private void CountRx(string type)
+    {
+        lock (_countersLock)
+        {
+            _rxByType.TryGetValue(type, out var n);
+            _rxByType[type] = n + 1;
         }
     }
 
@@ -471,7 +601,12 @@ public sealed class DiscoveryService : IDisposable
         while (!ct.IsCancellationRequested && _running)
         {
             Socket? sock;
-            lock (_socketLock) sock = _recvSocket;
+            long generationAtRead;
+            lock (_socketLock)
+            {
+                sock = _recvSocket;
+                generationAtRead = Interlocked.Read(ref _socketGeneration);
+            }
             if (sock is null)
             {
                 nullSocketStrikes++;
@@ -500,11 +635,22 @@ public sealed class DiscoveryService : IDisposable
             catch (ObjectDisposedException) { continue; }     // socket rebuilt — loop will pick up the new one
             catch (SocketException ex)
             {
-                // WSAECONNRESET is suppressed via SIO_UDP_CONNRESET, but other
-                // errors (network down, reset) can leave the socket permanently
-                // broken. Force a rebuild so the loop doesn't spin forever on a
-                // dead socket; the 10 s cooldown prevents hammering on hard errors.
-                LanLogger.Info("Discovery", $"recv socket error: {ex.SocketErrorCode} {ex.Message}");
+                // If a rebuild ran while we were parked in ReceiveFromAsync, this
+                // exception is our own teardown landing — expected, not a fault.
+                // Logging it at error level and rebuilding again would double
+                // every rebuild and bury real socket errors in noise.
+                if (Interlocked.Read(ref _socketGeneration) != generationAtRead ||
+                    ex.SocketErrorCode == SocketError.OperationAborted)
+                {
+                    LanLogger.Debug("Discovery",
+                        $"recv wakeup during rebuild ({ex.SocketErrorCode}) — expected, continuing");
+                    continue;
+                }
+
+                // A genuine fault: network down or a reset can leave the socket
+                // permanently broken. Force a rebuild so the loop doesn't spin
+                // forever on a dead socket; the 10 s cooldown prevents hammering.
+                LanLogger.Warn("Discovery", $"recv socket error: {ex.SocketErrorCode} {ex.Message}");
                 var now = Environment.TickCount64;
                 if (now - lastErrorRebuildTick > 10_000 && _running)
                 {
@@ -531,6 +677,7 @@ public sealed class DiscoveryService : IDisposable
         var pkt = PacketValidator.ValidateDiscovery(data, fromIP, OwnPublicKeyB64, OwnIPs);
         if (pkt is null) return;
 
+        CountRx(pkt.Type);
         var now = Environment.TickCount64;
 
         // Reply to "discovery" BEFORE the beacon dedup below. A peer that has

@@ -40,7 +40,6 @@ public sealed partial class SettingsPage : Page
             ? Visibility.Collapsed : Visibility.Visible;
         UpdateRepoBox.Text = cfg.UpdateRepo;
         CloseToTrayToggle.IsOn = cfg.CloseToTray;
-        VerboseLoggingToggle.IsOn = cfg.VerboseLogging;
         RelayEnabledToggle.IsOn = cfg.RelayEnabled;
         RelayUrlBox.Text = cfg.RelayWorkerUrl;
         RelayUrlBox.IsEnabled = cfg.RelayEnabled;
@@ -220,13 +219,6 @@ public sealed partial class SettingsPage : Page
     {
         _model?.InstallUpdate();
         RefreshUpdateUI();
-    }
-
-    private void VerboseLoggingToggle_Toggled(object sender, RoutedEventArgs e)
-    {
-        ConfigStore.Shared.Config.VerboseLogging = VerboseLoggingToggle.IsOn;
-        ConfigStore.Shared.Save();
-        LanLogger.Info("Settings", $"verbose logging {(VerboseLoggingToggle.IsOn ? "enabled" : "disabled")}");
     }
 
     private void RelayEnabledToggle_Toggled(object sender, RoutedEventArgs e)

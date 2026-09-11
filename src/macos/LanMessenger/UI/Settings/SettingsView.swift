@@ -11,7 +11,6 @@ struct SettingsView: View {
     @State private var screenshotDir = ConfigStore.shared.config.screenshotDir
     @State private var hideFromDock = ConfigStore.shared.config.hideFromDock
     @State private var launchAtLogin = ConfigStore.shared.config.launchAtLogin
-    @State private var verboseLogging = ConfigStore.shared.config.verboseLogging
     @State private var relayEnabled = ConfigStore.shared.config.relayEnabled
     @State private var relayWorkerURL = ConfigStore.shared.config.relayWorkerURL
     @State private var loginItemStatusText = ""
@@ -94,8 +93,7 @@ struct SettingsView: View {
                 }
 
                 Section("Logging") {
-                    Toggle("Verbose logging", isOn: $verboseLogging)
-                    Text("Logs file transfers, connections, and protocol events to a file. Useful for diagnosing transfer failures.")
+                    Text("Detailed diagnostics are always recorded — transfers, connections, discovery, UI events, and crashes. Export them when reporting a problem.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     HStack(spacing: 8) {
@@ -378,7 +376,6 @@ struct SettingsView: View {
         ConfigStore.shared.config.inboxDir = inboxDir
         ConfigStore.shared.config.screenshotDir = screenshotDir
         ConfigStore.shared.config.hideFromDock = hideFromDock
-        ConfigStore.shared.config.verboseLogging = verboseLogging
         ConfigStore.shared.config.relayEnabled = relayEnabled
         ConfigStore.shared.config.relayWorkerURL = relayWorkerURL.trimmingCharacters(in: .whitespaces)
         ConfigStore.shared.save()

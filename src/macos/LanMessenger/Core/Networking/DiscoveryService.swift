@@ -17,6 +17,15 @@ import Darwin
 // NetworkInterfaceMonitor fires onChange and this service tears down stale
 // sockets and rebuilds the per-interface set.
 //
+// Threading: the blocking recvfrom() loop gets its OWN serial queue
+// (`recvQueue`). It must never share a queue with the beacon timer or the
+// interface-change rebuild — the loop never returns, so on a shared serial
+// queue it starves every other work item for the life of the process. That
+// regression shipped once: beacons silently stopped (peers could reply but
+// never announce themselves) and stale send sockets were never rebuilt after a
+// DHCP change, so every send failed EADDRNOTAVAIL until the app restarted.
+// See DiscoveryServiceQueueTests.
+//
 // Wire-protocol invariants from PROTOCOL.md are preserved exactly: port 54231,
 // multicast group 239.255.42.99, TTL 1, 1.5 s beacon interval, JSON shape.
 
@@ -49,7 +58,7 @@ final class DiscoveryService {
     // interface, so the receive socket sees 2–3 copies per peer per cycle. Suppress
     // duplicates within a window shorter than the 1.5 s beacon interval.
     // Safe to access without a lock: handleReceivedData is only ever called from
-    // the serial `queue` dispatch loop.
+    // the single receive loop running on the serial `recvQueue`.
     private var lastSeen: [String: Date] = [:]
     private let dedupWindow: TimeInterval = 1.2
 
@@ -60,10 +69,27 @@ final class DiscoveryService {
     private var sendSockets: [String: Int32] = [:]   // keyed by interface localIP
     private var recvSocket: Int32 = -1
     private var sendTimer: DispatchSourceTimer?
+    // Beacon timer + interface-change rebuilds. Must stay free of blocking work.
     private let queue = DispatchQueue(label: "com.dave.lanmessenger.discovery", qos: .utility)
+    // Dedicated to the blocking recvfrom() loop — see the threading note above.
+    private let recvQueue = DispatchQueue(label: "com.dave.lanmessenger.discovery.recv", qos: .utility)
     private var running = false
     private let socketLock = NSLock()
     private var monitorObserverID: UUID?
+
+    // Health counters. The whole point of these is the failure this service
+    // already shipped once: beacons silently stopped while replies kept
+    // working, and nothing in the log said so — diagnosing it meant hand-
+    // counting tens of thousands of lines across two machines. A periodic
+    // summary makes "we are not transmitting" or "we are not hearing anyone"
+    // a single greppable line. Counters are only touched under `countersLock`.
+    private let countersLock = NSLock()
+    private var txBeacons = 0
+    private var txReplies = 0
+    private var txFailures = 0
+    private var rxByType: [String: Int] = [:]
+    private var healthTimer: DispatchSourceTimer?
+    private let healthInterval: TimeInterval = 60
 
     init(monitor: NetworkInterfaceMonitor) {
         self.monitor = monitor
@@ -80,6 +106,7 @@ final class DiscoveryService {
 
         startBeaconTimer()
         startReceiveLoop()
+        startHealthTimer()
 
         NetLogger.info("Discovery",
             "started port=\(discoveryPort) group=\(multicastGroup) interval=\(Int(interval*1000))ms " +
@@ -89,6 +116,7 @@ final class DiscoveryService {
     func stop() {
         running = false
         sendTimer?.cancel(); sendTimer = nil
+        healthTimer?.cancel(); healthTimer = nil
         if let id = monitorObserverID { monitor.removeObserver(id); monitorObserverID = nil }
         teardownSockets()
         NetLogger.info("Discovery", "stopped")
@@ -227,6 +255,70 @@ final class DiscoveryService {
         sendTimer = timer
     }
 
+    // Emits one summary line per minute. Runs on `recvQueue` rather than
+    // `queue` on purpose: if `queue` ever wedges again, the summary still gets
+    // out and says tx_beacons=0, naming the fault instead of going silent with
+    // it.
+    private func startHealthTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: recvQueue)
+        timer.schedule(deadline: .now() + healthInterval, repeating: healthInterval)
+        timer.setEventHandler { [weak self] in self?.emitHealthSummary() }
+        timer.resume()
+        healthTimer = timer
+    }
+
+    private func emitHealthSummary() {
+        guard running else { return }
+
+        countersLock.lock()
+        let beacons = txBeacons, replies = txReplies, failures = txFailures
+        let rx = rxByType
+        txBeacons = 0; txReplies = 0; txFailures = 0; rxByType = [:]
+        countersLock.unlock()
+
+        socketLock.lock()
+        let sendCount = sendSockets.count
+        let haveRecv  = recvSocket >= 0
+        socketLock.unlock()
+
+        let rxDesc = rx.isEmpty
+            ? "none"
+            : rx.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+
+        NetLogger.info("Discovery",
+            "health window=\(Int(healthInterval))s tx_beacons=\(beacons) tx_replies=\(replies) " +
+            "tx_failures=\(failures) rx=[\(rxDesc)] send_sockets=\(sendCount) " +
+            "recv_socket=\(haveRecv ? 1 : 0) interfaces=\(monitor.adapters.count)")
+
+        // Beacons are the one thing that must never stop while running. If the
+        // timer is starved or every send is failing, say so at WARN so it
+        // surfaces without reading the whole file.
+        if beacons == 0 {
+            NetLogger.warn("Discovery",
+                "health: no beacons transmitted in the last \(Int(healthInterval))s — " +
+                "beacon timer starved or no usable interface")
+        }
+        if rx.isEmpty && sendCount > 0 {
+            NetLogger.warn("Discovery",
+                "health: no discovery packets received in the last \(Int(healthInterval))s — " +
+                "inbound UDP \(discoveryPort) may be blocked")
+        }
+    }
+
+    private func countTx(beacon: Bool) {
+        countersLock.lock()
+        if beacon { txBeacons += 1 } else { txReplies += 1 }
+        countersLock.unlock()
+    }
+
+    private func countTxFailure() {
+        countersLock.lock(); txFailures += 1; countersLock.unlock()
+    }
+
+    private func countRx(type: String) {
+        countersLock.lock(); rxByType[type, default: 0] += 1; countersLock.unlock()
+    }
+
     func sendBeacon() {
         guard running, let payload = buildPayload?() else { return }
         guard let data = try? JSONEncoder().encode(payload) else { return }
@@ -234,6 +326,7 @@ final class DiscoveryService {
 
         socketLock.lock(); defer { socketLock.unlock() }
         guard !sendSockets.isEmpty else { return }
+        countTx(beacon: true)
 
         for (localIP, fd) in sendSockets {
             let adapter = monitor.adapters.first { $0.localIP == localIP }
@@ -301,6 +394,7 @@ final class DiscoveryService {
             NetLogger.warn("Discovery", "sendUDP: no send socket available for \(toIP)")
             return
         }
+        countTx(beacon: false)
         sendUDPLocked(data: data, fd: fd, toIP: toIP, port: port, label: "reply")
     }
 
@@ -340,6 +434,7 @@ final class DiscoveryService {
             }
         }
         if sent < 0 {
+            countTxFailure()
             NetLogger.info("Discovery", "send \(label) to \(toIP):\(port) failed: \(String(cString: strerror(errno)))")
         }
     }
@@ -347,7 +442,7 @@ final class DiscoveryService {
     // MARK: - Receive loop
 
     private func startReceiveLoop() {
-        queue.async { [weak self] in
+        recvQueue.async { [weak self] in
             var buffer = [UInt8](repeating: 0, count: 8192)
             while let strong = self, strong.running {
                 var addr = sockaddr_in()
@@ -371,6 +466,15 @@ final class DiscoveryService {
                     // keep looping so the next iteration picks up the new fd.
                     continue
                 }
+                // A rebuild on `queue` can close this fd while we are parked in
+                // recvfrom(); the descriptor number may then be reused by an
+                // unrelated socket. Drop anything that did not arrive on the
+                // socket that is still current.
+                strong.socketLock.lock()
+                let stillCurrent = strong.recvSocket == fd
+                strong.socketLock.unlock()
+                if !stillCurrent { continue }
+
                 let data = Data(buffer[..<n])
                 let sourceIP = String(cString: inet_ntoa(addr.sin_addr))
                 strong.handleReceivedData(data, fromIP: sourceIP)
@@ -387,6 +491,7 @@ final class DiscoveryService {
         ) else { return }
 
         let now = Date()
+        countRx(type: pkt.type)
 
         // Reply to "discovery" BEFORE the beacon dedup below. A peer that has
         // stopped hearing our beacons probes us with a unicast "discovery" and

@@ -312,8 +312,10 @@ only exposes end-user installers.
 
 Both clients write a structured log to disk for support and bug-report use.
 Each line is `[yyyy-MM-dd HH:mm:ss.fffZ] LEVEL Category: message`. Levels are
-DEBUG, INFO, WARN, ERROR, CRIT. DEBUG events are gated by the user's
-"Verbose logging" setting and never fire otherwise.
+DEBUG, INFO, WARN, ERROR, CRIT. Every level always writes: there is
+deliberately no verbose toggle, because a diagnostic level that is off by
+default is off exactly when a user hits the bug you needed it for. Volume is
+bounded by rotation instead.
 
 Locations:
 
@@ -333,7 +335,46 @@ Structured event helpers exist for the high-value paths:
 - `NetLogger.screenshot / LanLogger.Screenshot` — emits `event=...` with
   `display`, `res`, `perm`, `init_ms`, `interrupt`, `path`.
 - `NetLogger.peer / LanLogger.Peer` — emits `event=...` with `peer`,
-  `pubkey` (first 8 chars), `ms`, `reason`.
+  `pubkey` (first 8 chars), `ms`, `reason`. Every presence transition
+  (online/probing/offline) is logged here with the quiet time that caused it,
+  because presence drives queueing and relay routing.
+- `NetLogger.update / LanLogger.Update` — update checks, downloads, installs
+  (→ `update.log`).
+- `NetLogger.backend / LanLogger.Backend` — any outbound server call (cloud
+  relay, GitHub release API) with `service`, `op`, `http`, `ms`, `count`.
+- `NetLogger.crash / LanLogger.Crash` — fatal diagnostics (→ `crash.log` and
+  `client.log`). Written synchronously, because the async path never drains
+  when the process is about to die.
+
+Each channel writes its own file (`client`, `transfer`, `screenshot`,
+`discovery`, `peer`, `crypto`, `ui`, `retry`, `update`, `crash`), and all of
+them are rotated and included in the export bundle.
+
+### Discovery health summary
+
+Discovery emits one summary line per minute on both platforms:
+
+```text
+Discovery: health window=60s tx_beacons=40 tx_replies=38 tx_failures=0 \
+  rx=[discovery=39,discovery_reply=40] send_sockets=1 recv_socket=1 interfaces=1
+```
+
+`tx_beacons=0` or `rx=[none]` additionally logs a WARN naming the likely cause
+(starved beacon timer, or inbound UDP blocked). This exists because a real
+incident — beacons silently stopping while replies kept working — was only
+confirmable by hand-counting tens of thousands of log lines across two
+machines. Do not remove it.
+
+### Crash capture
+
+Both platforms record abnormal termination. macOS installs
+`NSSetUncaughtExceptionHandler` plus handlers for SIGSEGV/SIGBUS/SIGILL/
+SIGFPE/SIGABRT/SIGTRAP (Swift runtime traps such as a nil force-unwrap or
+`fatalError` raise a signal, not an exception, so both hooks are needed) and
+drops a `.running` marker that is cleared on clean shutdown, so the next launch
+can report that the previous run died. Windows hooks
+`Application.UnhandledException`, `AppDomain.CurrentDomain.UnhandledException`,
+and `TaskScheduler.UnobservedTaskException`.
 
 Always use the structured helpers for new high-value events; free-form
 `info/warn/error` calls are fine for one-off diagnostics that don't need a

@@ -123,16 +123,32 @@ actor RelayClient {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = data
 
+        let started = Date()
         do {
             let (respData, resp) = try await session.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             let confirmed = (200...299).contains(code) && Self.parseOk(respData)
+            NetLogger.backend(
+                event: confirmed ? "response" : "failed",
+                service: "relay", operation: "store",
+                httpStatus: code, durationMs: Self.elapsedMs(since: started),
+                reason: confirmed ? nil : "server did not confirm"
+            )
             NetLogger.info("Relay", "store msgId=\(messageId) → HTTP \(code) confirmed=\(confirmed)")
             return confirmed
         } catch {
+            NetLogger.backend(
+                event: "failed", service: "relay", operation: "store",
+                durationMs: Self.elapsedMs(since: started),
+                reason: error.localizedDescription
+            )
             NetLogger.warn("Relay", "store msgId=\(messageId) failed: \(error.localizedDescription)")
             return false
         }
+    }
+
+    private static func elapsedMs(since start: Date) -> Int {
+        Int(Date().timeIntervalSince(start) * 1000)
     }
 
     private static func parseOk(_ data: Data) -> Bool {
@@ -154,17 +170,33 @@ actor RelayClient {
         comps.queryItems = [URLQueryItem(name: "relay_id", value: relayIdHex)]
         guard let url = comps.url else { return [] }
 
+        let started = Date()
         do {
             let (data, resp) = try await session.data(from: url)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             guard code == 200 else {
+                NetLogger.backend(
+                    event: "failed", service: "relay", operation: "pending",
+                    httpStatus: code, durationMs: Self.elapsedMs(since: started),
+                    reason: "non-200 response"
+                )
                 NetLogger.warn("Relay", "fetchPending → HTTP \(code)")
                 return []
             }
             let msgs = try JSONDecoder().decode([RelayPendingMessage].self, from: data)
+            NetLogger.backend(
+                event: "response", service: "relay", operation: "pending",
+                httpStatus: code, durationMs: Self.elapsedMs(since: started),
+                count: msgs.count
+            )
             NetLogger.info("Relay", "fetchPending → \(msgs.count) message(s)")
             return msgs
         } catch {
+            NetLogger.backend(
+                event: "failed", service: "relay", operation: "pending",
+                durationMs: Self.elapsedMs(since: started),
+                reason: error.localizedDescription
+            )
             NetLogger.warn("Relay", "fetchPending failed: \(error.localizedDescription)")
             return []
         }

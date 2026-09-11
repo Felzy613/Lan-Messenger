@@ -74,12 +74,7 @@
             <StackPanel Spacing="6">
                 <TextBlock Text="Logging"
                            Style="{ThemeResource BodyStrongTextBlockStyle}" />
-                <ToggleSwitch x:Name="VerboseLoggingToggle"
-                              Header="Verbose logging (file transfers, peer events, screenshots)"
-                              OnContent="On"
-                              OffContent="Off"
-                              Toggled="VerboseLoggingToggle_Toggled" />
-                <TextBlock Text="Useful when reporting a bug — the export contains the active and rotated log files."
+                <TextBlock Text="Detailed diagnostics are always recorded — transfers, connections, discovery, UI events, and crashes. The export contains the active and rotated log files for every channel."
                            Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                            TextWrapping="Wrap" />

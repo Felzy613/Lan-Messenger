@@ -39,9 +39,6 @@ final class NetLoggerTests: XCTestCase {
         NetLogger.maxArchives = originalMaxArchives
         NetLogger._testLogDirectoryOverride = nil
         NetLogger._testResetHeaderFlag()
-        // Tests may flip the shared verboseLogging flag; restore it so other
-        // suites that read it later see the default state.
-        ConfigStore.shared.config.verboseLogging = false
         try? FileManager.default.removeItem(at: tempDir)
         super.tearDown()
     }
@@ -88,21 +85,16 @@ final class NetLoggerTests: XCTestCase {
         }
     }
 
-    // MARK: - Verbose gating
+    // MARK: - Verbose level
 
-    func testDebugIsGatedByVerboseFlag() throws {
-        ConfigStore.shared.config.verboseLogging = false
-        NetLogger.debug("Verbose", "should NOT appear")
-        NetLogger._testFlush()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: NetLogger.logURL.path),
-                       "no log file should be created when verbose is off and only debug is written")
-
-        ConfigStore.shared.config.verboseLogging = true
+    // There is deliberately no verbose toggle: a diagnostic level that is off
+    // by default is off exactly when the user hits the bug you needed it for.
+    func testDebugAlwaysWritesWithoutAToggle() throws {
         NetLogger.debug("Verbose", "should appear")
         NetLogger._testFlush()
         let body = try String(contentsOf: NetLogger.logURL, encoding: .utf8)
-        XCTAssertTrue(body.contains("Verbose: should appear"))
-        ConfigStore.shared.config.verboseLogging = false
+        XCTAssertTrue(body.contains("Verbose: should appear"),
+                      "debug() must write unconditionally — no verbose gate")
     }
 
     // MARK: - Structured events (per-channel routing)
@@ -306,6 +298,8 @@ final class NetLoggerTests: XCTestCase {
         NetLogger.crypto(event: "key_generated")
         NetLogger.ui(event: "window_shown")
         NetLogger.retry(event: "retry", subsystem: "Transfer", attempt: 1)
+        NetLogger.update(event: "check", currentVersion: "1.0.0")
+        NetLogger.crash(event: "uncaught_exception", name: "NSRangeException")
         NetLogger._testFlush()
 
         let urls = NetLogger.archivedLogURLs()
@@ -490,6 +484,8 @@ final class NetLoggerTests: XCTestCase {
         NetLogger.crypto(event: "session_key_derived", algorithm: "X25519")
         NetLogger.ui(event: "window_shown", screen: "main")
         NetLogger.retry(event: "retry", subsystem: "Messaging", attempt: 1)
+        NetLogger.update(event: "available", currentVersion: "1.0.0", latestVersion: "1.1.0")
+        NetLogger.crash(event: "fatal_signal", name: "SIGSEGV")
         NetLogger._testFlush()
 
         // Every channel should have a log file.

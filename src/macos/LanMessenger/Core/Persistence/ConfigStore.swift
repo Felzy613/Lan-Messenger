@@ -113,7 +113,6 @@ struct AppConfig: Codable {
     // Last update check time (Unix seconds). Used to throttle background checks.
     var lastUpdateCheck: Double = 0
     // When true, file-transfer and networking events are written to the log file.
-    var verboseLogging: Bool = false
     // When true, undeliverable messages are posted to relayWorkerURL so the
     // recipient can pick them up when they come back online.
     var relayEnabled: Bool = false
@@ -135,7 +134,6 @@ struct AppConfig: Codable {
         case launchAtLogin = "launch_at_login"
         case updateRepo = "update_repo"
         case lastUpdateCheck = "last_update_check"
-        case verboseLogging = "verbose_logging"
         case relayEnabled = "relay_enabled"
         case relayWorkerURL = "relay_worker_url"
         case screenshotDir = "screenshot_dir"
@@ -158,7 +156,6 @@ struct AppConfig: Codable {
         launchAtLogin = (try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? false
         updateRepo = (try c.decodeIfPresent(String.self, forKey: .updateRepo)) ?? "felzy613/lan-messenger"
         lastUpdateCheck = (try c.decodeIfPresent(Double.self, forKey: .lastUpdateCheck)) ?? 0
-        verboseLogging = (try c.decodeIfPresent(Bool.self, forKey: .verboseLogging)) ?? false
         relayEnabled = (try c.decodeIfPresent(Bool.self, forKey: .relayEnabled)) ?? false
         relayWorkerURL = (try c.decodeIfPresent(String.self, forKey: .relayWorkerURL)) ?? ""
         screenshotDir = (try c.decodeIfPresent(String.self, forKey: .screenshotDir)) ?? ""

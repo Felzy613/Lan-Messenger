@@ -13,6 +13,12 @@ final class LanMessengerAppDelegate: NSObject, NSApplicationDelegate {
     // until the user toggles the setting twice. Reading the config here also
     // means a relaunch picks up the persisted preference automatically.
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Before anything else: a crash during launch is exactly the one we
+        // have no other record of.
+        CrashReporter.install()
+        CrashReporter.reportPreviousRunIfCrashed()
+        NetLogger.ui(event: "app_launch")
+
         let hideFromDock = ConfigStore.shared.config.hideFromDock
         NSApp.setActivationPolicy(hideFromDock ? .accessory : .regular)
     }
@@ -28,6 +34,8 @@ final class LanMessengerAppDelegate: NSObject, NSApplicationDelegate {
     // is a non-blocking UDP sendto handed to the kernel.
     func applicationWillTerminate(_ notification: Notification) {
         AppModel.shared?.sendGoodbyeOnTerminate()
+        NetLogger.ui(event: "app_terminate")
+        CrashReporter.noteCleanShutdown()
     }
 
     // When the user clicks the dock icon (if visible) or relaunches, surface the window again.

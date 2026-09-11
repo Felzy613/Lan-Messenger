@@ -143,9 +143,12 @@ If something misbehaves, open Settings → Logging:
 - "Open Logs Folder" — opens the client log directory in Finder / Explorer.
 - "Export Logs…" — packages the active log and every rotated `.log.gz`
   archive into a single zip you can attach to a bug report.
-- "Verbose logging" toggle — turn this on before reproducing a transfer
-  or screen-capture problem; it records DEBUG-level events (per-chunk
-  progress, decrypt outcomes) the standard log omits.
+
+There is no verbose toggle to remember to turn on. DEBUG-level detail —
+per-chunk transfer progress, decrypt outcomes, discovery health, UI events,
+and crashes — is always recorded, so the log of the run that broke is
+already complete when you go looking for it. Volume stays bounded by
+rotation.
 
 Each line carries a millisecond-precision UTC timestamp, a level
 (`DEBUG`/`INFO`/`WARN`/`ERROR`/`CRIT`), and a category. File transfers,

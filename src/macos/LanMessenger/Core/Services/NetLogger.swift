@@ -48,8 +48,10 @@ import Darwin
 //   logging never blocks the caller.
 // • Every disk operation is wrapped in `try?` so a full disk, locked file,
 //   or read-only profile can never crash the app.
-// • `verbose`/`debug` are gated by the user's `verboseLogging` preference so
-//   high-rate per-chunk events don't fill the rotation budget.
+// • `verbose`/`debug` always write. There is deliberately no verbose toggle:
+//   a diagnostic level that is off by default is off exactly when a user hits
+//   the bug you needed it for, and every incident then starts with "turn on
+//   logging and try to reproduce". Volume is bounded by rotation instead.
 //
 // Mirrors to `os_log` so live tail via Console.app works without opening files.
 enum NetLogger {
@@ -67,6 +69,8 @@ enum NetLogger {
         case crypto     = "crypto"      // crypto/handshakes → crypto.log
         case ui         = "ui"          // UI state changes  → ui.log
         case retry      = "retry"       // retries/recovery  → retry.log
+        case update     = "update"      // update checks     → update.log
+        case crash      = "crash"       // fatal diagnostics → crash.log
 
         var logName: String    { "\(rawValue).log" }
         var archivePrefix: String { rawValue }
@@ -119,7 +123,6 @@ enum NetLogger {
     // The trailing API takes a category + message for legacy call-sites.
     // New code should prefer the structured helpers below.
     static func debug(_ category: String, _ message: String) {
-        guard isVerboseEnabled() else { return }
         write("DEBUG", category, message, channel: .app)
     }
     static func info(_ category: String, _ message: String)     { write("INFO",  category, message, channel: .app) }
@@ -130,7 +133,6 @@ enum NetLogger {
 
     // Verbose: legacy name kept for callers that haven't migrated to debug().
     static func verbose(_ category: String, _ message: String) {
-        guard isVerboseEnabled() else { return }
         write("DEBUG", category, message, channel: .app)
     }
 
@@ -306,6 +308,75 @@ enum NetLogger {
         write(level, "Retry", format(kv), channel: .retry)
     }
 
+    /// Records an update-check / download / install event (→ update.log).
+    /// `event` examples: "check", "up_to_date", "available", "download",
+    /// "verify_failed", "install", "failed".
+    static func update(
+        event: String,
+        channel channelName: String? = nil,
+        currentVersion: String?      = nil,
+        latestVersion: String?       = nil,
+        url: String?                 = nil,
+        httpStatus: Int?             = nil,
+        bytes: Int64?                = nil,
+        durationMs: Int?             = nil,
+        reason: String?              = nil
+    ) {
+        var kv: [(String, String)] = [("event", event)]
+        if let c = channelName    { kv.append(("channel", c)) }
+        if let v = currentVersion { kv.append(("current", v)) }
+        if let v = latestVersion  { kv.append(("latest",  v)) }
+        if let u = url            { kv.append(("url",     u)) }
+        if let s = httpStatus     { kv.append(("http",    String(s))) }
+        if let b = bytes          { kv.append(("bytes",   String(b))) }
+        if let ms = durationMs    { kv.append(("ms",      String(ms))) }
+        if let r = reason         { kv.append(("reason",  quote(r))) }
+        let level = ["failed", "verify_failed"].contains(event) ? "ERROR" : "INFO"
+        write(level, "Update", format(kv), channel: .update)
+    }
+
+    /// Records a backend/server call — cloud relay, GitHub release API, any
+    /// outbound HTTP (→ client.log). `event` examples: "request", "response",
+    /// "failed", "timeout".
+    static func backend(
+        event: String,
+        service: String,
+        operation: String? = nil,
+        httpStatus: Int?   = nil,
+        durationMs: Int?   = nil,
+        count: Int?        = nil,
+        reason: String?    = nil
+    ) {
+        var kv: [(String, String)] = [("event", event), ("service", service)]
+        if let o = operation   { kv.append(("op",     o)) }
+        if let s = httpStatus  { kv.append(("http",   String(s))) }
+        if let ms = durationMs { kv.append(("ms",     String(ms))) }
+        if let c = count       { kv.append(("count",  String(c))) }
+        if let r = reason      { kv.append(("reason", quote(r))) }
+        let level = ["failed", "timeout"].contains(event) ? "ERROR" : "INFO"
+        write(level, "Backend", format(kv), channel: .app)
+    }
+
+    /// Records a fatal or near-fatal diagnostic (→ crash.log *and* client.log).
+    /// Written synchronously: an uncaught-exception or signal handler has
+    /// microseconds to live, and the async queue would never drain.
+    static func crash(
+        event: String,
+        name: String?      = nil,
+        reason: String?    = nil,
+        stack: [String]    = []
+    ) {
+        var kv: [(String, String)] = [("event", event)]
+        if let n = name   { kv.append(("name",   quote(n))) }
+        if let r = reason { kv.append(("reason", quote(r))) }
+        var line = format(kv)
+        if !stack.isEmpty {
+            line += "\n" + stack.map { "    \($0)" }.joined(separator: "\n")
+        }
+        writeSynchronously("CRIT", "Crash", line, channel: .crash)
+        writeSynchronously("CRIT", "Crash", line, channel: .app)
+    }
+
     // MARK: - File-bundle export
     //
     // Returns all log files across all channels (active + archives), newest first.
@@ -341,13 +412,6 @@ enum NetLogger {
 
     // MARK: - Internals
 
-    private static func isVerboseEnabled() -> Bool {
-        // ConfigStore.shared.config.verboseLogging is a Bool read on the main
-        // actor; single-word loads are atomic on every Apple platform, so this
-        // is safe from any thread.
-        return ConfigStore.shared.config.verboseLogging
-    }
-
     private static func write(_ level: String, _ category: String, _ message: String,
                                channel: LogChannel) {
         let line = "[\(timestamp())] \(level.padding(toLength: 5, withPad: " ", startingAt: 0)) \(category): \(message)\n"
@@ -358,6 +422,20 @@ enum NetLogger {
             rotateIfNeeded(channel: channel)
             appendLine(line, channel: channel)
         }
+    }
+
+    // Same as write(), but performs the disk I/O on the calling thread instead
+    // of the logging queue. Only for crash paths: an uncaught-exception handler
+    // or signal handler is about to terminate the process, so anything left on
+    // the async queue is lost — which is precisely the record you most need.
+    // Deliberately skips rotation (it allocates and can block) and appends
+    // directly; a crash log that slightly overruns the budget beats no log.
+    private static func writeSynchronously(_ level: String, _ category: String, _ message: String,
+                                           channel: LogChannel) {
+        let line = "[\(timestamp())] \(level.padding(toLength: 5, withPad: " ", startingAt: 0)) \(category): \(message)\n"
+        os_log("%{public}@", log: log, type: levelToOSType(level), line)
+        ensureHeader(channel: channel)
+        appendLine(line, channel: channel)
     }
 
     // Writes the per-file header exactly once after the active log file is

@@ -332,6 +332,16 @@ final class AppModel: ObservableObject {
             }
 
             if info.presence != decision.presence {
+                // Every presence flip gets a line. Presence drives queueing and
+                // relay routing, so "why did my message queue?" is answerable
+                // only if the transition that caused it is on the record.
+                NetLogger.peer(
+                    event: "presence",
+                    peer: info.ip,
+                    publicKey: key,
+                    reason: "\(info.presence) -> \(decision.presence) " +
+                            "quiet_ms=\(Int(now.timeIntervalSince(info.lastSeen) * 1000))"
+                )
                 var copy = info
                 copy.presence = decision.presence
                 updated[key] = copy

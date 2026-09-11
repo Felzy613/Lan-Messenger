@@ -54,7 +54,6 @@ public sealed class AppConfig
     [JsonPropertyName("last_update_check")]     public double LastUpdateCheck    { get; set; }
     [JsonPropertyName("start_in_tray")]         public bool   StartInTray        { get; set; } = false;
     [JsonPropertyName("close_to_tray")]         public bool   CloseToTray        { get; set; } = true;
-    [JsonPropertyName("verbose_logging")]       public bool   VerboseLogging     { get; set; } = false;
     // When true, undeliverable messages are posted to RelayWorkerUrl so the
     // recipient can pick them up when they come back online.
     [JsonPropertyName("relay_enabled")]         public bool   RelayEnabled       { get; set; } = false;

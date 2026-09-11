@@ -181,6 +181,8 @@ state for the app.
 |---|---|
 | `src/macos/LanMessengerTests/ConfigStoreTests.swift` | Config and filename sanitization tests. |
 | `src/macos/LanMessengerTests/CryptoTests.swift` | Session/history crypto round trips and known vector tests. |
+| `src/macos/LanMessengerTests/DiscoveryServiceQueueTests.swift` | Guards the discovery threading invariant: the blocking receive loop must not starve the beacon timer or socket rebuild. |
+| `src/macos/LanMessenger/Core/Services/CrashReporter.swift` | Uncaught-exception and fatal-signal handlers; abnormal-termination marker. |
 | `src/macos/LanMessengerTests/FrameCodecTests.swift` | Frame codec and known frame tests. |
 | `src/macos/LanMessengerTests/HistoryStoreTests.swift` | History encryption, cap, wrong-key, and known history vector tests. |
 | `src/macos/LanMessengerTests/MessageStatusTests.swift` | Monotonic status behavior tests. |

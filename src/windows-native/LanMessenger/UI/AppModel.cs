@@ -487,6 +487,15 @@ public sealed partial class AppModel : ObservableObject
             var presence = decision.Presence();
             if (info.Presence != presence)
             {
+                // Every presence flip gets a line. Presence drives queueing and
+                // relay routing, so "why did my message queue?" is answerable
+                // only if the transition that caused it is on the record.
+                LanLogger.Peer(
+                    event_: "presence",
+                    peer:      info.IP,
+                    publicKey: key,
+                    reason:    $"{info.Presence} -> {presence} quiet_ms=" +
+                               $"{(long)(now - info.LastSeen).TotalMilliseconds}");
                 info.Presence = presence;
                 changed = true;
             }

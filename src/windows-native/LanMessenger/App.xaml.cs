@@ -1,6 +1,5 @@
 using LanMessenger.UI;
 using Microsoft.UI.Xaml;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -56,7 +55,11 @@ public partial class App : Application
     {
         try
         {
-            LanMessenger.Core.Services.LanLogger.Error("App", $"{source}: {ex.GetType().Name} {ex.Message}", ex);
+            LanMessenger.Core.Services.LanLogger.Crash(
+                event_: source,
+                name:   ex.GetType().Name,
+                reason: ex.Message,
+                stack:  ex.ToString());
         }
         catch { }
     }
@@ -79,11 +82,13 @@ public partial class App : Application
         var logPath = "";
         try
         {
-            var logDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "LanMessenger");
-            Directory.CreateDirectory(logDir);
-            logPath = Path.Combine(logDir, "crash.log");
+            // Route through LanLogger so the crash lands in the Logs directory
+            // that rotation and "Export Logs" actually cover. It previously went
+            // to a stray %APPDATA%\LanMessenger\crash.log that no support
+            // bundle ever included — the one file you most want was the one file
+            // the user could not send.
+            logPath = LanMessenger.Core.Services.LanLogger.LogPathFor(
+                LanMessenger.Core.Services.LanLogger.LogChannel.Crash);
 
             var sb = new StringBuilder();
             sb.AppendLine($"[{DateTime.UtcNow:u}] HResult: 0x{ex.HResult:X8}");
@@ -105,8 +110,11 @@ public partial class App : Application
                     sb.Append(_diag);
                 }
             }
-            sb.AppendLine();
-            File.AppendAllText(logPath, sb.ToString());
+            LanMessenger.Core.Services.LanLogger.Crash(
+                event_: startup ? "startup_failure" : "unhandled_exception",
+                name:   ex.GetType().Name,
+                reason: ex.Message,
+                stack:  sb.ToString());
         }
         catch { }
 

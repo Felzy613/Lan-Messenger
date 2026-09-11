@@ -183,6 +183,15 @@ they are never replied to and never refresh `last_seen`.
 Windows additionally disables UDP connection reset behavior with
 `SIO_UDP_CONNRESET`.
 
+**Threading invariant.** The blocking receive loop must run on a queue of its
+own, never one shared with the beacon timer or the interface-change socket
+rebuild. The loop never returns, so sharing a serial queue starves every item
+behind it for the process lifetime: beacons stop (the host answers probes but
+never announces itself, so peers cannot discover it) and sockets are never
+rebuilt after a DHCP change, leaving every send failing `EADDRNOTAVAIL`. macOS
+uses a dedicated `recvQueue`; Windows runs the loop as its own async `Task`.
+Both are covered by `DiscoveryServiceQueueTests` on macOS.
+
 ### Presence
 
 Online/offline status is LAN-local and driven by a per-peer state machine, not a

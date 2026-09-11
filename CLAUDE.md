@@ -313,6 +313,20 @@ Use the smallest sufficient set for the change:
   state set by the evaluator, goodbye, and liveness probes; both platforms keep
   offline peers (their key is needed for queue/relay). See PROTOCOL.md → Presence
   and `PresenceEvaluator` on each platform.
+- Do not put the blocking discovery receive loop on the same queue as the beacon
+  timer or the interface-change socket rebuild. The loop never returns, so a
+  shared serial queue starves both for the process lifetime: the host stops
+  beaconing (peers can never discover it) and never rebuilds sockets after a
+  DHCP change (every send fails `EADDRNOTAVAIL`). macOS uses a dedicated
+  `recvQueue`; Windows uses a separate async `Task`. See
+  `DiscoveryServiceQueueTests`.
+- Do not reintroduce a verbose/debug logging toggle. All levels always write;
+  a diagnostic level that is off by default is off exactly when a user hits the
+  bug you needed it for. Volume is bounded by rotation.
+- Do not remove the per-minute discovery health summary, or drop a log channel
+  from the `LogChannel` enum — `archivedLogURLs`/`ArchivedLogPaths` derive the
+  export bundle from that enum, so an unlisted channel silently never reaches a
+  bug report.
 - Do not remove SHA256 sidecar support from updaters; combined releases may only
   expose installer assets while sidecars live on per-platform releases.
 - Do not treat generated Xcode project files as source.
