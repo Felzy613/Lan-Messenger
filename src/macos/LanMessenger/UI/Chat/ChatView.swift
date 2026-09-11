@@ -14,6 +14,19 @@ struct ChatView: View {
     @State private var scrollHighlightID: String? = nil
     /// True while a file drag is hovering anywhere over the thread.
     @State private var isDropTargeted = false
+    /// Scroll geometry for the thread, measured rather than read: SwiftUI
+    /// exposes no scroll offset for a ScrollView before macOS 15, so the
+    /// distance still to scroll is `contentBottom - viewportHeight`.
+    @State private var contentBottom: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+
+    /// Slack enough that resting at the bottom still counts as "at the bottom"
+    /// after a bubble's height settles. Matches the Windows threshold.
+    private static let atBottomSlack: CGFloat = 40
+    private static let scrollSpace = "chatScroll"
+
+    private var distanceFromBottom: CGFloat { max(0, contentBottom - viewportHeight) }
+    private var isNearBottom: Bool { distanceFromBottom < Self.atBottomSlack }
 
     private var conv: ConversationViewModel? {
         model.conversations.first { $0.peerIP == peerIP }
@@ -177,9 +190,50 @@ struct ChatView: View {
                     }
                 }
                 .padding(.vertical, 12)
+                // Zero-height sentinel pinned to the end of the thread: its maxY
+                // in the scroll view's own coordinate space is where the bottom
+                // of the content currently sits. Subtracting the viewport height
+                // gives the distance still to scroll, which is what drives both
+                // the jump button and the "don't yank the reader" check below.
+                //
+                // It has to be a real sibling of the content, not a .background()
+                // on it: preferences raised inside a background subtree never
+                // reach .onPreferenceChange here (verified on macOS 13/14 — the
+                // value stays at the default forever).
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: ContentBottomKey.self,
+                        value: geo.frame(in: .named(Self.scrollSpace)).maxY
+                    )
+                }
+                .frame(height: 0)
+            }
+            .coordinateSpace(name: Self.scrollSpace)
+            // Viewport height, read straight out of the geometry rather than
+            // through a preference, for the same reason.
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { viewportHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { viewportHeight = $0 }
+                }
+            )
+            .onPreferenceChange(ContentBottomKey.self) { contentBottom = $0 }
+            .overlay(alignment: .bottomTrailing) {
+                jumpToLatestButton { scrollToBottom(proxy: proxy, animated: true) }
             }
             .onAppear { scrollToBottom(proxy: proxy, animated: false) }
-            .onChange(of: entries.count) { _ in scrollToBottom(proxy: proxy, animated: true) }
+            .onChange(of: entries.count) { _ in
+                // Sending always jumps to the newest message. Receiving only
+                // does when the newest message is already on screen — otherwise
+                // an arriving message would snatch the thread away from someone
+                // reading back through history. The jump button is how they get
+                // back down.
+                let outgoing = entries.last.map { !$0.incoming } ?? false
+                if outgoing || isNearBottom {
+                    scrollToBottom(proxy: proxy, animated: true)
+                }
+            }
             .onChange(of: scrollHighlightID) { newValue in
                 guard newValue != nil else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -187,6 +241,32 @@ struct ChatView: View {
                 }
             }
         }
+    }
+
+    /// Floating jump-to-latest control, shown only while the newest message is
+    /// off screen.
+    private func jumpToLatestButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 30, height: 30)
+                .background(
+                    Circle()
+                        .fill(.regularMaterial)
+                        .overlay(Circle().strokeBorder(Color.primary.opacity(0.08)))
+                        .shadow(color: .black.opacity(0.18), radius: 4, y: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Jump to latest")
+        .padding(.trailing, 18)
+        .padding(.bottom, 10)
+        .opacity(isNearBottom ? 0 : 1)
+        // Kept in the layout but inert when hidden, so a fade-out never eats a
+        // click aimed at the bubble underneath it.
+        .allowsHitTesting(!isNearBottom)
+        .animation(.easeInOut(duration: 0.15), value: isNearBottom)
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
@@ -275,4 +355,14 @@ struct ChatView: View {
     private func markRead() {
         model.markConversationRead(peerIP: peerIP)
     }
+}
+
+// MARK: - Scroll geometry
+
+/// Bottom edge of the thread's content, measured in the scroll view's own
+/// coordinate space: roughly the viewport height when the newest message is
+/// fully on screen, larger by the remaining scroll distance otherwise.
+private struct ContentBottomKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

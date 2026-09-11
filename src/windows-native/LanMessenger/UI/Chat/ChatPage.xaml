@@ -10,6 +10,7 @@
          you only get right on the second try. -->
     <Grid Background="{ThemeResource AppChatBackgroundBrush}"
           AllowDrop="True"
+          DragEnter="Page_DragEnter"
           DragOver="Page_DragOver"
           DragLeave="Page_DragLeave"
           Drop="Page_Drop">
@@ -85,6 +86,26 @@
                 </Style>
             </ListView.ItemContainerStyle>
         </ListView>
+
+        <!-- Jump to latest. Floats over the bottom-right of the thread and is
+             only shown once the view is scrolled away from the newest message —
+             new messages no longer yank a reader back down, so there has to be
+             a way back. -->
+        <Button x:Name="JumpToLatestBtn"
+                Grid.Row="2"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                Margin="0,0,20,10"
+                Width="34" Height="34"
+                Padding="0"
+                CornerRadius="17"
+                Visibility="Collapsed"
+                ToolTipService.ToolTip="Jump to latest"
+                Click="JumpToLatestBtn_Click">
+            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                      Glyph="&#xE70D;"
+                      FontSize="13" />
+        </Button>
 
         <!-- Reply banner (shown when replying, or when editing a sent message) -->
         <Border x:Name="ReplyBanner"

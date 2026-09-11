@@ -390,6 +390,23 @@ Use the smallest sufficient set for the change:
   until the feature runs — `SetForegroundWindowInternal` in the screenshot
   region overlay crashed the app the moment the overlay opened. Nothing that
   runs inside a WinUI event handler may throw.
+- Do not `await` inside a WinUI `DragEnter`/`DragOver` handler, and do not let
+  one throw. Awaiting returns control to the drag source, which reads
+  `AcceptedOperation` at that instant and takes the unset value as a refusal —
+  the drop is never offered and later drags break too
+  (microsoft-ui-xaml#8108). Inspect the payload in `Drop`, under a deferral.
+  `DragUIOverride` is null for some sources and throws a bare `COMException` on
+  others; an unhandled throw out of a drag handler ends the process. Registering
+  drop handlers only on the page root is also not enough — the `ListView`
+  covering the thread has its own class handling for these events, so
+  `ChatPage.WireDropTargets` re-registers them on the children with
+  `handledEventsToo`.
+- Do not raise a SwiftUI preference from inside a `.background()` or
+  `.overlay()` subtree and expect `onPreferenceChange` to see it. On macOS 13/14
+  the value stays at its default forever, silently. `ChatView`'s scroll geometry
+  depends on this: the content-bottom sentinel is a real sibling inside the
+  `ScrollView`, and the viewport height is written from `onAppear`/`onChange`
+  rather than through a second preference key.
 - Do not shrink the attachment drop target back to the composer strip, and keep
   every attachment route (picker, screenshot, drop, paste, drag-out) converging
   on `sendFile`/`SendFile` so queueing, offline persistence, and history stay

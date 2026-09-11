@@ -507,6 +507,35 @@ Conversation rows are created from saved contacts or existing history.
 
 ## UI Architecture
 
+### Thread Scrolling
+
+Both platforms follow the same rule, so a conversation behaves identically on
+either side:
+
+- Opening a conversation, and sending a message, always land on the newest
+  message.
+- An *incoming* message only scrolls the thread when the newest message is
+  already on screen (within 40 pt / px of the bottom). Someone reading back
+  through history is never yanked away from what they are reading.
+- Whenever the newest message is off screen, a floating chevron button appears
+  over the bottom-right of the thread and jumps back to it.
+
+Windows reads the position straight off the `ListView`'s inner `ScrollViewer`
+(`ChatPage._scroll`, cached once after layout) and refreshes the button from
+`ViewChanged` plus the merge path — appending rows grows the extent without
+necessarily raising `ViewChanged`.
+
+macOS has to measure it. SwiftUI exposes no scroll offset for a `ScrollView`
+before macOS 15, so `ChatView` reads the viewport height from a `GeometryReader`
+in the scroll view's `.background` and the content's bottom edge from a
+zero-height `GeometryReader` pinned after the message `VStack`, reported through
+`ContentBottomKey` in a named coordinate space; the distance still to scroll is
+the difference. The sentinel has to be a real sibling of the content: a
+preference raised inside a `.background()` subtree never reaches
+`onPreferenceChange` (verified on macOS 13/14 — the value sits at its default
+forever), which is also why the viewport height is written from `onAppear` /
+`onChange` rather than through a second preference key.
+
 ### macOS UI
 
 Important files:
@@ -618,6 +647,30 @@ identically no matter how the file arrived:
   Windows: `AllowDrop` on the `ChatPage` root grid with the `DropOverlay`
   border. `ComposerView`'s `NSTextView` calls `unregisterDraggedTypes()` so a
   file dropped on the text area is sent rather than inserted as a path string.
+
+  On Windows the same handlers are also registered directly on `MessagesList`
+  and `Composer` via `AddHandler(..., handledEventsToo: true)`
+  (`ChatPage.WireDropTargets`). The drag events bubble, but the ListView covers
+  nearly the whole thread and has its own class handling for them, so relying on
+  a single handler at the page root leaves the outcome up to whether a child
+  marked the event handled. Two further constraints on the Windows side, both
+  the kind that fail silently:
+  - `DragEnter`/`DragOver` must stay **synchronous**. Awaiting there returns
+    control to the drag source, which reads `AcceptedOperation` at that instant
+    and treats the not-yet-assigned value as a refusal — the drop is never
+    offered, and the data object is left in a state that breaks later drags too
+    (microsoft-ui-xaml#8108). Inspect the payload in `Drop`, under a deferral.
+  - Nothing in a drag handler may throw. `DragUIOverride` is null for some drag
+    sources and throws a bare `COMException` on others
+    (microsoft-ui-xaml#9296); an unhandled throw out of one of these handlers
+    ends the process.
+
+  `ChatPage` logs one `Attachment` line per drag session with the data package's
+  formats. If a drop does nothing and that line is absent, no drag event reached
+  the app at all, which is a Windows-side block rather than an app bug — most
+  often the app running elevated (Explorer will not hand a drag up an integrity
+  level), or UAC disabled machine-wide (`EnableLUA=0`), which breaks drop into
+  WinUI 3 apps outright.
 - **Paste** — Ctrl/Cmd+V with files or a bitmap on the clipboard. The
   precedence is shared across platforms (`AttachmentPasteboard.decide` /
   `ClipboardAttachments.Decide`): files beat a bitmap, and a bitmap only wins

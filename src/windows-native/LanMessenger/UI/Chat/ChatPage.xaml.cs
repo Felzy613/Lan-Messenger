@@ -174,6 +174,7 @@ public sealed partial class ChatPage : Page
     {
         InitializeComponent();
         MessagesList.ItemsSource = _rows;
+        WireDropTargets();
 
         // Cache the inner ScrollViewer once the visual tree is built so we can
         // query scroll position without walking the tree on every message update.
@@ -183,7 +184,9 @@ public sealed partial class ChatPage : Page
             var sv = FindDescendant<ScrollViewer>(MessagesList);
             if (sv is null) return;
             _scroll = sv;
+            _scroll.ViewChanged += (_, _) => UpdateJumpToLatest();
             MessagesList.LayoutUpdated -= layoutHandler;
+            UpdateJumpToLatest();
         };
         MessagesList.LayoutUpdated += layoutHandler;
     }
@@ -360,6 +363,10 @@ public sealed partial class ChatPage : Page
 
             if (wasAtBottom)
                 DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
+            else
+                // Reading back through history: the thread stays put, and the
+                // jump button is what says there is something newer below.
+                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdateJumpToLatest);
 
             // Auto-read newly-arrived incoming messages only while the window is
             // visible — messages that arrive after the user hides to tray should
@@ -374,7 +381,10 @@ public sealed partial class ChatPage : Page
         _rows.Clear();
         foreach (var e in entries) _rows.Add(MapEntry(e, entries));
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            _scroll?.ChangeView(null, verticalOffset, null, disableAnimation: true));
+        {
+            _scroll?.ChangeView(null, verticalOffset, null, disableAnimation: true);
+            UpdateJumpToLatest();
+        });
     }
 
     private void ScrollToBottom()
@@ -383,6 +393,7 @@ public sealed partial class ChatPage : Page
             _scroll.ChangeView(null, _scroll.ScrollableHeight, null, disableAnimation: true);
         else if (_rows.Count > 0)
             MessagesList.ScrollIntoView(_rows[^1]);
+        UpdateJumpToLatest();
     }
 
     private bool IsScrolledToBottom()
@@ -391,6 +402,20 @@ public sealed partial class ChatPage : Page
         return _scroll.ScrollableHeight <= 0
             || (_scroll.ScrollableHeight - _scroll.VerticalOffset) < 40;
     }
+
+    // ── Jump to latest ───────────────────────────────────────────────────────
+
+    /// Shows the floating jump button exactly while the newest message is out of
+    /// view. ScrollViewer.ViewChanged covers scrolling and resizing; appending
+    /// rows grows the extent without necessarily raising it, so the merge path
+    /// calls this too.
+    private void UpdateJumpToLatest()
+    {
+        var show = _rows.Count > 0 && !IsScrolledToBottom();
+        JumpToLatestBtn.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void JumpToLatestBtn_Click(object sender, RoutedEventArgs e) => ScrollToBottom();
 
     private static bool SameMessage(MessageRowViewModel row, MessageEntry entry)
     {
@@ -550,32 +575,139 @@ public sealed partial class ChatPage : Page
 
     // ── Thread-wide file drop ────────────────────────────────────────────────
 
+    /// <summary>
+    /// Registers the drag handlers on the thread's big child surfaces as well as
+    /// on the page root.
+    ///
+    /// The root Grid declares AllowDrop and the handlers in XAML, and WinUI's
+    /// drag events bubble — but the ListView covers nearly the whole thread and
+    /// is a control with its own class handling for drag (it uses these very
+    /// events for item reorder), so an event it marks handled never reaches the
+    /// Grid's handler. Registering on the children directly, with
+    /// handledEventsToo, takes that question off the table. The composer gets the
+    /// same treatment so the strip along the bottom is a target too: its TextBox
+    /// sets AllowDrop="False" precisely so drops land here instead of being
+    /// swallowed as text insertion.
+    /// </summary>
+    private void WireDropTargets()
+    {
+        foreach (var target in new UIElement[] { MessagesList, Composer })
+        {
+            target.AllowDrop = true;
+            target.AddHandler(DragEnterEvent, new DragEventHandler(Page_DragEnter), true);
+            target.AddHandler(DragOverEvent,  new DragEventHandler(Page_DragOver),  true);
+            target.AddHandler(DragLeaveEvent, new DragEventHandler(Page_DragLeave), true);
+            target.AddHandler(DropEvent,      new DragEventHandler(Page_Drop),      true);
+        }
+    }
+
+    /// Ticks on every DragOver so a deferred DragLeave can tell "the pointer
+    /// really left the thread" from "the pointer crossed between two children".
+    private int  _dragOverTick;
+    /// One log line per drag session rather than one per event.
+    private bool _dragSessionLogged;
+    private bool _dropOverlayShown;
+
+    private void Page_DragEnter(object sender, DragEventArgs e) => AcceptFileDrag(e);
+
     private void Page_DragOver(object sender, DragEventArgs e)
     {
+        _dragOverTick++;
+        AcceptFileDrag(e);
+    }
+
+    /// <summary>
+    /// Shared by DragEnter and DragOver. Everything here is synchronous by
+    /// design: awaiting inside a drag handler returns control to the drag
+    /// source, which reads AcceptedOperation at that moment and takes the
+    /// not-yet-assigned value as a refusal — the drop is then never offered, and
+    /// the data object is left in a state that breaks subsequent drags too
+    /// (microsoft-ui-xaml#8108). Inspect the payload in Drop, never here.
+    /// </summary>
+    private void AcceptFileDrag(DragEventArgs e)
+    {
+        NoteDragSession(e);
         if (_model?.SelectedPeerIP is null) return;
         if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
 
         e.AcceptedOperation = DataPackageOperation.Copy;
         // Suppress the shell's own "Copy to ..." caption, which names the app
-        // rather than the person the file is about to be sent to. Null for drag
-        // sources that don't offer an overridable UI — checked, not assumed:
-        // an exception out of a drag handler takes the process down.
-        if (e.DragUIOverride is { } ui) ui.IsCaptionVisible = false;
+        // rather than the person the file is about to be sent to. Both the null
+        // check and the catch are load-bearing: some drag sources offer no
+        // overridable UI, and touching the override on others throws a bare
+        // COMException (microsoft-ui-xaml#9296). Neither may escape — an
+        // unhandled throw out of a drag handler takes the process down.
+        try
+        {
+            if (e.DragUIOverride is { } ui) ui.IsCaptionVisible = false;
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Attachment", $"drag caption override failed: {ex.GetType().Name}: {ex.Message}");
+        }
+
         e.Handled = true;
         ShowDropOverlay(true);
     }
 
-    private void Page_DragLeave(object sender, DragEventArgs e) => ShowDropOverlay(false);
+    /// Records what a drag is actually carrying, once per drag. When a drop
+    /// "does nothing", this line is the difference between "no drag event ever
+    /// reached the app" (nothing logged — a Windows-side block such as an
+    /// elevated process, since Explorer will not hand a drag up an integrity
+    /// level) and "the package held no files".
+    private void NoteDragSession(DragEventArgs e)
+    {
+        if (_dragSessionLogged) return;
+        _dragSessionLogged = true;
+        LanLogger.Info("Attachment",
+            $"drag entered thread: files={e.DataView.Contains(StandardDataFormats.StorageItems)}, formats=[{FormatsOf(e)}]");
+    }
+
+    /// Never throws: this only ever feeds a log line, and an exception escaping
+    /// a drag handler ends the process.
+    private static string FormatsOf(DragEventArgs e)
+    {
+        try { return string.Join(", ", e.DataView.AvailableFormats); }
+        catch (Exception ex) { return $"<unreadable: {ex.GetType().Name}>"; }
+    }
+
+    private void Page_DragLeave(object sender, DragEventArgs e)
+    {
+        // DragLeave also fires when the pointer crosses from one child of the
+        // thread to another, because these events bubble — hiding the overlay
+        // straight away makes it blink as the cursor moves between the list and
+        // the composer. Defer the hide by one dispatcher turn and skip it if a
+        // DragOver landed in the meantime, which it will have unless the pointer
+        // genuinely left.
+        var seen = _dragOverTick;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_dragOverTick != seen) return;
+            EndDragSession();
+        });
+    }
+
+    private void EndDragSession()
+    {
+        _dragSessionLogged = false;
+        ShowDropOverlay(false);
+    }
 
     private async void Page_Drop(object sender, DragEventArgs e)
     {
-        ShowDropOverlay(false);
+        EndDragSession();
         if (_model?.SelectedPeerIP is null) return;
-        if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            LanLogger.Warn("Attachment", $"drop carried no files; formats=[{FormatsOf(e)}]");
+            return;
+        }
         e.Handled = true;
 
         // The DataView is only guaranteed to outlive the handler if a deferral
-        // is held — GetStorageItemsAsync yields, so take one.
+        // is held — GetStorageItemsAsync yields, so take one. Awaiting is safe
+        // *here*, unlike in DragOver: by the time Drop fires the source no
+        // longer needs an answer about whether the drop is accepted.
         var deferral = e.GetDeferral();
         try
         {
@@ -585,10 +717,13 @@ public sealed partial class ChatPage : Page
                              .Where(p => !string.IsNullOrEmpty(p))
                              .ToList();
             if (paths.Count > 0) SendAttachments(paths);
+            else
+                LanLogger.Warn("Attachment",
+                    $"drop produced no usable file paths from {items.Count} item(s) — folders are not sent");
         }
         catch (Exception ex)
         {
-            LanLogger.Warn("Attachment", $"drop failed: {ex.Message}");
+            LanLogger.Warn("Attachment", $"drop failed: {ex.GetType().Name}: {ex.Message}");
         }
         finally
         {
@@ -598,10 +733,11 @@ public sealed partial class ChatPage : Page
 
     private void ShowDropOverlay(bool visible)
     {
-        if (visible)
-        {
-            DropOverlayText.Text = $"Drop to send to {HeaderName.Text}";
-        }
+        // Guarded because DragOver fires many times a second: re-assigning the
+        // caption and Visibility on every tick means a layout pass on every tick.
+        if (visible == _dropOverlayShown) return;
+        _dropOverlayShown = visible;
+        if (visible) DropOverlayText.Text = $"Drop to send to {HeaderName.Text}";
         DropOverlay.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
 
