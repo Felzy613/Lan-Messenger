@@ -43,8 +43,12 @@ jobs:
       - name: Find latest per-platform releases
         id: releases
         run: |
-          RELEASES=$(gh release list --limit 100 --json tagName,createdAt \
-            --jq 'sort_by(.createdAt) | reverse')
+          # Drafts are excluded: GitHub only creates the git tag when a release
+          # is published, so a leftover draft from a failed run is both an
+          # unresolvable changelog boundary and an off-by-one in the .[1]
+          # lookups below.
+          RELEASES=$(gh release list --limit 100 --json tagName,isDraft,createdAt \
+            --jq '[.[] | select(.isDraft | not)] | sort_by(.createdAt) | reverse')
 
           MAC_TAG=$(echo "$RELEASES" | \
             jq -r '[.[] | select(.tagName | startswith("macos-v"))] | .[0].tagName // empty')
@@ -125,8 +129,12 @@ jobs:
           #
           # e.g. Windows 1.6.12 triggers → boundary = windows-v1.6.11 → one build's changes.
           # workflow_dispatch fallback → use most recently published platform's predecessor.
-          RELEASES=$(gh release list --limit 100 --json tagName,createdAt \
-            --jq 'sort_by(.createdAt) | reverse')
+          # Drafts are excluded: GitHub only creates the git tag when a release
+          # is published, so a leftover draft from a failed run is both an
+          # unresolvable changelog boundary and an off-by-one in the .[1]
+          # lookups below.
+          RELEASES=$(gh release list --limit 100 --json tagName,isDraft,createdAt \
+            --jq '[.[] | select(.isDraft | not)] | sort_by(.createdAt) | reverse')
 
           PREV_BOUNDARY=""
 
