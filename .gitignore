@@ -1,45 +1,107 @@
-# macOS
+# ── OS noise ──────────────────────────────────────────────────────────────────
 .DS_Store
 .DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
+.AppleDouble
+.LSOverride
 ehthumbs.db
 Thumbs.db
+desktop.ini
 
-# IDEs
+# ── Editors / IDEs ────────────────────────────────────────────────────────────
 .vscode/
 .idea/
+.fleet/
 *.swp
 *.swo
 *~
 
-# Swift Package Manager
+# ── Secrets & signing material ────────────────────────────────────────────────
+# Never commit signing identities or notarization credentials. CI injects these
+# from repository secrets; a local build may leave them lying around.
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.cer
+*.certSigningRequest
+*.provisionprofile
+*.mobileprovision
+*.keystore
+secrets.json
+.netrc
+
+# ── macOS: Swift Package Manager ──────────────────────────────────────────────
 src/macos/.build/
 src/macos/build/
+.build/
+.swiftpm/
+Package.resolved.bak
 
-# Xcode (regenerated from project.yml via xcodegen)
+# ── macOS: Xcode ──────────────────────────────────────────────────────────────
+# The project is regenerated from project.yml via xcodegen and is never source.
 src/macos/LanMessenger.xcodeproj/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
 
-# Windows Python build artifacts
-src/windows/__pycache__/
-src/windows/*.py[cod]
-src/windows/dist/
-src/windows/build/
-src/windows/.venv/
+# ── macOS: packaging output ───────────────────────────────────────────────────
+# scripts/macos/package.sh emits these plus .sha256 sidecars.
+*.dmg
+*.pkg
+*.app.zip
+*.sha256
 
-# Built releases (xcodebuild / build_app.sh / scripts/macos/package.sh)
+# ── Windows: .NET / WinUI build artifacts ─────────────────────────────────────
+src/windows-native/**/bin/
+src/windows-native/**/obj/
+.vs/
+*.user
+*.binlog
+msbuild*.log
+TestResults/
+*.nupkg
+project.lock.json
+
+# ── Windows: Inno Setup installer output ──────────────────────────────────────
+src/windows-native/**/Output/
+*.iss.bak
+
+# ── Node / TypeScript (scripts/relay-worker has its own .gitignore too) ───────
+node_modules/
+.wrangler/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── Python (icon generation and helper scripts) ───────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# ── Built releases (xcodebuild / build_app.sh / scripts/macos/package.sh) ─────
 builds/
 releases/
 dist/
+out/
 
-# Claude Code worktrees
+# ── Claude Code ───────────────────────────────────────────────────────────────
 .claude/worktrees/
+.claude/settings.local.json
 
-# Local config
+# ── Local app config & runtime state ──────────────────────────────────────────
+# The app writes these at runtime; they are user data, not source.
 .lan_messenger/
 config.json
-
-# Local runtime logs
 Logs/
 *.log
