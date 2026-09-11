@@ -206,6 +206,8 @@ public sealed partial class MessageBubbleControl : UserControl
                     {
                         DecodePixelWidth  = 72,
                         DecodePixelType   = DecodePixelType.Logical,
+                        // See ShowImageInline — must be set before UriSource.
+                        CreateOptions     = BitmapCreateOptions.IgnoreImageCache,
                     };
                     bmp.UriSource       = new Uri(path);
                     ReplyChipImage.Source    = bmp;
@@ -236,6 +238,13 @@ public sealed partial class MessageBubbleControl : UserControl
     /// pixel size so a 4K JPEG doesn't allocate ~30 MB just to render at 280 px.
     /// Errors are caught silently — the tile collapses and we fall back to the
     /// generic file caption.
+    ///
+    /// IgnoreImageCache is not optional here.  XAML caches decoded bitmaps by
+    /// URI for the life of the process, and a chat bubble is only a pointer to
+    /// an absolute path — so when a user re-exports an image over the same
+    /// filename and sends it again, every bubble for that path keeps rendering
+    /// the version decoded first, while the peer receives the new bytes.  That
+    /// made the sent bubble disagree with what was actually transmitted.
     /// </summary>
     private void ShowImageInline(string path)
     {
@@ -247,6 +256,9 @@ public sealed partial class MessageBubbleControl : UserControl
                 // only DecodePixelWidth preserves aspect ratio.
                 DecodePixelWidth = 560,
                 DecodePixelType  = DecodePixelType.Logical,
+                // Must be assigned before UriSource: setting UriSource starts
+                // the decode, and CreateOptions is read at that moment.
+                CreateOptions    = BitmapCreateOptions.IgnoreImageCache,
             };
             bmp.UriSource = new Uri(path);
             ImagePreview.Source = bmp;

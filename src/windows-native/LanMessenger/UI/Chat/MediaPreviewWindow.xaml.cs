@@ -68,8 +68,12 @@ public sealed partial class MediaPreviewWindow : Window
             if (kind == MediaKind.Image)
             {
                 var uri = new Uri(path);
-                _bitmapImage              = new BitmapImage(uri);
+                // IgnoreImageCache before UriSource — otherwise the preview shows
+                // whatever XAML decoded for this path earlier in the session, not
+                // what is on disk now (see MessageBubbleControl.ShowImageInline).
+                _bitmapImage              = new BitmapImage { CreateOptions = BitmapCreateOptions.IgnoreImageCache };
                 _bitmapImage.ImageOpened += OnBitmapImageOpened;
+                _bitmapImage.UriSource    = uri;
                 PreviewImage.Source       = _bitmapImage;
                 PreviewImage.Visibility   = Visibility.Visible;
             }

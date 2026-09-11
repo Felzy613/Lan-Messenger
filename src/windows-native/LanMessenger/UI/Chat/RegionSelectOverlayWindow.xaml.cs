@@ -134,12 +134,16 @@ public sealed class RegionSelectOverlayWindow : Window
 
         try
         {
-            var bmp = new BitmapImage(new Uri(backingImagePath));
+            // IgnoreImageCache: screenshot filenames have one-second resolution,
+            // so two captures in the same second share a path and a cached decode
+            // would paint the previous screen behind the selection rectangle.
+            var bmp = new BitmapImage { CreateOptions = BitmapCreateOptions.IgnoreImageCache };
             bmp.ImageOpened += (_, _) =>
             {
                 _imagePixelWidth  = bmp.PixelWidth;
                 _imagePixelHeight = bmp.PixelHeight;
             };
+            bmp.UriSource = new Uri(backingImagePath);   // starts the decode — subscribe first
             _background.Source = bmp;
         }
         catch (Exception ex)

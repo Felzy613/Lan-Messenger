@@ -576,10 +576,17 @@ private final class EscapablePanel: NSPanel {
 
 // MARK: - Thumbnail cache (in-memory, NSCache-backed)
 
-/// Memory-bounded cache for decoded NSImages keyed by absolute file path.
+/// Memory-bounded cache for decoded NSImages, keyed by absolute file path *and*
+/// the file's content version (modification date + size).
 /// NSCache evicts under memory pressure. The cache is intentionally process-local;
 /// we do not persist thumbnails to disk because the saved files themselves are the
 /// canonical source and re-decoding on relaunch is cheap.
+///
+/// The content version is not optional.  A chat bubble stores only an absolute
+/// path, so when a file is overwritten in place — re-exporting an image under
+/// the same name and sending it again is the ordinary case — a path-only key
+/// keeps serving the thumbnail decoded from the previous contents, and the
+/// bubble silently disagrees with the bytes that were actually transmitted.
 final class ThumbnailCache {
     static let shared = ThumbnailCache()
 
@@ -591,17 +598,26 @@ final class ThumbnailCache {
         cache.countLimit = 256
     }
 
-    func thumbnail(for path: String) -> NSImage? {
-        cache.object(forKey: path as NSString)
+    /// `variant` separates differently-sized renderings of the same file
+    /// (e.g. the 36-pt reply chip crop vs. the full bubble thumbnail).
+    private func key(for path: String, variant: String) -> NSString {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let size  = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        return "\(path)|\(variant)|\(mtime)|\(size)" as NSString
     }
 
-    func store(_ image: NSImage, for path: String) {
+    func thumbnail(for path: String, variant: String = "") -> NSImage? {
+        cache.object(forKey: key(for: path, variant: variant))
+    }
+
+    func store(_ image: NSImage, for path: String, variant: String = "") {
         // Cost estimate — pixel count × 4 bytes per pixel. NSImage size is in points,
         // but multiplied by representation scale where available.
         let pixels = image.representations.reduce(into: 0) { acc, rep in
             acc += rep.pixelsWide * rep.pixelsHigh
         }
         let cost = max(pixels * 4, Int(image.size.width * image.size.height * 4))
-        cache.setObject(image, forKey: path as NSString, cost: cost)
+        cache.setObject(image, forKey: key(for: path, variant: variant), cost: cost)
     }
 }

@@ -148,9 +148,11 @@ internal sealed class ScreenshotPreviewDialog : ContentDialog
         try
         {
             var uri = new Uri(imagePath);
+            var bmp = new BitmapImage { CreateOptions = BitmapCreateOptions.IgnoreImageCache };
+            bmp.UriSource = uri;   // assign after CreateOptions; setting it starts the decode
             image = new Image
             {
-                Source              = new BitmapImage(uri),
+                Source              = bmp,
                 MaxWidth            = 560,
                 MaxHeight           = 380,
                 Stretch             = Stretch.Uniform,

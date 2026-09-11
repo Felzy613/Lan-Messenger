@@ -364,6 +364,26 @@ Use the smallest sufficient set for the change:
   Dock icon reappears for a user who switched it off. `DockPolicyGuard` owns the
   policy and re-asserts it; route changes through it rather than calling
   `NSApp.setActivationPolicy` directly.
+- Do not call a WinRT picker (`FileOpenPicker`, `FileSavePicker`,
+  `FolderPicker`) from the Windows app. They route through a shell-broker COM
+  surrogate that throws `COMException 0x80004005` in this unpackaged process,
+  and every call site is an `async void` click handler, so the throw is
+  unhandled and kills the app. Export Logs did exactly that — the crash landed
+  precisely when a user was trying to collect a bug report. Use
+  `Win32FileDialog` (`GetOpenFileNameW` / `GetSaveFileNameW` /
+  `SHBrowseForFolderW`), from the UI thread, never inside `Task.Run`.
+- Do not cache a decoded image by file path alone. A bubble stores only an
+  absolute path, so when a file is overwritten in place — re-exporting an image
+  under the same name and sending it again is the ordinary case — a path-keyed
+  cache keeps showing the version decoded first while the peer receives the new
+  bytes, and the sent bubble silently disagrees with what was transmitted. On
+  Windows that cache is XAML's own, keyed by URI for the life of the process:
+  every `BitmapImage` for a mutable path needs
+  `CreateOptions = BitmapCreateOptions.IgnoreImageCache` assigned *before*
+  `UriSource` (setting `UriSource` starts the decode, and the options are read
+  at that moment); fixed app assets such as the tray `.ico` may keep the cache.
+  On macOS the cache is ours — `ThumbnailCache` keys on path plus the file's
+  modification date and size, and must keep doing so.
 - Do not add a `DllImport` whose managed method name isn't the real exported
   entry point (or set `EntryPoint` explicitly). The failure is
   `EntryPointNotFoundException` at the first call, not at load, so it looks fine

@@ -174,7 +174,7 @@ state for the app.
 | `src/macos/LanMessenger/UI/Chat/ChatView.swift` | Chat detail view, header, message list, reply banner, transfer banner, read marking, and the thread-wide file drop target (`onDrop` + dashed-border overlay) that sends dropped files as attachments. |
 | `src/macos/LanMessenger/UI/Chat/ComposerView.swift` | `PastingTextView` (NSTextView subclass) composer, Return-to-send, Shift+Return newline, ⌘V paste-to-attach, file picker, per-conversation draft restore, and screenshot capture button (`screencapture -i` interactive overlay). `WindowPickerView`/`ScreenshotPreviewView` remain defined here; the window-picker sheet is no longer shown. |
 | `src/macos/LanMessenger/UI/Chat/MessageBubbleView.swift` | Text/file bubble rendering, status icons, reply chips, copy/show/delete context menus, drag-out of the attached file, and "This message was deleted" placeholder; delegates to `MediaBubbleView` for image and video attachments. |
-| `src/macos/LanMessenger/UI/Chat/MediaBubbleView.swift` | Inline image and video bubbles with async thumbnail decode (NSImage / AVAssetImageGenerator), an in-memory `ThumbnailCache`, drag-out of the attached file, and a modal preview sheet hosting `NSImageView`/`VideoPlayer`. |
+| `src/macos/LanMessenger/UI/Chat/MediaBubbleView.swift` | Inline image and video bubbles with async thumbnail decode (NSImage / AVAssetImageGenerator), an in-memory `ThumbnailCache` keyed by path plus the file's modification date and size (so an overwritten file re-decodes), drag-out of the attached file, and a modal preview sheet hosting `NSImageView`/`VideoPlayer`. |
 | `src/macos/LanMessenger/UI/Chat/MediaTypes.swift` | Extension-based image/video classification (`MediaKind`) and `FinderReveal` helper that opens Finder with the file selected off the main thread. |
 | `src/macos/LanMessenger/UI/Chat/FileTransferBannerView.swift` | In-chat transfer progress banner. |
 | `src/macos/LanMessenger/UI/Settings/SettingsView.swift` | Identity, dock/menu-bar behavior, login item, inbox, update source/check/install, about section. |
@@ -271,8 +271,9 @@ state for the app.
 | `src/windows-native/LanMessenger/Core/Services/CryptoRuntimeDiagnostics.cs` | One-time diagnostics for libsodium and VC++ runtime DLL availability. |
 | `src/windows-native/LanMessenger/Core/Services/RelayControl.cs` | Control envelope that carries an edit or delete through the relay mailbox when the peer is off-LAN: `__CTRL__:` marker, encode/decode, target validation, and fresh-record-id generation. |
 | `src/windows-native/LanMessenger/Core/Services/ClipboardAttachments.cs` | Decides what Ctrl+V in the composer means (files beat a bitmap; a bitmap only wins with no text alongside) and names pasted-image files. WinRT-free so the precedence rules compile and test off Windows. |
+| `src/windows-native/LanMessenger/Core/Services/Win32FileDialog.cs` | Win32 open/save/folder dialogs (`GetOpenFileNameW`, `GetSaveFileNameW`, `SHBrowseForFolderW`) used instead of the WinRT pickers, whose shell broker throws `COMException 0x80004005` in this unpackaged process. STA/UI-thread only. |
 | `src/windows-native/LanMessenger/Core/Services/PastedImageWriter.cs` | Decodes a clipboard bitmap and re-encodes it as PNG into the configured screenshot folder, returning the path for the existing file-transfer pipeline. |
-| `src/windows-native/LanMessenger/Core/Services/ScreenshotService.cs` | Primary-display and per-window capture via GDI `CopyFromScreen`/`PrintWindow`; `CropToRegionAsync` crops a captured PNG to a pixel rectangle for the drag-to-select-region flow. Writes PNG to `%TEMP%\LanMessenger-Screenshots` and returns the path for the existing file-transfer pipeline. |
+| `src/windows-native/LanMessenger/Core/Services/ScreenshotService.cs` | Primary-display and per-window capture via GDI `CopyFromScreen`/`PrintWindow`; `CropToRegionAsync` crops a captured PNG to a pixel rectangle for the drag-to-select-region flow. Writes PNG to the configured screenshot folder (default `%USERPROFILE%\Downloads\LAN Messenger Screenshots`, never `%TEMP%` — history stores absolute paths) and returns the path for the existing file-transfer pipeline. |
 
 ## Windows UI
 
@@ -305,7 +306,7 @@ state for the app.
 | `src/windows-native/LanMessenger/UI/Chat/FileTransferBannerControl.xaml` | File transfer banner XAML. |
 | `src/windows-native/LanMessenger/UI/Chat/FileTransferBannerControl.xaml.cs` | File transfer banner code-behind. |
 | `src/windows-native/LanMessenger/UI/Settings/SettingsPage.xaml` | Settings dialog XAML. |
-| `src/windows-native/LanMessenger/UI/Settings/SettingsPage.xaml.cs` | Settings save logic, inbox picker, update check/install UI, tray preferences. |
+| `src/windows-native/LanMessenger/UI/Settings/SettingsPage.xaml.cs` | Settings save logic, inbox/screenshot folder pickers and log-bundle export (all via `Win32FileDialog`), update check/install UI, tray preferences. |
 
 ## Windows Tests
 

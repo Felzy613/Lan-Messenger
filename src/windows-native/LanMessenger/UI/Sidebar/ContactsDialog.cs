@@ -315,19 +315,27 @@ public sealed class ContactEditorPanel : StackPanel
 
     private async Task PickPhotoAsync()
     {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        picker.FileTypeFilter.Add(".jpg");
-        picker.FileTypeFilter.Add(".jpeg");
-        picker.FileTypeFilter.Add(".png");
-        picker.FileTypeFilter.Add(".bmp");
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((global::LanMessenger.App)Application.Current).MainWindow);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+        // Win32 dialog, not the WinRT FileOpenPicker: the picker's shell broker
+        // throws COMException 0x80004005 in this unpackaged process and would
+        // take the app down from here (see Win32FileDialog).
+        string? path;
+        try
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((global::LanMessenger.App)Application.Current).MainWindow);
+            path = Core.Services.Win32FileDialog.PickSingleFile(
+                hwnd, "Choose a Photo", "Images", "*.png;*.jpg;*.jpeg;*.bmp");
+        }
+        catch (Exception ex)
+        {
+            Core.Services.LanLogger.Warn("Contacts", $"photo dialog failed: {ex.GetType().Name}: {ex.Message}");
+            return;
+        }
 
-        var file = await picker.PickSingleFileAsync();
-        if (file is null) return;
+        if (path is null) return;
 
         try
         {
+            var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(path);
             using var src = await file.OpenAsync(Windows.Storage.FileAccessMode.Read);
             var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(src);
 

@@ -159,35 +159,42 @@ public sealed partial class SettingsPage : Page
         ConfigStore.Shared.Save();
     }
 
-    private async void BrowseInbox_Click(object sender, RoutedEventArgs e)
+    private void BrowseInbox_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new Windows.Storage.Pickers.FolderPicker();
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
-        picker.FileTypeFilter.Add("*");
-
-        var folder = await picker.PickSingleFolderAsync();
+        var folder = PickFolderOrNull("Choose where received files are saved");
         if (folder is null) return;
 
-        ConfigStore.Shared.Config.InboxDir = folder.Path;
+        ConfigStore.Shared.Config.InboxDir = folder;
         ConfigStore.Shared.Save();
-        InboxBox.Text = folder.Path;
+        InboxBox.Text = folder;
     }
 
-    private async void BrowseScreenshotDir_Click(object sender, RoutedEventArgs e)
+    private void BrowseScreenshotDir_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new Windows.Storage.Pickers.FolderPicker();
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
-        picker.FileTypeFilter.Add("*");
-
-        var folder = await picker.PickSingleFolderAsync();
+        var folder = PickFolderOrNull("Choose where screenshots are saved");
         if (folder is null) return;
 
-        ConfigStore.Shared.Config.ScreenshotDir = folder.Path;
+        ConfigStore.Shared.Config.ScreenshotDir = folder;
         ConfigStore.Shared.Save();
-        ScreenshotDirBox.Text = folder.Path;
+        ScreenshotDirBox.Text = folder;
         ResetScreenshotDirBtn.Visibility = Visibility.Visible;
+    }
+
+    /// Shared folder-browse wrapper.  Win32 rather than the WinRT FolderPicker,
+    /// which throws E_FAIL in this unpackaged process; the try/catch is a second
+    /// belt so a dialog failure can never escape a click handler and crash the app.
+    private static string? PickFolderOrNull(string title)
+    {
+        try
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
+            return Core.Services.Win32FileDialog.PickFolder(hwnd, title);
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Settings", $"folder dialog failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
     }
 
     private void ResetScreenshotDir_Click(object sender, RoutedEventArgs e)
@@ -257,27 +264,37 @@ public sealed partial class SettingsPage : Page
         }
     }
 
-    private async void ExportLogs_Click(object sender, RoutedEventArgs e)
+    private void ExportLogs_Click(object sender, RoutedEventArgs e)
     {
         LogExportStatus.Text = "";
-        var savePicker = new Windows.Storage.Pickers.FileSavePicker
+
+        // Win32 "Save As" rather than the WinRT FileSavePicker: the picker's
+        // shell broker throws COMException 0x80004005 in this unpackaged
+        // process, and from an async void handler that unhandled throw killed
+        // the app with the crash dialog every time Export Logs was clicked —
+        // exactly when a user is trying to collect a bug report.
+        string? path;
+        try
         {
-            SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Desktop,
-            SuggestedFileName      = $"LanMessenger-Logs-{DateTime.Now:yyyy-MM-dd_HHmmss}",
-        };
-        savePicker.FileTypeChoices.Add("Zip archive", new List<string> { ".zip" });
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
+            path = Core.Services.Win32FileDialog.SaveFile(
+                hwnd,
+                suggestedFileName: $"LanMessenger-Logs-{DateTime.Now:yyyy-MM-dd_HHmmss}.zip",
+                filterLabel:       "Zip archive",
+                extension:         ".zip",
+                initialDir:        Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                title:             "Export Logs");
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Warn("Settings", $"save dialog failed: {ex.GetType().Name}: {ex.Message}");
+            LogExportStatus.Text = "Couldn't open the save dialog.";
+            return;
+        }
 
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
-        WinRT.Interop.InitializeWithWindow.Initialize(savePicker, hwnd);
+        if (path is null) return;   // cancelled
 
-        var target = await savePicker.PickSaveFileAsync();
-        if (target is null) return;
-
-        // The picker hands back a StorageFile already created at the chosen path —
-        // delete it first so ExportLogBundle can write a fresh zip.
-        var path = target.Path;
-        try { File.Delete(path); } catch { /* may already be deleted */ }
-
+        // ExportLogBundle deletes any existing file before writing the archive.
         var ok = LanLogger.ExportLogBundle(path);
         LogExportStatus.Text = ok ? "Exported ✓" : "Export failed.";
     }

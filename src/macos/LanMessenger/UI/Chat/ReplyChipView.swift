@@ -104,15 +104,17 @@ struct ReplyChipView: View {
 
     // MARK: - Async thumbnail load
 
+    /// Cache variant for the 36-pt square chip crop.
+    private var chipVariant: String { "chip36" }
+
     private func loadThumbnail() async {
         guard let path = filePath, !path.isEmpty else { return }
         guard mediaKind == .image || mediaKind == .video else { return }
         guard FileManager.default.fileExists(atPath: path) else { return }
 
-        // Check the shared cache first; chips use a "_chip36" suffix to keep their
+        // Check the shared cache first; chips use the "chip36" variant to keep their
         // 36-pt square crop separate from the full-resolution media bubble thumbnails.
-        let cacheKey = path + "_chip36"
-        if let cached = ThumbnailCache.shared.thumbnail(for: cacheKey) {
+        if let cached = ThumbnailCache.shared.thumbnail(for: path, variant: chipVariant) {
             thumbnail = cached
             return
         }
@@ -157,7 +159,7 @@ struct ReplyChipView: View {
         }.value
 
         if let result {
-            ThumbnailCache.shared.store(result, for: cacheKey)
+            ThumbnailCache.shared.store(result, for: path, variant: chipVariant)
             thumbnail = result
         }
     }
