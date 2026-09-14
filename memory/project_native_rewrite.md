@@ -15,8 +15,11 @@ legacy protocol where needed.
 - Windows native app lives in `src/windows-native/`.
 - Protocol spec lives in `PROTOCOL.md`.
 - High-detail docs live in `docs/`.
-- macOS test suite currently has 52 Swift test methods.
-- Windows test suite currently has 45 MSTest methods.
+- macOS test suite: **260 passing**, 1 skipped (a fixture generator).
+- Windows test suite: **210 passing**, last run on real hardware 2026-09-14.
+- One unreleased feature is in flight: remote desktop, on
+  `feat/remote-desktop-transport`. See `docs/REMOTE_DESKTOP.md` and
+  `memory/remote-desktop.md`.
 
 ## Completed Native Capabilities
 
@@ -42,6 +45,10 @@ legacy protocol where needed.
 - **Offline status**: Contacts page now shows "Offline" instead of the IP address for offline contacts.
 - **Typing indicator**: Changed from "\(sender) is typing…" to "typing…" in ChatView and ConversationRowView.
 - **Verbose logging**: Added `NetLogger.verbose()` gated by `AppConfig.verboseLogging`. FileTransferService now logs transfer lifecycle, progress, and errors. Settings page has a Logging section with toggle, Open Logs Folder, and Export Log buttons.
+  **Since reversed.** The toggle was removed: a diagnostic level that is off by
+  default is off exactly when a user hits the bug you needed it for. All levels
+  now always write, with volume bounded by rotation instead. CLAUDE.md carries
+  this as a non-regression rule.
 
 ## Current Architecture
 
@@ -51,6 +58,7 @@ Both platforms mirror these layers:
 Core/Protocol
 Core/Crypto
 Core/Networking
+Core/Networking/Media      remote desktop (unreleased)
 Core/Persistence
 Core/Services
 UI

@@ -18,6 +18,7 @@ PROTOCOL.md
 docs/
 memory/
 scripts/
+spikes/            # throwaway platform diagnostics, not part of either app
 version/
 src/
 ```
@@ -29,12 +30,17 @@ docs/
   ARCHITECTURE.md
   DEVELOPMENT.md
   FILE_MAP.md
+  REMOTE_DESKTOP.md
   RELEASE_AND_OPERATIONS.md
 ```
 
 `PROTOCOL.md` is the protocol and persistence source of truth. `CLAUDE.md` is
 the operational guide for agents/developers. `docs/FILE_MAP.md` has the
-file-by-file inventory.
+file-by-file inventory. `docs/REMOTE_DESKTOP.md` is the status and handoff
+document for the one unreleased feature.
+
+The four shared test fixtures must stay byte-identical across the two test
+directories; changing one is a change to both.
 
 ## macOS Native App
 
@@ -53,6 +59,7 @@ src/macos/
       Protocol/
       Crypto/
       Networking/
+        Media/                    # remote desktop (unreleased)
       Persistence/
       Services/
     UI/
@@ -61,6 +68,9 @@ src/macos/
     Assets.xcassets/
   LanMessengerTests/
     known_good_exchange.json
+    remote_handshake_vector.json
+    media_frame_vector.json
+    windows_h264_sample.h264      # real Windows encoder output; not regenerable here
 ```
 
 SwiftPM (`Package.swift`) is the fast dev/test path. `project.yml` generates the
@@ -81,6 +91,7 @@ src/windows-native/
       Protocol/
       Crypto/
       Networking/
+        Media/                    # remote desktop (unreleased)
       Persistence/
       Services/
     UI/
@@ -88,6 +99,9 @@ src/windows-native/
   LanMessenger.Tests/
     LanMessenger.Tests.csproj
     known_good_exchange.json
+    remote_handshake_vector.json
+    media_frame_vector.json
+    windows_h264_sample.h264
 ```
 
 Use Visual Studio MSBuild for WinUI builds and tests. Inno Setup builds the

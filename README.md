@@ -31,6 +31,8 @@ Start here when working on the repo:
 - [docs/RELEASE_AND_OPERATIONS.md](docs/RELEASE_AND_OPERATIONS.md) - CI,
   packaging, releases, updaters, diagnostics, and incident handling.
 - [docs/FILE_MAP.md](docs/FILE_MAP.md) - file-by-file repository inventory.
+- [docs/REMOTE_DESKTOP.md](docs/REMOTE_DESKTOP.md) - remote-desktop status and
+  the plan for the remaining work. Unreleased, on a branch.
 - [memory/](memory/) - repo-local memory for future sessions. These files are
   documentation, not application runtime state.
 
@@ -52,6 +54,15 @@ Start here when working on the repo:
 - Offline pending text and file queues that drain when a saved peer reappears.
 - Native notifications and tray/menu-bar lifecycle.
 - In-app update checks from GitHub Releases.
+
+### In development
+
+**Remote desktop** — view a contact's screen and, with a separate grant, drive
+its keyboard and mouse. H.264 at 30 fps, LAN-only, peer-to-peer, over the
+existing TCP port. It is **not in any release**: it lives on
+`feat/remote-desktop-transport`, where the transport, the session handshake and
+the macOS encoder are built and the capture, presentation and input halves are
+not. See [docs/REMOTE_DESKTOP.md](docs/REMOTE_DESKTOP.md).
 
 ## Quick Start
 
@@ -109,11 +120,13 @@ msbuild LanMessenger\LanMessenger.csproj /t:Publish /p:Configuration=Release /p:
 
 | Platform | Command | Coverage focus |
 |---|---|---|
-| macOS | `cd src/macos && swift test` | 52 test methods across framing, validation, crypto, history, config, message status, and interface monitoring |
-| Windows | `cd src/windows-native && dotnet vstest <test dll>` | 45 MSTest methods covering the same protocol and persistence contracts |
+| macOS | `cd src/macos && swift test` | 260 test methods across framing, validation, crypto, history, config, message status, presence, interface monitoring, and threading invariants |
+| Windows | `cd src/windows-native && dotnet vstest <test dll>` | 210 MSTest methods covering the same protocol and persistence contracts |
 
-Both suites include `known_good_exchange.json`. Keep the macOS and Windows copies
-in sync whenever the protocol test vectors change.
+Both suites carry `known_good_exchange.json`. Keep the macOS and Windows copies
+in sync whenever the protocol test vectors change — and the same goes for every
+other shared fixture, listed in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#test-vectors).
 
 ## Runtime Ports
 
@@ -186,9 +199,11 @@ not used by the CI release pipelines.
 |   |-- ARCHITECTURE.md
 |   |-- DEVELOPMENT.md
 |   |-- FILE_MAP.md
+|   |-- REMOTE_DESKTOP.md
 |   `-- RELEASE_AND_OPERATIONS.md
 |-- memory/
 |-- scripts/
+|-- spikes/
 |-- version/
 `-- src/
     |-- macos/

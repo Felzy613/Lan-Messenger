@@ -131,6 +131,64 @@ Smoke-test an installer:
 scripts\windows\smoke-test.ps1 -ArtifactPath .\Output\LanMessenger-Setup-<version>.exe
 ```
 
+## Remote Desktop Development
+
+The feature and its remaining plan are documented in
+[REMOTE_DESKTOP.md](REMOTE_DESKTOP.md). This section is only the mechanics.
+
+It lives on `feat/remote-desktop-transport` and is **not** on `main`.
+
+### What can be done from a Mac
+
+Everything except Windows capture, Windows encode/decode, `SendInput`, and
+running the WinUI app. The media transport, the handshake crypto and the
+bitstream conversion are all pure logic with in-memory seams, so:
+
+```bash
+cd src/macos
+swift test --filter RemoteSessionCryptoTests
+swift test --filter MediaFrameTests
+swift test --filter H264BitstreamTests
+swift test --filter H264EncoderTests     # drives a real VTCompressionSession
+```
+
+The Windows sources can be compiled and their tests run from a Mac through the
+shim-csproj recipe in `memory/` — see the repo memory index. That covers
+`Core/` and the tests; it cannot build the WinUI app itself.
+
+### TCC grants
+
+macOS signing is stable (`DEVELOPMENT_TEAM` is set in `project.yml`, bundle id
+`com.dave.lanmessenger`), so Screen Recording and Accessibility grants survive a
+rebuild. To reset one while testing:
+
+```bash
+tccutil reset ScreenCapture com.dave.lanmessenger
+tccutil reset Accessibility com.dave.lanmessenger
+```
+
+### The Windows probe
+
+`spikes/windows-mf-probe` answers the platform questions that cannot be answered
+from a Mac, and its encode and decode stages are working reference code.
+
+```powershell
+cd spikes\windows-mf-probe
+dotnet run -c Release
+dotnet run -c Release -- --decode=macos_sample.h264
+```
+
+It always exits 0 — it is a report, not a gate. Read the output; "all stages
+ran" is not "all stages are healthy". `spikes/README.md` records the results of
+every run so far.
+
+**Desktop Duplication and `SendInput` need an interactive console session.** An
+SSH logon has no attached desktop, so those stages must be run at the physical
+keyboard. Do not substitute Microsoft RDP: it creates a virtual session with its
+own display driver, so Desktop Duplication would describe the RDP display rather
+than the real one, and some GPU drivers disable their hardware encoder in RDP
+sessions entirely.
+
 ## Test Inventory
 
 ### macOS Tests
@@ -142,7 +200,9 @@ cd src/macos
 swift test
 ```
 
-Current suite: 52 Swift test methods.
+Current suite: **260 passing, 1 skipped**. The skip is
+`testEmitMacOSFixtureForCrossPlatformDecode`, a fixture generator rather than an
+assertion; it runs only with `LANMSG_EMIT_H264_FIXTURE` set.
 
 Coverage:
 
@@ -159,6 +219,17 @@ Coverage:
   idempotent start, observer behavior.
 - `PacketValidatorTests`: packet validation, self suppression, nonce checks, file
   size checks, filename sanitization.
+- `PresenceEvaluatorTests`: LAN presence state-machine transitions.
+- `MessageEditTests` / `RelayControlTests`: edit and delete rules, the
+  `requireIncoming` security gate, and the relay control envelope.
+- `DiscoveryServiceQueueTests`: the discovery threading invariant — the blocking
+  receive loop must not starve the beacon timer, the socket rebuild, or the
+  health summary.
+- `DockPolicyGuardTests`, `AttachmentPasteboardTests`, `NetLoggerTests`,
+  `StressTests`.
+- Remote desktop: `RemoteSessionCryptoTests` (32), `MediaFrameTests` (26),
+  `H264BitstreamTests` (15), `H264EncoderTests` (12),
+  `RemoteDesktopQueueTests` (4).
 
 ### Windows Tests
 
@@ -170,20 +241,43 @@ $testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -
 dotnet vstest $testDll.FullName --logger:"console;verbosity=normal"
 ```
 
-Current suite: 45 MSTest methods.
+Current suite: **210 passing**, last run on real Windows hardware 2026-09-14.
 
 Coverage mirrors the macOS areas: config, crypto, frame codec, history, message
-status, network interface monitoring, and packet validation.
+status, network interface monitoring, packet validation, presence, message
+editing, relay control, clipboard attachments, and the remote-desktop suites
+(`RemoteSessionCryptoTests` 34, `MediaFrameTests` 26, `H264BitstreamTests` 15,
+`RemoteDesktopQueueTests` 4).
+
+One known result: `PacketValidatorTests.SanitizeFilenameStripsPath` **fails on
+macOS and passes on Windows**, because `SanitizeFilename` uses
+`Path.DirectorySeparatorChar`. On Windows it should pass; if it does not, that
+is a real regression.
 
 ### Test Vectors
 
-Both platforms carry `known_good_exchange.json`:
+Four fixtures are carried in **both** test directories, and must stay
+byte-for-byte equivalent:
 
-- `src/macos/LanMessengerTests/known_good_exchange.json`
-- `src/windows-native/LanMessenger.Tests/known_good_exchange.json`
+| Fixture | Covers |
+|---|---|
+| `known_good_exchange.json` | Text encryption, file chunk encryption, history encryption |
+| `remote_handshake_vector.json` | The remote-desktop media handshake |
+| `media_frame_vector.json` | Media frame header, AAD and sealed payload |
+| `windows_h264_sample.h264` | Real Microsoft H264 Encoder MFT output — 60 frames, 126 NAL units, 129,547 bytes |
 
-Keep them byte-for-byte equivalent if updated. They cover text encryption, file
-chunk encryption, and history encryption.
+`windows_h264_sample.h264` **cannot be regenerated without the Windows machine**.
+Do not delete it. The macOS counterpart is deliberately not committed because it
+regenerates in a second on any Mac:
+
+```bash
+cd src/macos
+LANMSG_EMIT_H264_FIXTURE=/tmp/macos_sample.h264 \
+  swift test --filter testEmitMacOSFixtureForCrossPlatformDecode
+```
+
+A change to any shared fixture is a change to both copies. CLAUDE.md's
+validation checklist calls this out because updating one is the natural mistake.
 
 ## Validation By Change Type
 
@@ -195,6 +289,7 @@ chunk encryption, and history encryption.
 | C#/WinUI code | MSBuild restore/build and MSTest on Windows |
 | Windows packaging | MSBuild publish, Inno Setup, smoke test |
 | Protocol/crypto/framing | Both platform tests and protocol docs |
+| Remote desktop | Both platform tests, both copies of every shared fixture, and `docs/REMOTE_DESKTOP.md` if status changed |
 | Discovery/networking | Platform test where possible plus runtime LAN test |
 | Updates/release | Workflow review, updater docs, artifact naming/sidecar check |
 
@@ -347,8 +442,14 @@ Structured event helpers exist for the high-value paths:
   when the process is about to die.
 
 Each channel writes its own file (`client`, `transfer`, `screenshot`,
-`discovery`, `peer`, `crypto`, `ui`, `retry`, `update`, `crash`), and all of
-them are rotated and included in the export bundle.
+`discovery`, `peer`, `crypto`, `ui`, `retry`, `update`, `crash`, `remote`), and
+all of them are rotated and included in the export bundle.
+
+`remote` is the remote-desktop channel. It exists and is exported, but nothing
+writes to it yet — it was added early on purpose, because the export bundle is
+derived from the `LogChannel` enum and a channel missing from that enum silently
+never reaches a bug report. Channel-coverage tests on both platforms enumerate
+the enum rather than a hardcoded list.
 
 ### Discovery health summary
 
@@ -411,4 +512,6 @@ Docs are part of the deliverable. Update them when:
 - a packet/config/history field changes;
 - a CI or packaging workflow changes;
 - a known gotcha is discovered;
-- local memory files are stale.
+- local memory files are stale;
+- the remote-desktop status changes — [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md) is
+  the handoff document for that feature and goes stale fastest.

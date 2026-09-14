@@ -72,6 +72,7 @@ src/macos/
       Protocol/
       Crypto/
       Networking/
+        Media/            remote-desktop media transport and codec
       Persistence/
       Services/
     UI/
@@ -81,9 +82,13 @@ src/windows-native/
   LanMessenger.sln
   LanMessenger/
     Core/
+      Networking/
+        Media/            mirror of the macOS media transport
     UI/
   LanMessenger.Tests/
   LanMessenger.iss
+
+spikes/                   throwaway diagnostics, not part of either app
 ```
 
 Use [FILE_MAP.md](FILE_MAP.md) for the detailed inventory.
@@ -720,13 +725,21 @@ Deliberately not the system temp directory: history stores absolute paths, and
 temp is swept between reboots, which turns the bubble into "File no longer
 available" a day later.
 
-## Remote Desktop Transport
+## Remote Desktop
+
+Remote desktop lets a peer view a contact's screen and, after a separate grant,
+drive its keyboard and mouse. The wire format is specified in PROTOCOL.md →
+Remote Desktop; **status, the remaining plan, and the accumulated gotchas live
+in [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md)**.
+
+It is **not shipped**. The transport, handshake crypto, bitstream conversion and
+the macOS encoder exist on `feat/remote-desktop-transport`; capture, decode,
+presentation, input injection and the consent UI do not exist yet.
+
+### Transport
 
 `src/{macos,windows-native}/.../Core/Networking/Media/` implements the media
-channel described in PROTOCOL.md → Remote Desktop. Capture, encode, decode,
-input injection and the consent UI are separate work and are not here yet.
-
-Layering, chosen so that only the socket adapter is untestable:
+channel. Layering, chosen so that only the socket adapter is untestable:
 
 - **Pure logic.** `MediaFrame`/`MediaFrameCodec` (22-byte header, seal/open),
   `MediaWriteScheduler` (fragmentation, interleaving, drop policy),
@@ -749,6 +762,40 @@ reads again.
 The upgrade happens inside each platform's existing `handleInbound`: a validated
 `media_attach` hands the socket to the media subsystem and returns, and socket
 ownership becomes conditional rather than unconditional so nothing double-closes.
+No new port, no firewall rule, no installer change.
+
+### Session crypto
+
+`Core/Crypto/RemoteSessionCrypto.{swift,cs}` derives per-session media keys with
+a Noise-KK-shaped triple DH over the long-term X25519 identity keys the app
+already pins per contact — there is no signing key in this system to work with.
+It is separate from `SessionCrypto` because the properties differ: message
+crypto is one-shot and stateless, media crypto is long-lived, directional, and
+forward-secret.
+
+The initiator is always the peer that sent `remote_invite`, and the role is
+bound into the transcript. Nonces are counters, never random. A dropped socket
+ends the crypto session; reconnect performs a fresh handshake with new
+ephemerals, because reusing keys with a reset counter is catastrophic GCM nonce
+reuse.
+
+Both platforms assert the shared `remote_handshake_vector.json`.
+
+### Video
+
+`H264Bitstream.{swift,cs}` converts between the two H.264 packagings — AVCC
+(VideoToolbox: length-prefixed NAL units, parameter sets out-of-band in the
+format description) and Annex-B (Media Foundation: start codes, parameter sets
+in-band before every IDR). Neither decoder accepts the other's packaging, and
+the failure is not a clean error but a picture that never appears. It is pure
+byte manipulation with no platform media types, so it is tested against
+`windows_h264_sample.h264`, a real Microsoft encoder artefact, rather than
+against its own output.
+
+`H264Encoder.swift` is a `VTCompressionSession` configured for low latency:
+High profile, no frame reordering, zero frame delay, BT.709 tags, parameter sets
+re-read on every keyframe. A stream it produced has been decoded successfully by
+Media Foundation on real Windows hardware. There is no Windows encoder yet.
 
 ## Update Architecture
 
@@ -857,6 +904,12 @@ Runtime logs:
 - Windows networking: `%APPDATA%\LanMessenger\Logs\client.log`.
 - Windows updates: `%APPDATA%\LanMessenger\Logs\update.log`.
 - Windows startup crashes: `%APPDATA%\LanMessenger\crash.log`.
+- Remote desktop, both platforms: `remote.log`. The channel exists and is
+  exported; nothing writes to it yet.
+
+Every channel in the `LogChannel` enum is written to its own file and collected
+into the bug-report bundle. The bundle is derived from the enum, so a channel
+that is missing from it silently never reaches a bug report.
 
 CI diagnostics:
 

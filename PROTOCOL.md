@@ -1017,6 +1017,11 @@ Remote desktop lets one peer view a contact's screen and, after a separate
 grant, drive its keyboard and mouse. It is an extension: a client that does not
 implement it drops the new packet types as unknown and is unaffected.
 
+> **Implementation status.** This section is normative and complete. The
+> implementation is not: it lives on `feat/remote-desktop-transport` and no
+> release contains it. `docs/REMOTE_DESKTOP.md` tracks which parts of this spec
+> have code behind them.
+
 Two hard rules frame everything below.
 
 **Remote desktop is LAN-only and peer-to-peer.** It never touches the cloud
@@ -1213,6 +1218,40 @@ new `session_id`, new ephemerals, new keys, sequence restarting from zero
 against a key that has never been used. Reusing a key with a reset counter is
 catastrophic AES-GCM nonce reuse. The user interface may present a reconnect
 within the 30 s window as if the session continued; the cryptography must not.
+
+### Video Sub-Channel
+
+Channel `1` carries H.264 access units, one logical frame per sequence number,
+fragmented by the writer when larger than the fragment size.
+
+**The on-wire packaging is Annex-B**, with SPS and PPS emitted **in-band
+immediately before every IDR**. Start codes may be three or four bytes; a
+receiver must accept both, and a sender should emit four uniformly.
+
+This is normative and it is the one thing both implementations must agree on,
+because the two platform codecs disagree by default:
+
+- **Media Foundation** produces and consumes Annex-B natively, with parameter
+  sets in-band. A Windows host therefore sends what its encoder emits, unchanged.
+- **VideoToolbox** produces and consumes AVCC — length-prefixed NAL units, with
+  parameter sets held out-of-band in a `CMVideoFormatDescription`. A macOS host
+  must convert on send, and a macOS viewer must convert on receive.
+
+Annex-B was chosen over AVCC because it is self-contained: parameter sets travel
+with the picture that needs them, so a viewer that joins late, or that has just
+flushed its decoder, recovers on the next IDR with no side channel. Under AVCC
+the parameter sets live outside the bitstream, which would mean a second
+delivery mechanism and a way for the two to disagree.
+
+A NAL length prefix size must never be assumed to be 4 — read it from the
+format description. Access unit delimiters are optional and carry no
+information a decoder needs; a receiver must tolerate their presence and their
+absence. In particular, **an access unit boundary is a slice**, not an AUD and
+not a parameter set: VideoToolbox emits no delimiters at all, so splitting on
+them silently collapses a stream into a handful of units.
+
+`video_config` on the control channel carries the dimensions, and must arrive
+before the first frame on this channel.
 
 ### Control Sub-Channel
 

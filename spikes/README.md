@@ -2,7 +2,12 @@
 
 Throwaway diagnostics. **Not part of the shipping app** and not referenced by
 `LanMessenger.sln`. Delete a spike once the question it answers is settled and
-the answer is written down in the plan or in `docs/`.
+the answer is written down in `docs/`.
+
+The remote-desktop spike is the exception to "throwaway": its encode and decode
+stages are **working Media Foundation reference code against real hardware**, and
+they are what WS4b and WS5 should be ported from rather than written afresh. See
+[docs/REMOTE_DESKTOP.md](../docs/REMOTE_DESKTOP.md).
 
 ## `windows-mf-probe`
 
@@ -162,3 +167,10 @@ unlike `windows_h264_sample.h264`, which needs the Dell.
 
 **Still unanswered:** Desktop Duplication (needs an interactive console session)
 and the Windows -> macOS decode direction (needs `VTDecompressionSession`, WS5).
+
+To answer the first, at the Dell's physical keyboard:
+
+```powershell
+cd C:\Users\Davef\lanmsg\spikes\windows-mf-probe
+dotnet run -c Release -- --frames=2
+```

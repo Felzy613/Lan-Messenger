@@ -27,6 +27,9 @@ The repo does not commit `LanMessenger.xcodeproj`. macOS development uses
 - [docs/RELEASE_AND_OPERATIONS.md](docs/RELEASE_AND_OPERATIONS.md) - CI,
   packaging, update channels, smoke tests, and diagnostics.
 - [docs/FILE_MAP.md](docs/FILE_MAP.md) - detailed file inventory.
+- [docs/REMOTE_DESKTOP.md](docs/REMOTE_DESKTOP.md) - remote-desktop status,
+  handoff, and the plan for the remaining workstreams. Read this before touching
+  anything under `Core/Networking/Media` or `RemoteSessionCrypto`.
 - [memory/](memory/) - repo-local project memory for future sessions.
 
 Update the relevant docs when changing behavior, storage formats, protocol fields,
@@ -95,6 +98,7 @@ PROTOCOL.md
 docs/
 memory/
 scripts/
+spikes/            throwaway diagnostics; not part of either app
 version/
 src/
   macos/
@@ -106,6 +110,7 @@ src/
         Protocol/
         Crypto/
         Networking/
+          Media/   remote-desktop transport and codec
         Persistence/
         Services/
       UI/
@@ -114,6 +119,8 @@ src/
     LanMessenger.sln
     LanMessenger/
       Core/
+        Networking/
+          Media/
       UI/
     LanMessenger.Tests/
     LanMessenger.iss
@@ -210,6 +217,20 @@ Files:
 - Chunk plaintext size is 64 KiB.
 - Temp file format is `{transfer_id}_{filename}.part`.
 - Dedup final names with `_1` through `_999`, then an 8-hex fallback.
+
+Remote desktop (unreleased, `feat/remote-desktop-transport`):
+
+- The media channel shares TCP `54232` by connection upgrade. A validated
+  `media_attach` detaches the socket from the JSON read loop; the JSON frame
+  format is untouched because the descriptor has left the loop before the first
+  binary byte arrives. No new port.
+- Media frame header is 22 bytes: `[4B length][1B channel][1B flags]
+  [8B sequence][8B capture_us]`, and `length == 18 + sealedPayloadCount`.
+- Media frames cap at 4 MiB, independent of the 50 MiB JSON cap.
+- Media nonces are counters — `direction_salt(4) || sequence(8)` — never random.
+- **The on-wire H.264 packaging is Annex-B with in-band SPS/PPS before every
+  IDR.** Media Foundation speaks this natively; VideoToolbox does not, so the
+  macOS side converts in both directions. See PROTOCOL.md → Video Sub-Channel.
 
 Reply extension:
 
@@ -315,6 +336,9 @@ Use the smallest sufficient set for the change:
 - Docs-only: `git diff --check` and grep for stale paths/claims.
 - Protocol/crypto/framing: macOS `swift test`, Windows test suite when on Windows
   or CI, and check both `known_good_exchange.json` copies.
+- Remote desktop: both platform suites, plus **both** copies of
+  `remote_handshake_vector.json` and `media_frame_vector.json`. Update
+  `docs/REMOTE_DESKTOP.md` if the status of a workstream changed.
 - macOS source: `cd src/macos && swift build && swift test`.
 - Windows source: restore/build/tests through MSBuild on Windows.
 - Packaging: platform workflow scripts or the relevant smoke test.
@@ -375,6 +399,33 @@ Use the smallest sufficient set for the change:
   `18 + sealedPayloadCount`, tag included, and the length lives inside the AAD —
   getting it wrong is off by exactly 16 and every frame fails on the peer with no
   other symptom. `encodeFrame`/`EncodeFrame` is the only sanctioned constructor.
+- Do not advance a single byte after matching an H.264 start code. A 4-byte
+  start code *contains* a 3-byte one at offset+1, so a scanner that does not
+  consume the whole code finds a phantom unit inside every 4-byte code and
+  reports exactly twice as many NAL units as exist. The tell is suspiciously
+  equal 3-byte and 4-byte counts in the same stream. Both `H264Bitstream`
+  scanners consume the full code; `H264BitstreamTests` asserts the count against
+  a real encoder artefact.
+- Do not split an H.264 stream into access units on access unit delimiters or
+  parameter sets. VideoToolbox emits no AUDs at all and parameter sets only at
+  IDRs, so an AUD/SPS split collapsed a 60-frame stream into 2 units and the
+  Windows decoder emitted almost nothing. **A slice (NAL type 1 or 5) is the
+  access unit boundary**; any SPS/PPS/SEI ahead of it belongs to it.
+- Do not call Media Foundation's `ProcessOutput` before setting an output media
+  type on the decoder. Without one it answers every call with
+  `MF_E_TRANSFORM_TYPE_NOT_SET` (0xC00D6D60) and emits nothing, forever —
+  including the `MF_E_TRANSFORM_STREAM_CHANGE` you were hoping to discover the
+  real format from. Set a placeholder NV12 type up front and let the stream
+  change correct it. In the same path, `MF_E_NOTACCEPTING` (0xC00D36B5) is
+  normal flow control, not an error, and input samples without timestamps are
+  buffered forever. All four are recorded in `spikes/README.md`.
+- Do not hard-code an H.264 NAL length prefix size. Read it from the format
+  description. VideoToolbox emits 4 in practice, which is exactly why
+  hard-coding it survives testing and fails later against another encoder.
+- Do not delete `windows_h264_sample.h264` from either test directory. It is
+  real Microsoft H264 Encoder MFT output and cannot be regenerated without the
+  Windows machine; it is the only thing that tests the Annex-B converter against
+  something other than our own output.
 - Do not drop the in-progress video frame when the two-frame budget is full. Once
   its first fragment is on the wire the peer is reassembling it, and abandoning it
   leaves a dangling `fragmented`-without-`final` that desyncs their reassembler
