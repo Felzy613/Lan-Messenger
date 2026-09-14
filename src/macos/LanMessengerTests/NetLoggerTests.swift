@@ -300,6 +300,7 @@ final class NetLoggerTests: XCTestCase {
         NetLogger.retry(event: "retry", subsystem: "Transfer", attempt: 1)
         NetLogger.update(event: "check", currentVersion: "1.0.0")
         NetLogger.crash(event: "uncaught_exception", name: "NSRangeException")
+        NetLogger.remote(event: "invite_sent", peer: "10.0.0.3")
         NetLogger._testFlush()
 
         let urls = NetLogger.archivedLogURLs()
@@ -486,6 +487,8 @@ final class NetLoggerTests: XCTestCase {
         NetLogger.retry(event: "retry", subsystem: "Messaging", attempt: 1)
         NetLogger.update(event: "available", currentVersion: "1.0.0", latestVersion: "1.1.0")
         NetLogger.crash(event: "fatal_signal", name: "SIGSEGV")
+        NetLogger.remote(event: "handshake_ok", peer: "10.0.0.3",
+                         sessionID: "9f2c4a6e8b0d1f3a5c7e9b1d3f5a7c9e", role: "initiator")
         NetLogger._testFlush()
 
         // Every channel should have a log file.

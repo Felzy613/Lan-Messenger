@@ -720,6 +720,36 @@ Deliberately not the system temp directory: history stores absolute paths, and
 temp is swept between reboots, which turns the bubble into "File no longer
 available" a day later.
 
+## Remote Desktop Transport
+
+`src/{macos,windows-native}/.../Core/Networking/Media/` implements the media
+channel described in PROTOCOL.md → Remote Desktop. Capture, encode, decode,
+input injection and the consent UI are separate work and are not here yet.
+
+Layering, chosen so that only the socket adapter is untestable:
+
+- **Pure logic.** `MediaFrame`/`MediaFrameCodec` (22-byte header, seal/open),
+  `MediaWriteScheduler` (fragmentation, interleaving, drop policy),
+  `MediaReassembler` and `MediaSequenceGate`. No sockets, no clock, no threads.
+  Both platforms assert the shared `media_frame_vector.json`.
+- **Loops.** `MediaFrameReader`/`MediaFrameWriter` do all I/O through
+  `MediaLink`/`IMediaLink` — three methods, the entire socket surface.
+- **Socket.** `SocketMediaLink` adopts a detached descriptor, clears the
+  inherited read timeout, sets `TCP_NODELAY`, and caps the send buffer at 128 KiB
+  so the kernel cannot re-absorb what fragmentation just split up.
+
+`MediaSession` owns three execution contexts — read, write, timers — that never
+share. `RemoteSessionRegistry` holds the ~10 s accept window, one in-flight
+session per peer, and single-shot `session_id` lookup, with an injected clock.
+`RemoteDesktopService` is the app-facing surface and is deliberately not
+main-thread affine: `attachInbound` runs synchronously on the inbound socket's
+own thread, because the descriptor must leave the JSON loop before that loop
+reads again.
+
+The upgrade happens inside each platform's existing `handleInbound`: a validated
+`media_attach` hands the socket to the media subsystem and returns, and socket
+ownership becomes conditional rather than unconditional so nothing double-closes.
+
 ## Update Architecture
 
 Both platforms check GitHub Releases using `update_repo` from config, defaulting

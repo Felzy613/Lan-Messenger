@@ -200,4 +200,94 @@ public class PacketValidatorTests
         var result = PacketValidator.ValidateDiscovery(data, "10.0.0.2", OwnKey, new HashSet<string>());
         Assert.IsNull(result);
     }
+
+    // ---- Remote desktop ----------------------------------------------------
+
+    private const string GoodSessionId = "9f2c4a6e8b0d1f3a5c7e9b1d3f5a7c9e";
+    private static readonly string ValidNonce = Convert.ToBase64String(new byte[12]);
+
+    private static byte[] RemoteJson(string type, string sessionId = GoodSessionId,
+                                     string? nonce = null, string? reason = null,
+                                     string senderKey = "cGVlci1rZXk=")
+    {
+        var fields = new List<string>
+        {
+            $"\"type\":\"{type}\"",
+            $"\"session_id\":\"{sessionId}\"",
+            "\"sender\":\"Alice\"",
+            $"\"sender_public_key_b64\":\"{senderKey}\"",
+            "\"port\":54232",
+        };
+        if (nonce is not null) { fields.Add($"\"nonce\":\"{nonce}\""); fields.Add("\"ciphertext\":\"Y2lwaGVy\""); }
+        if (reason is not null) fields.Add($"\"reason\":\"{reason}\"");
+        return Encoding.UTF8.GetBytes("{" + string.Join(",", fields) + "}");
+    }
+
+    [TestMethod]
+    public void RemoteInviteAndAcceptValidate()
+    {
+        foreach (string type in new[] { "remote_invite", "remote_accept" })
+        {
+            var pkt = PacketValidator.Validate(RemoteJson(type, nonce: ValidNonce), "10.0.0.5", "mine");
+            Assert.IsNotNull(pkt, $"{type} should validate");
+            Assert.AreEqual("10.0.0.5", pkt!.SenderIP);
+            Assert.IsTrue(pkt.RefreshesPresence);
+        }
+    }
+
+    [TestMethod]
+    public void RemoteControlPacketsValidate()
+    {
+        foreach (string type in new[] { "remote_decline", "remote_end", "media_attach" })
+        {
+            var reason = type == "media_attach" ? null : "declined";
+            Assert.IsNotNull(PacketValidator.Validate(RemoteJson(type, reason: reason), "10.0.0.5", "mine"),
+                $"{type} should validate");
+        }
+    }
+
+    [TestMethod]
+    public void MediaAttachDoesNotRefreshPresence()
+    {
+        // It is the last JSON frame on a socket that is about to become a binary
+        // media channel; treating it as ordinary peer traffic would have the
+        // presence path touching a connection that is no longer a JSON peer.
+        var pkt = PacketValidator.Validate(RemoteJson("media_attach"), "10.0.0.5", "mine");
+        Assert.IsNotNull(pkt);
+        Assert.IsFalse(pkt!.RefreshesPresence);
+    }
+
+    [TestMethod]
+    public void RemotePacketsRejectMalformedSessionId()
+    {
+        // A session id is the lookup key for an accept window, so a malformed one
+        // must never reach the registry.
+        foreach (string bad in new[] { "", "short", "9F2C4A6E8B0D1F3A5C7E9B1D3F5A7C9E",
+                                       "9f2c4a6e-8b0d-1f3a-5c7e-9b1d3f5a7c9e" })
+        {
+            foreach (string type in new[] { "remote_invite", "remote_decline", "media_attach" })
+            {
+                string? nonce = type == "remote_invite" ? ValidNonce : null;
+                Assert.IsNull(PacketValidator.Validate(RemoteJson(type, bad, nonce), "10.0.0.5", "mine"),
+                    $"{type} must reject session_id '{bad}'");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void RemoteInviteRejectsBadNonce()
+    {
+        string shortNonce = Convert.ToBase64String(new byte[8]);
+        Assert.IsNull(PacketValidator.Validate(
+            RemoteJson("remote_invite", nonce: shortNonce), "10.0.0.5", "mine"),
+            "a nonce that is not 12 bytes must be rejected");
+    }
+
+    [TestMethod]
+    public void RemotePacketFromSelfIsDropped()
+    {
+        Assert.IsNull(PacketValidator.Validate(
+            RemoteJson("remote_invite", nonce: ValidNonce, senderKey: "mine"), "10.0.0.5", "mine"),
+            "self-suppression must apply to remote-desktop packets too");
+    }
 }

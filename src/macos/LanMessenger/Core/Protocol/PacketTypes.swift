@@ -14,6 +14,11 @@ enum PacketType: String, Codable {
     case fileStart = "file_start"
     case fileChunk = "file_chunk"
     case fileEnd = "file_end"
+    case remoteInvite = "remote_invite"
+    case remoteAccept = "remote_accept"
+    case remoteDecline = "remote_decline"
+    case remoteEnd = "remote_end"
+    case mediaAttach = "media_attach"
 }
 
 // MARK: - Discovery (UDP, no framing)
@@ -196,6 +201,75 @@ struct FileEndPacket: Codable {
     }
 }
 
+// MARK: - Remote desktop (TCP, framed)
+
+// Two shapes cover all five remote-desktop packets.
+//
+// `remote_invite` / `remote_accept` carry a sealed body — the sender's ephemeral
+// X25519 key plus the negotiated parameters — encrypted with the ordinary
+// session key and AAD'd to `session_id`. Sealing the ephemeral rather than
+// sending it in the clear does not stop an attacker who cannot complete the
+// triple DH anyway; it hardens against unauthenticated peers making a host do
+// X25519 work, and it authenticates the parameters for free.
+//
+// `session_id` itself is plaintext because the receiver must look up the session
+// before it can decrypt anything.
+struct RemoteSessionPacket: Codable {
+    let type: String        // "remote_invite" or "remote_accept"
+    let sessionId: String
+    let sender: String
+    let senderPublicKeyB64: String
+    let port: Int
+    let nonce: String
+    let ciphertext: String
+
+    enum CodingKeys: String, CodingKey {
+        case type, sender, port, nonce, ciphertext
+        case sessionId = "session_id"
+        case senderPublicKeyB64 = "sender_public_key_b64"
+    }
+}
+
+// `remote_decline`, `remote_end` and `media_attach`: the spine plus an optional
+// machine-readable reason. Nothing here is sensitive — the initiator already
+// knows it asked — so `reason` is deliberately unencrypted, which is what lets a
+// client show "they have it switched off" rather than a generic failure.
+struct RemoteControlPacket: Codable {
+    let type: String        // "remote_decline", "remote_end" or "media_attach"
+    let sessionId: String
+    let sender: String
+    let senderPublicKeyB64: String
+    let port: Int
+    let reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type, sender, port, reason
+        case sessionId = "session_id"
+        case senderPublicKeyB64 = "sender_public_key_b64"
+    }
+
+    // `reason` is absent on media_attach and optional elsewhere.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decode(String.self, forKey: .type)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        sender = try c.decode(String.self, forKey: .sender)
+        senderPublicKeyB64 = try c.decode(String.self, forKey: .senderPublicKeyB64)
+        port = try c.decode(Int.self, forKey: .port)
+        reason = try c.decodeIfPresent(String.self, forKey: .reason)
+    }
+
+    init(type: String, sessionId: String, sender: String, senderPublicKeyB64: String,
+         port: Int, reason: String? = nil) {
+        self.type = type
+        self.sessionId = sessionId
+        self.sender = sender
+        self.senderPublicKeyB64 = senderPublicKeyB64
+        self.port = port
+        self.reason = reason
+    }
+}
+
 // MARK: - Unified parsed packet (output of PacketValidator)
 
 enum ValidatedPacket {
@@ -210,6 +284,11 @@ enum ValidatedPacket {
     case fileChunk(FileChunkPacket, senderIP: String)
     case fileEnd(FileEndPacket, senderIP: String)
     case discovery(DiscoveryPacket, senderIP: String)
+    case remoteInvite(RemoteSessionPacket, senderIP: String)
+    case remoteAccept(RemoteSessionPacket, senderIP: String)
+    case remoteDecline(RemoteControlPacket, senderIP: String)
+    case remoteEnd(RemoteControlPacket, senderIP: String)
+    case mediaAttach(RemoteControlPacket, senderIP: String)
 
     var senderPublicKeyB64: String? {
         switch self {
@@ -222,6 +301,29 @@ enum ValidatedPacket {
         case .fileChunk(let p, _): return p.senderPublicKeyB64
         case .fileEnd(let p, _):   return p.senderPublicKeyB64
         case .discovery(let p, _): return p.publicKeyB64
+        case .remoteInvite(let p, _), .remoteAccept(let p, _):
+            return p.senderPublicKeyB64
+        case .remoteDecline(let p, _), .remoteEnd(let p, _), .mediaAttach(let p, _):
+            return p.senderPublicKeyB64
+        }
+    }
+
+    /// Whether receiving this packet should refresh the sender's presence.
+    ///
+    /// Exhaustively switched on purpose: a future case has to make this decision
+    /// explicitly rather than inherit "yes" from a default. `media_attach` is the
+    /// one that must NOT — it is the last JSON frame on a socket that is about to
+    /// become a binary media channel, and treating it as ordinary peer traffic
+    /// would have the presence path touching a connection that is no longer a
+    /// JSON peer at all.
+    var refreshesPresence: Bool {
+        switch self {
+        case .text, .typing, .receipt, .delete, .edit,
+             .fileStart, .fileChunk, .fileEnd, .discovery,
+             .remoteInvite, .remoteAccept, .remoteDecline, .remoteEnd:
+            return true
+        case .mediaAttach:
+            return false
         }
     }
 
@@ -230,7 +332,9 @@ enum ValidatedPacket {
         case .text(_, let ip), .typing(_, let ip), .receipt(_, let ip), .delete(_, let ip),
              .edit(_, let ip),
              .fileStart(_, let ip), .fileChunk(_, let ip), .fileEnd(_, let ip),
-             .discovery(_, let ip):
+             .discovery(_, let ip),
+             .remoteInvite(_, let ip), .remoteAccept(_, let ip),
+             .remoteDecline(_, let ip), .remoteEnd(_, let ip), .mediaAttach(_, let ip):
             return ip
         }
     }

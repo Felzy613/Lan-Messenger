@@ -15,15 +15,17 @@ crosses a platform boundary.
 2. [Constants](#constants)
 3. [Transport](#transport)
 4. [Discovery](#discovery)
-5. [Framing](#framing)
-6. [Packet Fields](#packet-fields)
-7. [Packet Types](#packet-types)
-8. [Cryptography](#cryptography)
-9. [History Format](#history-format)
-10. [Config Format](#config-format)
-11. [Validation Rules](#validation-rules)
-12. [Operational Flows](#operational-flows)
-13. [Compatibility Notes](#compatibility-notes)
+5. [Presence](#presence)
+6. [Framing](#framing)
+7. [Packet Fields](#packet-fields)
+8. [Packet Types](#packet-types)
+9. [Cryptography](#cryptography)
+10. [History Format](#history-format)
+11. [Config Format](#config-format)
+12. [Validation Rules](#validation-rules)
+13. [Operational Flows](#operational-flows)
+14. [Remote Desktop](#remote-desktop)
+15. [Compatibility Notes](#compatibility-notes)
 
 ## Design Goals
 
@@ -51,8 +53,15 @@ crosses a platform boundary.
 | History cap | `200` messages per peer IP |
 | AES-GCM nonce size | `12` bytes |
 | AES-GCM tag size | `16` bytes |
+| Media frame max size | `4_194_304` bytes (`4 MiB`) |
+| Media video fragment size | `16_384` bytes (`16 KiB`) |
+| Media session accept window | `10 s` |
+| Media reconnect window | `30 s` |
 
 The peer-timeout difference is UI state only. It does not change packet format.
+
+The media constants apply only to the remote-desktop media channel described in
+[Remote Desktop](#remote-desktop). They do not affect the JSON frame format.
 
 ## Transport
 
@@ -105,6 +114,15 @@ or other virtual adapters.
 | `public_key_b64` | string | yes | Standard base64 of raw 32-byte X25519 public key |
 | `ips` | array of strings | yes | Sender's local IPv4 addresses |
 | `relay_id_hash` | string | no | SHA-256 hex of the sender's private `relay_id`; used as the cloud-relay mailbox address. Older clients omit this field and must be tolerated by receivers. |
+| `caps` | array of strings | no | Optional capability tokens the sender implements, for example `["remote-desktop-v1"]`. Absent means "assume nothing beyond the base protocol". Receivers must tolerate unknown tokens and a missing field. |
+
+`caps` exists because `PacketValidator` drops unknown packet types silently. A
+sender that has no way to know whether a peer implements an extension will wait
+forever for a reply that is never coming. Advertising the capability turns that
+hang into a disabled menu item and an accurate "this peer's version does not
+support it" message. Add a token here when an extension needs to be negotiated
+before first use; do not add one for extensions that degrade safely, such as
+`reply_to_*`.
 
 ### Discovery Reply
 
@@ -455,6 +473,152 @@ The receiver closes the temp file and renames it to a deduplicated final path.
 If `photo.jpg` exists, try `photo_1.jpg` through `photo_999.jpg`, then use an
 8-hex fallback suffix.
 
+### remote_invite
+
+Offers a remote-desktop session. Sent by the peer that wants to view, which the
+handshake calls the **initiator**. See [Remote Desktop](#remote-desktop).
+
+```json
+{
+  "type": "remote_invite",
+  "session_id": "9f2c4a6e8b0d1f3a5c7e9b1d3f5a7c9e",
+  "sender": "Alice",
+  "sender_public_key_b64": "base64-public-key",
+  "port": 54232,
+  "nonce": "base64-12-byte-nonce",
+  "ciphertext": "base64-ciphertext-plus-tag"
+}
+```
+
+`session_id` is a 32-character lowercase hex value with the same shape as
+`message_id`. It is plaintext because the receiver needs it to look up the
+session before it can decrypt anything.
+
+The ciphertext is an encrypted JSON body, sealed with the ordinary session key
+(X25519/HKDF/AES-GCM, `info = "lan-messenger"`) and AAD set to the raw UTF-8
+`session_id`:
+
+```json
+{
+  "eph_pub_b64": "base64-32-byte-ephemeral-x25519-public-key",
+  "params": { "protocol": 1, "video": "h264", "displays": 2 }
+}
+```
+
+Sealing the ephemeral key rather than sending it in the clear does not stop an
+attacker who cannot complete the triple DH anyway; it hardens against
+unauthenticated peers making a host do X25519 work, and it authenticates
+`params` for free. `params` is canonicalized into the handshake transcript, so a
+field added here later cannot be silently downgraded by a man in the middle.
+
+An invite from a peer that is not a saved contact must be dropped without a
+prompt. An invite arriving while the receiver already has a live or pending
+session with that peer must be declined with `reason: "busy"`.
+
+### remote_accept
+
+Grants a `remote_invite`. The sender of this packet is the **responder** — the
+host whose screen will be shared.
+
+```json
+{
+  "type": "remote_accept",
+  "session_id": "9f2c4a6e8b0d1f3a5c7e9b1d3f5a7c9e",
+  "sender": "Bob",
+  "sender_public_key_b64": "base64-public-key",
+  "port": 54232,
+  "nonce": "base64-12-byte-nonce",
+  "ciphertext": "base64-ciphertext-plus-tag"
+}
+```
+
+The sealed body mirrors the invite and carries the responder's ephemeral key
+plus the parameters it actually agreed to:
+
+```json
+{
+  "eph_pub_b64": "base64-32-byte-ephemeral-x25519-public-key",
+  "params": { "protocol": 1, "video": "h264", "display": 0 }
+}
+```
+
+Accepting grants **viewing only**. Input control is a separate escalation the
+host approves later, over the media channel's control sub-channel — never
+implied by `remote_accept`.
+
+After sending this, the host opens a ~10 s window in which it will honour
+exactly one `media_attach` bearing this `session_id`.
+
+### remote_decline
+
+Refuses an invite, or reports that a session could not be set up.
+
+```json
+{
+  "type": "remote_decline",
+  "session_id": "9f2c4a6e8b0d1f3a5c7e9b1d3f5a7c9e",
+  "reason": "declined",
+  "sender": "Bob",
+  "sender_public_key_b64": "base64-public-key",
+  "port": 54232
+}
+```
+
+`reason` is an unencrypted, machine-readable token: `declined`, `busy`,
+`unsupported`, `disabled`, `no_encoder`, or `timeout`. Receivers must tolerate
+unknown values and show a generic message. Nothing here is sensitive — the
+initiator already knows it asked.
+
+Sending `declined` for a policy refusal and `disabled` for "the feature is
+switched off" leaks slightly more than a single opaque token, and that is the
+intended trade: a user who has switched the feature off wants their peer to be
+told that, not left guessing.
+
+### remote_end
+
+Terminates a session from either side, at any point, including before the media
+channel is attached.
+
+```json
+{
+  "type": "remote_end",
+  "session_id": "9f2c4a6e8b0d1f3a5c7e9b1d3f5a7c9e",
+  "reason": "user_stopped",
+  "sender": "Alice",
+  "sender_public_key_b64": "base64-public-key",
+  "port": 54232
+}
+```
+
+`reason` tokens: `user_stopped`, `idle_timeout`, `screen_locked`, `app_quit`,
+`error`. This is best-effort — one TCP write, no retry. Both sides must also
+tear down on socket close alone, because a crashing peer never sends it. It is
+sent over TCP 54232 rather than the media channel precisely so it still works
+when the media channel is what broke.
+
+`remote_end` is never queued for offline delivery and never goes through the
+cloud relay. A session that is not live has nothing to end.
+
+### media_attach
+
+The first and only JSON frame on a connection that is about to become a media
+channel. See [Media Channel Attach](#media-channel-attach).
+
+```json
+{
+  "type": "media_attach",
+  "session_id": "9f2c4a6e8b0d1f3a5c7e9b1d3f5a7c9e",
+  "sender": "Alice",
+  "sender_public_key_b64": "base64-public-key",
+  "port": 54232
+}
+```
+
+On acceptance the socket leaves the JSON frame loop permanently and speaks the
+binary media framing for the rest of its life. A `media_attach` whose
+`session_id` does not match an open accept window is dropped and the connection
+closed.
+
 ## Cryptography
 
 ### Key Agreement
@@ -657,6 +821,14 @@ Drop packets that violate these rules:
 | `file_start.size < 0` or `> 2 GiB` | Drop |
 | Decryption/authentication fails | Drop content; do not send receipt |
 | Malformed JSON | Drop frame/datagram |
+| `remote_invite` from a peer that is not a saved contact | Drop without prompting |
+| `remote_invite` while a session with that peer is live or pending | Decline with `busy` |
+| `media_attach` with no matching open accept window | Drop and close connection |
+| Media frame length is `<= 0` or `> 4 MiB` | Close connection; do not allocate |
+| Media frame sequence is not strictly greater than the last accepted | Drop and close connection |
+| Media frame on the input sub-channel before `control_grant` | Drop |
+| Media frame with a reserved `flags` bit set | Ignore the bit; do not reject |
+| Key confirmation (`hello`) mismatch | Close connection; do not retry with the same keys |
 
 Filename sanitization:
 
@@ -839,6 +1011,319 @@ When a saved contact broadcasts the same public key from a new IP, clients migra
 history, hidden conversation state, archived state, and selected conversation from
 old IP to new IP.
 
+## Remote Desktop
+
+Remote desktop lets one peer view a contact's screen and, after a separate
+grant, drive its keyboard and mouse. It is an extension: a client that does not
+implement it drops the new packet types as unknown and is unaffected.
+
+Two hard rules frame everything below.
+
+**Remote desktop is LAN-only and peer-to-peer.** It never touches the cloud
+relay. The relay is a dumb mailbox for offline text; routing a screen through it
+would break the no-server design goal and require NAT traversal that does not
+exist here. If the peer is not reachable on the LAN, the feature is unavailable.
+
+**Viewing and control are separate grants.** `remote_accept` grants viewing
+only. Control is escalated later over the control sub-channel and approved
+separately by the host. A client must never infer control from acceptance.
+
+### Session Overview
+
+```text
+Initiator (viewer)                         Responder (host)
+------------------                         ----------------
+remote_invite  ------- TCP 54232 -------->  consent prompt
+                                            (contact check, mode check)
+               <------ remote_accept -----  opens 10 s accept window
+media_attach   ------- TCP 54232 -------->  matches session_id,
+                                            detaches socket from JSON loop
+               <====== binary media framing from here on ======>
+               <------ ctrl: hello -------  key confirmation
+ctrl: hello_ack ------------------------->
+               <------ ctrl: video_config
+               <------ video frames -------
+(user asks for control)
+ctrl: control_request ------------------->  second consent prompt
+               <------ ctrl: control_grant
+input frames   -------------------------->  injected
+```
+
+The initiator is always the peer that sent `remote_invite`. This is not a
+convention, it is load-bearing: the handshake's directional keys are selected by
+role, and two peers that both believe they are the initiator derive swapped keys
+and fail to decrypt each other with no useful error.
+
+### Media Channel Attach
+
+The media channel runs on **TCP 54232**, the same port as everything else. There
+is no second port, and that is deliberate — a new port means a new Windows
+firewall rule, an installer change, and a broken experience on every already
+installed client. Multiplexing onto the one port is also what comparable
+products do, for the same reason.
+
+The upgrade works like this:
+
+1. The initiator opens a fresh TCP connection to the host on 54232.
+2. It writes one ordinary JSON frame: `media_attach`, carrying `session_id`.
+3. The host validates it through the normal packet validator.
+4. On success the host **detaches the socket from the JSON read loop** and hands
+   it to the media subsystem, which owns it for the rest of its life.
+5. Both sides then speak only the binary media framing below.
+
+The JSON frame format on 54232 is therefore untouched: the validator never sees
+a binary byte, because the socket has already left the loop by the time the
+first binary frame arrives. A media socket is exempt from the inbound idle
+timeout that ordinary JSON connections use; it has its own keepalive.
+
+The host must reject a `media_attach` that does not match an accept window it
+opened, and must allow only one in-flight session per peer.
+
+### Media Framing
+
+The media channel is binary, multiplexed, and shaped like a datagram so a future
+UDP transport can reuse the header verbatim.
+
+```text
++--------+---------+-------+------------+---------------+---------------------+
+| 4 B    | 1 B     | 1 B   | 8 B        | 8 B           | variable            |
+| length | channel | flags | sequence   | capture_us    | encrypted payload   |
++--------+---------+-------+------------+---------------+---------------------+
+```
+
+All integers are unsigned big-endian. `length` counts every byte after itself,
+header included.
+
+| Sub-channel | Id | Carries |
+|---|---|---|
+| control | `0` | JSON session control (see below) |
+| video | `1` | H.264 access unit, possibly fragmented |
+| input | `2` | Keyboard and pointer events |
+| cursor | `3` | Cursor position and shape updates |
+| stats | `4` | Viewer-to-host quality telemetry |
+
+`flags` bits, from least significant:
+
+| Bit | Meaning |
+|---|---|
+| 0 | keyframe (video only) |
+| 1 | fragmented — this is part of a larger logical frame |
+| 2 | final fragment |
+| 3-7 | reserved, must be zero, receivers must ignore |
+
+`capture_us` is a monotonic microsecond timestamp taken at capture. It exists so
+end-to-end latency is measurable at every stage rather than estimated, and it is
+mandatory from the first implementation — retrofitting it means retrofitting
+every measurement built on top of it.
+
+There is **no version field in the media header**. Version and capability
+negotiation happen once, in the handshake, and are bound into the transcript.
+Do not add one; a per-frame version byte is unauthenticated and downgradeable.
+
+Rules:
+
+- Reject a frame whose `length` is `<= 0` or `> 4 MiB`, before allocating.
+  The 50 MiB JSON cap does not apply here and would be a memory-exhaustion
+  vector at 30 frames per second.
+- `sequence` must be strictly increasing per direction. Reject any frame whose
+  sequence is not greater than the last accepted one. This closes replay and
+  reorder ambiguity, and it is also what keeps the AEAD nonce unique.
+- Video is fragmented into segments of at most 16 KiB at the writer, and frames
+  on other sub-channels are interleaved between those segments. A 500 KiB
+  keyframe must never delay a 20-byte mouse move; on congested Wi-Fi that
+  difference is the difference between usable and unusable.
+- `TCP_NODELAY` must be set on the media socket. Without it, Nagle plus delayed
+  ACK parks small input frames for tens of milliseconds.
+- Never buffer more than two video frames anywhere. For remote control, dropping
+  a frame is always better than delaying one.
+
+### Media Session Key Derivation
+
+The media channel does **not** reuse the message session key. It performs a
+fresh authenticated key exchange per session, giving forward secrecy that the
+static message key cannot: a long-term key compromised tomorrow must not decrypt
+a screen recording captured today.
+
+There is no signing key in this protocol — the only identity is the long-term
+X25519 key, already pinned per contact — so authentication comes from mixing
+static and ephemeral agreements, in the shape of a Noise `KK` handshake:
+
+```text
+es = X25519(eph_initiator_priv,    static_responder_pub)   # authenticates responder
+se = X25519(static_initiator_priv, eph_responder_pub)      # authenticates initiator
+ee = X25519(eph_initiator_priv,    eph_responder_pub)      # forward secrecy
+
+transcript = SHA256(
+    "lan-messenger-remote-v1"        ||
+    session_id_bytes(16)             ||
+    static_pub_initiator(32)         || static_pub_responder(32) ||
+    eph_pub_initiator(32)            || eph_pub_responder(32)    ||
+    canonical_params_bytes
+)
+
+okm = HKDF-SHA256(
+    ikm    = es || se || ee,
+    salt   = session_id_bytes,
+    info   = transcript,
+    length = 72
+)
+
+key_i2r   = okm[0..32]     # initiator -> responder
+key_r2i   = okm[32..64]    # responder -> initiator
+salt_i2r  = okm[64..68]
+salt_r2i  = okm[68..72]
+```
+
+`session_id_bytes` is the 16 raw bytes the 32-hex-character `session_id`
+represents. `canonical_params_bytes` is the agreed parameter object serialized
+with sorted keys, no insignificant whitespace, and UTF-8 encoding — both sides
+must produce byte-identical output or the transcripts differ and key
+confirmation fails.
+
+Binding the transcript into `info` is what makes the negotiated parameters
+tamper-evident. Without it, any field added to `params` later would be
+unauthenticated, and an attacker could downgrade a future codec or capability
+choice without breaking the handshake.
+
+Per-frame encryption:
+
+```text
+nonce  = direction_salt(4) || sequence(8)          # 12 bytes, never random
+aad    = the 22 plaintext header bytes, length prefix included
+sealed = AES-256-GCM(direction_key, nonce, payload, aad)
+wire   = ciphertext || 16-byte tag
+```
+
+A counter nonce rather than a random one is deliberate: at 30 frames per second
+across several sub-channels, a deterministic counter is both cheaper and
+strictly safer than relying on the birthday bound of a 96-bit random nonce.
+
+Including the length prefix in the AAD authenticates the framing itself, not
+just its contents.
+
+**Key confirmation is mandatory and must precede control.** Immediately after
+derivation the responder sends a control-channel `hello` containing the
+transcript hash; the initiator verifies it against its own before anything else
+happens, and the input sub-channel must not be armed until it has. Skipping this
+means the first symptom of a key mismatch is a stream of GCM failures in the
+middle of video, which is a miserable thing to debug.
+
+**A dropped media socket ends the crypto session.** Reconnecting reuses nothing:
+new `session_id`, new ephemerals, new keys, sequence restarting from zero
+against a key that has never been used. Reusing a key with a reset counter is
+catastrophic AES-GCM nonce reuse. The user interface may present a reconnect
+within the 30 s window as if the session continued; the cryptography must not.
+
+### Control Sub-Channel
+
+Channel `0` carries UTF-8 JSON objects, each with a `t` discriminator. These are
+encrypted like any other media payload.
+
+| `t` | Direction | Purpose |
+|---|---|---|
+| `hello` | host → viewer | Key confirmation; carries `transcript_b64` |
+| `hello_ack` | viewer → host | Confirms match; session becomes live |
+| `video_config` | host → viewer | `width`, `height`, `scale`, `display_id`, `codec` |
+| `keyframe_request` | viewer → host | Ask for an IDR now |
+| `control_request` | viewer → host | Ask to escalate from viewing to control |
+| `control_grant` | host → viewer | Input accepted; input sub-channel armed |
+| `control_revoke` | host → viewer | Input withdrawn; viewer must stop sending |
+| `display_list` | host → viewer | Available displays, for selection |
+| `display_select` | viewer → host | Switch to another display |
+| `host_state` | host → viewer | `secure_desktop`, `elevated_focus`, `locked` |
+| `ping` / `pong` | either | Keepalive and round-trip measurement |
+
+`video_config` must arrive before the first video frame and again after any
+resolution or display change — the viewer needs dimensions to lay out and to map
+input coordinates, and it has no other source for them.
+
+`host_state` is what turns an inexplicable frozen image into an explanation. A
+Windows host cannot capture or drive the secure desktop, and cannot inject into
+a focused elevated window; when either is true it says so, and the viewer shows
+a banner instead of a mystery.
+
+### Input Sub-Channel
+
+Channel `2` carries fixed-shape binary records. The input sub-channel is inert
+until `control_grant` and must go inert again on `control_revoke`, session end,
+or any error.
+
+Pointer positions are **normalized floats in `[0,1]`, relative to the shared
+video surface** — not the viewer's window. The host resolves them to pixels
+itself. This keeps display scaling, Retina backing scale, and multi-monitor
+offsets entirely on the host side, where the authoritative geometry lives, and
+it is why a letterboxed viewer must normalize against the video surface rather
+than the window it is drawn in.
+
+Keyboard events carry **USB HID usage IDs (usage page `0x07`)**, a modifier
+bitmask, and a repeat flag — never characters, never platform virtual key
+codes. A HID usage names a physical key position, so the host's own layout
+decides the resulting character. That is correct remote-desktop behaviour: dead
+keys, AltGr, and IME all work because the events pass through the host's real
+text input path. It also means a viewer on AZERTY typing `a` produces `q` on a
+QWERTY host, which is expected and matches every other remote desktop.
+
+Because layout-independent position codes cannot express everything, the input
+sub-channel also carries a **Unicode text record**. It injects a string
+directly, and it is the escape hatch for layout mismatch, emoji, IME
+composition, and paste-as-typing.
+
+Key repeat is forwarded by the viewer from its own operating system. Neither
+platform auto-repeats synthetic key-down events, so a host that waits for
+repeats it will never generate produces a single character where the user held
+a key down.
+
+Some combinations can never be captured by the viewer because its own operating
+system consumes them first — Cmd+Tab, Cmd+Space, Ctrl+Alt+Del, Win+L. These are
+sent explicitly from a "send special keys" menu rather than forwarded, and the
+un-forwardable set is a documented limitation, not a bug to be fixed.
+
+### Stats Sub-Channel
+
+Channel `4` carries viewer-to-host JSON telemetry roughly once per second:
+round-trip time, decoded frames per second, dropped frames, decode queue depth,
+and end-to-end latency computed from `capture_us`. The host adapts bitrate and
+frame rate from this and from its own send-queue depth.
+
+Both capture backends are **change-driven, not fixed-rate**: a completely static
+screen legitimately produces no frames at all. The stats channel and the
+keepalive are therefore the only way to distinguish "nothing is happening" from
+"the stream died", and a viewer must never time out a session purely because no
+video arrived.
+
+### Session Lifecycle
+
+A host must end the session and release capture on any of: `remote_end`, socket
+close, screen lock, user switch, system sleep, app quit, or a watchdog expiry
+when no input, stats, or keepalive has arrived for its timeout. The watchdog is
+not optional — without it a viewer that crashes leaves a host's screen being
+captured indefinitely, which is the single worst failure this feature can have.
+
+Reconnect within the 30 s window keeps capture warm and preserves the user's
+sense of one continuous session, but performs a full fresh handshake as
+described above.
+
+### Consent Rules
+
+These are protocol-level requirements, not user-interface suggestions. A client
+that does not enforce them is not compatible.
+
+- Remote desktop is **off by default**. It must be switched on deliberately.
+- Only **saved contacts** may invite. An invite from an unknown peer is dropped
+  without prompting, matching the existing rule that discovered peers do not
+  become conversations on their own.
+- Consent is **per session**, never remembered, never "always allow". There is
+  no unattended access mode.
+- The consent prompt must show the peer's name **and identity key fingerprint**,
+  and must distinguish a key matching the saved contact from a new or changed
+  one. A display name alone is trivially spoofable; the pinned key is not.
+- While a session is live the host must show a **persistent indicator** naming
+  the viewer and the current grant level, with a stop control.
+- The host must reserve a **kill shortcut that is never forwarded to the peer**,
+  so a host being actively controlled can always stop the session.
+- Session start, stop, and every control grant are recorded in the conversation
+  history as an audit trail.
+
 ## Compatibility Notes
 
 - New packet fields must be optional unless the protocol version is explicitly
@@ -850,3 +1335,15 @@ old IP to new IP.
   also inspect per-platform releases for ZIP/EXE assets and SHA256 sidecars.
 - Legacy Python config migration may import non-key config fields and optionally
   import a raw base64 private key into the platform secure store.
+- Remote desktop is negotiated through the optional `caps` discovery field. A
+  client without `remote-desktop-v1` in its `caps` must be treated as unable to
+  participate, and the feature disabled for that peer in the interface rather
+  than attempted and timed out.
+- The media channel shares TCP 54232 with JSON packets by detaching the socket
+  after `media_attach`. The JSON frame format is unchanged, and no new port or
+  firewall rule is required. Do not "simplify" this by adding a second listener
+  port — that breaks every installed client and needs an elevated firewall
+  change on Windows.
+- A media session's keys are per-session and never reused across reconnects.
+  Treat any change to the handshake as a protocol version bump: both ends derive
+  the same transcript or neither works.

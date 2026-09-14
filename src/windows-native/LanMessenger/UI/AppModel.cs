@@ -1151,10 +1151,12 @@ public sealed partial class AppModel : ObservableObject
         {
             // Refresh LastSeen for the sender so TCP activity (text, typing,
             // receipts, file chunks) keeps them marked online — mirrors macOS touchPeer.
-            TouchPeer(pkt.SenderPublicKeyB64);
+            // Gated rather than unconditional: media_attach arrives on a socket
+            // that is about to stop being a JSON peer connection at all.
+            if (pkt.RefreshesPresence) TouchPeer(pkt.SenderPublicKeyB64);
             // Cache ip -> publicKeyB64 so replies work even for unsaved / offline
             // contacts, or when this machine's own discovery reception is broken.
-            if (!string.IsNullOrEmpty(pkt.SenderPublicKeyB64))
+            if (pkt.RefreshesPresence && !string.IsNullOrEmpty(pkt.SenderPublicKeyB64))
             {
                 _knownPeerKeys[pkt.SenderIP] = pkt.SenderPublicKeyB64;
                 // Flush any file sends that arrived before we knew this peer's key.
@@ -1167,6 +1169,15 @@ public sealed partial class AppModel : ObservableObject
                     MessagingService.Shared.HandlePacket(pkt); break;
                 case ValidatedFileStart or ValidatedFileChunk or ValidatedFileEnd:
                     FileTransferService.Shared.HandlePacket(pkt); break;
+                case ValidatedRemoteInvite or ValidatedRemoteAccept
+                     or ValidatedRemoteDecline or ValidatedRemoteEnd:
+                    Core.Services.RemoteDesktopService.Shared.HandleControlPacket(pkt);
+                    break;
+                case ValidatedMediaAttach:
+                    // Handled synchronously inside NetworkCoordinator.HandleInbound,
+                    // on the connection's own task, because the socket has to be
+                    // detached before the JSON read loop touches it again.
+                    break;
                 case ValidatedDiscovery vd:
                     UpsertPeer(vd.SenderIP, vd.Packet.Username, vd.Packet.Port,
                                vd.Packet.PublicKeyB64, vd.Packet.RelayIdHash, vd.Packet.Ips);

@@ -1111,10 +1111,14 @@ enum UpdateProgress: Equatable {
 extension AppModel: NetworkCoordinatorDelegate {
     func coordinator(_ c: NetworkCoordinator, didReceivePacket packet: ValidatedPacket) {
         // Refresh lastSeen for the sender so TCP activity keeps them online.
-        if let key = packet.senderPublicKeyB64 { touchPeer(publicKeyB64: key) }
-        // Cache ip → publicKeyB64 so replies work even for unsaved / offline contacts.
-        if let key = packet.senderPublicKeyB64, !key.isEmpty {
-            knownPeerKeys[packet.senderIP] = key
+        // Gated rather than unconditional: media_attach arrives on a socket that
+        // is about to stop being a JSON peer connection at all.
+        if packet.refreshesPresence {
+            if let key = packet.senderPublicKeyB64 { touchPeer(publicKeyB64: key) }
+            // Cache ip → publicKeyB64 so replies work even for unsaved / offline contacts.
+            if let key = packet.senderPublicKeyB64, !key.isEmpty {
+                knownPeerKeys[packet.senderIP] = key
+            }
         }
         switch packet {
         case .text, .typing, .receipt, .delete, .edit:
@@ -1124,6 +1128,15 @@ extension AppModel: NetworkCoordinatorDelegate {
         case .discovery(let pkt, let ip):
             upsertPeer(ip: ip, username: pkt.username, port: pkt.port,
                        publicKeyB64: pkt.publicKeyB64, advertisedIPs: pkt.ips)
+        case .remoteInvite, .remoteAccept, .remoteDecline, .remoteEnd:
+            RemoteDesktopService.shared.handleControlPacket(packet)
+        case .mediaAttach:
+            // Handled synchronously inside NetworkCoordinator.handleInbound, on
+            // the socket's own thread, because the fd has to be detached before
+            // the JSON read loop touches it again. By the time this @MainActor
+            // hop landed, that loop would already have consumed the first 22
+            // binary header bytes as a JSON length prefix.
+            break
         }
     }
 

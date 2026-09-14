@@ -73,6 +73,11 @@ final class DiscoveryService {
     private let queue = DispatchQueue(label: "com.dave.lanmessenger.discovery", qos: .utility)
     // Dedicated to the blocking recvfrom() loop — see the threading note above.
     private let recvQueue = DispatchQueue(label: "com.dave.lanmessenger.discovery.recv", qos: .utility)
+    // The health summary gets its own queue, and it must be its own: not
+    // `queue`, so a wedged beacon queue still produces a summary naming the
+    // fault; and emphatically not `recvQueue`, because the receive loop's block
+    // never returns and a timer targeted there can never be dequeued behind it.
+    private let healthQueue = DispatchQueue(label: "com.dave.lanmessenger.discovery.health", qos: .utility)
     private var running = false
     private let socketLock = NSLock()
     private var monitorObserverID: UUID?
@@ -89,7 +94,15 @@ final class DiscoveryService {
     private var txFailures = 0
     private var rxByType: [String: Int] = [:]
     private var healthTimer: DispatchSourceTimer?
-    private let healthInterval: TimeInterval = 60
+    /// Seconds between health summaries. Settable so tests can shrink it — at
+    /// the production 60 s a test would have to wait a full minute just to prove
+    /// the timer fires at all, which is why this went unverified for so long.
+    var healthInterval: TimeInterval = 60
+    /// Invoked after each health summary is emitted. Exists so a test can prove
+    /// the timer still fires while the blocking receive loop is running, which
+    /// is precisely what was broken. Same role as DockPolicyGuard's injected
+    /// closures: make an otherwise-invisible runtime property assertable.
+    var onHealthSummary: (() -> Void)?
 
     init(monitor: NetworkInterfaceMonitor) {
         self.monitor = monitor
@@ -255,12 +268,19 @@ final class DiscoveryService {
         sendTimer = timer
     }
 
-    // Emits one summary line per minute. Runs on `recvQueue` rather than
-    // `queue` on purpose: if `queue` ever wedges again, the summary still gets
-    // out and says tx_beacons=0, naming the fault instead of going silent with
-    // it.
+    // Emits one summary line per minute on its own `healthQueue`.
+    //
+    // The queue choice is the whole point of this function. It must not be
+    // `queue`: if the beacon queue ever wedges again, the summary still has to
+    // get out and say tx_beacons=0, naming the fault instead of going silent
+    // with it. It must equally not be `recvQueue`, which is where this timer
+    // originally lived — `recvQueue` is serial and permanently occupied by the
+    // never-returning receive loop, so the handler was never dequeued and the
+    // summary never emitted once in production. The diagnostic built to catch
+    // queue starvation was itself dead from queue starvation; a dedicated queue
+    // is the only placement that satisfies both constraints.
     private func startHealthTimer() {
-        let timer = DispatchSource.makeTimerSource(queue: recvQueue)
+        let timer = DispatchSource.makeTimerSource(queue: healthQueue)
         timer.schedule(deadline: .now() + healthInterval, repeating: healthInterval)
         timer.setEventHandler { [weak self] in self?.emitHealthSummary() }
         timer.resume()
@@ -303,6 +323,8 @@ final class DiscoveryService {
                 "health: no discovery packets received in the last \(Int(healthInterval))s — " +
                 "inbound UDP \(discoveryPort) may be blocked")
         }
+
+        onHealthSummary?()
     }
 
     private func countTx(beacon: Bool) {

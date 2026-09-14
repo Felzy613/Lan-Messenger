@@ -348,7 +348,37 @@ Use the smallest sufficient set for the change:
 - Do not remove the per-minute discovery health summary, or drop a log channel
   from the `LogChannel` enum — `archivedLogURLs`/`ArchivedLogPaths` derive the
   export bundle from that enum, so an unlisted channel silently never reaches a
-  bug report.
+  bug report. Adding a channel without a writer is caught by the channel-coverage
+  tests on both platforms, which enumerate the enum rather than a hardcoded list.
+- Do not schedule the discovery health timer on `recvQueue`. It was created there
+  for years and therefore never fired once — `recvQueue` is serial and the
+  receive loop's block never returns, so the handler was never dequeued.
+  Production logs showed 39,304 Discovery lines and zero health lines: the
+  diagnostic built to catch queue starvation was itself dead from queue
+  starvation. It must not go on `queue` either, since it has to survive a wedged
+  beacon queue in order to report `tx_beacons=0`. It owns `healthQueue` for
+  exactly that reason. Covered by `DiscoveryServiceQueueTests`.
+- Do not give a media session's timers the same queue or thread as its read
+  loop. `MediaSession` owns three contexts — read, write, timers — and the read
+  loop never returns while running, so a keepalive or watchdog scheduled onto it
+  is never dequeued. That is the same failure the discovery receive loop caused
+  twice. A starved watchdog is the worst case here: a crashed viewer would leave
+  the host's screen captured indefinitely with nothing saying so. Covered by
+  `RemoteDesktopQueueTests` on both platforms, which count seams reachable only
+  from the timer path.
+- Do not rebuild a media frame header to use as AEAD associated data. The AAD is
+  the 22 header bytes exactly as received; reserved flag bits 3-7 must be ignored
+  for interpretation but preserved byte-for-byte, so a normalised re-encode
+  differs by one byte against any peer that sets one and fails every tag check.
+  Both `MediaFrameHeader` types keep `rawFlags` beside the masked view for this.
+- Do not compute a media frame's `length` from the plaintext. It is
+  `18 + sealedPayloadCount`, tag included, and the length lives inside the AAD —
+  getting it wrong is off by exactly 16 and every frame fails on the peer with no
+  other symptom. `encodeFrame`/`EncodeFrame` is the only sanctioned constructor.
+- Do not drop the in-progress video frame when the two-frame budget is full. Once
+  its first fragment is on the wire the peer is reassembling it, and abandoning it
+  leaves a dangling `fragmented`-without-`final` that desyncs their reassembler
+  permanently. Drop the queued frame, which is also the staler one.
 - Do not remove SHA256 sidecar support from updaters; combined releases may only
   expose installer assets while sidecars live on per-platform releases.
 - Do not make the only capture of SwiftUI's `openWindow` action live in

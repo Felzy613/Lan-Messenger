@@ -86,6 +86,15 @@ public abstract class ValidatedPacket
 {
     public abstract string SenderIP { get; }
     public abstract string? SenderPublicKeyB64 { get; }
+
+    /// <summary>Whether receiving this packet should refresh the sender's presence.</summary>
+    /// <remarks>
+    /// Virtual with a "yes" default, overridden only by ValidatedMediaAttach:
+    /// media_attach is the last JSON frame on a socket that is about to become a
+    /// binary media channel, and treating it as ordinary peer traffic would have
+    /// the presence path touching a connection that is no longer a JSON peer.
+    /// </remarks>
+    public virtual bool RefreshesPresence => true;
 }
 
 public sealed class ValidatedText(TextPacket packet, string senderIP) : ValidatedPacket
@@ -151,4 +160,78 @@ public sealed class ValidatedDiscovery(DiscoveryPacket packet, string senderIP) 
     public DiscoveryPacket Packet { get; } = packet;
     public override string  SenderIP           { get; } = senderIP;
     public override string? SenderPublicKeyB64 { get; } = packet.PublicKeyB64;
+}
+
+// ---- Remote desktop (TCP, framed) -----------------------------------------
+
+// Two shapes cover all five remote-desktop packets.
+//
+// remote_invite / remote_accept carry a sealed body — the sender's ephemeral
+// X25519 key plus the negotiated parameters — encrypted with the ordinary
+// session key and AAD'd to session_id. Sealing the ephemeral rather than
+// sending it in the clear does not stop an attacker who cannot complete the
+// triple DH anyway; it hardens against unauthenticated peers making a host do
+// X25519 work, and it authenticates the parameters for free.
+//
+// session_id itself is plaintext because the receiver must look up the session
+// before it can decrypt anything.
+public sealed class RemoteSessionPacket
+{
+    [JsonPropertyName("type")]                  public string Type       { get; set; } = "";
+    [JsonPropertyName("session_id")]            public string SessionId  { get; set; } = "";
+    [JsonPropertyName("sender")]                public string Sender     { get; set; } = "";
+    [JsonPropertyName("sender_public_key_b64")] public string SenderPublicKeyB64 { get; set; } = "";
+    [JsonPropertyName("port")]                  public int    Port       { get; set; }
+    [JsonPropertyName("nonce")]                 public string Nonce      { get; set; } = "";
+    [JsonPropertyName("ciphertext")]            public string Ciphertext { get; set; } = "";
+}
+
+// remote_decline, remote_end and media_attach: the spine plus an optional
+// machine-readable reason. Nothing here is sensitive — the initiator already
+// knows it asked — so `reason` is deliberately unencrypted, which is what lets a
+// client show "they have it switched off" rather than a generic failure.
+public sealed class RemoteControlPacket
+{
+    [JsonPropertyName("type")]                  public string  Type      { get; set; } = "";
+    [JsonPropertyName("session_id")]            public string  SessionId { get; set; } = "";
+    [JsonPropertyName("sender")]                public string  Sender    { get; set; } = "";
+    [JsonPropertyName("sender_public_key_b64")] public string  SenderPublicKeyB64 { get; set; } = "";
+    [JsonPropertyName("port")]                  public int     Port      { get; set; }
+    [JsonPropertyName("reason")]                public string? Reason    { get; set; }
+}
+
+public sealed class ValidatedRemoteInvite(RemoteSessionPacket packet, string senderIP) : ValidatedPacket
+{
+    public RemoteSessionPacket Packet { get; } = packet;
+    public override string  SenderIP           { get; } = senderIP;
+    public override string? SenderPublicKeyB64 { get; } = packet.SenderPublicKeyB64;
+}
+
+public sealed class ValidatedRemoteAccept(RemoteSessionPacket packet, string senderIP) : ValidatedPacket
+{
+    public RemoteSessionPacket Packet { get; } = packet;
+    public override string  SenderIP           { get; } = senderIP;
+    public override string? SenderPublicKeyB64 { get; } = packet.SenderPublicKeyB64;
+}
+
+public sealed class ValidatedRemoteDecline(RemoteControlPacket packet, string senderIP) : ValidatedPacket
+{
+    public RemoteControlPacket Packet { get; } = packet;
+    public override string  SenderIP           { get; } = senderIP;
+    public override string? SenderPublicKeyB64 { get; } = packet.SenderPublicKeyB64;
+}
+
+public sealed class ValidatedRemoteEnd(RemoteControlPacket packet, string senderIP) : ValidatedPacket
+{
+    public RemoteControlPacket Packet { get; } = packet;
+    public override string  SenderIP           { get; } = senderIP;
+    public override string? SenderPublicKeyB64 { get; } = packet.SenderPublicKeyB64;
+}
+
+public sealed class ValidatedMediaAttach(RemoteControlPacket packet, string senderIP) : ValidatedPacket
+{
+    public RemoteControlPacket Packet { get; } = packet;
+    public override string  SenderIP           { get; } = senderIP;
+    public override string? SenderPublicKeyB64 { get; } = packet.SenderPublicKeyB64;
+    public override bool RefreshesPresence => false;
 }

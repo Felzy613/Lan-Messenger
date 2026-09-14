@@ -97,6 +97,10 @@ public sealed class NetworkCoordinator : IDisposable
             foreach (var s in _sessions.Values) s.Stop();
             _sessions.Clear();
         }
+        // Detached media sockets are owned by RemoteDesktopService, not by
+        // _sessions, so they need their own reach-through or they outlive the
+        // network stack that produced them.
+        Services.RemoteDesktopService.Shared.StopAll();
         try { _listener?.Stop(); } catch { }
         _listener = null;
     }
@@ -213,7 +217,12 @@ public sealed class NetworkCoordinator : IDisposable
 
     private async Task HandleInbound(TcpClient client, string fromIP, CancellationToken ct)
     {
-        using (client)
+        // Ownership of this connection is single-owner but no longer
+        // unconditional: a media_attach hands it to the media subsystem, which
+        // then owns it for the rest of its life. Disposing it here as well would
+        // pull the socket out from under a live session.
+        bool detached = false;
+        try
         {
             try
             {
@@ -240,13 +249,38 @@ public sealed class NetworkCoordinator : IDisposable
                     if (frameData is null) break;
 
                     var pkt = PacketValidator.Validate(frameData, fromIP, OwnPublicKeyB64);
-                    if (pkt is not null)
-                        _dispatcherQueue?.TryEnqueue(() => PacketReceived?.Invoke(pkt));
-                    else
+                    if (pkt is null)
+                    {
                         LanLogger.Warn("Net", $"dropped invalid frame from {fromIP} bytes={frameData.Length}");
+                        continue;
+                    }
+
+                    // Decided HERE, synchronously, on this task. The dispatcher
+                    // hop below is asynchronous; by the time it landed, this loop
+                    // would already have read the first 22 binary header bytes of
+                    // the media stream and interpreted them as a JSON length
+                    // prefix.
+                    if (pkt is ValidatedMediaAttach attach)
+                    {
+                        if (Services.RemoteDesktopService.Shared.AttachInbound(
+                                attach.Packet, client, fromIP)
+                            == Services.RemoteDesktopService.AttachOutcome.Detached)
+                        {
+                            detached = true;
+                        }
+                        // `return`, never `break`: the loop must not touch this
+                        // connection again either way.
+                        return;
+                    }
+
+                    _dispatcherQueue?.TryEnqueue(() => PacketReceived?.Invoke(pkt));
                 }
             }
             catch (Exception ex) { LanLogger.Warn("Net", $"inbound from {fromIP} ended: {ex.GetType().Name} {ex.Message}"); }
+        }
+        finally
+        {
+            if (!detached) client.Dispose();
         }
     }
 }
