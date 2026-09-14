@@ -47,6 +47,7 @@ let package = Package(
                 .copy("known_good_exchange.json"),
                 .copy("remote_handshake_vector.json"),
                 .copy("media_frame_vector.json"),
+                .copy("windows_h264_sample.h264"),
             ]
         ),
     ]
