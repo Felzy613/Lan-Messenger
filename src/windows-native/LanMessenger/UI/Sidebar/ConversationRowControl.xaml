@@ -33,6 +33,13 @@
                        TextWrapping="Wrap"
                        MaxLines="2"
                        TextTrimming="CharacterEllipsis" />
+            <!-- Takes the preview line's place while the peer is typing: a
+                 miniature of the thread's typing bubble, which is how Messages
+                 marks a typing conversation in its list. Dot size and colour
+                 are set in the code-behind. -->
+            <ui:TypingIndicatorControl x:Name="TypingDots"
+                                       HorizontalAlignment="Left"
+                                       Margin="0,2,0,2" />
         </StackPanel>
 
         <!-- Timestamp + unread badge -->

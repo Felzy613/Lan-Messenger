@@ -28,10 +28,15 @@ struct ConversationRowView: View {
                 }
                 HStack(alignment: .top) {
                     if conv.isTyping {
-                        Text("typing…")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Theme.accent)
-                            .italic()
+                        // A miniature of the thread's typing bubble, which is
+                        // how Messages marks a typing conversation in its list.
+                        TypingDotsView(dotSize: 6, spacing: 4, color: Theme.accent)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(Theme.accent.opacity(0.12), in: Capsule())
+                            .accessibilityElement()
+                            .accessibilityLabel(Text("\(conv.peerName) is typing"))
+                            .help("\(conv.peerName) is typing…")
                     } else {
                         Text(conv.lastMessage.isEmpty ? " " : conv.lastMessage)
                             .font(.system(size: 13))

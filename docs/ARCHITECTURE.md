@@ -536,6 +536,35 @@ preference raised inside a `.background()` subtree never reaches
 forever), which is also why the viewport height is written from `onAppear` /
 `onChange` rather than through a second preference key.
 
+### Typing Indicator
+
+An inbound `typing` packet with `active: true` shows the same thing on both
+platforms: three dots that swell and brighten in a staggered wave — 0.6 s out,
+0.6 s back, each dot 0.2 s behind the one before it. They appear in three
+places:
+
+- at the end of the thread, inside an incoming-style bubble, sitting where the
+  peer's message is about to land;
+- under the peer's name in the chat header, in place of the Online/Offline
+  caption, so the state is still visible when the thread is scrolled up;
+- in the sidebar row, as an accent-tinted capsule covering the message preview.
+
+The thread bubble grows the thread, so it follows the scrolling rule above: it
+only pulls the view down when the reader is already at the bottom.
+
+macOS: `UI/TypingIndicatorView.swift` (`TypingDotsView`, `TypingBubbleView`).
+The bubble lives in a wrapper that is always in the message `VStack` — empty and
+zero-height when nobody is typing — which both scopes the insert/remove
+animation and gives `ChatView` a stable `threadEndID` to scroll to. Reduce
+Motion drops the wave and leaves the dots standing.
+
+Windows: `UI/TypingIndicatorControl.xaml(.cs)`, driven by
+`ChatPage.UpdateTypingIndicator`. The thread copy is the `ListView`'s `Footer`,
+so it scrolls with the messages and never enters the item collection or any
+merge path. The storyboard animates `Opacity` and a `ScaleTransform` — both
+independent targets — and is stopped whenever the control is hidden or unloaded
+rather than left ticking behind a collapsed element.
+
 ### macOS UI
 
 Important files:

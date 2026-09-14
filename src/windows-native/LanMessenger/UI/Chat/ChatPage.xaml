@@ -57,6 +57,14 @@
                 <TextBlock x:Name="HeaderSubtext"
                            Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <!-- Swapped in for the Online/Offline caption while the peer is
+                     typing, so the header keeps its height and the state is
+                     still legible when the thread is scrolled up and the
+                     in-thread typing bubble is off screen. Dot size is set in
+                     the code-behind. -->
+                <ui:TypingIndicatorControl x:Name="HeaderTyping"
+                                           HorizontalAlignment="Left"
+                                           Margin="0,3,0,2" />
             </StackPanel>
         </Grid>
 
@@ -85,6 +93,13 @@
                     <Setter Property="Background" Value="Transparent" />
                 </Style>
             </ListView.ItemContainerStyle>
+            <!-- The typing bubble sits at the end of the thread, where the
+                 peer's message is about to appear. As the list's Footer it
+                 scrolls with the messages and stays out of the item collection,
+                 so no merge/diff path has to know about it. -->
+            <ListView.Footer>
+                <ui:TypingIndicatorControl x:Name="ThreadTyping" Margin="0,2,0,2" />
+            </ListView.Footer>
         </ListView>
 
         <!-- Jump to latest. Floats over the bottom-right of the thread and is

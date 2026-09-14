@@ -132,12 +132,14 @@ public sealed partial class SidebarControl : UserControl
         {
             var c = target[i];
             var online = c.IsOnline;
-            var preview = c.IsTyping ? "typing..." : c.LastMessage;
+            // The row keeps the real last message while the peer types — it
+            // hides it behind the typing dots and puts it straight back
+            // afterwards, rather than overwriting it with the word "typing...".
             if (byIP.TryGetValue(c.PeerIP, out var existing))
             {
                 existing.PeerName    = c.PeerName;
                 existing.PhotoB64    = c.PhotoB64;
-                existing.LastMessage = preview;
+                existing.LastMessage = c.LastMessage;
                 existing.Timestamp   = Theme.FormatTimestamp(c.LastTimestamp);
                 existing.UnreadCount = c.UnreadCount;
                 existing.IsTyping    = c.IsTyping;
@@ -155,7 +157,7 @@ public sealed partial class SidebarControl : UserControl
                     PeerIP      = c.PeerIP,
                     PeerName    = c.PeerName,
                     PhotoB64    = c.PhotoB64,
-                    LastMessage = preview,
+                    LastMessage = c.LastMessage,
                     Timestamp   = Theme.FormatTimestamp(c.LastTimestamp),
                     UnreadCount = c.UnreadCount,
                     IsTyping    = c.IsTyping,

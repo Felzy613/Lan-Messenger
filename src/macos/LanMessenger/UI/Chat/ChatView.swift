@@ -24,6 +24,10 @@ struct ChatView: View {
     /// after a bubble's height settles. Matches the Windows threshold.
     private static let atBottomSlack: CGFloat = 40
     private static let scrollSpace = "chatScroll"
+    /// Identity of the row that always sits at the very end of the thread —
+    /// the typing bubble when the peer is typing, a zero-height placeholder
+    /// when they are not. Scrolling to it lands on the real bottom either way.
+    private static let threadEndID = "__thread_end__"
 
     private var distanceFromBottom: CGFloat { max(0, contentBottom - viewportHeight) }
     private var isNearBottom: Bool { distanceFromBottom < Self.atBottomSlack }
@@ -38,6 +42,14 @@ struct ChatView: View {
 
     private var peerIsOnline: Bool {
         model.peers.values.first { $0.ip == peerIP }?.isOnline ?? false
+    }
+
+    private var peerIsTyping: Bool {
+        model.typingStates[peerIP]?.active ?? false
+    }
+
+    private var peerName: String {
+        conv?.peerName ?? peerIP
     }
 
     var body: some View {
@@ -131,18 +143,27 @@ struct ChatView: View {
                         .fill(peerIsOnline ? Color.green : Color.gray)
                         .frame(width: 8, height: 8)
                 }
-                if let typing = model.typingStates[peerIP], typing.active {
-                    Text("typing…")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                // The dots replace the caption rather than sitting beside it,
+                // so the header keeps its height and the peer's state is still
+                // legible while the thread is scrolled up and the in-thread
+                // typing bubble is off screen.
+                if peerIsTyping {
+                    TypingDotsView(dotSize: 5, spacing: 3, color: Color.primary.opacity(0.5))
+                        .frame(height: 13, alignment: .leading)
+                        // The dots themselves are accessibility-hidden; this
+                        // wrapper is what VoiceOver actually reads.
+                        .accessibilityElement()
+                        .accessibilityLabel(Text("\(peerName) is typing"))
+                        .help("\(peerName) is typing…")
                         .transition(.opacity)
-                        .animation(.easeInOut(duration: 0.2), value: typing.active)
                 } else {
                     Text(peerIsOnline ? "Online" : "Offline")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                        .transition(.opacity)
                 }
             }
+            .animation(.easeInOut(duration: 0.2), value: peerIsTyping)
             Spacer()
         }
         .padding(.horizontal, 16)
@@ -188,6 +209,21 @@ struct ChatView: View {
                             : Color.clear
                         )
                     }
+
+                    // The typing bubble is the last row of the thread, where
+                    // the peer's message is about to appear. The wrapper is
+                    // always in the layout — zero-height when nobody is typing
+                    // — so `threadEndID` is a stable scroll target and the
+                    // insertion animates on its own without putting an
+                    // .animation() over the whole message list.
+                    VStack(spacing: 0) {
+                        if peerIsTyping {
+                            TypingBubbleView(peerName: peerName)
+                                .transition(.opacity)
+                        }
+                    }
+                    .id(Self.threadEndID)
+                    .animation(.easeInOut(duration: 0.18), value: peerIsTyping)
                 }
                 .padding(.vertical, 12)
                 // Zero-height sentinel pinned to the end of the thread: its maxY
@@ -234,6 +270,13 @@ struct ChatView: View {
                     scrollToBottom(proxy: proxy, animated: true)
                 }
             }
+            .onChange(of: peerIsTyping) { nowTyping in
+                // Same rule as an arriving message: follow the thread down only
+                // when the reader is already at the bottom. Deferred a runloop
+                // because the bubble has not been laid out yet at this point.
+                guard nowTyping, isNearBottom else { return }
+                DispatchQueue.main.async { scrollToBottom(proxy: proxy, animated: true) }
+            }
             .onChange(of: scrollHighlightID) { newValue in
                 guard newValue != nil else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -270,11 +313,14 @@ struct ChatView: View {
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
-        guard let lastID = entries.last?.id else { return }
+        // Target the thread-end anchor, not the last message: when the peer is
+        // typing the bubble sits below the newest message, and scrolling to
+        // the message would leave the thing we are scrolling for off screen.
+        guard !entries.isEmpty || peerIsTyping else { return }
         if animated {
-            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(lastID, anchor: .bottom) }
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(Self.threadEndID, anchor: .bottom) }
         } else {
-            proxy.scrollTo(lastID, anchor: .bottom)
+            proxy.scrollTo(Self.threadEndID, anchor: .bottom)
         }
     }
 

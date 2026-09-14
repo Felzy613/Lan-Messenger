@@ -176,6 +176,12 @@ public sealed partial class ChatPage : Page
         MessagesList.ItemsSource = _rows;
         WireDropTargets();
 
+        // The thread's dots live in a bubble at message size; the header's are
+        // caption-sized to sit where the Online/Offline text does.
+        ThreadTyping.UseBubbleShell();
+        HeaderTyping.DotDiameter = 5;
+        HeaderTyping.DotSpacing  = 3;
+
         // Cache the inner ScrollViewer once the visual tree is built so we can
         // query scroll position without walking the tree on every message update.
         EventHandler<object>? layoutHandler = null;
@@ -225,7 +231,7 @@ public sealed partial class ChatPage : Page
                 break;
 
             case nameof(AppModel.TypingStates):
-                UpdateHeaderOnlineState();
+                UpdateTypingIndicator();
                 break;
 
             case nameof(AppModel.ActiveTransfers):
@@ -264,6 +270,7 @@ public sealed partial class ChatPage : Page
 
         UpdateHeaderName();
         UpdateHeaderOnlineState();
+        UpdateTypingIndicator();
         UpdateTransferBanner();
 
         if (forceReload) _rows.Clear();
@@ -302,10 +309,32 @@ public sealed partial class ChatPage : Page
         // Inline dot after the name: green when online, gray when offline (matches macOS header)
         HeaderNameDot.Fill = online ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
 
-        var typing = _model.TypingStates.TryGetValue(ip, out var t) ? t : default;
-        HeaderSubtext.Text = typing.Active
-            ? "typing…"
-            : (online ? "Online" : "Offline");
+        HeaderSubtext.Text = online ? "Online" : "Offline";
+    }
+
+    /// Drives both copies of the typing indicator: the dots under the peer's
+    /// name and the bubble at the end of the thread. The bubble grows the
+    /// thread, so it follows the same rule an arriving message does — only
+    /// scroll down to it if the reader is already at the bottom.
+    private void UpdateTypingIndicator()
+    {
+        if (_model is null) return;
+        var ip = _model.SelectedPeerIP;
+        var typing = ip is not null
+                     && _model.TypingStates.TryGetValue(ip, out var t)
+                     && t.Active;
+        if (typing == ThreadTyping.IsActive) return;
+
+        var wasAtBottom = IsScrolledToBottom();
+
+        ThreadTyping.IsActive    = typing;
+        HeaderTyping.IsActive    = typing;
+        HeaderSubtext.Visibility = typing ? Visibility.Collapsed : Visibility.Visible;
+
+        if (typing && wasAtBottom)
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
+        else
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdateJumpToLatest);
     }
 
     private void UpdateTransferBanner()

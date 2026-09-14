@@ -22,7 +22,15 @@ public sealed partial class ConversationRowControl : UserControl
     // The owning sidebar control sets this so the menu actions can reach AppModel.
     public AppModel? Model { get; set; }
 
-    public ConversationRowControl() => InitializeComponent();
+    public ConversationRowControl()
+    {
+        InitializeComponent();
+        // Smaller than the thread's dots and tinted with the brand accent,
+        // which is what the word "typing..." used to be.
+        TypingDots.DotDiameter = 6;
+        TypingDots.DotSpacing  = 4;
+        TypingDots.DotBrush    = Theme.BrandAccentBrush;
+    }
 
     private static void OnRowChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -38,11 +46,13 @@ public sealed partial class ConversationRowControl : UserControl
     {
         if (Row is null) return;
 
-        Avatar.NameText      = Row.PeerName;
-        Avatar.PhotoB64      = Row.PhotoB64;
-        NameText.Text        = Row.PeerName;
-        PreviewText.Text     = Row.LastMessage;
-        TimestampText.Text   = Row.Timestamp;
+        Avatar.NameText        = Row.PeerName;
+        Avatar.PhotoB64        = Row.PhotoB64;
+        NameText.Text          = Row.PeerName;
+        PreviewText.Text       = Row.LastMessage;
+        PreviewText.Visibility = Row.IsTyping ? Visibility.Collapsed : Visibility.Visible;
+        TypingDots.IsActive    = Row.IsTyping;
+        TimestampText.Text     = Row.Timestamp;
         // Always show the dot; green when online, muted gray when offline — matches
         // macOS sidebar. (The previous 45%-alpha black was invisible in dark mode.)
         OnlineDot.Fill = Row.IsOnline ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
