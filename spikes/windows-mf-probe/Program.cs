@@ -49,6 +49,14 @@ internal static class Program
         Stage("3. DXGI adapters, outputs, Desktop Duplication", ProbeDesktopDuplication);
         Stage("4. Encode NV12 -> out.h264", () => EncodeSample(args));
 
+        // The interop test that matters: a stream produced by VideoToolbox on
+        // the Mac, decoded here by Media Foundation. Encoding and decoding on
+        // the same platform proves nothing about the pair.
+        var decodePath = args.FirstOrDefault(a => a.StartsWith("--decode="))?[9..];
+        if (decodePath is not null)
+            Stage($"5. Decode {Path.GetFileName(decodePath)} (cross-platform)",
+                  () => DecodeSample(decodePath));
+
         Console.WriteLine();
         Console.WriteLine(new string('=', 72));
         Console.WriteLine(_problems == 0
@@ -389,6 +397,239 @@ internal static class Program
         else Console.WriteLine("  Verify with:  ffplay out.h264      (or open in VLC)");
     }
 
+    private static readonly Guid MFT_CATEGORY_VIDEO_DECODER = new("d6c02d4b-6833-45b4-971a-05a4b04bab91");
+    private static readonly Guid MF_MT_FRAME_SIZE_OUT = new("1652c33d-d6b2-4012-b834-72030849a37d");
+
+    /// Feeds an Annex-B file to the Media Foundation H.264 decoder.
+    ///
+    /// Note the asymmetry with the encoder: a decoder wants its INPUT type first
+    /// and only offers an output type once it has parsed enough of the stream to
+    /// know the picture size, which surfaces as MF_E_TRANSFORM_STREAM_CHANGE
+    /// rather than as an error.
+    private static void DecodeSample(string path)
+    {
+        if (!File.Exists(path)) { Console.WriteLine($"  !! not found: {path}"); _problems++; return; }
+        byte[] annexB = File.ReadAllBytes(path);
+        Console.WriteLine($"  input: {annexB.Length} bytes of Annex-B");
+
+        MediaFactory.MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER,
+            MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
+            new RegisterTypeInfo { GuidMajorType = MFMediaType_Video, GuidSubtype = MFVideoFormat_H264 },
+            null, out IntPtr array, out uint count);
+
+        if (array == IntPtr.Zero || count == 0)
+        {
+            Console.WriteLine("  !! no H.264 decoder MFT");
+            _problems++; return;
+        }
+        using var activate = new IMFActivate(Marshal.ReadIntPtr(array));
+        Marshal.FreeCoTaskMem(array);
+        Console.WriteLine($"  using: {FriendlyName(activate)}");
+
+        using var decoder = activate.ActivateObject<IMFTransform>();
+        Unlock(decoder);
+
+        int decoded = 0; bool outputConfigured = false; int width = 0, height = 0;
+        long auIndex = 0;
+
+        using (var inType = MediaFactory.MFCreateMediaType())
+        {
+            inType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            inType.Set(MF_MT_SUBTYPE, MFVideoFormat_H264);
+            inType.Set(MF_MT_INTERLACE_MODE, (uint)MFVideoInterlace_Progressive);
+            decoder.SetInputType(0, inType, 0);
+            Console.WriteLine("  SetInputType(H264) OK");
+        }
+
+        // The output type must be set BEFORE any ProcessOutput, not discovered
+        // through MF_E_TRANSFORM_STREAM_CHANGE: without it the decoder answers
+        // every ProcessOutput with MF_E_TRANSFORM_TYPE_NOT_SET (0xC00D6D60) and
+        // emits nothing, forever. The size it offers now is a placeholder; the
+        // real one arrives as a stream change once it has parsed the SPS.
+        if (!NegotiateOutput(decoder, ref width, ref height))
+        {
+            Console.WriteLine("  !! decoder offered no NV12 output type");
+            _problems++; return;
+        }
+        outputConfigured = true;
+
+        decoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+        decoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+
+        // One sample per access unit. Splitting on IDR/non-IDR slice boundaries
+        // is enough for a probe; a real decoder gets whole access units from the
+        // media channel anyway.
+        var samples = SplitAccessUnits(annexB);
+        Console.WriteLine($"  {samples.Count} access unit(s) to feed");
+
+        foreach (var au in samples)
+        {
+            using var buffer = MediaFactory.MFCreateMemoryBuffer(au.Length);
+            unsafe
+            {
+                buffer.Lock(out IntPtr data, out _, out _);
+                new Span<byte>(au).CopyTo(new Span<byte>((void*)data, au.Length));
+                buffer.Unlock();
+                buffer.CurrentLength = au.Length;
+            }
+            using var sample = MediaFactory.MFCreateSample();
+            sample.AddBuffer(buffer);
+            // Without a timestamp the decoder has no timeline and will happily
+            // buffer every access unit without ever emitting one.
+            sample.SampleTime = auIndex * 10_000_000L / 30;
+            sample.SampleDuration = 10_000_000L / 30;
+            auIndex++;
+
+            // MF_E_NOTACCEPTING means the decoder is holding output it wants
+            // collected before it will take more input. That is the normal MFT
+            // contract, not an error: drain and retry the same sample.
+            bool accepted = false;
+            for (int attempt = 0; attempt < 8 && !accepted; attempt++)
+            {
+                try { decoder.ProcessInput(0, sample, 0); accepted = true; }
+                catch (SharpGenException ex) when (ex.ResultCode.Code == MF_E_NOTACCEPTING)
+                {
+                    DrainDecoder(decoder, ref decoded, ref outputConfigured, ref width, ref height);
+                }
+                catch (SharpGenException ex)
+                {
+                    Console.WriteLine($"  ProcessInput 0x{ex.ResultCode.Code:X8}");
+                    accepted = true;   // stop retrying; report and move on
+                }
+            }
+            DrainDecoder(decoder, ref decoded, ref outputConfigured, ref width, ref height);
+        }
+
+        decoder.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero);
+        decoder.ProcessMessage(TMessageType.MessageCommandDrain, UIntPtr.Zero);
+        DrainDecoder(decoder, ref decoded, ref outputConfigured, ref width, ref height);
+
+        Console.WriteLine($"  DECODED {decoded} frame(s) at {width}x{height}");
+        if (decoded == 0)
+        {
+            Console.WriteLine("  !! Media Foundation could not decode the macOS stream.");
+            _problems++;
+        }
+        else
+        {
+            Console.WriteLine("  Cross-platform decode CONFIRMED: VideoToolbox -> Media Foundation.");
+        }
+    }
+
+    private static void DrainDecoder(IMFTransform decoder, ref int decoded,
+                                     ref bool outputConfigured, ref int width, ref int height)
+    {
+        while (true)
+        {
+            var info = decoder.GetOutputStreamInfo(0);
+            bool selfAllocating =
+                (info.Flags & (int)(OutputStreamInfoFlags.OutputStreamProvidesSamples |
+                                    OutputStreamInfoFlags.OutputStreamCanProvideSamples)) != 0;
+            var buffer = new OutputDataBuffer { StreamID = 0 };
+            if (!selfAllocating && info.Size > 0)
+            {
+                var allocated = MediaFactory.MFCreateSample();
+                allocated.AddBuffer(MediaFactory.MFCreateMemoryBuffer(info.Size));
+                buffer.Sample = allocated;
+            }
+
+            var hr = decoder.ProcessOutput(ProcessOutputFlags.None, 1, ref buffer, out _);
+
+            if (hr.Code == MF_E_TRANSFORM_NEED_MORE_INPUT) { buffer.Sample?.Dispose(); return; }
+            if (hr.Code == MF_E_TRANSFORM_STREAM_CHANGE)
+            {
+                buffer.Sample?.Dispose();
+                // The decoder has now parsed the SPS and knows the real picture
+                // size, so the placeholder type set at startup is replaced here.
+                if (!NegotiateOutput(decoder, ref width, ref height)) return;
+                outputConfigured = true;
+                continue;
+            }
+            if (hr.Failure)
+            {
+                if (!_reportedOutputHr)
+                {
+                    Console.WriteLine($"  ProcessOutput 0x{hr.Code:X8} " +
+                                      $"(streamInfo flags=0x{info.Flags:X} size={info.Size})");
+                    _reportedOutputHr = true;
+                }
+                buffer.Sample?.Dispose();
+                return;
+            }
+            if (buffer.Sample is null) return;
+
+            using (buffer.Sample) { decoded++; }
+        }
+    }
+
+    /// Picks the decoder's NV12 output type and applies it, reporting the frame
+    /// size it agreed to.
+    private static bool NegotiateOutput(IMFTransform decoder, ref int width, ref int height)
+    {
+        for (int i = 0; ; i++)
+        {
+            IMFMediaType candidate;
+            try { candidate = decoder.GetOutputAvailableType(0, i); }
+            catch { return false; }
+
+            bool isNV12;
+            try { isNV12 = candidate.GetGUID(MF_MT_SUBTYPE) == MFVideoFormat_NV12; }
+            catch { candidate.Dispose(); continue; }
+
+            if (!isNV12) { candidate.Dispose(); continue; }
+
+            decoder.SetOutputType(0, candidate, 0);
+            try
+            {
+                ulong packed = candidate.GetUInt64(MF_MT_FRAME_SIZE_OUT);
+                width = (int)(packed >> 32); height = (int)(packed & 0xFFFFFFFF);
+            }
+            catch { }
+            Console.WriteLine($"  output type set: NV12 {width}x{height}");
+            candidate.Dispose();
+            return true;
+        }
+    }
+
+    /// Splits an Annex-B byte stream into access units, one per coded picture.
+    ///
+    /// Keying on access unit delimiters does not work: VideoToolbox emits none
+    /// at all, and parameter sets only appear at IDRs, so an AUD/SPS-based split
+    /// collapsed a 60-frame stream into 2 units. The reliable rule is that every
+    /// slice (type 1 or 5) is exactly one picture, and any SPS/PPS/SEI/AUD ahead
+    /// of it belongs to it.
+    private static List<byte[]> SplitAccessUnits(byte[] data)
+    {
+        var starts = new List<(int Offset, int Code)>();
+        int i = 0;
+        while (i + 3 <= data.Length)
+        {
+            if (data[i] == 0 && data[i + 1] == 0)
+            {
+                if (i + 4 <= data.Length && data[i + 2] == 0 && data[i + 3] == 1) { starts.Add((i, 4)); i += 4; continue; }
+                if (data[i + 2] == 1) { starts.Add((i, 3)); i += 3; continue; }
+            }
+            i++;
+        }
+        if (starts.Count == 0) return [data];
+
+        var units = new List<byte[]>();
+        int prefixStart = starts[0].Offset;
+        for (int k = 0; k < starts.Count; k++)
+        {
+            byte type = (byte)(data[starts[k].Offset + starts[k].Code] & 0x1F);
+            if (type is not (1 or 5)) continue;          // not a picture yet
+            int end = k + 1 < starts.Count ? starts[k + 1].Offset : data.Length;
+            units.Add(data[prefixStart..end]);
+            prefixStart = end;
+        }
+        if (prefixStart < data.Length && units.Count == 0) units.Add(data[prefixStart..]);
+        return units;
+    }
+
+    private static bool _reportedOutputHr;
+
+    private const int MF_E_NOTACCEPTING = unchecked((int)0xC00D36B5);
     private const int MF_E_TRANSFORM_NEED_MORE_INPUT = unchecked((int)0xC00D6D72);
     private const int MF_E_TRANSFORM_STREAM_CHANGE   = unchecked((int)0xC00D6D61);
 

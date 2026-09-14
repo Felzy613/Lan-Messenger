@@ -122,3 +122,43 @@ One correction to the plan: it predicted a locked async MFT would fail with "a
 bare `E_FAIL` and no diagnostic". It does not — the HRESULT is
 `MF_E_TRANSFORM_ASYNC_LOCKED` (0xC00D6D77), whose message names the cause
 directly. The trap is real; the diagnosis is easier than feared.
+
+### Cross-platform decode confirmed (2026-09-14)
+
+`--decode=<file>` feeds an Annex-B file to the Media Foundation H.264 decoder.
+A stream encoded on the Mac by VideoToolbox (60 frames, 320x240, via
+`H264Encoder` + `H264Bitstream.avccToAnnexB`) **decoded to 60 frames at
+320x240** on the Dell. That is the plan's second-biggest risk closed in the
+macOS -> Windows direction.
+
+Four things the MF decoder requires that cost an iteration each, none of them
+documented anywhere obvious:
+
+1. **Set the output type before the first `ProcessOutput`.** Discovering it via
+   `MF_E_TRANSFORM_STREAM_CHANGE` does not work — without an output type the
+   decoder answers every `ProcessOutput` with `MF_E_TRANSFORM_TYPE_NOT_SET`
+   (0xC00D6D60) and emits nothing, forever. Set a placeholder NV12 type up
+   front; the decoder issues a stream change with the real size once it has
+   parsed the SPS (observed: 1920x1080 placeholder -> 320x240 actual).
+2. **Input samples need timestamps.** With none, the decoder buffers every
+   access unit and never emits one.
+3. **`MF_E_NOTACCEPTING` (0xC00D36B5) is normal**, not an error: the decoder is
+   holding output it wants collected. Drain and retry the same sample.
+4. **Split access units on slices, not on AUD or SPS.** VideoToolbox emits no
+   access unit delimiters at all and parameter sets only at IDRs, so an
+   AUD/SPS-based split collapsed a 60-frame stream into 2 units. Every slice
+   (NAL type 1 or 5) is one picture; any SPS/PPS/SEI ahead of it belongs to it.
+
+Regenerate the macOS fixture with:
+
+```bash
+cd src/macos
+LANMSG_EMIT_H264_FIXTURE=/tmp/macos_sample.h264 \
+  swift test --filter testEmitMacOSFixtureForCrossPlatformDecode
+```
+
+It is deliberately not committed — it takes a second to regenerate on any Mac,
+unlike `windows_h264_sample.h264`, which needs the Dell.
+
+**Still unanswered:** Desktop Duplication (needs an interactive console session)
+and the Windows -> macOS decode direction (needs `VTDecompressionSession`, WS5).
