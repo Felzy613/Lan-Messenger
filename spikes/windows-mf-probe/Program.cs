@@ -87,6 +87,10 @@ internal static class Program
 
     private static Guid IID_ICodecAPI = new("901db4c7-31ce-41a2-85dc-8fa0bf41b8da");
 
+    private static readonly Guid MFT_FRIENDLY_NAME_Attribute = new("314ffbae-5b41-4c95-9c19-4e7d586face3");
+    private static readonly Guid MF_TRANSFORM_ASYNC          = new("f81a699a-649a-497d-8c73-29f8fed6ad7a");
+    private static readonly Guid MF_TRANSFORM_ASYNC_UNLOCK   = new("e5666d6b-3422-4eb6-a421-da7db1f8e207");
+
     private const uint MFT_ENUM_FLAG_SYNCMFT        = 0x00000001;
     private const uint MFT_ENUM_FLAG_ASYNCMFT       = 0x00000002;
     private const uint MFT_ENUM_FLAG_HARDWARE       = 0x00000004;
@@ -141,13 +145,12 @@ internal static class Program
             Console.WriteLine($"  {label,-16} {found.Count} transform(s)");
             foreach (var activate in found)
             {
-                string name;
-                try { name = activate.FriendlyName ?? "(unnamed)"; } catch { name = "(unnamed)"; }
-                Console.WriteLine($"      - {name}");
+                Console.WriteLine($"      - {FriendlyName(activate)}");
 
                 try
                 {
                     using var transform = activate.ActivateObject<IMFTransform>();
+                    Console.WriteLine($"        async     : {DescribeAsync(transform)}");
                     Guid iid = IID_ICodecAPI;
                     int hr = Marshal.QueryInterface(transform.NativePointer, ref iid, out IntPtr codecApi);
                     if (hr >= 0 && codecApi != IntPtr.Zero)
@@ -268,7 +271,12 @@ internal static class Program
         }
         Console.WriteLine($"  {width}x{height}, {frames} frames, NV12 in / H.264 out");
 
-        var candidates = EnumEncoders(MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SYNCMFT |
+        // Sync MFTs first: the simple ProcessInput/ProcessOutput loop below only
+        // works with those, and the point of this stage is to prove a playable
+        // file comes out, not to reimplement the async event pump.
+        var candidates = EnumEncoders(MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER);
+        if (candidates.Count == 0)
+            candidates = EnumEncoders(MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SYNCMFT |
                                       MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_TRANSCODE_ONLY |
                                       MFT_ENUM_FLAG_SORTANDFILTER);
         if (candidates.Count == 0)
@@ -284,11 +292,19 @@ internal static class Program
         using var activate = candidates[0];
         for (int i = 1; i < candidates.Count; i++) candidates[i].Dispose();
 
-        string chosen;
-        try { chosen = activate.FriendlyName ?? "(unnamed)"; } catch { chosen = "(unnamed)"; }
-        Console.WriteLine($"  using: {chosen}");
+        Console.WriteLine($"  using: {FriendlyName(activate)}");
 
         using var encoder = activate.ActivateObject<IMFTransform>();
+
+        // An async (hardware) MFT refuses ProcessInput with
+        // MF_E_TRANSFORM_ASYNC_LOCKED until the caller declares it understands
+        // the asynchronous model by setting MF_TRANSFORM_ASYNC_UNLOCK. Unlocking
+        // is necessary but NOT sufficient: a real async MFT then has to be driven
+        // by METransformNeedInput / METransformHaveOutput events off
+        // IMFMediaEventGenerator, not by this synchronous loop. The probe unlocks
+        // so the flag's effect is observable, and the encode stage below prefers a
+        // sync MFT so it can actually produce a file.
+        Unlock(encoder);
 
         // Output type first — the MF H.264 encoder requires it before the input
         // type, and setting them the other way round fails with a
@@ -424,6 +440,52 @@ internal static class Program
             }
             samples++;
         }
+    }
+
+    private static string FriendlyName(IMFActivate activate)
+    {
+        try
+        {
+            var n = activate.GetString(MFT_FRIENDLY_NAME_Attribute);
+            if (!string.IsNullOrWhiteSpace(n)) return n;
+        }
+        catch { }
+        return "(unnamed)";
+    }
+
+    /// Reports whether a transform advertises the asynchronous model, and whether
+    /// unlocking it succeeds. Hardware encoders are async; this is the single
+    /// most common reason a first Media Foundation encode attempt fails.
+    private static string DescribeAsync(IMFTransform transform)
+    {
+        try
+        {
+            var attrs = transform.Attributes;
+            uint isAsync = 0;
+            try { isAsync = attrs.GetUInt32(MF_TRANSFORM_ASYNC); } catch { }
+            if (isAsync == 0) return "no (synchronous MFT)";
+            var hr = attrs.Set(MF_TRANSFORM_ASYNC_UNLOCK, (uint)1);
+            return hr.Success
+                ? "YES — needs MF_TRANSFORM_ASYNC_UNLOCK + the event-driven pump (unlock OK)"
+                : $"YES — unlock FAILED 0x{hr.Code:X8}";
+        }
+        catch (Exception ex) { return $"unknown ({ex.GetType().Name})"; }
+    }
+
+    private static void Unlock(IMFTransform transform)
+    {
+        try
+        {
+            var attrs = transform.Attributes;
+            uint isAsync = 0;
+            try { isAsync = attrs.GetUInt32(MF_TRANSFORM_ASYNC); } catch { }
+            if (isAsync != 0)
+            {
+                attrs.Set(MF_TRANSFORM_ASYNC_UNLOCK, (uint)1);
+                Console.WriteLine("  async MFT: set MF_TRANSFORM_ASYNC_UNLOCK");
+            }
+        }
+        catch (Exception ex) { Console.WriteLine($"  unlock attempt failed: {ex.GetType().Name}"); }
     }
 
     /// MF packs paired 32-bit values (width/height, numerator/denominator) into

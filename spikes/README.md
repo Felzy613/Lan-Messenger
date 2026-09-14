@@ -97,3 +97,28 @@ One known result: `PacketValidatorTests.SanitizeFilenameStripsPath` **fails on
 macOS and passes on Windows**, because `SanitizeFilename` uses
 `Path.DirectorySeparatorChar`. On Windows it should pass. If it does not, that
 is a real regression.
+
+### Results from the first real run (2026-09-14)
+
+Dell, Intel i5-12400 / UHD Graphics 730, Windows 11 26200, run over SSH.
+
+| Question | Answer |
+|---|---|
+| Hardware H.264 encoder | **Yes** — 2 × "Intel® Quick Sync Video H.264 Encoder MFT" |
+| Software encoder | Yes — "H264 Encoder MFT", synchronous |
+| `ICodecAPI` reachable | **Yes, on all three.** So low-latency and rate control are available, via a hand-rolled `ICodecAPI` (Vortice does not project it) |
+| Hardware MFTs asynchronous | **Yes.** They refuse `ProcessInput` with `MF_E_TRANSFORM_ASYNC_LOCKED` until `MF_TRANSFORM_ASYNC_UNLOCK` is set — and unlocking alone is not enough, they then need the `METransformNeedInput`/`METransformHaveOutput` pump |
+| Encode produces valid H.264 | **Yes**, via the sync software MFT: 60 frames → 126 NAL units, 129,547 bytes |
+| SPS/PPS delivery | **In-band**, as `AUD, SPS, PPS, IDR` before every IDR, and at stream start |
+| Start codes | This encoder emits **only 4-byte** start codes. Handle 3-byte too — the Quick Sync MFT was not exercised here |
+| Desktop Duplication | **Unanswered.** Adapters enumerate (2 × UHD 730 + Basic Render Driver) but no outputs, because an SSH session has no attached desktop. Re-run the probe from an interactive console session to test this stage |
+
+The encoded stream is kept as `windows_h264_sample.h264` in both test
+directories. It is a real Windows-encoder artefact that cannot be regenerated
+without this hardware, and it is what the macOS Annex-B → AVCC converter will be
+tested against in WS6.
+
+One correction to the plan: it predicted a locked async MFT would fail with "a
+bare `E_FAIL` and no diagnostic". It does not — the HRESULT is
+`MF_E_TRANSFORM_ASYNC_LOCKED` (0xC00D6D77), whose message names the cause
+directly. The trap is real; the diagnosis is easier than feared.
