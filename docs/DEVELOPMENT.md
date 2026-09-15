@@ -150,6 +150,8 @@ swift test --filter RemoteSessionCryptoTests
 swift test --filter MediaFrameTests
 swift test --filter H264BitstreamTests
 swift test --filter H264EncoderTests     # drives a real VTCompressionSession
+swift test --filter H264DecoderTests     # drives a real VTDecompressionSession
+swift test --filter VideoPipelineEndToEndTests   # capture-to-picture, one process
 ```
 
 The Windows sources can be compiled and their tests run from a Mac through the
@@ -200,7 +202,7 @@ cd src/macos
 swift test
 ```
 
-Current suite: **260 passing, 1 skipped**. The skip is
+Current suite: **300 passing, 1 skipped**. The skip is
 `testEmitMacOSFixtureForCrossPlatformDecode`, a fixture generator rather than an
 assertion; it runs only with `LANMSG_EMIT_H264_FIXTURE` set.
 
@@ -228,8 +230,9 @@ Coverage:
 - `DockPolicyGuardTests`, `AttachmentPasteboardTests`, `NetLoggerTests`,
   `StressTests`.
 - Remote desktop: `RemoteSessionCryptoTests` (32), `MediaFrameTests` (26),
-  `H264BitstreamTests` (15), `H264EncoderTests` (12),
-  `RemoteDesktopQueueTests` (4).
+  `H264BitstreamTests` (15), `H264EncoderTests` (12), `H264DecoderTests` (14),
+  `SampleBufferVideoPresenterTests` (3), `ScreenCaptureSourceTests` (18),
+  `VideoPipelineEndToEndTests` (5), `RemoteDesktopQueueTests` (4).
 
 ### Windows Tests
 

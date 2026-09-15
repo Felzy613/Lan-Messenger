@@ -109,3 +109,66 @@ final class BlockingMediaLink: MediaLink {
         condition.lock(); closed = true; condition.broadcast(); condition.unlock()
     }
 }
+
+/// Two links wired back to back: whatever one writes, the other reads.
+///
+/// Everything below this in the stack has always been testable; what has not
+/// been is two *sessions* facing each other, with real framing, real sealing and
+/// real sequence enforcement between them. That is what this makes possible, and
+/// it is the difference between "the codec works" and "a frame arrives".
+final class PairedMediaLink: MediaLink {
+
+    let peerIP: String
+    private let condition = NSCondition()
+    private var inbox = Data()
+    private var closed = false
+    private var deliver: ((Data) -> Void)?
+
+    private init(peerIP: String) { self.peerIP = peerIP }
+
+    static func pair(aIP: String = "10.0.0.1",
+                     bIP: String = "10.0.0.2") -> (a: PairedMediaLink, b: PairedMediaLink) {
+        let a = PairedMediaLink(peerIP: bIP)
+        let b = PairedMediaLink(peerIP: aIP)
+        a.deliver = { [weak b] bytes in b?.receive(bytes) }
+        b.deliver = { [weak a] bytes in a?.receive(bytes) }
+        return (a, b)
+    }
+
+    var isClosed: Bool {
+        condition.lock(); defer { condition.unlock() }
+        return closed
+    }
+
+    private func receive(_ bytes: Data) {
+        condition.lock()
+        inbox.append(bytes)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func readExact(into buffer: inout [UInt8], count: Int) -> MediaLinkRead {
+        guard count > 0 else { return .ok }
+        condition.lock()
+        while inbox.count < count && !closed { condition.wait() }
+        guard !closed, inbox.count >= count else { condition.unlock(); return .closed }
+        let chunk = inbox.prefix(count)
+        inbox.removeFirst(count)
+        condition.unlock()
+        for (i, byte) in chunk.enumerated() { buffer[i] = byte }
+        return .ok
+    }
+
+    func writeAll(_ bytes: Data) -> Bool {
+        guard !isClosed else { return false }
+        deliver?(bytes)
+        return true
+    }
+
+    func shutdownAndClose() {
+        condition.lock()
+        closed = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}

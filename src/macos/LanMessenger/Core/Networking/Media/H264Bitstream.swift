@@ -83,20 +83,8 @@ enum H264Bitstream {
     /// byte instead finds a phantom 3-byte code inside every 4-byte one, and
     /// reports exactly twice as many units as exist.
     static func scanAnnexB(_ data: Data) -> [H264NALUnit] {
-        var starts: [(offset: Int, codeLength: Int)] = []
         let bytes = [UInt8](data)
-        var i = 0
-        while i + 3 <= bytes.count {
-            if bytes[i] == 0, bytes[i + 1] == 0 {
-                if i + 4 <= bytes.count, bytes[i + 2] == 0, bytes[i + 3] == 1 {
-                    starts.append((i, 4)); i += 4; continue
-                }
-                if bytes[i + 2] == 1 {
-                    starts.append((i, 3)); i += 3; continue
-                }
-            }
-            i += 1
-        }
+        let starts = startCodes(in: bytes)
 
         var units: [H264NALUnit] = []
         units.reserveCapacity(starts.count)
@@ -123,6 +111,37 @@ enum H264Bitstream {
     /// True if the buffer contains an IDR slice.
     static func annexBContainsKeyframe(_ data: Data) -> Bool {
         scanAnnexB(data).contains { $0.isKeyframe }
+    }
+
+    /// Splits an Annex-B buffer into access units, one per coded picture.
+    ///
+    /// **A slice is the boundary** — not an access unit delimiter, and not a
+    /// parameter set. VideoToolbox emits no delimiters at all and parameter sets
+    /// only at IDRs, so splitting on those collapsed a 60-frame stream into two
+    /// units and the far side decoded almost nothing. Every slice (type 1 or 5)
+    /// is exactly one picture; any AUD, SPS, PPS or SEI ahead of it belongs to
+    /// it, and travels with it.
+    ///
+    /// NAL units trailing the last slice are dropped. They are the prelude to a
+    /// picture this buffer does not contain, and handing a decoder a sample with
+    /// no picture in it is how you get a stall rather than an error.
+    static func splitAccessUnits(_ data: Data) -> [Data] {
+        let bytes = [UInt8](data)
+        let starts = startCodes(in: bytes)
+        guard !starts.isEmpty else { return [] }
+
+        var units: [Data] = []
+        var unitStart = starts[0].offset
+        for (index, start) in starts.enumerated() {
+            let payloadStart = start.offset + start.codeLength
+            guard payloadStart < bytes.count else { continue }
+            let type = bytes[payloadStart] & 0x1F
+            guard type == H264NALType.nonIDRSlice || type == H264NALType.idrSlice else { continue }
+            let end = index + 1 < starts.count ? starts[index + 1].offset : bytes.count
+            units.append(Data(bytes[unitStart..<end]))
+            unitStart = end
+        }
+        return units
     }
 
     // MARK: - Annex-B → AVCC (receiving from Windows)
@@ -223,6 +242,30 @@ enum H264Bitstream {
     }
 
     // MARK: - Private
+
+    /// Locates every Annex-B start code, with the length of the code found.
+    ///
+    /// The single place the "consume the whole start code" rule lives. A 4-byte
+    /// code *contains* a 3-byte one at offset+1, so a scanner that advances one
+    /// byte after a match finds a phantom unit inside every 4-byte code and
+    /// reports exactly twice as many NAL units as exist. The tell is suspiciously
+    /// equal 3-byte and 4-byte counts in one stream.
+    private static func startCodes(in bytes: [UInt8]) -> [(offset: Int, codeLength: Int)] {
+        var starts: [(offset: Int, codeLength: Int)] = []
+        var i = 0
+        while i + 3 <= bytes.count {
+            if bytes[i] == 0, bytes[i + 1] == 0 {
+                if i + 4 <= bytes.count, bytes[i + 2] == 0, bytes[i + 3] == 1 {
+                    starts.append((i, 4)); i += 4; continue
+                }
+                if bytes[i + 2] == 1 {
+                    starts.append((i, 3)); i += 3; continue
+                }
+            }
+            i += 1
+        }
+        return starts
+    }
 
     /// Four-byte start codes everywhere. Three-byte codes are legal and are
     /// parsed, but emitting one size uniformly keeps our output trivially

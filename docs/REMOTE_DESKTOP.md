@@ -59,10 +59,10 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS1 | Protocol spec | **Done** | no |
 | WS2 | Handshake crypto | **Done**, both platforms | no |
 | WS3 | Media transport | **Done**, both platforms | no |
-| WS4a | macOS capture + encode | **Encoder done**, capture not started | Screen Recording grant |
+| WS4a | macOS capture + encode | **Written, end to end**; capture unverified | Screen Recording grant |
 | WS4b | Windows capture + encode | **Not started** | yes |
-| WS5 | Decode + present, both platforms | **Not started** | Windows: yes |
-| WS6 | Cross-platform conformance | **Converter done; macOS→Windows proven** | reverse direction pending |
+| WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
+| WS6 | Cross-platform conformance | **Converter done; both directions proven** | macOS fixture pending |
 | WS7 | Input capture + injection | **Not started** | yes, both |
 | WS8 | Session lifecycle + consent UI | **Not started** | no (UI work) |
 | WS9 | Settings, logging, diagnostics | **Log channel done**, settings not started | no |
@@ -71,7 +71,7 @@ desktop, and it needs its own channel, size cap and loop guard.
 
 Test counts on this branch, both suites green:
 
-- macOS **260 passing**, 1 skipped (a fixture generator, skipped by design)
+- macOS **300 passing**, 1 skipped (a fixture generator, skipped by design)
 - Windows **210 passing**, run on real hardware
 
 Of those, the remote-desktop tests are:
@@ -82,6 +82,10 @@ Of those, the remote-desktop tests are:
 | `MediaFrameTests` | 26 | 26 |
 | `H264BitstreamTests` | 15 | 15 |
 | `H264EncoderTests` | 12 | — (no encoder yet) |
+| `H264DecoderTests` | 14 | — (no decoder yet) |
+| `SampleBufferVideoPresenterTests` | 3 | — |
+| `ScreenCaptureSourceTests` | 18 | — (no capture yet) |
+| `VideoPipelineEndToEndTests` | 5 | — |
 | `RemoteDesktopQueueTests` | 4 | 4 |
 
 ---
@@ -168,6 +172,73 @@ this component can be wrong (a silently rejected property, parameter sets read
 from the wrong index, a truncated non-contiguous block buffer, an inverted
 keyframe flag) produces plausible-looking objects and an unplayable stream.
 
+### WS5a — macOS decode and present
+
+`Core/Networking/Media/H264Decoder.swift` and `VideoPresenter.swift`.
+
+The decoder turns wire Annex-B into `CMSampleBuffer`s: it splits access units on
+slices, rebuilds the `CMVideoFormatDescription` from the in-band parameter sets
+whenever they change, converts to AVCC with the parameter sets and delimiters
+stripped, and attaches `DisplayImmediately` and an accurate `NotSync` flag. It
+refuses to emit anything until it has seen an IDR, and raises a debounced
+`onNeedsKeyframe` when it is stalled — which is what becomes a `keyframe_request`
+on the control channel.
+
+There is deliberately **no `VTDecompressionSession` in the production path**.
+`AVSampleBufferDisplayLayer` decodes what it is handed on the hardware path and
+owns presentation timing, so a session of our own would be a second decoder
+producing pixel buffers nobody looks at. The tests bring one as an *oracle*
+instead — see [What is proven](#what-is-proven-and-by-what).
+
+`SampleBufferVideoPresenter` is the layer implementation of the `VideoPresenter`
+protocol, and exists almost entirely for `requiresFlushToResumeDecoding`. Two
+mechanisms clear it, and both are needed: the flag is checked before every
+enqueue, **and** `NSApplication.didBecomeActiveNotification` is hooked, because
+polling on enqueue cannot help when no frames are arriving — and a remote screen
+is silent whenever nothing on it moves. Every flush asks for a keyframe, once,
+and the request re-arms only when a keyframe has actually been enqueued.
+
+### WS4a — macOS capture
+
+`Core/Networking/Media/ScreenCaptureSource.swift`. An `SCStream` built for a
+session that runs for hours, which is a different problem from `ScreenshotService`'s
+one-frame grab and differs from it in nearly every decision — the two files mark
+the differences where they occur.
+
+Three `SCStream` properties shape it:
+
+- **It is change-driven, not 30 fps.** `minimumFrameInterval` is a ceiling. A
+  still screen delivers *no frames at all*, indefinitely, and that is correct.
+  Nothing downstream may read silence as failure.
+- **It stops silently.** Display reconfiguration, a resolution change, a GPU
+  reset and a revoked TCC grant all arrive as `didStopWithError` and then
+  nothing. Restart is mandatory, with backoff, re-enumerating shareable content
+  because the display may be gone. `NSApplication.didChangeScreenParametersNotification`
+  is watched too: a resolution change does not always stop the stream, and a
+  stream that keeps running scales the new desktop into the old frame size.
+- **Frames are not all pictures.** Idle, blank and suspended frames are marked in
+  the sample attachments and still delivered, carrying whatever was in the pool.
+
+Geometry, the `SCStreamConfiguration` mapping, the frame-status gate, the capture
+clock and the restart backoff are all pure and tested. **That `SCStream` delivers
+a frame at all is not**, and cannot be here — see [Verification](#verification).
+
+### The pipeline
+
+`VideoSendPipeline.swift` and `VideoReceivePipeline.swift` join what had never
+been joined. The send side owns the encoder, converts AVCC to Annex-B with the
+parameter sets in-band at every IDR, and turns a viewer's `keyframe_request`
+into `kVTEncodeFrameOptionKey_ForceKeyFrame` on the next captured frame —
+*latched*, because VideoToolbox has no "send an IDR now" call and a still screen
+may not produce a frame for some time. The receive side decodes and hands
+sample buffers on, deliberately **not** presenting: `VideoPresenter` is
+main-actor work and the pipeline runs on the session read queue.
+
+The one coupling that survives that split is `reset(reason:)` — the other half of
+a presenter flush. After a flush nothing decodes until an IDR, and a decoder that
+does not know it was flushed keeps handing over P-frames that are silently
+discarded.
+
 ### WS9 — partial
 
 `remote` is present in **both** `LogChannel` enums, so a remote-desktop session
@@ -192,19 +263,36 @@ observed. This section is only the second kind.
 | The software MFT produces valid H.264 | WS0 probe — 60 frames, 126 NAL units, 129,547 bytes |
 | Our Annex-B converter handles real Windows encoder output | `H264BitstreamTests` against `windows_h264_sample.h264` |
 | **A macOS-encoded stream decodes on Windows** | WS0 probe `--decode=`: 60 frames in, **60 frames out at 320×240** |
+| **A Windows-encoded stream decodes on macOS** | `H264DecoderTests`: `windows_h264_sample.h264` → 60 samples → **60 pictures at 1280×720** out of a real `VTDecompressionSession` |
+| **A frame travels the whole video path** | `VideoPipelineEndToEndTests`: pixel buffers → encoder → Annex-B → scheduler → framing → AES-GCM → paired link → unseal → sequence gate → reassembly → decoder → `VTDecompressionSession`, with two real `MediaSession`s and independently derived directional keys |
+| A 1080p keyframe fragments and reassembles | same suite — asserted to exceed one 16 KiB fragment, then decoded |
+| `capture_us` survives the whole journey | same suite — submitted and received timestamps compared element by element |
+| A viewer's keyframe request becomes an IDR | same suite — the recovery loop, closed |
 
-That last row is the plan's second-biggest risk, closed in the macOS → Windows
-direction. **The reverse direction is not proven** and is WS5's first job.
+Those last two rows are the plan's second-biggest risk, and it is now closed in
+**both** directions. Note what the macOS one asserts against: not our own
+encoder, and not a mock, but a real Microsoft H264 Encoder MFT artefact decoded
+by a real VideoToolbox session. Nothing of ours is on the answering side of that
+test, which is the only reason it is worth anything — parameter sets left in the
+sample data, a format description built back to front, or access units split on
+the wrong NAL type all produce well-formed objects that simply never become a
+picture.
 
 ### Not yet proven
 
 - Desktop Duplication acquiring a frame at all. The probe enumerates adapters
   but no outputs over SSH, because an SSH logon session has no attached desktop.
-- Windows → macOS decode (needs `VTDecompressionSession` or
-  `AVSampleBufferDisplayLayer`).
-- Any end-to-end path. No frame has travelled over the media transport yet:
-  the transport is tested against in-memory `MediaLink` doubles, and the encoder
-  is tested standalone. **They have never been connected to each other.**
+- macOS → macOS presentation. The decoder's output has been decoded, but nothing
+  has been on screen yet: `SampleBufferVideoPresenter` is tested against a layer
+  with no window behind it, which catches a rejected sample but not a blank one.
+- **`SCStream` delivering a frame at all.** Everything downstream of capture is
+  now proven end to end, but the capture source has never produced a picture:
+  this machine's TCC grant is declined for the process that runs the tests, so
+  `start()` can only be shown to refuse correctly.
+- Anything over a real socket, or between two machines. The end-to-end test runs
+  two sessions in one process over a paired in-memory link, so it proves framing,
+  sealing, sequencing and reassembly — but not `SocketMediaLink`, not the
+  `media_attach` upgrade, and nothing about a real network.
 
 ---
 
@@ -339,29 +427,27 @@ interactive console session, and a Windows-captured stream plays in VLC.
 
 **Goal:** a viewer on either platform shows the other platform's stream.
 
-**Do the macOS decoder first.** It closes the conformance loop in the untested
-direction using `windows_h264_sample.h264`, which is already committed, and it
-needs nothing from anybody.
+**macOS is done.** `H264Decoder.swift` and `VideoPresenter.swift` exist,
+`H264DecoderTests` asserts 60 pictures out of the committed Windows fixture, and
+the notes that were in this section are now comments in those two files. Five
+things it settled, for whoever ports them:
 
-**macOS** — `Core/Networking/Media/H264Decoder.swift` plus a
-`VideoPresenter` protocol with an `AVSampleBufferDisplayLayer` implementation:
-
-1. `H264Bitstream.annexBToAVCC` already exists and drops SPS/PPS/AUD by default,
-   which is what you want — feeding parameter sets in the sample data as well as
-   the format description is a decode error on VideoToolbox, not a harmless
-   duplicate.
-2. `CMVideoFormatDescriptionCreateFromH264ParameterSets` from the in-band SPS
-   and PPS; rebuild it on every keyframe, because resolution can change
-   mid-stream.
-3. `CMBlockBufferCreateWithMemoryBlock` → `CMSampleBufferCreate`, then set
-   `kCMSampleAttachmentKey_DisplayImmediately`.
-4. **`requiresFlushToResumeDecoding` is the one that will bite.** When the app is
-   occluded or loses focus the layer silently drops everything enqueued until
-   you call `flush()`. This is the "video froze after I switched apps" bug and it
-   *will* happen. KVO the property, also hook
-   `NSApplication.didBecomeActiveNotification`, flush, and request an IDR.
-5. Deployment target is macOS 13, so use the layer's own `enqueue(_:)` and gate
-   any `sampleBufferRenderer` use behind `if #available(macOS 14, *)`.
+1. `H264Bitstream.annexBToAVCC` drops SPS/PPS/AUD by default, which is what you
+   want — feeding parameter sets in the sample data *as well as* the format
+   description is a decode error on VideoToolbox, not a harmless duplicate.
+2. The format description is rebuilt when the parameter sets **change**, not on
+   every keyframe. Rebuilding every time throws away the decoder's warm state
+   several times a minute; never rebuilding decodes a resolution change against
+   a description of the old picture.
+3. `CMBlockBufferCreateWithMemoryBlock` does not copy. The block is `malloc`'d
+   and handed to `kCFAllocatorMalloc` so CoreMedia frees it exactly once.
+4. **`requiresFlushToResumeDecoding` is the one that bites.** Two mechanisms
+   clear it and both are needed: check before every enqueue, *and* hook
+   `NSApplication.didBecomeActiveNotification` — polling on enqueue cannot help
+   while the stream is silent, and a remote screen is silent whenever nothing on
+   it moves. Each flush requests an IDR, once.
+5. Deployment target is macOS 13, so `sampleBufferRenderer` is behind
+   `if #available(macOS 14, *)` with `enqueue(_:)` as the fallback.
 
 **Windows** — `Core/Networking/Media/H264Decoder.cs` plus `IVideoPresenter`.
 The decoder recipe is **already proven** in `spikes/windows-mf-probe`; port it.
@@ -392,17 +478,19 @@ implementations:
    `ISwapChainPanelNative` is not projected to C# and its **WinUI 3 IID differs
    from the UWP one** — using the UWP IID is a baffling and common failure.
 
-**Done when:** `windows_h264_sample.h264` decodes to 60 frames on macOS,
-asserted in `H264DecoderTests`; and a viewer window shows live frames.
+**Done when:** ~~`windows_h264_sample.h264` decodes to 60 frames on macOS,
+asserted in `H264DecoderTests`~~ — done, 60/60 at 1280×720 — and a viewer window
+shows live frames on both platforms.
 
 ### WS6 — Conformance, remainder
 
-The converter and the macOS → Windows direction are done. What remains:
+The converter and **both** decode directions are done: macOS → Windows on real
+hardware via the WS0 probe, Windows → macOS in `H264DecoderTests` against the
+committed fixture. What remains:
 
-- Windows → macOS decode, asserted against the committed fixture (falls out of
-  WS5's macOS decoder).
-- A macOS fixture committed alongside the Windows one, so CI can assert both
-  directions without hardware. It is currently regenerated on demand:
+- A macOS fixture committed alongside the Windows one, so the *Windows* suite can
+  assert its direction without hardware too — the macOS side already can. It is
+  currently regenerated on demand:
 
 ```bash
 cd src/macos
@@ -618,7 +706,17 @@ worth of hard-won knowledge.
   counts.
 - Do not hard-code the NAL length prefix size. Read it from the format
   description. VideoToolbox emits 4 in practice, which is exactly why
-  hard-coding it survives testing and fails later.
+  hard-coding it survives testing and fails later. The one exception is the
+  AVCC the *receive* path authors for itself, where the same value goes into the
+  format description and the length prefixes and they agree by construction.
+- Parameter sets belong in the format description **or** the sample data, never
+  both. VideoToolbox treats the duplicate as a decode error, and the error is a
+  picture that never appears.
+- `AVSampleBufferDisplayLayer.requiresFlushToResumeDecoding` silently swallows
+  everything enqueued until `flush()` is called. It is set by occlusion and focus
+  loss, so it fires in the first minute of the first real session, and it needs
+  clearing from two directions — before an enqueue, and on app activation, since
+  a silent stream never reaches the first.
 - `CMBlockBufferGetDataPointer` returns the **first contiguous range**, not the
   whole buffer. Use `CMBlockBufferCopyDataBytes` into a flat buffer.
 - Iterate the parameter set count; do not assume index 0 = SPS, 1 = PPS. Re-read
@@ -667,6 +765,22 @@ worth of hard-won knowledge.
 
 **Per workstream** — see each section above for its own "done when".
 
+**The macOS capture smoke test**, which is the one thing `swift test` cannot do.
+Screen Recording is a TCC grant keyed to the code signature, and the process that
+runs the test bundle does not have it — so `ScreenCaptureSourceTests` asserts
+that `start()` refuses cleanly and skips itself on a machine that *is* granted.
+Verifying capture needs the signed app, a human, and a look at the log:
+
+```bash
+tccutil reset ScreenCapture com.dave.lanmessenger   # to re-test the prompt
+cd src/macos && ./scripts/build_app.sh
+```
+
+Then drive a capture and confirm the `remote` log channel shows `capture_started`
+with the expected `WxH@fps`, followed by frames. **Move a window while watching**:
+a still screen produces no frames at all, so "no frames" on a static desktop is
+the correct result and proves nothing either way.
+
 **End-to-end, needs two real machines:**
 
 1. Mac ↔ Mac: invite, accept, view. Confirm 30 fps on a moving window, and that
@@ -711,14 +825,22 @@ of every test fixture.
 
 For whoever picks this up:
 
-1. **macOS decoder (WS5).** Closes the conformance loop in the untested
-   direction, uses the already-committed `windows_h264_sample.h264`, and needs
-   no hardware and no one's permission. This is the obvious next move.
-2. **`SCStream` continuous capture (WS4a).** Needs a Screen Recording grant on
-   this Mac — signing is stable now, so the grant will stick.
-3. **Wire the transport to the encoder.** Nothing has ever travelled end-to-end;
-   the sooner that is true, the sooner the integration surprises show up.
-4. **At the Dell's physical keyboard**, run the probe to answer Desktop
+1. **Grant Screen Recording to the built app and confirm capture delivers.**
+   This is the only unverified link in the macOS chain, and it needs a human:
+   the TCC grant is declined for the process that runs `swift test`, so the
+   refusal path is all that can be asserted here. Build and launch the signed
+   app, grant it, and check that `capture_started` is followed by frames —
+   signing is stable, so the grant will stick across rebuilds.
+
+   ```bash
+   cd src/macos && ./scripts/build_app.sh && swift run
+   ```
+
+2. **WS8, session lifecycle and consent.** Everything below it now works and
+   none of it is reachable: there is no invite, no accept, no viewer window and
+   no host indicator. It is also the workstream that decides whether this feature
+   is safe, and retrofitting consent is much harder than building it in.
+3. **At the Dell's physical keyboard**, run the probe to answer Desktop
    Duplication:
 
    ```powershell

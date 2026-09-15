@@ -732,9 +732,10 @@ drive its keyboard and mouse. The wire format is specified in PROTOCOL.md →
 Remote Desktop; **status, the remaining plan, and the accumulated gotchas live
 in [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md)**.
 
-It is **not shipped**. The transport, handshake crypto, bitstream conversion and
-the macOS encoder exist on `feat/remote-desktop-transport`; capture, decode,
-presentation, input injection and the consent UI do not exist yet.
+It is **not shipped**. On `feat/remote-desktop-transport` the whole macOS video
+path exists and has been run end to end in one process — capture, encode,
+transport, decode — while the Windows codec halves, input injection and the
+consent UI do not exist yet, and nothing has run between two machines.
 
 ### Transport
 
@@ -796,6 +797,32 @@ against its own output.
 High profile, no frame reordering, zero frame delay, BT.709 tags, parameter sets
 re-read on every keyframe. A stream it produced has been decoded successfully by
 Media Foundation on real Windows hardware. There is no Windows encoder yet.
+
+`H264Decoder.swift` is the receive half, and is not a decoder in the obvious
+sense: `AVSampleBufferDisplayLayer` does the decoding, so what this owns is the
+part the layer cannot do for itself — splitting access units on slices, and
+rebuilding the `CMVideoFormatDescription` from the parameter sets that arrive
+in-band ahead of every IDR. It emits nothing until it has seen one, because a
+P-frame handed to a cold decoder is not a recoverable glitch. `VideoPresenter`
+abstracts display so a session can run without a window;
+`SampleBufferVideoPresenter` is the layer implementation, and most of it is
+`requiresFlushToResumeDecoding` handling. A real Media Foundation stream decodes
+here — 60 pictures out of the committed Windows fixture — which closes codec
+conformance in both directions. There is no Windows decoder yet.
+
+`ScreenCaptureSource.swift` is the host's `SCStream`, built for a session that
+runs for hours rather than for one frame. It restarts on `didStopWithError` and
+on screen-parameter changes, because SCK stops silently and sometimes keeps
+running at a stale size; it drops the idle and blank frames SCK delivers
+alongside real ones; and it treats silence as normal, because capture is
+change-driven and a still screen produces nothing at all.
+
+`VideoSendPipeline` and `VideoReceivePipeline` are the seams that join capture,
+codec and transport. They are thin on purpose: the send side owns an encoder and
+the rule about when to convert to Annex-B, the receive side owns a decoder and
+hands sample buffers on without presenting them. `VideoPipelineEndToEndTests`
+runs both against two real `MediaSession`s over a paired in-memory link, which is
+the first thing in this feature to prove a pipeline rather than a component.
 
 ## Update Architecture
 

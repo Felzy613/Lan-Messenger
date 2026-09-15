@@ -411,6 +411,18 @@ Use the smallest sufficient set for the change:
   IDRs, so an AUD/SPS split collapsed a 60-frame stream into 2 units and the
   Windows decoder emitted almost nothing. **A slice (NAL type 1 or 5) is the
   access unit boundary**; any SPS/PPS/SEI ahead of it belongs to it.
+- Do not treat an absence of captured frames as a fault. `SCStream` and DXGI
+  Desktop Duplication are both change-driven: a screen with nothing moving on it
+  delivers no frames at all, indefinitely, and that is correct. A watchdog,
+  viewer or reconnect timer that reads silence as failure tears down a perfectly
+  healthy session the moment the user stops typing. The keepalive and stats
+  sub-channels exist precisely so liveness is never inferred from video.
+- Do not let a capture source's restart path share a queue with its frame
+  delivery. `ScreenCaptureSource` keeps `frameQueue` for SCK and `controlQueue`
+  for start/stop/restart, and blocks on stream teardown on the latter — the
+  restart has to run while delivery is wedged, which is exactly when it is
+  needed, and teardown must never block the queue SCK is delivering to. Same
+  family as the `DiscoveryService` and `MediaSession` rules above.
 - Do not call Media Foundation's `ProcessOutput` before setting an output media
   type on the decoder. Without one it answers every call with
   `MF_E_TRANSFORM_TYPE_NOT_SET` (0xC00D6D60) and emits nothing, forever —
@@ -421,7 +433,22 @@ Use the smallest sufficient set for the change:
   buffered forever. All four are recorded in `spikes/README.md`.
 - Do not hard-code an H.264 NAL length prefix size. Read it from the format
   description. VideoToolbox emits 4 in practice, which is exactly why
-  hard-coding it survives testing and fails later against another encoder.
+  hard-coding it survives testing and fails later against another encoder. The
+  sole exception is `H264Decoder.nalLengthSize`, where the same value is written
+  into the format description and the length prefixes we author ourselves.
+- Do not put H.264 parameter sets in the `CMVideoFormatDescription` *and* the
+  sample data. VideoToolbox treats the duplicate as a decode error rather than
+  as redundancy, and the error surfaces as a picture that never appears.
+  `H264Bitstream.annexBToAVCC` drops SPS/PPS/AUD by default for this reason;
+  passing a narrower `dropping:` set re-introduces the bug.
+- Do not enqueue to an `AVSampleBufferDisplayLayer` without clearing
+  `requiresFlushToResumeDecoding`, and do not clear it from only one place. The
+  layer silently discards everything enqueued while the flag is set, and it is
+  set by occlusion and focus loss — this is the "video froze after I switched
+  apps" bug. `SampleBufferVideoPresenter` checks it before every enqueue *and*
+  hooks `NSApplication.didBecomeActiveNotification`, because screen capture is
+  change-driven on both platforms and a still screen sends no frames for the
+  enqueue check to run on. Every flush must be followed by a keyframe request.
 - Do not delete `windows_h264_sample.h264` from either test directory. It is
   real Microsoft H264 Encoder MFT output and cannot be regenerated without the
   Windows machine; it is the only thing that tests the Annex-B converter against
