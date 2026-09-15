@@ -64,14 +64,14 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
 | WS6 | Cross-platform conformance | **Converter done; both directions proven** | macOS fixture pending |
 | WS7 | Input capture + injection | **Not started** | yes, both |
-| WS8 | Session lifecycle + consent UI | **`caps` and key trust done**; the rest not started | no (UI work) |
+| WS8 | Session lifecycle + consent UI | **Policy core done**, both platforms; UI not started | no (UI work) |
 | WS9 | Settings, logging, diagnostics | **Log channel done**, settings not started | no |
 | WS10 | Latency tuning | **Not started** | yes |
 | WS11 | Packaging, docs, CI | **Docs done; `dpiAwareness` outstanding** | no |
 
 Test counts on this branch, both suites green:
 
-- macOS **319 passing**, 1 skipped (a fixture generator, skipped by design)
+- macOS **342 passing**, 1 skipped (a fixture generator, skipped by design)
 - Windows **210 passing**, run on real hardware
 
 Of those, the remote-desktop tests are:
@@ -87,7 +87,8 @@ Of those, the remote-desktop tests are:
 | `ScreenCaptureSourceTests` | 18 | — (no capture yet) |
 | `VideoPipelineEndToEndTests` | 5 | — |
 | `ProtocolCapabilityTests` | 10 | 9 |
-| `PeerKeyTrustTests` | 9 | — |
+| `PeerKeyTrustTests` | 9 | — (folded into the policy suite) |
+| `RemoteDesktopPolicyTests` | 23 | 27 |
 | `RemoteDesktopQueueTests` | 4 | 4 |
 
 ---
@@ -576,11 +577,42 @@ requirements** — a client that does not enforce them is not compatible.
 
 **Config and capability:**
 
-- `remoteDesktopMode` in both `AppConfig`s: **`off` (default)** / `contactsOnly`
-  / `ask`. No unattended-access mode in v1 — that is what turns a chat app into
-  a RAT. **Not built yet, and the three modes need pinning down before it is:**
-  `contactsOnly` and `ask` are indistinguishable under the consent rules as
-  written, since only saved contacts may invite at all.
+- `remoteDesktopMode` is **done**, both platforms. **It is two modes, `off` and
+  `on`, not the three originally sketched** — `contactsOnly` and `ask` were
+  indistinguishable under the consent rules, since only saved contacts may
+  invite at all. Decided 2026-09-15.
+
+  One switch governs the whole feature in **both** directions: a host that will
+  not be viewed also does not offer to view, because a switch that only
+  half-applies is one users misread. It is stored as a *string*, not a bool, for
+  two reasons — a later mode (view-only, say) becomes a new case rather than a
+  config migration, and an unrecognised value can **fail closed**. A bool has no
+  way to express "I don't know", and the safe direction for this setting is the
+  one that does nothing. Failing closed must not mean failing loudly, either:
+  the Windows side serializes the raw string precisely because
+  `System.Text.Json` would throw on an unknown enum value and take the user's
+  contacts with it.
+
+  No unattended-access mode in v1 — that is what turns a chat app into a RAT.
+- **`RemoteDesktopPolicy`** is **done**, both platforms: one pure function for
+  the inbound gate, one for whether the menu item is offered. Three decisions in
+  it are deliberate and easy to get wrong in the friendlier direction:
+
+  **A stranger gets silence, a contact gets an answer.** An invite from an
+  unpinned key is dropped without reply, not declined — a decline confirms the
+  address runs the app and has the feature, and a stranger who can provoke any
+  response can use it to probe. A saved contact already knows all of that, and
+  leaving them hanging is the exact failure `caps` exists to prevent.
+
+  **Trust is checked before the mode.** Switching the feature on can never widen
+  *who* may reach the host, only what happens for contacts who already could.
+  Asserted across every mode.
+
+  **A changed key is ignored, not prompted** — it is not a saved contact — but
+  it is logged at `error` rather than as routine, because an unfamiliar key at a
+  familiar address is the shape of the attack pinning defends against, and
+  "nothing happened" is a poor account of it in a bug report.
+
 - The optional **`caps` discovery field** is **done**, both platforms.
   `remote-desktop-v1` rides every beacon, reply and goodbye;
   `PeerInfo.supportsRemoteDesktop` is what the menu item will be gated on.

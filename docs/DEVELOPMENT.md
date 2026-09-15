@@ -202,7 +202,7 @@ cd src/macos
 swift test
 ```
 
-Current suite: **319 passing, 1 skipped**. The skip is
+Current suite: **342 passing, 1 skipped**. The skip is
 `testEmitMacOSFixtureForCrossPlatformDecode`, a fixture generator rather than an
 assertion; it runs only with `LANMSG_EMIT_H264_FIXTURE` set.
 
@@ -233,7 +233,8 @@ Coverage:
   `H264BitstreamTests` (15), `H264EncoderTests` (12), `H264DecoderTests` (14),
   `SampleBufferVideoPresenterTests` (3), `ScreenCaptureSourceTests` (18),
   `VideoPipelineEndToEndTests` (5), `ProtocolCapabilityTests` (10),
-  `PeerKeyTrustTests` (9), `RemoteDesktopQueueTests` (4).
+  `PeerKeyTrustTests` (9), `RemoteDesktopPolicyTests` (23),
+  `RemoteDesktopQueueTests` (4).
 
 ### Windows Tests
 

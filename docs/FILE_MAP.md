@@ -167,6 +167,7 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/macos/LanMessenger/Core/Networking/Media/VideoSendPipeline.swift` | Host video path: owns the encoder, converts AVCC to Annex-B with parameter sets in-band at every IDR, and latches a viewer's keyframe request onto the next captured frame — VideoToolbox has no "send an IDR now" call, and a still screen may not produce a frame for some time. |
 | `src/macos/LanMessenger/Core/Networking/Media/VideoReceivePipeline.swift` | Viewer video path: reassembled frame → decoder → sample buffer, handed on rather than presented, because `VideoPresenter` is main-actor work and this runs on the session read queue. `reset(reason:)` is the other half of a presenter flush. |
 | `src/macos/LanMessenger/Core/Crypto/PeerKeyTrust.swift` | Classifies the identity key behind an invite as `pinned`, `changedAtKnownAddress` or `unknown` — the distinction PROTOCOL.md's consent rules require the prompt to draw. Contacts are keyed *by* public key, so a changed key looks like a new contact; the signal is positional, a saved contact having last lived at that address under a different key. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteDesktopPolicy.swift` | The consent gate as one pure function, plus `RemoteDesktopMode` (off/on, stored as a string so an unrecognised value fails closed). A stranger is ignored, a contact is declined or prompted; trust is settled before the mode is consulted, so turning the feature on never widens who may reach the host. |
 
 ## macOS Persistence Layer
 
@@ -242,6 +243,7 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/macos/LanMessengerTests/VideoPipelineEndToEndTests.swift` | The whole video path in one process: encoder → Annex-B → scheduler → framing → AES-GCM → paired link → unseal → sequence gate → reassembly → decoder → a real `VTDecompressionSession`. Two `MediaSession`s with independently derived directional keys, so a swapped role fails here rather than on a live call. |
 | `src/macos/LanMessengerTests/ProtocolCapabilityTests.swift` | The optional discovery `caps` field, mostly from the compatibility direction: an older client that omits it, a newer one advertising unknown tokens, and a malformed field that must be tolerated rather than drop the peer. Asserts the wire key and token string literally, because a rename on one platform is invisible to the other. |
 | `src/macos/LanMessengerTests/PeerKeyTrustTests.swift` | Key-trust classification, leaning on the direction that matters: a stranger's key must never read as pinned. |
+| `src/macos/LanMessengerTests/RemoteDesktopPolicyTests.swift` | The consent rules, tested like protocol rules rather than interface behaviour — exhaustively, and from the direction of the mistake that would be worst to ship. Includes the invariant that no prompt is ever raised for an unpinned key. |
 | `src/macos/LanMessengerTests/TestMediaLinks.swift` | In-memory `MediaLink` doubles. Not tests — the seam that makes everything above the socket exercisable without binding a port. |
 | `src/macos/LanMessengerTests/known_good_exchange.json` | Cross-platform crypto/framing/history test vectors. |
 | `src/macos/LanMessengerTests/remote_handshake_vector.json` | Shared remote-desktop handshake vector. Must stay byte-identical to the Windows copy. |
@@ -315,6 +317,8 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 | `src/windows-native/LanMessenger/Core/Networking/Media/MediaSession.cs` | Read, write and timer contexts that never share. |
 | `src/windows-native/LanMessenger/Core/Networking/Media/RemoteSessionRegistry.cs` | Accept window, one in-flight session per peer, injected clock. |
 | `src/windows-native/LanMessenger/Core/Networking/Media/H264Bitstream.cs` | AVCC ↔ Annex-B conversion; mirror of the Swift implementation. |
+| `src/windows-native/LanMessenger/Core/Crypto/PeerKeyTrust.cs` | Mirror of the Swift key-trust classifier. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteDesktopPolicy.cs` | Mirror of the Swift consent gate, including `RemoteDesktopMode`. `AppConfig` serializes the raw string rather than the enum: `System.Text.Json` throws on an unknown enum value, which would take the rest of the config with it. |
 
 There is **no Windows encoder or decoder yet**. `spikes/windows-mf-probe` holds
 working Media Foundation encode and decode code against this exact hardware, and
@@ -401,6 +405,8 @@ is the thing to port rather than starting from scratch.
 | `src/windows-native/LanMessenger.Tests/MediaFrameTests.cs` | Media framing, mux and demux, plus the shared frame vector. |
 | `src/windows-native/LanMessenger.Tests/RemoteDesktopQueueTests.cs` | Media threading invariant; mirror of the macOS queue tests. |
 | `src/windows-native/LanMessenger.Tests/H264BitstreamTests.cs` | AVCC ↔ Annex-B conversion against the real encoder artefact. |
+| `src/windows-native/LanMessenger.Tests/ProtocolCapabilityTests.cs` | Mirror of the Swift `caps` suite; asserts the same wire key and token string. |
+| `src/windows-native/LanMessenger.Tests/RemoteDesktopPolicyTests.cs` | Mirror of the Swift consent-gate suite, with the key-trust cases folded in. |
 | `src/windows-native/LanMessenger.Tests/known_good_exchange.json` | Cross-platform crypto/framing/history test vectors. |
 | `src/windows-native/LanMessenger.Tests/remote_handshake_vector.json` | Shared handshake vector. Must stay byte-identical to the macOS copy. |
 | `src/windows-native/LanMessenger.Tests/media_frame_vector.json` | Shared media-frame vector. Must stay byte-identical to the macOS copy. |
