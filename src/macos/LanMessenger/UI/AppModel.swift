@@ -18,7 +18,15 @@ struct PeerInfo: Identifiable {
     // Every IP this peer has advertised (from discovery `ips`), used as probe
     // targets so a multi-homed or roaming peer can still be reconfirmed.
     var knownIPs: [String] = []
+    /// Capability tokens from the peer's last discovery packet. Empty means the
+    /// peer advertised none — which includes every client older than this field,
+    /// so absence must never be read as "probably supports it".
+    var caps: [String] = []
     var isOnline: Bool { presence == .online }
+    /// Whether remote desktop may even be offered for this peer. A peer that
+    /// does not advertise it drops `remote_invite` silently, so the menu item is
+    /// disabled rather than left to time out.
+    var supportsRemoteDesktop: Bool { caps.contains(ProtocolCapability.remoteDesktopV1) }
 }
 
 // ViewModel for one conversation row in the sidebar.
@@ -225,7 +233,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - Peers
 
-    private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String, relayIdHash: String? = nil, advertisedIPs: [String] = []) {
+    private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String, relayIdHash: String? = nil, advertisedIPs: [String] = [], caps: [String] = []) {
         // Last-resort self-suppression — defends against stale `ownIPs` in
         // the discovery service when the machine's network interfaces change.
         if publicKeyB64.isEmpty || publicKeyB64 == KeyManager.shared.publicKeyB64 { return }
@@ -269,7 +277,7 @@ final class AppModel: ObservableObject {
         var knownIPs = advertisedIPs
         if !knownIPs.contains(ip) { knownIPs.insert(ip, at: 0) }
         let info = PeerInfo(ip: ip, username: username, port: port, publicKeyB64: publicKeyB64,
-                            lastSeen: Date(), presence: .online, knownIPs: knownIPs)
+                            lastSeen: Date(), presence: .online, knownIPs: knownIPs, caps: caps)
         peers[publicKeyB64] = info
         knownPeerKeys[ip] = publicKeyB64
         if let hash = relayIdHash, !hash.isEmpty {
@@ -1147,7 +1155,8 @@ extension AppModel: NetworkCoordinatorDelegate {
             port: packet.port,
             publicKeyB64: packet.publicKeyB64,
             relayIdHash: packet.relayIdHash,
-            advertisedIPs: packet.ips
+            advertisedIPs: packet.ips,
+            caps: packet.caps ?? []
         )
     }
 

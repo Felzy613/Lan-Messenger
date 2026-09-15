@@ -375,7 +375,8 @@ final class DiscoveryService {
             port: base.port,
             publicKeyB64: base.publicKeyB64,
             ips: base.ips,
-            relayIdHash: base.relayIdHash
+            relayIdHash: base.relayIdHash,
+            caps: base.caps
         )
         guard let data = try? JSONEncoder().encode(payload) else { return }
         let extras = extraTargets?() ?? []
@@ -535,7 +536,8 @@ final class DiscoveryService {
                         port: replyPayload.port,
                         publicKeyB64: replyPayload.publicKeyB64,
                         ips: replyPayload.ips,
-                        relayIdHash: replyPayload.relayIdHash
+                        relayIdHash: replyPayload.relayIdHash,
+                        caps: replyPayload.caps
                     )
                 ) {
                     sendUDP(data: replyData, toIP: fromIP, port: discoveryPort)

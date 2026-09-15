@@ -411,6 +411,13 @@ Use the smallest sufficient set for the change:
   IDRs, so an AUD/SPS split collapsed a 60-frame stream into 2 units and the
   Windows decoder emitted almost nothing. **A slice (NAL type 1 or 5) is the
   access unit boundary**; any SPS/PPS/SEI ahead of it belongs to it.
+- Do not let a malformed optional discovery field drop the datagram. A peer
+  with a broken `caps` is still a peer, and rejecting its beacon removes it from
+  the network entirely over a field that is optional by definition. Swift's
+  decoder is tolerant by construction; `System.Text.Json` throws, which
+  `ValidateDiscovery` catches as "drop it" — hence `TolerantStringListConverter`.
+  The two must agree, because the peer that vanishes is always the one on the
+  *other* platform. Covered by `ProtocolCapabilityTests` on both sides.
 - Do not treat an absence of captured frames as a fault. `SCStream` and DXGI
   Desktop Duplication are both change-driven: a screen with nothing moving on it
   delivers no frames at all, indefinitely, and that is correct. A watchdog,

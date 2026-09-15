@@ -79,7 +79,8 @@ final class NetworkCoordinator: NSObject {
                 port: 54232,
                 publicKeyB64: self?.ownPublicKeyB64 ?? "",
                 ips: self?.network.localIPs.map { $0 } ?? [],
-                relayIdHash: RelayClient.shared.relayIdHash()
+                relayIdHash: RelayClient.shared.relayIdHash(),
+                caps: ProtocolCapability.advertised
             )
         }
         discovery.extraTargets = { [weak self] in

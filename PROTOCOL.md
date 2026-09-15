@@ -116,6 +116,14 @@ or other virtual adapters.
 | `relay_id_hash` | string | no | SHA-256 hex of the sender's private `relay_id`; used as the cloud-relay mailbox address. Older clients omit this field and must be tolerated by receivers. |
 | `caps` | array of strings | no | Optional capability tokens the sender implements, for example `["remote-desktop-v1"]`. Absent means "assume nothing beyond the base protocol". Receivers must tolerate unknown tokens and a missing field. |
 
+A receiver must also tolerate a **malformed** `caps` — a bare string, a number,
+an object, a null, or an array with non-string entries — by treating it as
+absent, never by rejecting the datagram. A peer with a broken capability field is
+still a peer, and dropping its beacon would remove it from the network entirely
+over a field that is optional by definition. Receivers should bound what they
+retain: discovery is unauthenticated UDP from anyone on the LAN, and the
+reference implementations keep at most 16 tokens of at most 64 characters.
+
 `caps` exists because `PacketValidator` drops unknown packet types silently. A
 sender that has no way to know whether a peer implements an extension will wait
 forever for a reply that is never coming. Advertising the capability turns that

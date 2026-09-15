@@ -71,6 +71,7 @@ public sealed class NetworkCoordinator : IDisposable
             // relay_id_hash lets peers know where to send cloud-relay messages
             // destined for us. It is SHA256(relay_id) and safe to publish.
             RelayIdHash  = LanMessenger.Core.Services.RelayClient.Shared.RelayIdHash(),
+            Caps         = ProtocolCapability.Advertised,
         };
         Discovery.ExtraTargets = () => UnicastHints?.Invoke() ?? [];
         Discovery.PeerDiscovered += (pkt, ip) =>

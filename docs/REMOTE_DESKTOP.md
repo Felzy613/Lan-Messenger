@@ -64,14 +64,14 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
 | WS6 | Cross-platform conformance | **Converter done; both directions proven** | macOS fixture pending |
 | WS7 | Input capture + injection | **Not started** | yes, both |
-| WS8 | Session lifecycle + consent UI | **Not started** | no (UI work) |
+| WS8 | Session lifecycle + consent UI | **`caps` and key trust done**; the rest not started | no (UI work) |
 | WS9 | Settings, logging, diagnostics | **Log channel done**, settings not started | no |
 | WS10 | Latency tuning | **Not started** | yes |
 | WS11 | Packaging, docs, CI | **Docs done; `dpiAwareness` outstanding** | no |
 
 Test counts on this branch, both suites green:
 
-- macOS **300 passing**, 1 skipped (a fixture generator, skipped by design)
+- macOS **319 passing**, 1 skipped (a fixture generator, skipped by design)
 - Windows **210 passing**, run on real hardware
 
 Of those, the remote-desktop tests are:
@@ -86,6 +86,8 @@ Of those, the remote-desktop tests are:
 | `SampleBufferVideoPresenterTests` | 3 | — |
 | `ScreenCaptureSourceTests` | 18 | — (no capture yet) |
 | `VideoPipelineEndToEndTests` | 5 | — |
+| `ProtocolCapabilityTests` | 10 | 9 |
+| `PeerKeyTrustTests` | 9 | — |
 | `RemoteDesktopQueueTests` | 4 | 4 |
 
 ---
@@ -103,7 +105,8 @@ The five packet types are implemented and validated on both platforms —
 `remote_invite`, `remote_accept`, `remote_decline`, `remote_end`, `media_attach`
 in `Core/Protocol/PacketTypes.*` and `PacketValidator.*`.
 
-The optional `caps` discovery field is **specified but not implemented**. See
+The optional `caps` discovery field is **implemented on both platforms**, with
+`remote-desktop-v1` advertised by every beacon, reply and goodbye. See
 [WS8](#ws8--session-lifecycle-and-consent).
 
 ### WS2 — Handshake crypto
@@ -575,13 +578,16 @@ requirements** — a client that does not enforce them is not compatible.
 
 - `remoteDesktopMode` in both `AppConfig`s: **`off` (default)** / `contactsOnly`
   / `ask`. No unattended-access mode in v1 — that is what turns a chat app into
-  a RAT.
-- The optional **`caps` discovery field** is specified but not implemented. It
-  matters: `PacketValidator` rejects unknown types, so an old client receiving
-  `remote_invite` silently drops it and the initiator hangs forever. Follow the
-  exact precedent `relay_id_hash` already sets — optional, older clients omit
-  it, receivers tolerate its absence — then grey out the menu item for peers
-  that cannot do it.
+  a RAT. **Not built yet, and the three modes need pinning down before it is:**
+  `contactsOnly` and `ask` are indistinguishable under the consent rules as
+  written, since only saved contacts may invite at all.
+- The optional **`caps` discovery field** is **done**, both platforms.
+  `remote-desktop-v1` rides every beacon, reply and goodbye;
+  `PeerInfo.supportsRemoteDesktop` is what the menu item will be gated on.
+  Tolerance is the part that needed care and is now normative in PROTOCOL.md: a
+  malformed `caps` is treated as absent rather than dropping the datagram,
+  because System.Text.Json throws where Swift's decoder would not, and the peer
+  that vanishes is always the one on the *other* platform.
 
 **Consent UI:**
 
@@ -591,6 +597,12 @@ requirements** — a client that does not enforce them is not compatible.
 - The dialog shows the peer's pinned name, IP and **identity key fingerprint**,
   distinguishing "matches your saved contact" from "new key". A display name
   alone is trivially spoofable; the pinned key is not.
+  **`PeerKeyTrust` is built** (macOS) and answers exactly that question:
+  `pinned`, `changedAtKnownAddress`, or `unknown`. The awkwardness it works
+  around is that contacts are keyed *by* public key, so a peer whose key changes
+  looks like a brand-new contact rather than a changed one — the signal is
+  positional, a saved contact having last lived at this address under a
+  different key. Still to mirror on Windows.
 - **Persistent always-on-top host indicator** naming the viewer and the grant
   level, with a Stop control.
 - A **host-reserved kill hotkey that is never forwarded**, so a host being

@@ -25,7 +25,15 @@ public sealed class PeerInfo
     // Every IP this peer has advertised (from discovery `ips`), used as probe
     // targets so a multi-homed or roaming peer can still be reconfirmed.
     public List<string> KnownIPs { get; set; } = [];
+    // Capability tokens from the peer's last discovery packet. Empty means the
+    // peer advertised none — which includes every client older than this field,
+    // so absence must never be read as "probably supports it".
+    public List<string> Caps { get; set; } = [];
     public bool     IsOnline     => Presence == PeerPresence.Online;
+    // Whether remote desktop may even be offered for this peer. A peer that does
+    // not advertise it drops remote_invite silently, so the menu item is
+    // disabled rather than left to time out.
+    public bool SupportsRemoteDesktop => Caps.Contains(ProtocolCapability.RemoteDesktopV1);
 }
 
 // View model for one conversation row in the sidebar.
@@ -266,7 +274,8 @@ public sealed partial class AppModel : ObservableObject
     // MARK: - Peers
 
     private void UpsertPeer(string ip, string username, int port, string publicKeyB64,
-                            string? relayIdHash = null, List<string>? advertisedIPs = null)
+                            string? relayIdHash = null, List<string>? advertisedIPs = null,
+                            List<string>? caps = null)
     {
         // Last-resort self-suppression — defends against stale OwnIPs in the
         // discovery service when the machine's network interfaces change.
@@ -357,6 +366,7 @@ public sealed partial class AppModel : ObservableObject
             IP = ip, Username = username, Port = port,
             PublicKeyB64 = publicKeyB64, LastSeen = DateTime.UtcNow,
             Presence = PeerPresence.Online, KnownIPs = knownIPs,
+            Caps = caps ?? [],
         };
         Peers = updated;
         if (!string.IsNullOrEmpty(relayIdHash))
@@ -1180,13 +1190,15 @@ public sealed partial class AppModel : ObservableObject
                     break;
                 case ValidatedDiscovery vd:
                     UpsertPeer(vd.SenderIP, vd.Packet.Username, vd.Packet.Port,
-                               vd.Packet.PublicKeyB64, vd.Packet.RelayIdHash, vd.Packet.Ips);
+                               vd.Packet.PublicKeyB64, vd.Packet.RelayIdHash, vd.Packet.Ips,
+                               ProtocolCapability.Sanitize(vd.Packet.Caps));
                     break;
             }
         };
 
         Coordinator.PeerDiscovered += (pkt, ip) =>
-            UpsertPeer(ip, pkt.Username, pkt.Port, pkt.PublicKeyB64, pkt.RelayIdHash, pkt.Ips);
+            UpsertPeer(ip, pkt.Username, pkt.Port, pkt.PublicKeyB64, pkt.RelayIdHash, pkt.Ips,
+                       ProtocolCapability.Sanitize(pkt.Caps));
 
         Coordinator.PeerDeparted += HandleGoodbye;
 

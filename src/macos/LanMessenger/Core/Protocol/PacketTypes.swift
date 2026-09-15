@@ -23,6 +23,28 @@ enum PacketType: String, Codable {
 
 // MARK: - Discovery (UDP, no framing)
 
+/// Capability tokens advertised in the optional discovery `caps` field.
+///
+/// The field exists because `PacketValidator` drops unknown packet types
+/// *silently*. A client that sends `remote_invite` to a peer too old to know the
+/// type waits forever for a reply that is never coming — so the capability is
+/// advertised, and the interface disables the feature for that peer instead of
+/// offering something that can only time out.
+///
+/// Add a token only for an extension that must be negotiated before first use.
+/// Extensions that degrade safely — `reply_to_*`, which an old client simply
+/// ignores — must not have one, or every future field becomes a negotiation.
+enum ProtocolCapability {
+    /// Remote desktop, as specified in PROTOCOL.md → Remote Desktop.
+    static let remoteDesktopV1 = "remote-desktop-v1"
+
+    /// What this build implements. Advertised as a statement of capability, not
+    /// of willingness: whether a host will *accept* an invite is a policy
+    /// question answered by `remote_decline`, which is a fast, clear answer
+    /// rather than the hang this field exists to prevent.
+    static let advertised: [String] = [remoteDesktopV1]
+}
+
 struct DiscoveryPacket: Codable {
     let type: String        // "discovery" or "discovery_reply"
     let username: String
@@ -32,15 +54,28 @@ struct DiscoveryPacket: Codable {
     // SHA256(relay_id) hex — the sender's cloud relay mailbox address.
     // Optional: older clients that don't include this field are silently ignored.
     let relayIdHash: String?
+    /// Optional capability tokens. Absent means "assume nothing beyond the base
+    /// protocol"; unknown tokens must be tolerated, because a newer peer will
+    /// advertise tokens this build has never heard of.
+    let caps: [String]?
 
     enum CodingKeys: String, CodingKey {
         case type, username, port
         case publicKeyB64 = "public_key_b64"
         case ips
         case relayIdHash = "relay_id_hash"
+        case caps
     }
 
-    // Custom decoding: relay_id_hash is optional (old clients omit it).
+    /// True when the peer advertised remote-desktop support. A peer that
+    /// advertises nothing is not assumed capable — that assumption is exactly
+    /// the hang this field prevents.
+    var supportsRemoteDesktop: Bool {
+        caps?.contains(ProtocolCapability.remoteDesktopV1) ?? false
+    }
+
+    // Custom decoding: relay_id_hash and caps are optional (old clients omit
+    // both, and must keep working).
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         type          = try c.decode(String.self, forKey: .type)
@@ -49,16 +84,35 @@ struct DiscoveryPacket: Codable {
         publicKeyB64  = try c.decode(String.self, forKey: .publicKeyB64)
         ips           = try c.decode([String].self, forKey: .ips)
         relayIdHash   = try c.decodeIfPresent(String.self, forKey: .relayIdHash)
+        // Tolerant on purpose, in both directions. A malformed `caps` — a bare
+        // string, a number, anything — is treated as absent rather than
+        // failing the packet: a peer with a broken capability field is still a
+        // peer, and dropping its beacon would make it vanish from the network
+        // entirely over a field that is optional by definition.
+        //
+        // Bounded, too. Discovery is unauthenticated UDP from anyone on the
+        // LAN, and the tokens are retained per peer; a datagram full of them
+        // should cost nothing.
+        let declared = (try? c.decodeIfPresent([String].self, forKey: .caps)) ?? nil
+        caps = declared.map { tokens in
+            Array(tokens.filter { !$0.isEmpty && $0.count <= DiscoveryPacket.maxCapTokenLength }
+                        .prefix(DiscoveryPacket.maxCapTokens))
+        }
     }
 
+    static let maxCapTokens = 16
+    static let maxCapTokenLength = 64
+
     init(type: String, username: String, port: Int, publicKeyB64: String,
-         ips: [String], relayIdHash: String? = nil) {
+         ips: [String], relayIdHash: String? = nil,
+         caps: [String]? = ProtocolCapability.advertised) {
         self.type         = type
         self.username     = username
         self.port         = port
         self.publicKeyB64 = publicKeyB64
         self.ips          = ips
         self.relayIdHash  = relayIdHash
+        self.caps         = caps
     }
 }
 
