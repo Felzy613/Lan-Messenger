@@ -1284,6 +1284,27 @@ encrypted like any other media payload.
 resolution or display change — the viewer needs dimensions to lay out and to map
 input coordinates, and it has no other source for them.
 
+Encoding rules, normative because the two platforms hand-roll them:
+
+- Keys are written in **sorted order**, and `/` and non-ASCII characters are
+  **not escaped**. Foundation and `System.Text.Json` disagree by default on both
+  counts, so each side writes its objects explicitly. The shared
+  `media_control_vector.json` pins every message type's exact bytes.
+- A whole-valued number is written without a decimal point: `"scale": 2`, never
+  `2.0`.
+- **An unknown `t` must decode, not fault.** The point of a discriminated channel
+  is that it can grow; a receiver that rejects what it has not heard of turns
+  every future extension into a flag-day upgrade. Carry the name so a log can
+  report it, and ignore the message.
+- A known `t` carrying **extra fields must still decode**. A newer peer adding a
+  field must not break an older one.
+- Control payloads are capped at **64 KiB**, separately from the 4 MiB media
+  frame cap. Without the second limit a peer can make a host parse four megabytes
+  of JSON per frame on the session's read queue, for free.
+- Values are validated where they are used, not trusted where they arrive. A
+  `video_config` may name any dimensions; a receiver acts only on plausible ones
+  (both axes positive and no greater than 16384, scale in (0, 8]).
+
 `host_state` is what turns an inexplicable frozen image into an explanation. A
 Windows host cannot capture or drive the secure desktop, and cannot inject into
 a focused elevated window; when either is true it says so, and the viewer shows

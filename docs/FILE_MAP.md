@@ -172,6 +172,8 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/macos/LanMessenger/Core/Networking/Media/RemoteHostIndicator.swift` | What the host indicator says, and `IndicatorPlacement` — the pure top-centre placement it re-derives rather than remembers. Immovable by design: a viewer with the mouse could otherwise drag the host's own warning off-screen. |
 | `src/macos/LanMessenger/Core/Networking/Media/RemoteSessionStop.swift` | `RemoteStopReason` — every way a session ends, which ones can still put a `remote_end` on the wire, and the audit sentence for each — plus `RemoteKillSwitch`, the reserved `⌃⌥⌘⎋` combination and the list WS7 must never forward. |
 | `src/macos/LanMessenger/Core/Networking/Media/RemoteAuditEntry.swift` | The audit record, stored as a `__REMOTE__:` marker prefix on an ordinary history entry so the history format is unchanged. Decodes tolerantly: a record from a newer build yields nil rather than taking the conversation down. |
+| `src/macos/LanMessenger/Core/Networking/Media/MediaControlMessage.swift` | The control sub-channel codec: every `t` in PROTOCOL.md's table, sorted-key canonical JSON, a 64 KiB cap separate from the media frame cap, and an unknown `t` that decodes rather than faults. Also `VideoConfig`, `RemoteHostState` and `RemoteSessionStats`. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteInputGeometry.swift` | Normalized [0,1] pointer positions to `CGEvent`'s global top-left point space, with clamping treated as the trust boundary it is. |
 
 ## macOS Persistence Layer
 
@@ -258,6 +260,9 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/macos/LanMessengerTests/RemoteHostIndicatorTests.swift` | What the indicator says, elapsed-time formatting including a clock that went backwards, and placement across the visible frame, a second display and a screen narrower than the strip. Includes the skipped render generator. |
 | `src/macos/LanMessengerTests/RemoteSessionStopTests.swift` | The kill shortcut's identity and its separation from Force Quit, which stop reasons can still notify the peer, and that the guard disarms as it fires. |
 | `src/macos/LanMessengerTests/RemoteAuditTests.swift` | Audit storage round-trips, tolerance of malformed and future records, the prose each event produces, and that the marker prefixes cannot collide. Includes a skipped render generator. |
+| `src/macos/LanMessengerTests/MediaControlMessageTests.swift` | The control codec against `media_control_vector.json`, plus forward compatibility and hostile input. |
+| `src/macos/LanMessengerTests/RemoteInputGeometryTests.swift` | Coordinate mapping and the clamping that stops a peer putting the cursor on a display it was never shown. |
+| `src/macos/LanMessengerTests/media_control_vector.json` | Shared control-channel vector: thirteen messages, the exact bytes both platforms must produce. Present in both test directories. |
 | `src/macos/LanMessengerTests/TestMediaLinks.swift` | In-memory `MediaLink` doubles. Not tests — the seam that makes everything above the socket exercisable without binding a port. |
 | `src/macos/LanMessengerTests/known_good_exchange.json` | Cross-platform crypto/framing/history test vectors. |
 | `src/macos/LanMessengerTests/remote_handshake_vector.json` | Shared remote-desktop handshake vector. Must stay byte-identical to the Windows copy. |
@@ -333,6 +338,8 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 | `src/windows-native/LanMessenger/Core/Networking/Media/H264Bitstream.cs` | AVCC ↔ Annex-B conversion; mirror of the Swift implementation. |
 | `src/windows-native/LanMessenger/Core/Crypto/PeerKeyTrust.cs` | Mirror of the Swift key-trust classifier. |
 | `src/windows-native/LanMessenger/Core/Networking/Media/RemoteDesktopPolicy.cs` | Mirror of the Swift consent gate, including `RemoteDesktopMode`. `AppConfig` serializes the raw string rather than the enum: `System.Text.Json` throws on an unknown enum value, which would take the rest of the config with it. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaControlMessage.cs` | Mirror of the Swift control codec. Every object is written by hand with `Utf8JsonWriter` in sorted key order and `UnsafeRelaxedJsonEscaping`, because `System.Text.Json` sorts nothing and escapes `/` and non-ASCII where Foundation does not. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteInputGeometry.cs` | Mirror of the Swift geometry, plus the SendInput absolute conversion: divisor is `width - 1`, and the virtual screen origin is subtracted. |
 
 There is **no Windows encoder or decoder yet**. `spikes/windows-mf-probe` holds
 working Media Foundation encode and decode code against this exact hardware, and

@@ -64,15 +64,15 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
 | WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
 | WS7 | Input capture + injection | **Geometry done**, both platforms; injection and key tables not started | yes, both |
-| WS8 | Session lifecycle + consent UI | **Done on macOS** except `video_config` and reconnect; Windows mirror not started | no (UI work) |
-| WS9 | Settings, logging, diagnostics | **Log channel done**, settings not started | no |
+| WS8 | Session lifecycle + consent UI | **Done on macOS**; control channel done both platforms; reconnect remains | no (UI work) |
+| WS9 | Settings, logging, diagnostics | **Log channel and stats contents done**; the settings toggle remains | no |
 | WS10 | Latency tuning | **Not started** | yes |
 | WS11 | Packaging, docs, CI | **`dpiAwareness` done** (unverified on Windows); Vortice refs and the SDK decision remain | no |
 
 Test counts on this branch, both suites green:
 
-- macOS **411 passing**, 4 skipped (all generators, skipped by design: the
-  H.264 fixture emitter and the UI renderers)
+- macOS **423 passing**, 5 skipped (all generators, skipped by design: the
+  H.264 fixture emitter, the control-vector emitter and the UI renderers)
 - Windows: **64 pure-logic tests pass via the macOS shim** — the policy,
   capability, bitstream and input-geometry suites. The full MSTest run has not
   happened since the `caps` commit; that machine has been off the network.
@@ -96,6 +96,8 @@ Of those, the remote-desktop tests are:
 | `RemoteHostIndicatorTests` | 13 | — |
 | `RemoteSessionStopTests` | 11 | — |
 | `RemoteAuditTests` | 13 | — |
+| `RemoteInputGeometryTests` | 8 | 11 |
+| `MediaControlMessageTests` | 11 | 11 |
 | `RemoteDesktopQueueTests` | 4 | 4 |
 
 ---
@@ -748,18 +750,39 @@ requirements** — a client that does not enforce them is not compatible.
   is a single slot taking only a String id and cannot carry a session payload.
 - Windows viewer: the separate-window pattern from `MediaPreviewWindow.xaml.cs`.
 
-Also needed here: the `video_config` control message (dimensions before the
-first frame), resolution-change and monitor-hot-plug handling, and reconnect
-(~30 s warm window, **fresh handshake** — the UI may present it as one
-continuous session, the crypto must not).
+The **control sub-channel is done on both platforms**: `MediaControlMessage`
+and `MediaControlCodec` implement every `t` in the table, including
+`video_config`, and `media_control_vector.json` pins all thirteen to exactly the
+same bytes on each side. Two independently hand-written encoders agree because
+both sort keys and both disable their JSON library's default escaping —
+`System.Text.Json` escapes `/` and non-ASCII where Foundation does not, and one
+byte of difference would mean sessions that work Mac-to-Mac and Windows-to-
+Windows and fail across.
+
+One bug worth recording came out of the tolerance tests. Swift's
+`JSONSerialization.data(withJSONObject:)` raises an **ObjC exception**, not a
+Swift error, when handed a non-container top-level value — so `try?` does not
+catch it, and a peer sending `"displays": ["nonsense"]` would have taken the
+session's read loop down. Tolerant-looking code that calls it without a type
+check first is a remote crash, not a lenient parser.
+
+What remains here: wiring the messages to the session (resolution-change and
+monitor-hot-plug handling), and reconnect (~30 s warm window, **fresh
+handshake** — the UI may present it as one continuous session, the crypto must
+not).
 
 ### WS9 — Settings and diagnostics, remainder
 
-`remote` is already in both `LogChannel` enums. What remains is the
-`remoteDesktopMode` setting in the UI (the 3-step `SettingsPage` recipe on
-Windows, the `@State` mirror + `save()` pattern on macOS) and the stats channel
-contents: RTT, decoded fps, dropped frames, decode queue depth, and end-to-end
-latency from `capture_us`.
+`remote` is already in both `LogChannel` enums, and the **stats channel contents
+are defined and encoded** on both platforms — `RemoteSessionStats` carries RTT,
+decoded fps, dropped frames, decode queue depth and end-to-end latency from
+`capture_us`, and is in the shared vector. Latency is deliberately allowed to go
+negative: when the two machines' clocks disagree the figure is nonsense, and a
+nonsense number visible is better than a plausible one invented.
+
+What remains is the `remoteDesktopMode` setting in the UI — the 3-step
+`SettingsPage` recipe on Windows, the `@State` mirror + `save()` pattern on
+macOS.
 
 ### WS10 — Latency tuning
 
