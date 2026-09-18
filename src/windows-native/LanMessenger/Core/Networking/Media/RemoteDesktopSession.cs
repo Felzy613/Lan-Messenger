@@ -148,6 +148,7 @@ public sealed class RemoteDesktopSession : IDisposable
     /// Its own thread, because AcquireNextFrame blocks until the screen changes.
     private void CaptureLoop()
     {
+        long attempts = 0, delivered = 0;
         while (_capturing)
         {
             try
@@ -159,6 +160,18 @@ public sealed class RemoteDesktopSession : IDisposable
                 // Null means nothing changed. That is the ordinary case on a
                 // still screen and is not a failure of any kind.
                 var frame = capture.TryCapture(timeoutMs: 100);
+                attempts++;
+                if (frame is not null) delivered++;
+
+                // The capture side of the same question the encoder stats
+                // answer. A screen with nothing moving on it legitimately
+                // delivers nothing at all, so "no frames" is only meaningful
+                // next to the number of times we asked.
+                if (attempts % 150 == 0)
+                {
+                    LanLogger.Remote("capture_stats",
+                        reason: $"attempts={attempts} delivered={delivered}");
+                }
 
                 // The secure desktop coming and going is the one capture state a
                 // viewer needs told about, or they see a frozen picture and no

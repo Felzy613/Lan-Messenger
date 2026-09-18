@@ -93,6 +93,7 @@ public sealed class H264Encoder : IDisposable
     private static readonly Guid MFVideoFormat_NV12 = new("3231564e-0000-0010-8000-00aa00389b71");
 
     private static readonly Guid MFT_CATEGORY_VIDEO_ENCODER = new("f79eac7d-e545-4387-bdee-d647d7bde42a");
+    private static readonly Guid MF_TRANSFORM_ASYNC         = new("f81da2c7-b103-4d8d-9fb3-3f3085fc51d3");
     private static readonly Guid MF_TRANSFORM_ASYNC_UNLOCK  = new("e5666d6b-3422-4eb6-a421-da7db1f8e207");
     private static readonly Guid MFT_FRIENDLY_NAME_Attribute = new("314ffbae-5b41-4c95-9c19-4e7d586face3");
 
@@ -110,6 +111,7 @@ public sealed class H264Encoder : IDisposable
     private readonly int _width;
     private readonly int _height;
     private readonly int _frameRate;
+    private int _bitrate;
     private IMFTransform? _encoder;
     private ICodecAPI? _codecApi;
     private long _sampleIndex;
@@ -138,7 +140,22 @@ public sealed class H264Encoder : IDisposable
     private readonly ManualResetEventSlim _drainComplete = new(false);
 
     private int _consecutiveFailures;
+
+    // Counters, and a timer that prints them. Not debug scaffolding to be
+    // removed later: a pipeline that fails by going *quiet* cannot be diagnosed
+    // from errors, because there are none. The first async-pump build produced
+    // no errors and no picture, and there was nothing in the log that
+    // distinguished "capture is not delivering" from "the encoder never asked
+    // for input" from "output is never collected".
+    private long _encodeCalls;
+    private long _needInput;
+    private long _submitted;
     private long _droppedForBackpressure;
+    private long _haveOutput;
+    private long _emitted;
+    private Timer? _stats;
+    private string _lastStats = "";
+    private int _statsQuietTicks;
 
     /// Raised once, when the encoder has failed enough times in a row to be
     /// considered dead. The session ends rather than showing a picture that is
@@ -218,7 +235,7 @@ public sealed class H264Encoder : IDisposable
                         if (p == IntPtr.Zero) continue;
                         var activate = new IMFActivate(p);
                         into.Add(new Candidate(activate, new EncoderMftInfo(
-                            FriendlyName(activate), hardware, IsAsync(activate), true)));
+                            FriendlyName(activate), hardware, IsAsync(activate, hardware), true)));
                     }
                 }
                 finally { Marshal.FreeCoTaskMem(array); }
@@ -236,15 +253,28 @@ public sealed class H264Encoder : IDisposable
         catch { return "unnamed"; }
     }
 
-    private static bool IsAsync(IMFActivate activate)
+    /// Whether this MFT is asynchronous, which decides which drive loop it gets.
+    ///
+    /// The previous version set MF_TRANSFORM_ASYNC_UNLOCK and returned true if
+    /// that did not throw — but `IMFAttributes::SetUINT32` succeeds for *any*
+    /// GUID, so it answered "async" for every transform ever enumerated,
+    /// software ones included. It happened to be right about the Quick Sync
+    /// encoder, which is how it survived.
+    ///
+    /// The real answer is the MF_TRANSFORM_ASYNC attribute the registry puts on
+    /// the activation object. Where a driver omits it, hardware is taken to mean
+    /// async, which has been true of every hardware encoder since Windows 8.
+    private static bool IsAsync(IMFActivate activate, bool hardware)
     {
-        // An MFT that accepts the unlock attribute is telling us it is async.
         try
         {
-            activate.Set(MF_TRANSFORM_ASYNC_UNLOCK, 1u);
-            return true;
+            if (activate.GetUInt32(MF_TRANSFORM_ASYNC) == 1) return true;
+            return false;
         }
-        catch { return false; }
+        catch
+        {
+            return hardware;
+        }
     }
 
     private void Configure(int bitrate)
@@ -267,25 +297,12 @@ public sealed class H264Encoder : IDisposable
 
         // Output type FIRST. The MF H.264 encoder requires this order and fails
         // unhelpfully in the other one.
+        _bitrate = bitrate;
         using (var outType = MediaFactory.MFCreateMediaType())
         {
             outType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Video);
             outType.Set(MF_MT_SUBTYPE, MFVideoFormat_H264);
-            outType.Set(MF_MT_AVG_BITRATE, (uint)bitrate);
-            outType.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-            outType.Set(MF_MT_FRAME_SIZE, Pack(_width, _height));
-            outType.Set(MF_MT_FRAME_RATE, Pack(_frameRate, 1));
-            outType.Set(MF_MT_PIXEL_ASPECT_RATIO, Pack(1, 1));
-            outType.Set(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High);
-
-            // The colour tags the macOS encoder also sets. They have to agree:
-            // an unsignalled range is how blacks come out washed out and whites
-            // clipped on the far side, and neither component complains.
-            outType.Set(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
-            outType.Set(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
-            outType.Set(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
-            outType.Set(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
-
+            ApplyOutputAttributes(outType);
             encoder.SetOutputType(0, outType, 0);
         }
 
@@ -345,6 +362,7 @@ public sealed class H264Encoder : IDisposable
 
     private void StartEventPump()
     {
+        StartStats();
         if (_events is null) return;
         _pumping = true;
         _pump = new Thread(PumpEvents)
@@ -353,6 +371,37 @@ public sealed class H264Encoder : IDisposable
             Name = "h264-encoder-events",
         };
         _pump.Start();
+        LanLogger.Remote("encoder_pump_started", reason: EncoderName);
+    }
+
+    /// Prints the counters every two seconds.
+    ///
+    /// Its own timer thread on purpose. The capture thread blocks in
+    /// AcquireNextFrame and the pump thread blocks in GetEvent, so either would
+    /// stop reporting at exactly the moment the report became interesting —
+    /// the same trap that left the discovery health timer dead for years.
+    private void StartStats()
+    {
+        _stats = new Timer(_ => LogStats(), null,
+                           TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+    }
+
+    private void LogStats()
+    {
+        string line =
+            $"calls={Interlocked.Read(ref _encodeCalls)} "
+          + $"need_input={Interlocked.Read(ref _needInput)} "
+          + $"submitted={Interlocked.Read(ref _submitted)} "
+          + $"dropped={Interlocked.Read(ref _droppedForBackpressure)} "
+          + $"have_output={Interlocked.Read(ref _haveOutput)} "
+          + $"emitted={Interlocked.Read(ref _emitted)}";
+
+        // Unchanged counters still get through every 30s, so a stalled session
+        // is visibly stalled rather than merely absent from the log.
+        if (line == _lastStats && ++_statsQuietTicks < 15) return;
+        _statsQuietTicks = 0;
+        _lastStats = line;
+        LanLogger.Remote("encoder_stats", reason: line);
     }
 
     /// The async MFT's half of the conversation.
@@ -375,17 +424,19 @@ public sealed class H264Encoder : IDisposable
             }
             catch (SharpGenException ex)
             {
-                // MF_E_SHUTDOWN is the ordinary way this loop ends.
-                if (_pumping && ex.ResultCode.Code != MF_E_SHUTDOWN)
-                {
-                    LanLogger.Remote("error",
-                        reason: $"encoder GetEvent 0x{ex.ResultCode.Code:X8}");
-                }
+                // MF_E_SHUTDOWN during teardown is the ordinary way this ends.
+                // Every other exit gets said out loud: a pump that returned
+                // early looks exactly like one that is simply waiting, and the
+                // difference is a session that will never show a picture.
+                bool expected = !_pumping || ex.ResultCode.Code == MF_E_SHUTDOWN;
+                LanLogger.Remote(expected ? "encoder_pump_stopped" : "error",
+                    reason: $"GetEvent 0x{ex.ResultCode.Code:X8}");
                 return;
             }
             catch (Exception ex)
             {
-                if (_pumping) LanLogger.Remote("error", reason: $"encoder event pump: {ex.Message}");
+                LanLogger.Remote(_pumping ? "error" : "encoder_pump_stopped",
+                                 reason: $"event pump: {ex.Message}");
                 return;
             }
 
@@ -396,6 +447,7 @@ public sealed class H264Encoder : IDisposable
                 {
                     case MediaEventTypes.TransformNeedInput:
                         // Permission to submit exactly one frame.
+                        Interlocked.Increment(ref _needInput);
                         _inputCredits!.Release();
                         break;
 
@@ -403,8 +455,17 @@ public sealed class H264Encoder : IDisposable
                         // Exactly one ProcessOutput per event. Looping here the
                         // way the synchronous path does would produce the same
                         // E_UNEXPECTED this whole pump exists to avoid.
+                        Interlocked.Increment(ref _haveOutput);
                         var encoder = _encoder;
-                        if (encoder is not null) ReadOutput(encoder);
+                        if (encoder is not null)
+                        {
+                            // Normally exactly one ProcessOutput per event. A
+                            // stream change is the exception: it consumed the
+                            // event without producing a frame, and the output
+                            // it was announcing is still waiting behind the
+                            // renegotiated type.
+                            if (ReadOutput(encoder) == OutputStep.StreamChange) ReadOutput(encoder);
+                        }
                         break;
 
                     case MediaEventTypes.TransformDrainComplete:
@@ -413,6 +474,29 @@ public sealed class H264Encoder : IDisposable
                 }
             }
         }
+    }
+
+    /// Everything that has to be true of the output type, wherever it came from.
+    ///
+    /// Extracted because a stream change hands back a *bare* type from
+    /// GetOutputAvailableType: setting that as-is silently discards the bitrate
+    /// and the colour signalling. The colour tags are the dangerous loss — an
+    /// unsignalled range is how blacks come out washed out and whites clipped
+    /// at the far end, with neither side reporting anything wrong.
+    private void ApplyOutputAttributes(IMFMediaType type)
+    {
+        type.Set(MF_MT_AVG_BITRATE, (uint)_bitrate);
+        type.Set(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+        type.Set(MF_MT_FRAME_SIZE, Pack(_width, _height));
+        type.Set(MF_MT_FRAME_RATE, Pack(_frameRate, 1));
+        type.Set(MF_MT_PIXEL_ASPECT_RATIO, Pack(1, 1));
+        type.Set(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High);
+
+        // The colour tags the macOS encoder also sets. They have to agree.
+        type.Set(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
+        type.Set(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
+        type.Set(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+        type.Set(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
     }
 
     private static ulong Pack(int high, int low) =>
@@ -432,6 +516,7 @@ public sealed class H264Encoder : IDisposable
     {
         var encoder = _encoder;
         if (encoder is null) return;
+        Interlocked.Increment(ref _encodeCalls);
 
         if (Interlocked.Exchange(ref _forceKeyframe, 0) == 1)
         {
@@ -483,6 +568,7 @@ public sealed class H264Encoder : IDisposable
 
             _pendingCaptureUs.Enqueue(captureUs);
             encoder.ProcessInput(0, sample, 0);
+            Interlocked.Increment(ref _submitted);
             Interlocked.Exchange(ref _consecutiveFailures, 0);
         }
         catch (SharpGenException ex)
@@ -504,6 +590,7 @@ public sealed class H264Encoder : IDisposable
             {
                 _pendingCaptureUs.Enqueue(captureUs);
                 encoder.ProcessInput(0, sample, 0);
+                Interlocked.Increment(ref _submitted);
                 break;
             }
             catch (SharpGenException ex) when (ex.ResultCode.Code == MF_E_NOTACCEPTING)
@@ -570,12 +657,18 @@ public sealed class H264Encoder : IDisposable
         {
             hr = encoder.ProcessOutput(ProcessOutputFlags.None, 1, ref output, out _);
         }
+        catch (SharpGenException ex) when (LogFirstOutcomes(ex.ResultCode, info.Flags, info.Size, -1))
+        {
+            throw;   // unreachable: the filter always returns false
+        }
         catch (SharpGenException ex)
         {
             output.Sample?.Dispose();
             NoteEncoderFailure("ProcessOutput", ex.ResultCode);
             return OutputStep.Failed;
         }
+
+        LogFirstOutcomes(hr, info.Flags, info.Size, -1);
 
         if (hr.Code == MF_E_TRANSFORM_NEED_MORE_INPUT)
         {
@@ -585,6 +678,7 @@ public sealed class H264Encoder : IDisposable
         if (hr.Code == MF_E_TRANSFORM_STREAM_CHANGE)
         {
             output.Sample?.Dispose();
+            RenegotiateOutputType(encoder);
             return OutputStep.StreamChange;
         }
         if (hr.Failure)
@@ -600,6 +694,7 @@ public sealed class H264Encoder : IDisposable
         using (output.Sample)
         {
             var annexB = CopyOut(output.Sample);
+            LogFirstOutcomes(hr, info.Flags, info.Size, annexB?.Length ?? 0);
             if (annexB is null || annexB.Length == 0) return OutputStep.Emitted;
 
             // The submission-time capture timestamp, not whatever is current:
@@ -610,6 +705,7 @@ public sealed class H264Encoder : IDisposable
             // This encoder emits Annex-B with in-band parameter sets before
             // every IDR, which is exactly the wire format — no conversion,
             // unlike the macOS side.
+            Interlocked.Increment(ref _emitted);
             OnEncodedFrame?.Invoke(new EncodedVideoFrame
             {
                 AnnexB = annexB,
@@ -618,6 +714,58 @@ public sealed class H264Encoder : IDisposable
             });
         }
         return OutputStep.Emitted;
+    }
+
+    /// Says what the first few ProcessOutput calls actually did.
+    ///
+    /// Written because "have_output=1 emitted=0" is not a diagnosable state:
+    /// every branch out of ReadOutput that is not an outright failure returns
+    /// quietly, so a transform that announces output and then hands back
+    /// nothing looks identical to one that was never asked. Bounded to the
+    /// first few calls — after that the counters carry the story.
+    private int _outcomesLogged;
+
+    private bool LogFirstOutcomes(Result hr, int flags, int size, int copied)
+    {
+        if (Interlocked.Increment(ref _outcomesLogged) <= 6)
+        {
+            LanLogger.Remote("encoder_output",
+                reason: $"hr=0x{hr.Code:X8} stream_flags=0x{flags:X} stream_size={size} copied={copied}");
+        }
+        return false;   // never handles the exception; only observes it
+    }
+
+    /// MF_E_TRANSFORM_STREAM_CHANGE means the transform has withdrawn its
+    /// output type and will do nothing further until a new one is set.
+    ///
+    /// Ignoring it deadlocks the async path in a way that reads as silence: the
+    /// MFT is holding output it cannot give us, so it never asks for input
+    /// again, and the counters freeze one frame in.
+    private bool RenegotiateOutputType(IMFTransform encoder)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            try
+            {
+                var candidate = encoder.GetOutputAvailableType(0, i);
+                if (candidate is null) break;
+                using (candidate)
+                {
+                    // A bare type from the transform carries none of our
+                    // configuration. Put it back before accepting it.
+                    ApplyOutputAttributes(candidate);
+                    encoder.SetOutputType(0, candidate, 0);
+                }
+                LanLogger.Remote("encoder_output_renegotiated", reason: $"type index {i}");
+                return true;
+            }
+            catch (SharpGenException)
+            {
+                // That candidate was refused; try the next one.
+            }
+        }
+        LanLogger.Remote("error", reason: "no output type accepted after stream change");
+        return false;
     }
 
     /// Rate-limits the log, and gives up rather than spinning.
@@ -683,6 +831,11 @@ public sealed class H264Encoder : IDisposable
             encoder.ProcessMessage(TMessageType.MessageNotifyEndStreaming, UIntPtr.Zero);
         }
         catch { /* tearing down an encoder that already faulted is fine */ }
+
+        try { _stats?.Dispose(); } catch { }
+        _stats = null;
+        _statsQuietTicks = int.MaxValue;   // force the closing line out
+        LogStats();
 
         bool pumpStopped = StopEventPump();
 
