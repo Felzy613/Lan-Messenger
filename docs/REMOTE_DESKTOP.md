@@ -1053,7 +1053,11 @@ thing to fix.
 
 ---
 
-### Phase 1 — Make it work on one Mac — **DONE 2026-09-17**
+### Phase 1 — Make it work on one Mac — **DONE 2026-09-17, confirmed in the app**
+
+Self view runs in the packaged, signed build: a window showing the screen, the
+host indicator counting up, and the kill shortcut ending it. Confirmed by a human
+on 1.21.x, which is the only kind of confirmation that counts for this phase.
 
 `RemoteDesktopSession` is the object the plan forgot, and it now exists:
 `RemoteDesktopSession.swift`, `RemoteViewerWindow.swift`, the `AppModel`
@@ -1092,6 +1096,29 @@ screen in a window, watch the indicator count up, and stop it with `⌃⌥⌘⎋
 **Verified by:** a human on this Mac. No hardware anyone has to find.
 
 ---
+
+#### Two bugs that only running it could find
+
+Neither was a test failure, and neither would have been caught by more tests.
+
+**The entry point was invisible.** It was a `CommandMenu`, and `hideFromDock`
+defaults to true — which makes this an `.accessory` process, and an accessory app
+has no menu bar at all. The button belongs on the contact strip, beside the
+peer's name, which is where somebody reaches for it.
+
+**"Turn on Remote Desktop in Settings" sent people to the wrong app.** macOS
+ships a System Settings pane called exactly *Remote Desktop* — the Apple Remote
+Desktop privacy permission — which is unrelated and permanently empty for this
+app. Somebody read the message, went there, found nothing, and reasonably
+concluded the feature was broken. Every such message now names our own window,
+and the settings screen says the macOS pane is not the one.
+
+**And the `caps` field earned itself.** With two peers on older builds on the
+same LAN, the button greyed out with *"Ari's version does not support remote
+desktop"* — observed on the wire as `caps=ABSENT` against this Mac's
+`caps=["remote-desktop-v1"]`. Without that field the invite would have been sent,
+`PacketValidator` would have dropped it silently as an unknown type, and the
+initiator would have waited forever with no error anywhere.
 
 ### Phase 2 — Two Macs
 
