@@ -107,6 +107,20 @@ public sealed class RemoteDesktopSession : IDisposable
                 _encoder = new H264Encoder(_capture.Width, _capture.Height);
                 _encoder.OnEncodedFrame = HandleEncodedFrame;
 
+                // An encoder that has stopped producing frames is the end of
+                // the session, not a log line. Without this the viewer sits on
+                // "waiting for first frame" with nothing on screen to say why.
+                //
+                // Off the calling thread on purpose: this fires from the
+                // encoder's own event pump, and Stop disposes the encoder,
+                // which joins that pump. Tearing down from inside it would be
+                // a thread joining itself.
+                _encoder.OnFatalError = detail => Task.Run(() =>
+                {
+                    LanLogger.Remote("session_fault", reason: $"encoder: {detail}");
+                    Stop(RemoteStopReason.Error);
+                });
+
                 // A viewer has no other source for the picture size, and needs
                 // it before the first frame.
                 OnControlMessage?.Invoke(MediaControlMessage.Video(new VideoConfig

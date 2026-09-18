@@ -83,6 +83,14 @@ or from inside `src/macos`:
 Run on Windows with Visual Studio 2022, .NET 8, Windows App SDK support, and x64.
 Use VS MSBuild for WinUI packaging tasks.
 
+Restore and build must be **separate MSBuild invocations**. Combined as
+`/t:Restore,Build` the Windows App SDK targets are imported before the restore
+that supplies them, so the XAML markup compiler never runs — and the build fails
+with hundreds of `CS0103: The name 'InitializeComponent' does not exist` plus a
+`CS5001: no static 'Main' method`, which reads as a broken source tree rather
+than a restore ordering problem. Every generated partial goes missing at once;
+that symptom means the markup compiler did not run.
+
 ```powershell
 cd src\windows-native
 msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
@@ -477,6 +485,24 @@ Use the smallest sufficient set for the change:
   restart has to run while delivery is wedged, which is exactly when it is
   needed, and teardown must never block the queue SCK is delivering to. Same
   family as the `DiscoveryService` and `MediaSession` rules above.
+- Do not drive an asynchronous MFT synchronously. `MF_TRANSFORM_ASYNC_UNLOCK`
+  grants permission to drive a hardware encoder the async way; it does not make
+  it behave like a synchronous one. An async MFT tells you when to act:
+  `METransformNeedInput` means you may call `ProcessInput` exactly once,
+  `METransformHaveOutput` means you may call `ProcessOutput` exactly once, and
+  both arrive on the MFT's `IMFMediaEventGenerator`. Calling either at any other
+  moment returns `E_UNEXPECTED` (0x8000FFFF) forever. On the test machine's
+  `IntelAr Quick Sync Video H.264 Encoder MFT` that produced 34,731 identical
+  error lines in fifty seconds and not one frame, while the viewer sat on
+  "waiting for first frame". `EncoderKind` already distinguishes `HardwareAsync`
+  from `HardwareSync`/`SoftwareSync`, and `H264Encoder` keeps both drive loops —
+  the synchronous one is still what a machine with no Quick Sync uses.
+- Do not log a repeating unrecoverable error and carry on. A fault that recurs
+  every frame without recovering is not a log line; it is the end of the
+  session. Left to spin it pegs a core, evicts everything else from the log, and
+  presents to the user as a window that never does anything. `H264Encoder`
+  counts consecutive failures, logs the first, and raises `OnFatalError` at
+  `MaxConsecutiveFailures` so the session stops with a reason attached.
 - Do not call Media Foundation's `ProcessOutput` before setting an output media
   type on the decoder. Without one it answers every call with
   `MF_E_TRANSFORM_TYPE_NOT_SET` (0xC00D6D60) and emits nothing, forever —

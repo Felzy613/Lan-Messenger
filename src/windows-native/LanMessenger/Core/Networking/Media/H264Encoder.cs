@@ -1,5 +1,6 @@
 using LanMessenger.Core.Services;
 using SharpGen.Runtime;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using Vortice.MediaFoundation;
 
@@ -19,14 +20,33 @@ namespace LanMessenger.Core.Networking.Media;
 //    obvious relationship to the cause. The decoder is the opposite — input
 //    first — which is not symmetry anybody would guess.
 //
-// The async trap is the expensive one. A hardware MFT refuses ProcessInput with
-// MF_E_TRANSFORM_ASYNC_LOCKED (0xC00D6D77) until MF_TRANSFORM_ASYNC_UNLOCK is
-// set on its attributes — and unlocking is necessary but not sufficient, because
-// a real async MFT then has to be driven by METransformNeedInput and
-// METransformHaveOutput events rather than by a synchronous loop. The WS0 probe
-// confirmed both Quick Sync encoders on this hardware are async; it also only
-// ever encoded through the *software* MFT, so the event pump below has never
-// produced a frame anywhere and is the least proven code in this file.
+// The async trap is the expensive one, and it is the reason this file has two
+// drive loops instead of one.
+//
+// A hardware MFT refuses ProcessInput with MF_E_TRANSFORM_ASYNC_LOCKED
+// (0xC00D6D77) until MF_TRANSFORM_ASYNC_UNLOCK is set on its attributes — and
+// **unlocking is necessary but not sufficient.** Unlocking does not make an
+// async MFT behave synchronously; it grants permission to drive it the async
+// way, which inverts who is in charge:
+//
+//   sync MFT    we call ProcessInput, then pull with ProcessOutput until it
+//               says MF_E_TRANSFORM_NEED_MORE_INPUT.
+//   async MFT   it tells us. METransformNeedInput means we may call
+//               ProcessInput exactly once; METransformHaveOutput means we may
+//               call ProcessOutput exactly once. Both events arrive on the
+//               MFT's IMFMediaEventGenerator. Calling either method at any
+//               other time returns E_UNEXPECTED (0x8000FFFF).
+//
+// That last sentence was learned the hard way. This code unlocked the MFT and
+// then drove it synchronously anyway, which on the test machine's
+// "IntelAr Quick Sync Video H.264 Encoder MFT" produced 34,731 identical
+// E_UNEXPECTED lines in fifty seconds and not one frame — the viewer sat on
+// "waiting for first frame" forever, because nothing in the failure path said
+// anything louder than a log line. Hence both the event pump below and the
+// consecutive-failure fuse in NoteEncoderFailure.
+//
+// SoftwareSync and HardwareSync encoders still take the synchronous path, so
+// the fallback on a machine with no Quick Sync is untouched.
 
 public sealed class H264EncoderException(string message) : Exception(message);
 
@@ -44,6 +64,16 @@ public sealed class H264Encoder : IDisposable
     private const int MF_E_TRANSFORM_STREAM_CHANGE   = unchecked((int)0xC00D6D61);
     private const int MF_E_NOTACCEPTING              = unchecked((int)0xC00D36B5);
     private const int MF_E_TRANSFORM_ASYNC_LOCKED    = unchecked((int)0xC00D6D77);
+    private const int MF_E_SHUTDOWN                  = unchecked((int)0xC00D3E85);
+
+    /// How many consecutive ProcessInput/ProcessOutput failures the encoder
+    /// tolerates before declaring itself dead.
+    ///
+    /// Any positive number would have been an improvement on the previous
+    /// behaviour, which was to log and keep trying forever. Thirty is about one
+    /// second of frames: long enough to ride out a transient, short enough that
+    /// the user hears about it while they are still looking at the window.
+    private const int MaxConsecutiveFailures = 30;
 
     private static readonly Guid MF_MT_MAJOR_TYPE         = new("48eba18e-f8c9-4687-bf11-0a74c9f96a8f");
     private static readonly Guid MF_MT_SUBTYPE            = new("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");
@@ -84,6 +114,36 @@ public sealed class H264Encoder : IDisposable
     private ICodecAPI? _codecApi;
     private long _sampleIndex;
     private int _forceKeyframe;
+
+    // ---- async drive state; all null on the synchronous path ----------------
+
+    private IMFMediaEventGenerator? _events;
+    private Thread? _pump;
+    private volatile bool _pumping;
+
+    /// One permit per METransformNeedInput the MFT has issued and we have not
+    /// yet spent. This is the whole async contract in one field: a frame may
+    /// only go in when the encoder has asked for one.
+    private SemaphoreSlim? _inputCredits;
+
+    /// Capture timestamps, in submission order, waiting for their encoded frame.
+    ///
+    /// An async MFT hands output back on its own thread some time after Encode
+    /// returned, so the captureUs that was on the stack at submission is gone by
+    /// then. It has to travel alongside. Output order follows input order here
+    /// because the encoder is configured for low latency with one reference
+    /// frame, so there are no B-frames to reorder anything.
+    private readonly ConcurrentQueue<ulong> _pendingCaptureUs = new();
+
+    private readonly ManualResetEventSlim _drainComplete = new(false);
+
+    private int _consecutiveFailures;
+    private long _droppedForBackpressure;
+
+    /// Raised once, when the encoder has failed enough times in a row to be
+    /// considered dead. The session ends rather than showing a picture that is
+    /// never going to arrive.
+    public Action<string>? OnFatalError { get; set; }
 
     public EncoderKind Kind { get; private set; } = EncoderKind.None;
     public string EncoderName { get; private set; } = "";
@@ -257,8 +317,102 @@ public sealed class H264Encoder : IDisposable
             _codecApi.TrySet(CodecApiProperty.VideoMaxNumRefFrame, 1u, "MaxNumRefFrame=1");
         }
 
+        // Begin streaming is what makes an async MFT start issuing events, so
+        // the generator has to be in hand before it. Events are queued rather
+        // than dropped, so the pump thread can start either side of this — but
+        // the QI cannot fail silently afterwards.
+        if (Kind == EncoderKind.HardwareAsync) AttachEventGenerator(encoder);
+
         encoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
         encoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+
+        StartEventPump();
+    }
+
+    /// Async MFTs only. A transform that accepted MF_TRANSFORM_ASYNC_UNLOCK but
+    /// exposes no event generator cannot be driven either way, and saying so
+    /// here is better than discovering it one E_UNEXPECTED at a time.
+    private void AttachEventGenerator(IMFTransform encoder)
+    {
+        _events = encoder.QueryInterfaceOrNull<IMFMediaEventGenerator>();
+        if (_events is null)
+        {
+            throw new H264EncoderException(
+                $"{EncoderName} reports async but exposes no IMFMediaEventGenerator");
+        }
+        _inputCredits = new SemaphoreSlim(0);
+    }
+
+    private void StartEventPump()
+    {
+        if (_events is null) return;
+        _pumping = true;
+        _pump = new Thread(PumpEvents)
+        {
+            IsBackground = true,
+            Name = "h264-encoder-events",
+        };
+        _pump.Start();
+    }
+
+    /// The async MFT's half of the conversation.
+    ///
+    /// Its own thread, and deliberately not the capture thread: the capture
+    /// thread spends most of its life blocked in AcquireNextFrame waiting for
+    /// the screen to change, and an encoder that could only deliver output while
+    /// the screen was moving would stall on the last frame of every pause. It is
+    /// the same rule as the discovery receive loop and the media session timers
+    /// — a loop that blocks does not get to share.
+    private void PumpEvents()
+    {
+        while (_pumping)
+        {
+            IMFMediaEvent ev;
+            try
+            {
+                // 0 means block. The wake-up on teardown is a queued event.
+                ev = _events!.GetEvent(0);
+            }
+            catch (SharpGenException ex)
+            {
+                // MF_E_SHUTDOWN is the ordinary way this loop ends.
+                if (_pumping && ex.ResultCode.Code != MF_E_SHUTDOWN)
+                {
+                    LanLogger.Remote("error",
+                        reason: $"encoder GetEvent 0x{ex.ResultCode.Code:X8}");
+                }
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (_pumping) LanLogger.Remote("error", reason: $"encoder event pump: {ex.Message}");
+                return;
+            }
+
+            using (ev)
+            {
+                if (!_pumping) return;
+                switch (ev.EventType)
+                {
+                    case MediaEventTypes.TransformNeedInput:
+                        // Permission to submit exactly one frame.
+                        _inputCredits!.Release();
+                        break;
+
+                    case MediaEventTypes.TransformHaveOutput:
+                        // Exactly one ProcessOutput per event. Looping here the
+                        // way the synchronous path does would produce the same
+                        // E_UNEXPECTED this whole pump exists to avoid.
+                        var encoder = _encoder;
+                        if (encoder is not null) ReadOutput(encoder);
+                        break;
+
+                    case MediaEventTypes.TransformDrainComplete:
+                        _drainComplete.Set();
+                        break;
+                }
+            }
+        }
     }
 
     private static ulong Pack(int high, int low) =>
@@ -271,6 +425,9 @@ public sealed class H264Encoder : IDisposable
 
     /// Encodes one NV12 frame. `stride` is the luma row pitch, which is not
     /// necessarily the width.
+    ///
+    /// Called from the capture thread. On the async path the encoded frame does
+    /// NOT come back before this returns — it arrives later, on the pump thread.
     public void Encode(ReadOnlySpan<byte> nv12, int stride, ulong captureUs)
     {
         var encoder = _encoder;
@@ -298,73 +455,197 @@ public sealed class H264Encoder : IDisposable
         sample.SampleDuration = 10_000_000L / _frameRate;
         _sampleIndex++;
 
+        if (_inputCredits is not null) SubmitAsync(encoder, sample, captureUs);
+        else SubmitSync(encoder, sample, captureUs);
+    }
+
+    /// An async MFT asks for input; it is not told. ProcessInput before a
+    /// METransformNeedInput has arrived returns E_UNEXPECTED, so a credit has to
+    /// be in hand before the sample goes anywhere near it.
+    private void SubmitAsync(IMFTransform encoder, IMFSample sample, ulong captureUs)
+    {
+        // One frame period, no longer. Waiting for a busy encoder only queues a
+        // picture that is already stale — and on a still screen the next capture
+        // may be minutes away, so blocking here would wedge the capture thread
+        // rather than merely delay it.
+        if (!_inputCredits!.Wait(Math.Max(1, 1000 / _frameRate)))
+        {
+            Interlocked.Increment(ref _droppedForBackpressure);
+            return;
+        }
+
+        try
+        {
+            // Bounded. If the MFT ever swallows a frame without producing one,
+            // an unbounded FIFO would drift by exactly that much forever and
+            // every latency figure after it would be wrong.
+            while (_pendingCaptureUs.Count > 120) _pendingCaptureUs.TryDequeue(out _);
+
+            _pendingCaptureUs.Enqueue(captureUs);
+            encoder.ProcessInput(0, sample, 0);
+            Interlocked.Exchange(ref _consecutiveFailures, 0);
+        }
+        catch (SharpGenException ex)
+        {
+            // The credit was never spent, and the timestamp never used.
+            _pendingCaptureUs.TryDequeue(out _);
+            try { _inputCredits.Release(); } catch (ObjectDisposedException) { }
+            NoteEncoderFailure("ProcessInput", ex.ResultCode);
+        }
+    }
+
+    /// The classic loop, for SoftwareSync and HardwareSync transforms: push one
+    /// in, then pull until it asks for more.
+    private void SubmitSync(IMFTransform encoder, IMFSample sample, ulong captureUs)
+    {
         for (int attempt = 0; attempt < 8; attempt++)
         {
-            try { encoder.ProcessInput(0, sample, 0); break; }
+            try
+            {
+                _pendingCaptureUs.Enqueue(captureUs);
+                encoder.ProcessInput(0, sample, 0);
+                break;
+            }
             catch (SharpGenException ex) when (ex.ResultCode.Code == MF_E_NOTACCEPTING)
             {
-                // Normal flow control, not an error.
-                Drain(encoder, captureUs);
+                // Normal flow control, not an error: it has output waiting.
+                _pendingCaptureUs.TryDequeue(out _);
+                Drain(encoder);
             }
             catch (SharpGenException ex) when (ex.ResultCode.Code == MF_E_TRANSFORM_ASYNC_LOCKED)
             {
+                _pendingCaptureUs.TryDequeue(out _);
                 LanLogger.Remote("error",
                     reason: "MF_E_TRANSFORM_ASYNC_LOCKED — MF_TRANSFORM_ASYNC_UNLOCK was not accepted");
                 return;
             }
             catch (SharpGenException ex)
             {
-                LanLogger.Remote("error", reason: $"encoder ProcessInput 0x{ex.ResultCode.Code:X8}");
+                _pendingCaptureUs.TryDequeue(out _);
+                NoteEncoderFailure("ProcessInput", ex.ResultCode);
                 return;
             }
         }
 
-        Drain(encoder, captureUs);
+        Drain(encoder);
     }
 
-    private void Drain(IMFTransform encoder, ulong captureUs)
+    /// Synchronous path only. An async MFT gets exactly one ReadOutput per
+    /// METransformHaveOutput instead.
+    private void Drain(IMFTransform encoder)
     {
         while (true)
         {
-            var info = encoder.GetOutputStreamInfo(0);
-            bool selfAllocating =
-                (info.Flags & (int)(OutputStreamInfoFlags.OutputStreamProvidesSamples |
-                                    OutputStreamInfoFlags.OutputStreamCanProvideSamples)) != 0;
-
-            var output = new OutputDataBuffer { StreamID = 0 };
-            if (!selfAllocating && info.Size > 0)
+            switch (ReadOutput(encoder))
             {
-                var allocated = MediaFactory.MFCreateSample();
-                allocated.AddBuffer(MediaFactory.MFCreateMemoryBuffer(info.Size));
-                output.Sample = allocated;
+                case OutputStep.Emitted:
+                case OutputStep.StreamChange:
+                    continue;
+                default:
+                    return;
             }
+        }
+    }
 
-            var hr = encoder.ProcessOutput(ProcessOutputFlags.None, 1, ref output, out _);
+    private enum OutputStep { Emitted, NeedMoreInput, StreamChange, Failed }
 
-            if (hr.Code == MF_E_TRANSFORM_NEED_MORE_INPUT) { output.Sample?.Dispose(); return; }
-            if (hr.Code == MF_E_TRANSFORM_STREAM_CHANGE) { output.Sample?.Dispose(); continue; }
-            if (hr.Failure)
+    /// Exactly one ProcessOutput call, shared by both drive loops.
+    private OutputStep ReadOutput(IMFTransform encoder)
+    {
+        var info = encoder.GetOutputStreamInfo(0);
+        bool selfAllocating =
+            (info.Flags & (int)(OutputStreamInfoFlags.OutputStreamProvidesSamples |
+                                OutputStreamInfoFlags.OutputStreamCanProvideSamples)) != 0;
+
+        var output = new OutputDataBuffer { StreamID = 0 };
+        if (!selfAllocating && info.Size > 0)
+        {
+            var allocated = MediaFactory.MFCreateSample();
+            allocated.AddBuffer(MediaFactory.MFCreateMemoryBuffer(info.Size));
+            output.Sample = allocated;
+        }
+
+        Result hr;
+        try
+        {
+            hr = encoder.ProcessOutput(ProcessOutputFlags.None, 1, ref output, out _);
+        }
+        catch (SharpGenException ex)
+        {
+            output.Sample?.Dispose();
+            NoteEncoderFailure("ProcessOutput", ex.ResultCode);
+            return OutputStep.Failed;
+        }
+
+        if (hr.Code == MF_E_TRANSFORM_NEED_MORE_INPUT)
+        {
+            output.Sample?.Dispose();
+            return OutputStep.NeedMoreInput;
+        }
+        if (hr.Code == MF_E_TRANSFORM_STREAM_CHANGE)
+        {
+            output.Sample?.Dispose();
+            return OutputStep.StreamChange;
+        }
+        if (hr.Failure)
+        {
+            output.Sample?.Dispose();
+            NoteEncoderFailure("ProcessOutput", hr);
+            return OutputStep.Failed;
+        }
+
+        Interlocked.Exchange(ref _consecutiveFailures, 0);
+        if (output.Sample is null) return OutputStep.NeedMoreInput;
+
+        using (output.Sample)
+        {
+            var annexB = CopyOut(output.Sample);
+            if (annexB is null || annexB.Length == 0) return OutputStep.Emitted;
+
+            // The submission-time capture timestamp, not whatever is current:
+            // on the async path this runs on the pump thread, long after the
+            // frame it describes was captured.
+            if (!_pendingCaptureUs.TryDequeue(out ulong captureUs)) captureUs = 0;
+
+            // This encoder emits Annex-B with in-band parameter sets before
+            // every IDR, which is exactly the wire format — no conversion,
+            // unlike the macOS side.
+            OnEncodedFrame?.Invoke(new EncodedVideoFrame
             {
-                output.Sample?.Dispose();
-                LanLogger.Remote("error", reason: $"encoder ProcessOutput 0x{hr.Code:X8}");
-                return;
-            }
-            if (output.Sample is null) return;
+                AnnexB = annexB,
+                IsKeyframe = H264Bitstream.AnnexBContainsKeyframe(annexB),
+                CaptureUs = captureUs,
+            });
+        }
+        return OutputStep.Emitted;
+    }
 
-            using (output.Sample)
+    /// Rate-limits the log, and gives up rather than spinning.
+    ///
+    /// The previous version logged every failure and carried on. Driving an
+    /// async MFT synchronously made that 34,731 identical E_UNEXPECTED lines in
+    /// fifty seconds, a pegged core, a log with nothing else left in it, and a
+    /// viewer window that said "waiting for first frame" indefinitely. A fault
+    /// that repeats without recovering is not a log line; it is the end of the
+    /// session, and the user is entitled to be told.
+    private void NoteEncoderFailure(string stage, Result hr)
+    {
+        int count = Interlocked.Increment(ref _consecutiveFailures);
+
+        if (count == 1)
+        {
+            LanLogger.Remote("error", reason: $"encoder {stage} 0x{hr.Code:X8}");
+        }
+        else if (count == MaxConsecutiveFailures)
+        {
+            string detail = $"{stage} failed {count}x in a row, last 0x{hr.Code:X8}";
+            LanLogger.Remote("encoder_failed", reason: detail);
+            // Fired from whichever thread noticed; the handler is responsible
+            // for getting itself onto the right one.
+            try { OnFatalError?.Invoke(detail); }
+            catch (Exception ex)
             {
-                var annexB = CopyOut(output.Sample);
-                if (annexB is null || annexB.Length == 0) continue;
-
-                // This encoder emits Annex-B with in-band parameter sets before
-                // every IDR, which is exactly the wire format — no conversion,
-                // unlike the macOS side.
-                OnEncodedFrame?.Invoke(new EncodedVideoFrame
-                {
-                    AnnexB = annexB,
-                    IsKeyframe = H264Bitstream.AnnexBContainsKeyframe(annexB),
-                    CaptureUs = captureUs,
-                });
+                LanLogger.Remote("error", reason: $"encoder fatal handler: {ex.Message}");
             }
         }
     }
@@ -385,21 +666,76 @@ public sealed class H264Encoder : IDisposable
 
     public void Dispose()
     {
-        if (_encoder is null) return;
+        var encoder = _encoder;
+        if (encoder is null) return;
+        _encoder = null;          // stops Encode submitting into a closing MFT
+
         try
         {
-            _encoder.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero);
-            _encoder.ProcessMessage(TMessageType.MessageCommandDrain, UIntPtr.Zero);
-            _encoder.ProcessMessage(TMessageType.MessageNotifyEndStreaming, UIntPtr.Zero);
+            encoder.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero);
+            encoder.ProcessMessage(TMessageType.MessageCommandDrain, UIntPtr.Zero);
+
+            // An async MFT answers a drain with METransformDrainComplete, on the
+            // pump thread. Waiting for it is not politeness — it is what makes
+            // it safe to release a COM object the pump is sitting inside.
+            if (_pump is not null) _drainComplete.Wait(TimeSpan.FromMilliseconds(500));
+
+            encoder.ProcessMessage(TMessageType.MessageNotifyEndStreaming, UIntPtr.Zero);
         }
         catch { /* tearing down an encoder that already faulted is fine */ }
+
+        bool pumpStopped = StopEventPump();
 
         if (_codecApi is not null)
         {
             Marshal.ReleaseComObject(_codecApi);
             _codecApi = null;
         }
-        _encoder.Dispose();
-        _encoder = null;
+
+        if (pumpStopped)
+        {
+            _events?.Dispose();
+            _events = null;
+            encoder.Dispose();
+        }
+        else
+        {
+            // The pump did not come back, which means it is still inside
+            // GetEvent on this object. Releasing it now would free memory the
+            // other thread is about to touch, and the crash would land
+            // somewhere unrelated minutes later. Leaking one encoder at
+            // teardown is the cheaper of the two.
+            LanLogger.Remote("error",
+                reason: "encoder event pump did not stop; leaking the transform rather than "
+                      + "releasing it underneath the thread");
+        }
+
+        // _inputCredits is deliberately not disposed: Encode may be sitting in
+        // its Wait right now, and disposing a SemaphoreSlim under a waiter
+        // throws in the waiter's thread. It holds no unmanaged handle unless
+        // AvailableWaitHandle is touched, which nothing here does.
+        _drainComplete.Dispose();
+    }
+
+    /// Returns false if the pump thread would not come back.
+    private bool StopEventPump()
+    {
+        var pump = _pump;
+        if (pump is null) return true;
+        _pump = null;
+
+        _pumping = false;
+
+        // A thread cannot join itself. Callers are told to get off the pump
+        // before tearing down, but a handler that ignores that should not take
+        // the process with it.
+        if (pump == Thread.CurrentThread) return false;
+
+        // The pump is blocked in GetEvent. Posting an event is the only thing
+        // that reliably returns it; the flag alone would never be re-read.
+        try { _events?.QueueEvent((int)MediaEventTypes.TransformUnknown, Guid.Empty, Result.Ok, null); }
+        catch { /* the generator may already be shut down, which also wakes it */ }
+
+        return pump.Join(TimeSpan.FromSeconds(2));
     }
 }

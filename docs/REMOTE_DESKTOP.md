@@ -60,8 +60,8 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS2 | Handshake crypto | **Done**, both platforms | no |
 | WS3 | Media transport | **Done**, both platforms | no |
 | WS4a | macOS capture + encode | **Done and verified on real hardware** 2026-09-17 | grant now given |
-| WS4b | Windows capture + encode | **Not started, now unblocked** — Desktop Duplication confirmed working | yes, to test |
-| WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
+| WS4b | Windows capture + encode | **Written and running on hardware** — capture and encoder both start on the Dell; the async MFT event pump landed 2026-09-17 | yes, to test |
+| WS5 | Decode + present, both platforms | **macOS done**; Windows written, self-view under test | Windows: yes |
 | WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
 | WS7 | Input capture + injection | **Geometry done**, both platforms; injection and key tables not started | yes, both |
 | WS8 | Session lifecycle + consent UI | **Done on macOS**; control channel done both platforms; reconnect remains | no (UI work) |
@@ -280,6 +280,8 @@ observed. This section is only the second kind.
 | **A macOS-encoded stream decodes on Windows** | WS0 probe `--decode=`: 60 frames in, **60 frames out at 320×240** |
 | **A Windows-encoded stream decodes on macOS** | `H264DecoderTests`: `windows_h264_sample.h264` → 60 samples → **60 pictures at 1280×720** out of a real `VTDecompressionSession` |
 | **Desktop Duplication acquires real frames** | WS0 stage 3 at the Dell's physical keyboard, 2026-09-17: adapter 0 → `\\.\DISPLAY22` 1920x1080, `DuplicateOutput: OK`, `AcquireNextFrame: OK accumulated=1` |
+| **Desktop Duplication and the Quick Sync encoder both start in the real app** | self-view smoke test at the Dell, 2026-09-17: `capture_started \\.\DISPLAY22 1920x1080 adapter=Intel(R) UHD Graphics 730`, then `encoder_started IntelAr Quick Sync Video H.264 Encoder MFT 1920x1080@30 kind=HardwareAsync` |
+| **An async MFT will not be driven synchronously** | the same run, before the fix: 34,731 `ProcessOutput 0x8000FFFF` (E_UNEXPECTED) in fifty seconds and no frames. Unlocking an async MFT is not the same as driving one — see the `H264Encoder` header and CLAUDE.md |
 | Quick Sync encoders exist and `ICodecAPI` is reachable on them | same run: two hardware MFTs, both async, both unlocking and answering `QueryInterface` |
 | **`SCStream` captures the real screen, and it encodes** | `ScreenCaptureLiveTests` with the grant, 2026-09-17: **32 frames at 1920x1080**, delivered size matching the configured size, capture clock advancing; then **30 frames encoded, 1 keyframe, 505,315 bytes** through the real VideoToolbox encoder |
 | **A frame travels the whole video path** | `VideoPipelineEndToEndTests`: pixel buffers → encoder → Annex-B → scheduler → framing → AES-GCM → paired link → unseal → sequence gate → reassembly → decoder → `VTDecompressionSession`, with two real `MediaSession`s and independently derived directional keys |
