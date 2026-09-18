@@ -1,0 +1,71 @@
+<Window
+    x:Class="LanMessenger.UI.RemoteDesktop.RemoteHostIndicatorWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Border x:Name="Strip"
+            Background="#D93025"
+            CornerRadius="18"
+            BorderThickness="1"
+            BorderBrush="#38FFFFFF"
+            Padding="12,8">
+        <Grid ColumnSpacing="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- The one moving thing. A static dot becomes furniture within a
+                 minute; a slow pulse keeps catching the eye, which is the job.
+                 Slow on purpose — a fast blink reads as an error the user is
+                 expected to fix, and this is a normal state to notice. -->
+            <Ellipse x:Name="PulseDot"
+                     Grid.Column="0"
+                     Width="8" Height="8"
+                     Fill="White"
+                     VerticalAlignment="Center">
+                <Ellipse.OpacityTransition>
+                    <ScalarTransition Duration="0:0:1.1" />
+                </Ellipse.OpacityTransition>
+            </Ellipse>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <TextBlock x:Name="HeadlineText"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="White" />
+                <TextBlock x:Name="ElapsedText"
+                           FontSize="10"
+                           Foreground="#D9FFFFFF" />
+            </StackPanel>
+
+            <!-- Offered only when there is control to take back. Leaves the
+                 session running, which is usually what a host actually wants:
+                 "stop touching things", not "get out". -->
+            <Button x:Name="StopControlButton"
+                    Grid.Column="2"
+                    Content="Stop Control"
+                    FontSize="11"
+                    Background="#38FFFFFF"
+                    Foreground="White"
+                    BorderThickness="0"
+                    CornerRadius="12"
+                    Padding="10,4"
+                    Visibility="Collapsed"
+                    Click="StopControl_Click" />
+
+            <Button x:Name="StopSharingButton"
+                    Grid.Column="3"
+                    Content="Stop Sharing"
+                    FontSize="11"
+                    Background="#38FFFFFF"
+                    Foreground="White"
+                    BorderThickness="0"
+                    CornerRadius="12"
+                    Padding="10,4"
+                    Click="StopSharing_Click" />
+        </Grid>
+    </Border>
+</Window>
