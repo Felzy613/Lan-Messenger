@@ -522,6 +522,15 @@ Use the smallest sufficient set for the change:
   as arithmetic in the presenter. `DecodedVideoFrame` carries `SurfaceHeight`
   beside `Height` for this, and `Nv12Converter.ToBgra` takes both. Covered by
   `ChromaIsReadFromTheSurfaceHeightNotTheDisplayHeight`.
+- Do not pass `MFCreateMemoryBuffer` straight into `AddBuffer`. The create
+  returns a reference **the caller owns**, and `AddBuffer` takes its own rather
+  than adopting yours, so `sample.AddBuffer(MFCreateMemoryBuffer(size))` leaks
+  one native buffer every time it runs. Per frame at 1080p that was 208MB a
+  second and 15GB in ninety seconds, in the decoder and the encoder alike. It is
+  invisible from the C#: the code reads correctly, the managed heap stays flat,
+  and only the process total moves — which is why `viewer_stats` reports `gc_mb`
+  beside `ws_mb`. A flat managed heap under a climbing process means the leak is
+  native and reading the C# will not find it.
 - Do not allocate a frame-sized buffer per frame. At 1080p that is a few
   megabytes, which lands on the Large Object Heap — not compacted, and swept
   only on a gen2 collection. The capture converter and the decoder were each
