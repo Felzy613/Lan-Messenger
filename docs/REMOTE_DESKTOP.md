@@ -930,7 +930,21 @@ worth of hard-won knowledge.
 
 **Per workstream** — see each section above for its own "done when".
 
-**The macOS capture smoke test**, which is the one thing `swift test` cannot do.
+**The macOS capture smoke test** now has a test to run, rather than only a
+procedure to follow. `ScreenCaptureLiveTests` is skipped by default and starts a
+real `SCStream` when enabled:
+
+```bash
+# System Settings -> Privacy & Security -> Screen Recording: enable your
+# terminal, then QUIT AND REOPEN it. The grant does not reach a running process.
+cd src/macos
+LANMSG_LIVE_CAPTURE=1 swift test --filter ScreenCaptureLiveTests
+```
+
+Move the mouse while it runs. The second test pushes the captured frames through
+the real encoder, which is the first time anything here encodes an actual screen.
+
+**The older procedure**, for checking it inside the signed app:
 Screen Recording is a TCC grant keyed to the code signature, and the process that
 runs the test bundle does not have it — so `ScreenCaptureSourceTests` asserts
 that `start()` refuses cleanly and skips itself on a machine that *is* granted.
