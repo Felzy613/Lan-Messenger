@@ -115,6 +115,8 @@ public sealed class H264Encoder : IDisposable
     private IMFTransform? _encoder;
     private ICodecAPI? _codecApi;
     private long _sampleIndex;
+    private ulong _firstCaptureUs;
+    private long _lastSampleTime = -1;
     private int _forceKeyframe;
 
     // ---- async drive state; all null on the synchronous path ----------------
@@ -535,8 +537,19 @@ public sealed class H264Encoder : IDisposable
 
         using var sample = MediaFactory.MFCreateSample();
         sample.AddBuffer(buffer);
-        // Without a timestamp the encoder has no timeline. 100ns units.
-        sample.SampleTime = _sampleIndex * 10_000_000L / _frameRate;
+
+        // Without a timestamp the encoder has no timeline, and MF buffers
+        // untimed samples forever. 100ns units.
+        //
+        // Derived from the capture clock rather than counted off a frame index.
+        // A counter asserts that frames arrive at exactly _frameRate, and when
+        // they do not — capture is change-driven, so they never do — the
+        // encoder's idea of elapsed time drifts away from real time and its
+        // rate control is steering by a clock that is wrong.
+        if (_firstCaptureUs == 0) _firstCaptureUs = captureUs;
+        long presentation = (long)(captureUs - _firstCaptureUs) * 10L;
+        sample.SampleTime = Math.Max(presentation, _lastSampleTime + 1);
+        _lastSampleTime = sample.SampleTime;
         sample.SampleDuration = 10_000_000L / _frameRate;
         _sampleIndex++;
 

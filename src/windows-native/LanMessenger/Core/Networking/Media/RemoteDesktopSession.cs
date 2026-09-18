@@ -1,4 +1,5 @@
 using LanMessenger.Core.Services;
+using System.Diagnostics;
 
 namespace LanMessenger.Core.Networking.Media;
 
@@ -146,11 +147,42 @@ public sealed class RemoteDesktopSession : IDisposable
     }
 
     /// Its own thread, because AcquireNextFrame blocks until the screen changes.
+    /// Frames per second the capture loop will encode at most.
+    ///
+    /// The encoder is configured for this rate, so exceeding it is not a bonus:
+    /// it is CPU spent producing frames the timeline has no room for.
+    private const int TargetFrameRate = 30;
+
     private void CaptureLoop()
     {
         long attempts = 0, delivered = 0;
+        var clock = Stopwatch.StartNew();
+        long nextSlotMs = 0;
+        long intervalMs = 1000 / TargetFrameRate;
+
         while (_capturing)
         {
+            // Pace *before* asking for a frame, not after taking one.
+            //
+            // Desktop Duplication always hands back the newest complete desktop
+            // image, so waiting costs nothing but staleness bounded by one
+            // interval — while TryCapture does a full-screen colour conversion,
+            // which is the most expensive thing in the loop. Skipping the frame
+            // after that work is done saves nothing at all.
+            //
+            // Without this the loop ran as fast as the GPU allowed. Self-view
+            // measured 4,252 frames in 98 seconds — about 42fps into an encoder
+            // told to expect 30, with every capture attempt delivering, because
+            // presenting each frame changed the screen and so produced the next
+            // one. The pacing is what stops that becoming a treadmill.
+            long now = clock.ElapsedMilliseconds;
+            if (now < nextSlotMs)
+            {
+                Thread.Sleep((int)Math.Min(intervalMs, nextSlotMs - now));
+                continue;
+            }
+            nextSlotMs = now + intervalMs;
+
             try
             {
                 var capture = _capture;
