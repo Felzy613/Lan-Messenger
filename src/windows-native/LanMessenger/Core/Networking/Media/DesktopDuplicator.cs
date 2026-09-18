@@ -224,7 +224,14 @@ public sealed class DesktopDuplicator : IDisposable
     private static ulong NowUs() =>
         (ulong)(Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1_000_000L));
 
-    public CapturedFrame? TryCapture(int timeoutMs = 100)
+    /// Acquires the next desktop frame.
+    ///
+    /// `convert: false` acquires and immediately releases without the colour
+    /// conversion. That is how the capture loop paces itself: duplication has
+    /// to be drained either way — a frame that is not released blocks the next
+    /// acquire — so the choice is not whether to take the frame but whether to
+    /// pay for it. The conversion is the expensive half.
+    public CapturedFrame? TryCapture(int timeoutMs = 100, bool convert = true)
     {
         var duplication = _duplication;
         if (duplication is null) return null;
@@ -283,12 +290,18 @@ public sealed class DesktopDuplicator : IDisposable
                 ? (ulong)(info.LastPresentTime / (Stopwatch.Frequency / 1_000_000L))
                 : NowUs();
             AccumulatedFrames = info.AccumulatedFrames;
-            FrameAgeUs = NowUs() - captureUs;
+            ulong acquiredAt = NowUs();
+            FrameAgeUs = acquiredAt - captureUs;
+
+            // Drained but not paid for. The finally block releases it.
+            if (!convert) return null;
 
             using var texture = resource.QueryInterface<ID3D11Texture2D>();
             var nv12 = _converter!.Convert(texture, out int stride);
             if (nv12 is null) return null;
-            ConvertUs = NowUs() - captureUs;
+            // From acquire, not from the frame's own timestamp — otherwise this
+            // silently includes the frame's age and reads three times too high.
+            ConvertUs = NowUs() - acquiredAt;
 
             return new CapturedFrame
             {

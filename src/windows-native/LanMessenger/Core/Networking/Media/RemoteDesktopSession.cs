@@ -163,26 +163,24 @@ public sealed class RemoteDesktopSession : IDisposable
 
         while (_capturing)
         {
-            // Pace *before* asking for a frame, not after taking one.
+            // Pace by declining to convert, never by sleeping.
             //
-            // Desktop Duplication always hands back the newest complete desktop
-            // image, so waiting costs nothing but staleness bounded by one
-            // interval — while TryCapture does a full-screen colour conversion,
-            // which is the most expensive thing in the loop. Skipping the frame
-            // after that work is done saves nothing at all.
+            // The first version slept until the next slot. On paper that is a
+            // 33ms lap; in practice Thread.Sleep rounds up to the system timer
+            // granularity, which is 15.6ms by default, so a requested 21ms
+            // became about 31ms and the loop settled at 21fps with only 12ms of
+            // real work in it. The measurement said so plainly: capture 6-8ms,
+            // encode 1-4ms, lap 47ms.
             //
-            // Without this the loop ran as fast as the GPU allowed. Self-view
-            // measured 4,252 frames in 98 seconds — about 42fps into an encoder
-            // told to expect 30, with every capture attempt delivering, because
-            // presenting each frame changed the screen and so produced the next
-            // one. The pacing is what stops that becoming a treadmill.
+            // AcquireNextFrame is already the right wait. It blocks until the
+            // desktop actually changes, costs nothing while it waits, and has
+            // no rounding. So the loop now always acquires — duplication has to
+            // be drained anyway, since an unreleased frame blocks the next
+            // acquire — and only pays for the colour conversion when a slot is
+            // due. Frames arrive as fresh as the compositor can make them.
             long now = clock.ElapsedMilliseconds;
-            if (now < nextSlotMs)
-            {
-                Thread.Sleep((int)Math.Min(intervalMs, nextSlotMs - now));
-                continue;
-            }
-            nextSlotMs = now + intervalMs;
+            bool due = now >= nextSlotMs;
+            if (due) nextSlotMs = now + intervalMs;
 
             try
             {
@@ -193,7 +191,7 @@ public sealed class RemoteDesktopSession : IDisposable
                 // Null means nothing changed. That is the ordinary case on a
                 // still screen and is not a failure of any kind.
                 long t0 = Stopwatch.GetTimestamp();
-                var frame = capture.TryCapture(timeoutMs: 100);
+                var frame = capture.TryCapture(timeoutMs: 100, convert: due);
                 long t1 = Stopwatch.GetTimestamp();
                 captureUsTotal += (t1 - t0) / (Stopwatch.Frequency / 1_000_000L);
                 attempts++;
