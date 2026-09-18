@@ -451,6 +451,26 @@ Use the smallest sufficient set for the change:
   IDRs, so an AUD/SPS split collapsed a 60-frame stream into 2 units and the
   Windows decoder emitted almost nothing. **A slice (NAL type 1 or 5) is the
   access unit boundary**; any SPS/PPS/SEI ahead of it belongs to it.
+- Do not add a `remote_decline` reason on one platform only. The token set is
+  fixed by PROTOCOL.md — `declined`, `busy`, `unsupported`, `disabled`,
+  `no_encoder`, `timeout` — and the Windows enum carried only two of the six for
+  a while, which meant that side had no way to say `declined` or `timeout`: the
+  two a consent prompt actually produces. The tokens are spelled out in
+  `ToToken`/`Parse` rather than derived from the enum names, because
+  `no_encoder` is not `NoEncoder` lowercased and the two platforms have to agree
+  byte for byte. Covered by `EveryDeclineReasonRoundTripsThroughItsWireToken`.
+- Do not open a remote-desktop accept window after sending `remote_accept`. The
+  peer may attach the instant it reads the answer, and a `media_attach` with no
+  matching window is dropped and the connection closed — so the wrong order
+  fails only when the network is fast enough to win the race, which is the worst
+  kind of intermittent. `RemoteInviteCoordinator` opens the window first on both
+  platforms, and both suites assert it by snapshotting the registry at the
+  moment the accept frame is written.
+- Do not start capturing when an invite is accepted. Capture begins when the
+  viewer's `media_attach` actually arrives, so a peer that changes its mind
+  never causes the host's screen to be read at all — the accept window simply
+  expires. Agreeing is not sharing, and the gap between the two is a real
+  network round trip.
 - Do not let a malformed optional discovery field drop the datagram. A peer
   with a broken `caps` is still a peer, and rejecting its beacon removes it from
   the network entirely over a field that is optional by definition. Swift's

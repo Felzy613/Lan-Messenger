@@ -396,6 +396,28 @@ public sealed class RemoteHandshakeParams
 
     public bool TryGetValue(string key, out RemoteParamValue value) => _values.TryGetValue(key, out value);
 
+    /// <summary>The parameters, for callers that have to serialize or copy them.</summary>
+    /// <remarks>
+    /// Read-only, and deliberately not the canonical form: CanonicalBytes is for
+    /// the transcript and must never be reconstructed from this. Mirrors the
+    /// Swift type's `values`.
+    /// </remarks>
+    public IReadOnlyDictionary<string, RemoteParamValue> Values => _values;
+
+    /// <summary>A copy, so answering an invite cannot mutate what arrived.</summary>
+    public RemoteHandshakeParams Clone() => new(_values);
+
+    /// <summary>Plain values for JSON serialization.</summary>
+    public Dictionary<string, object> ToDictionary()
+    {
+        var result = new Dictionary<string, object>(_values.Count);
+        foreach (var (key, value) in _values)
+        {
+            result[key] = value.IsString ? value.AsString : value.AsInt;
+        }
+        return result;
+    }
+
     /// <summary>
     /// Deterministic bytes for the transcript: keys sorted by UTF-8 byte order,
     /// no insignificant whitespace, minimal string escaping.

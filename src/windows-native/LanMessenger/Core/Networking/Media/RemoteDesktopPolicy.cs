@@ -60,10 +60,56 @@ public static class RemoteDesktopModeParser
 /// each case has to be true without being more specific than a contact needs.
 public enum RemoteDeclineReason
 {
-    /// The host has remote desktop switched off.
-    Disabled,
+    /// The human said no.
+    Declined,
     /// A session with this peer is already in flight or live.
     Busy,
+    /// The peer asked for something this build does not implement.
+    Unsupported,
+    /// The host has remote desktop switched off.
+    Disabled,
+    /// No H.264 encoder on this machine. Windows N/KN SKUs have none at all.
+    NoEncoder,
+    /// Nobody answered the prompt in time.
+    Timeout,
+}
+
+/// <summary>
+/// The wire tokens for <see cref="RemoteDeclineReason"/>.
+///
+/// Spelled out rather than derived from the enum name, because `no_encoder` is
+/// not `NoEncoder` lowercased and the two platforms have to agree byte for byte.
+/// This set was previously missing four of the six PROTOCOL.md defines, which
+/// meant the Windows side had no way to say `declined` or `timeout` — the two a
+/// consent prompt actually produces.
+/// </summary>
+public static class RemoteDeclineReasonExtensions
+{
+    public static string ToToken(this RemoteDeclineReason reason) => reason switch
+    {
+        RemoteDeclineReason.Declined    => "declined",
+        RemoteDeclineReason.Busy        => "busy",
+        RemoteDeclineReason.Unsupported => "unsupported",
+        RemoteDeclineReason.Disabled    => "disabled",
+        RemoteDeclineReason.NoEncoder   => "no_encoder",
+        RemoteDeclineReason.Timeout     => "timeout",
+        _                               => "declined",
+    };
+
+    /// <summary>
+    /// Null for a token this build does not know. Receivers must tolerate
+    /// unknown values and show something generic rather than the raw text.
+    /// </summary>
+    public static RemoteDeclineReason? Parse(string token) => token switch
+    {
+        "declined"    => RemoteDeclineReason.Declined,
+        "busy"        => RemoteDeclineReason.Busy,
+        "unsupported" => RemoteDeclineReason.Unsupported,
+        "disabled"    => RemoteDeclineReason.Disabled,
+        "no_encoder"  => RemoteDeclineReason.NoEncoder,
+        "timeout"     => RemoteDeclineReason.Timeout,
+        _             => null,
+    };
 }
 
 /// Why an invite was dropped without any reply at all.

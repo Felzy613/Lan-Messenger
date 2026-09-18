@@ -1,3 +1,5 @@
+using LanMessenger.Core.Crypto;
+
 namespace LanMessenger.Core.Networking.Media;
 
 // What a viewer has been allowed to do. Mirror of RemoteGrant.swift.
@@ -76,4 +78,66 @@ public sealed class RemoteGrantState
         Grant = RemoteGrant.None;
         Ended = true;
     }
+}
+
+/// <summary>Which of the two consents is being asked for.</summary>
+public enum RemoteConsentKind { Viewing, Control }
+
+public enum RemoteConsentOutcomeKind { Accepted, Declined, TimedOut }
+
+/// <summary>
+/// How a consent prompt ended, and why.
+///
+/// The reason travels with the outcome rather than being inferred from it,
+/// because PROTOCOL.md distinguishes a person saying no from a prompt nobody
+/// answered — `declined` and `timeout` are different tokens on the wire, and an
+/// initiator is entitled to know which it got.
+/// </summary>
+public readonly record struct RemoteConsentOutcome(
+    RemoteConsentOutcomeKind Kind, RemoteDeclineReason Reason)
+{
+    public static RemoteConsentOutcome Accepted =>
+        new(RemoteConsentOutcomeKind.Accepted, RemoteDeclineReason.Declined);
+
+    public static RemoteConsentOutcome Declined(
+        RemoteDeclineReason reason = RemoteDeclineReason.Declined) =>
+        new(RemoteConsentOutcomeKind.Declined, reason);
+
+    public static RemoteConsentOutcome TimedOut =>
+        new(RemoteConsentOutcomeKind.TimedOut, RemoteDeclineReason.Timeout);
+}
+
+/// <summary>
+/// Everything a consent prompt needs to say. Mirror of the Swift type.
+///
+/// A value rather than a pile of constructor arguments so that the decision to
+/// prompt, the prompt itself, and the test that exercises the decision all agree
+/// on what a request is. The fingerprint in particular has to be derived the
+/// same way everywhere: a display name is trivially spoofable by anyone on the
+/// LAN, and the pinned key is the only thing in here that is not.
+/// </summary>
+public sealed record RemoteConsentRequest(
+    string SessionId,
+    RemoteConsentKind Kind,
+    string PeerName,
+    string PeerIP,
+    string PeerPublicKeyB64,
+    PeerKeyTrust Trust,
+    DateTime ExpiresAt)
+{
+    /// <summary>How long a prompt waits before declining on the user's behalf.</summary>
+    /// <remarks>
+    /// A dialog that waits forever is worse than one that gives up: the screen
+    /// it guards may be on a desk nobody is sitting at, and the peer is
+    /// meanwhile staring at a spinner with no way to tell a slow human from a
+    /// dead one.
+    /// </remarks>
+    public const int DefaultTimeoutSeconds = 45;
+
+    /// <summary>Never falls back to something reassuring.</summary>
+    public string Fingerprint =>
+        RemoteSessionCrypto.Fingerprint(PeerPublicKeyB64) ?? "unreadable key";
+
+    public int SecondsRemaining(DateTime now) =>
+        Math.Max(0, (int)Math.Ceiling((ExpiresAt - now).TotalSeconds));
 }

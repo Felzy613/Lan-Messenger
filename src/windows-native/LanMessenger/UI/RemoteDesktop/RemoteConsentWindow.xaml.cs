@@ -27,10 +27,6 @@ namespace LanMessenger.UI.RemoteDesktop;
 //    declines, the close button declines, and the countdown declines with the
 //    `timeout` token PROTOCOL.md already reserves.
 
-public enum RemoteConsentKind { Viewing, Control }
-
-public enum RemoteConsentOutcome { Accepted, Declined, TimedOut }
-
 public sealed partial class RemoteConsentWindow : Window
 {
     /// How long a prompt waits before declining on the user's behalf.
@@ -39,7 +35,7 @@ public sealed partial class RemoteConsentWindow : Window
     /// it guards may be on a desk nobody is sitting at, and the peer is
     /// meanwhile staring at a spinner with no way to tell a slow human from a
     /// dead one.
-    public const int DefaultTimeoutSeconds = 45;
+    public const int DefaultTimeoutSeconds = RemoteConsentRequest.DefaultTimeoutSeconds;
 
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _timer;
@@ -101,7 +97,7 @@ public sealed partial class RemoteConsentWindow : Window
         AppWindow.Resize(new Windows.Graphics.SizeInt32(440, 300));
 
         // The close button is a way out, so it means no.
-        Closed += (_, _) => Finish(RemoteConsentOutcome.Declined);
+        Closed += (_, _) => Finish(RemoteConsentOutcome.Declined());
 
         UpdateCountdown();
         _timer = _dispatcher.CreateTimer();
@@ -134,7 +130,7 @@ public sealed partial class RemoteConsentWindow : Window
         CountdownText.Text = $"Declines automatically in {_secondsRemaining}s";
 
     private void Accept_Click(object sender, RoutedEventArgs e) => Finish(RemoteConsentOutcome.Accepted);
-    private void Decline_Click(object sender, RoutedEventArgs e) => Finish(RemoteConsentOutcome.Declined);
+    private void Decline_Click(object sender, RoutedEventArgs e) => Finish(RemoteConsentOutcome.Declined());
 
     /// Idempotent, and the only exit. Everything that can end this dialog — a
     /// click, the close button, the countdown, the session dying underneath it —
@@ -147,7 +143,7 @@ public sealed partial class RemoteConsentWindow : Window
         try { _timer.Stop(); } catch { /* already stopped */ }
 
         LanLogger.Remote("consent_outcome", sessionId: _sessionId,
-                         reason: outcome.ToString().ToLowerInvariant());
+                         reason: outcome.Kind.ToString().ToLowerInvariant());
 
         // Nothing inside a WinUI callback may throw.
         try { _onOutcome(outcome); }

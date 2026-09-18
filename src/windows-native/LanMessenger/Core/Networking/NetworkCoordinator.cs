@@ -136,6 +136,43 @@ public sealed class NetworkCoordinator : IDisposable
         });
     }
 
+    /// <summary>
+    /// Opens a connection, writes one JSON frame, and hands back the still-open
+    /// client for the caller to adopt.
+    /// </summary>
+    /// <remarks>
+    /// This is the initiator's half of the media upgrade, and the reason it
+    /// cannot use Send: that disposes the TcpClient, which is precisely what
+    /// must not happen here. The frame is a media_attach, and everything after
+    /// it on this connection is binary media framing.
+    ///
+    /// Synchronous on purpose. The caller has just derived session keys and is
+    /// about to build a MediaSession around the result; handing it a Task would
+    /// mean either blocking on it anyway or inventing a half-attached state for
+    /// the session to be in.
+    ///
+    /// Returns null on failure with nothing left open. On success the caller
+    /// owns the client and must dispose it if it then declines to use it.
+    /// </remarks>
+    public TcpClient? AttachOutbound(string toIP, byte[] frame, int port = TcpPort)
+    {
+        TcpClient? tcp = null;
+        try
+        {
+            tcp = new TcpClient();
+            tcp.Connect(toIP, port);
+            tcp.GetStream().Write(frame, 0, frame.Length);
+            return tcp;
+        }
+        catch (Exception ex)
+        {
+            tcp?.Dispose();
+            LanLogger.Remote("error", peer: toIP,
+                             reason: $"media_attach write failed: {ex.GetType().Name} {ex.Message}");
+            return null;
+        }
+    }
+
     public void Send(IEnumerable<byte[]> frames, string toIP, int port = TcpPort)
     {
         foreach (var f in frames) Send(f, toIP, port);

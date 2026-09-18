@@ -53,6 +53,14 @@ public sealed class RemoteDesktopService
         session.Start();
 
         LanLogger.Remote("attach", peer: fromIP, sessionId: window.SessionId, role: window.Role.ToString());
+
+        // Only a responder hosts. An initiator's own attach is the connection it
+        // just opened outbound, and its viewer is already being set up by the
+        // coordinator that opened it.
+        if (window.Role == RemoteSessionRole.Responder)
+        {
+            OnHostAttached?.Invoke(window.SessionId, session);
+        }
         return AttachOutcome.Detached;
     }
 
@@ -62,19 +70,33 @@ public sealed class RemoteDesktopService
     /// exists now so the transport is reachable and so an unhandled case is a
     /// compile error there rather than a silent drop.
     /// </summary>
+    /// <summary>
+    /// Set by AppModel. The invite exchange lives with the model because it
+    /// needs the consent prompt, the peer list and the session; this object
+    /// stays free of all three so AttachInbound can keep running on the socket
+    /// thread.
+    /// </summary>
+    public RemoteInviteCoordinator? Invites { get; set; }
+
+    /// <summary>A viewer we agreed to has attached. Hosting begins here.</summary>
+    public Action<string, MediaSession>? OnHostAttached { get; set; }
+
     public void HandleControlPacket(ValidatedPacket packet)
     {
         switch (packet)
         {
             case ValidatedRemoteInvite invite:
                 LanLogger.Remote("invite_received", peer: invite.SenderIP, sessionId: invite.Packet.SessionId);
+                Invites?.HandleInvite(invite.Packet, invite.SenderIP);
                 break;
             case ValidatedRemoteAccept accept:
                 LanLogger.Remote("accepted", peer: accept.SenderIP, sessionId: accept.Packet.SessionId);
+                Invites?.HandleAccept(accept.Packet, accept.SenderIP);
                 break;
             case ValidatedRemoteDecline decline:
                 LanLogger.Remote("declined", peer: decline.SenderIP, sessionId: decline.Packet.SessionId,
                                  reason: decline.Packet.Reason);
+                Invites?.HandleDecline(decline.Packet, decline.SenderIP);
                 Registry.Cancel(decline.Packet.SessionId);
                 break;
             case ValidatedRemoteEnd end:

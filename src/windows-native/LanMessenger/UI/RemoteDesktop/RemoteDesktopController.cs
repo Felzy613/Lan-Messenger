@@ -159,7 +159,7 @@ public sealed class RemoteDesktopController
                 try { viewer.Close(); } catch { }
             }
 
-            try { _consent?.Finish(RemoteConsentOutcome.Declined); } catch { }
+            try { _consent?.Finish(RemoteConsentOutcome.Declined()); } catch { }
             _consent = null;
         });
     }
