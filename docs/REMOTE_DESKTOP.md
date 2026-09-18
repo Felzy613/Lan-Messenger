@@ -67,7 +67,7 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS8 | Session lifecycle + consent UI | **Done on macOS**; control channel done both platforms; reconnect remains | no (UI work) |
 | WS9 | Settings, logging, diagnostics | **Done** — log channel, stats contents, and the settings toggle on both platforms | no |
 | WS10 | Latency tuning | **Not started** | yes |
-| WS11 | Packaging, docs, CI | **`dpiAwareness` done** (unverified on Windows); Vortice refs and the SDK decision remain | no |
+| WS11 | Packaging, docs, CI | **`dpiAwareness` done**, and the app builds with it; Vortice refs and the SDK decision wait on WS4b | no |
 
 Test counts on this branch, both suites green:
 
