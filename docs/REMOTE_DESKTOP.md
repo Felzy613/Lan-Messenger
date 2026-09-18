@@ -55,12 +55,12 @@ desktop, and it needs its own channel, size cap and loop guard.
 
 | WS | Scope | State | Needs hardware |
 |---|---|---|---|
-| WS0 | Spikes: MF encoder, `ICodecAPI`, Desktop Duplication | **Done**, one stage unanswered | Windows console session |
+| WS0 | Spikes: MF encoder, `ICodecAPI`, Desktop Duplication | **Done**, every stage answered 2026-09-17 | — |
 | WS1 | Protocol spec | **Done** | no |
 | WS2 | Handshake crypto | **Done**, both platforms | no |
 | WS3 | Media transport | **Done**, both platforms | no |
 | WS4a | macOS capture + encode | **Done and verified on real hardware** 2026-09-17 | grant now given |
-| WS4b | Windows capture + encode | **Not started** | yes |
+| WS4b | Windows capture + encode | **Not started, now unblocked** — Desktop Duplication confirmed working | yes, to test |
 | WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
 | WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
 | WS7 | Input capture + injection | **Geometry done**, both platforms; injection and key tables not started | yes, both |
@@ -276,6 +276,8 @@ observed. This section is only the second kind.
 | Our Annex-B converter handles real Windows encoder output | `H264BitstreamTests` against `windows_h264_sample.h264` |
 | **A macOS-encoded stream decodes on Windows** | WS0 probe `--decode=`: 60 frames in, **60 frames out at 320×240** |
 | **A Windows-encoded stream decodes on macOS** | `H264DecoderTests`: `windows_h264_sample.h264` → 60 samples → **60 pictures at 1280×720** out of a real `VTDecompressionSession` |
+| **Desktop Duplication acquires real frames** | WS0 stage 3 at the Dell's physical keyboard, 2026-09-17: adapter 0 → `\\.\DISPLAY22` 1920x1080, `DuplicateOutput: OK`, `AcquireNextFrame: OK accumulated=1` |
+| Quick Sync encoders exist and `ICodecAPI` is reachable on them | same run: two hardware MFTs, both async, both unlocking and answering `QueryInterface` |
 | **`SCStream` captures the real screen, and it encodes** | `ScreenCaptureLiveTests` with the grant, 2026-09-17: **32 frames at 1920x1080**, delivered size matching the configured size, capture clock advancing; then **30 frames encoded, 1 keyframe, 505,315 bytes** through the real VideoToolbox encoder |
 | **A frame travels the whole video path** | `VideoPipelineEndToEndTests`: pixel buffers → encoder → Annex-B → scheduler → framing → AES-GCM → paired link → unseal → sequence gate → reassembly → decoder → `VTDecompressionSession`, with two real `MediaSession`s and independently derived directional keys |
 | A 1080p keyframe fragments and reassembles | same suite — asserted to exceed one 16 KiB fragment, then decoded |
@@ -293,8 +295,10 @@ picture.
 
 ### Not yet proven
 
-- Desktop Duplication acquiring a frame at all. The probe enumerates adapters
-  but no outputs over SSH, because an SSH logon session has no attached desktop.
+- The **hardware** encode path end to end. The probe enumerated and unlocked
+  both Quick Sync MFTs but its stage 4 encoded through the *software* MFT, so
+  the async `METransformNeedInput` / `METransformHaveOutput` pump has still never
+  actually produced a frame.
 - macOS → macOS presentation. The decoder's output has been decoded, but nothing
   has been on screen yet: `SampleBufferVideoPresenter` is tested against a layer
   with no window behind it, which catches a rejected sample but not a blank one.
@@ -381,11 +385,27 @@ and `IMFMediaType` — **everything except `ICodecAPI`**. So this is Vortice plu
 one hand-rolled COM interface, not a migration to CsWin32. Verified by
 reflection over the NuGet package from the Mac.
 
+**Confirmed working on this hardware, 2026-09-17.** The probe, run at the
+physical keyboard, reported `DuplicateOutput: OK` and
+`AcquireNextFrame: OK accumulated=1` on adapter 0's `\\.\DISPLAY22` at
+1920x1080. Three details from that run shape the code:
+
+- **The adapter/output warning below is live, not theoretical.** This machine
+  enumerates three adapters: adapter 0 (UHD 730) owns the only output, adapter 1
+  is the *same GPU again* and owns none, and adapter 2 is the Microsoft Basic
+  Render Driver. Walking adapters and taking the first is wrong twice over here.
+- **`pointerShapeBytes=0` on the first acquire.** The pointer shape is delivered
+  only when it *changes*, so a capture loop must cache the last one — a v1 that
+  composites the cursor and reads the shape per frame draws nothing most frames.
+- **Both Quick Sync MFTs answer `ICodecAPI`**, which settles the interop plan:
+  Vortice plus one hand-rolled COM interface, as expected.
+
 **Capture sequence:**
 
 1. Enumerate adapters via `CreateDXGIFactory1`, then each adapter's outputs, and
    create the D3D11 device **on the adapter that owns the target output**.
-   "Adapter 0" fails with `DXGI_ERROR_UNSUPPORTED` on every Optimus laptop.
+   "Adapter 0" fails with `DXGI_ERROR_UNSUPPORTED` on every Optimus laptop, and
+   on this machine adapters 1 and 2 have no outputs at all.
 2. `ID3D10Multithread::SetMultithreadProtected(TRUE)` on the device. Media
    Foundation calls in from its own threads; without this you get sporadic
    driver crashes with no useful diagnostic.

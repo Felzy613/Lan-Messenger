@@ -39,6 +39,25 @@ Use **Vortice for the MFT and D3D surface, plus a hand-rolled `ICodecAPI`**
 gap, and stage 2 of the probe confirms whether `QueryInterface` for it actually
 succeeds on this machine's encoders.
 
+### What it answered, 2026-09-17
+
+Run at the Dell's physical keyboard, which is the only place stage 3 means
+anything — an SSH logon has no attached desktop and enumerates no outputs.
+
+- **Desktop Duplication works.** `DuplicateOutput: OK`,
+  `AcquireNextFrame: OK accumulated=1` on adapter 0's `\\.\DISPLAY22`, 1920x1080.
+- Three adapters enumerate: adapter 0 (UHD 730) owns the only output, adapter 1
+  is the same GPU with no outputs, adapter 2 is the Microsoft Basic Render
+  Driver. Taking "the first adapter" would pick wrong here.
+- `pointerShapeBytes=0` on the first acquire — the shape comes only when it
+  changes, so it has to be cached.
+- Two Quick Sync H.264 encoder MFTs, both async, both answering `ICodecAPI`.
+  The software `H264 Encoder MFT` is also present.
+- Stage 4 encoded through the **software** MFT. The hardware async pump is
+  enumerated and unlocked but has still never produced a frame.
+
+That was the last open question in WS0.
+
 ### Running it
 
 ```powershell
