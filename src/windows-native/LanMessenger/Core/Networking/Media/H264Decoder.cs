@@ -328,8 +328,16 @@ public sealed class H264Decoder : IDisposable
             var output = new OutputDataBuffer { StreamID = 0 };
             if (!selfAllocating && info.Size > 0)
             {
+                // MFCreateMemoryBuffer hands back a reference that AddBuffer
+                // does NOT take ownership of — it takes its own. Dropping the
+                // temporary without disposing it leaks one native buffer per
+                // frame, which at 1080p is megabytes a second and shows up as
+                // private bytes climbing with the managed heap flat.
                 var allocated = MediaFactory.MFCreateSample();
-                allocated.AddBuffer(MediaFactory.MFCreateMemoryBuffer(info.Size));
+                using (var scratch = MediaFactory.MFCreateMemoryBuffer(info.Size))
+                {
+                    allocated.AddBuffer(scratch);
+                }
                 output.Sample = allocated;
             }
 

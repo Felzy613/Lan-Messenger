@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices.WindowsRuntime;
 
 namespace LanMessenger.UI.RemoteDesktop;
@@ -33,6 +34,7 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
 {
     private readonly DispatcherQueue _dispatcher;
     private WriteableBitmap? _bitmap;
+    private Stream? _pixels;
     private byte[]? _bgra;
     private int _width;
     private int _height;
@@ -156,16 +158,19 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
                 _width = _bgraWidth;
                 _height = _bgraHeight;
                 _bitmap = new WriteableBitmap(_width, _height);
+                // Opened once with the bitmap, not once per frame. AsStream
+                // wraps the same underlying WinRT buffer every time, so calling
+                // it per frame allocates a wrapper for a buffer we already have.
+                _pixels?.Dispose();
+                _pixels = _bitmap.PixelBuffer.AsStream();
                 VideoImage.Source = _bitmap;
                 ResizeToAspect();
                 LanLogger.Remote("viewer_format", reason: $"{_width}x{_height}");
             }
 
-            using (var stream = _bitmap!.PixelBuffer.AsStream())
-            {
-                stream.Write(_bgra, 0, _bgra.Length);
-            }
-            _bitmap.Invalidate();
+            _pixels!.Seek(0, SeekOrigin.Begin);
+            _pixels.Write(_bgra, 0, _bgra.Length);
+            _bitmap!.Invalidate();
             // Closed out by the next CompositionTarget.Rendering, which is the
             // first moment this frame can actually be on screen.
             _awaitingCompositionUs = captureUs;
@@ -230,10 +235,17 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
         double seconds = _statsClock.ElapsedMilliseconds / 1000.0;
         long avg = _latencySamples > 0 ? _latencySumMs / _latencySamples : -1;
         long onScreenAvg = _compositeSamples > 0 ? _compositeSumMs / _compositeSamples : -1;
+
+        // Managed heap beside the process total. If gc_mb stays flat while the
+        // process keeps growing, the growth is native — a COM object released
+        // once too few — and no amount of staring at the C# will show it.
+        long gcMb = GC.GetTotalMemory(false) / (1024 * 1024);
+        long processMb = Environment.WorkingSet / (1024 * 1024);
         LanLogger.Remote("viewer_stats",
             reason: $"presented={_presented} dropped={Interlocked.Read(ref _dropped)} "
                   + $"fps={_presented / seconds:F1} latency_ms_avg={avg} latency_ms_max={_latencyMaxMs} "
-                  + $"onscreen_ms_avg={onScreenAvg} onscreen_ms_max={_compositeMaxMs}");
+                  + $"onscreen_ms_avg={onScreenAvg} onscreen_ms_max={_compositeMaxMs} "
+                  + $"gc_mb={gcMb} ws_mb={processMb} gen2={GC.CollectionCount(2)}");
 
         _statsClock.Restart();
         _presented = 0;
@@ -256,6 +268,8 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
         _dispatcher.TryEnqueue(() =>
         {
             VideoImage.Source = null;
+            _pixels?.Dispose();
+            _pixels = null;
             _bitmap = null;
             _bgra = null;
             _bgraWidth = 0;
