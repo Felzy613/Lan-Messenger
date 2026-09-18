@@ -59,7 +59,7 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS1 | Protocol spec | **Done** | no |
 | WS2 | Handshake crypto | **Done**, both platforms | no |
 | WS3 | Media transport | **Done**, both platforms | no |
-| WS4a | macOS capture + encode | **Written, end to end**; capture unverified | Screen Recording grant |
+| WS4a | macOS capture + encode | **Done and verified on real hardware** 2026-09-17 | grant now given |
 | WS4b | Windows capture + encode | **Not started** | yes |
 | WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
 | WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
@@ -276,6 +276,7 @@ observed. This section is only the second kind.
 | Our Annex-B converter handles real Windows encoder output | `H264BitstreamTests` against `windows_h264_sample.h264` |
 | **A macOS-encoded stream decodes on Windows** | WS0 probe `--decode=`: 60 frames in, **60 frames out at 320×240** |
 | **A Windows-encoded stream decodes on macOS** | `H264DecoderTests`: `windows_h264_sample.h264` → 60 samples → **60 pictures at 1280×720** out of a real `VTDecompressionSession` |
+| **`SCStream` captures the real screen, and it encodes** | `ScreenCaptureLiveTests` with the grant, 2026-09-17: **32 frames at 1920x1080**, delivered size matching the configured size, capture clock advancing; then **30 frames encoded, 1 keyframe, 505,315 bytes** through the real VideoToolbox encoder |
 | **A frame travels the whole video path** | `VideoPipelineEndToEndTests`: pixel buffers → encoder → Annex-B → scheduler → framing → AES-GCM → paired link → unseal → sequence gate → reassembly → decoder → `VTDecompressionSession`, with two real `MediaSession`s and independently derived directional keys |
 | A 1080p keyframe fragments and reassembles | same suite — asserted to exceed one 16 KiB fragment, then decoded |
 | `capture_us` survives the whole journey | same suite — submitted and received timestamps compared element by element |
@@ -297,10 +298,6 @@ picture.
 - macOS → macOS presentation. The decoder's output has been decoded, but nothing
   has been on screen yet: `SampleBufferVideoPresenter` is tested against a layer
   with no window behind it, which catches a rejected sample but not a blank one.
-- **`SCStream` delivering a frame at all.** Everything downstream of capture is
-  now proven end to end, but the capture source has never produced a picture:
-  this machine's TCC grant is declined for the process that runs the tests, so
-  `start()` can only be shown to refuse correctly.
 - Anything over a real socket, or between two machines. The end-to-end test runs
   two sessions in one process over a paired in-memory link, so it proves framing,
   sealing, sequencing and reassembly — but not `SocketMediaLink`, not the
