@@ -101,10 +101,28 @@
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                            TextWrapping="Wrap" />
                 <TextBlock x:Name="RemoteDesktopStopHint"
-                           Text="Stop a session at any time from the indicator at the top of the screen."
+                           Text="Stop a session at any time from the indicator at the top of the screen, or with Ctrl+Alt+Shift+Esc, which works even while the other side is controlling your keyboard and mouse."
                            Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                            TextWrapping="Wrap" />
+                <!-- The whole pipeline against this machine's own screen: no
+                     peer, no socket. It is the only thing testable before the
+                     invite exchange exists, and it is how a support problem gets
+                     narrowed to "capture is broken" rather than "it does not
+                     work". -->
+                <StackPanel x:Name="RemoteDesktopTestPanel"
+                            Orientation="Horizontal"
+                            Spacing="10"
+                            Visibility="Collapsed">
+                    <Button x:Name="SelfViewButton"
+                            Content="Test Self View"
+                            Click="SelfView_Click" />
+                    <TextBlock x:Name="SelfViewStatus"
+                               VerticalAlignment="Center"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
             </StackPanel>
 
             <!-- Cloud Relay -->
