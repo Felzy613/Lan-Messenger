@@ -418,6 +418,21 @@ Use the smallest sufficient set for the change:
   `ValidateDiscovery` catches as "drop it" — hence `TolerantStringListConverter`.
   The two must agree, because the peer that vanishes is always the one on the
   *other* platform. Covered by `ProtocolCapabilityTests` on both sides.
+- Do not add a message-text marker prefix without updating every call site that
+  inspects `text`. There are three — the sidebar's last-message preview, the
+  editability guard in `AppModel`, and the chat row builder in `ChatView` — and
+  one that forgets renders the raw JSON body at the user. `__FILE__:` marks an
+  attachment and `__REMOTE__:` marks a remote-desktop audit record; both keep
+  the stored history format unchanged, which is the whole reason for the trick.
+  Covered by `RemoteAuditTests`.
+- Do not register the remote-desktop kill shortcut through an `NSEvent` global
+  monitor. That route needs the Accessibility grant, and the shortcut exists to
+  work when things have gone wrong — including a grant that was never given or
+  has been revoked. Carbon's `RegisterEventHotKey` needs no permission and fires
+  whatever app is frontmost, which is the requirement: a host being actively
+  controlled is by definition not looking at our window. The combination is
+  `⌃⌥⌘⎋`, it lives in `RemoteKillSwitch`, and WS7's viewer-side capture must
+  consult `RemoteKillSwitch.reserved` and never put it on the wire.
 - Do not treat an absence of captured frames as a fault. `SCStream` and DXGI
   Desktop Duplication are both change-driven: a screen with nothing moving on it
   delivers no frames at all, indefinitely, and that is correct. A watchdog,

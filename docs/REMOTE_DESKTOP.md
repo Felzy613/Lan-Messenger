@@ -64,15 +64,15 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
 | WS6 | Cross-platform conformance | **Converter done; both directions proven** | macOS fixture pending |
 | WS7 | Input capture + injection | **Not started** | yes, both |
-| WS8 | Session lifecycle + consent UI | **Policy, consent prompt, host indicator done** (macOS); hotkey, watchdog, audit outstanding | no (UI work) |
+| WS8 | Session lifecycle + consent UI | **Done on macOS** except `video_config` and reconnect; Windows mirror not started | no (UI work) |
 | WS9 | Settings, logging, diagnostics | **Log channel done**, settings not started | no |
 | WS10 | Latency tuning | **Not started** | yes |
 | WS11 | Packaging, docs, CI | **Docs done; `dpiAwareness` outstanding** | no |
 
 Test counts on this branch, both suites green:
 
-- macOS **376 passing**, 3 skipped (all generators, skipped by design: the
-  H.264 fixture emitter and the two UI renderers)
+- macOS **400 passing**, 3 skipped (all generators, skipped by design: the
+  H.264 fixture emitter and the UI renderers)
 - Windows **210 passing**, run on real hardware
 
 Of those, the remote-desktop tests are:
@@ -92,6 +92,8 @@ Of those, the remote-desktop tests are:
 | `RemoteDesktopPolicyTests` | 23 | 27 |
 | `RemoteConsentTests` | 19 | — |
 | `RemoteHostIndicatorTests` | 13 | — |
+| `RemoteSessionStopTests` | 11 | — |
+| `RemoteAuditTests` | 13 | — |
 | `RemoteDesktopQueueTests` | 4 | 4 |
 
 ---
@@ -687,14 +689,51 @@ requirements** — a client that does not enforce them is not compatible.
   the right way round: it costs a strip of transmitted pixels and lets a host
   confirm the viewer is seeing what they think.
 - A **host-reserved kill hotkey that is never forwarded**, so a host being
-  actively controlled can always stop the session.
-- **Host watchdog** — no input, stats or keepalive for N seconds tears the
-  session down and releases capture. Not optional: a crashed viewer must never
-  leave a screen captured indefinitely. The `MediaSession` timer context already
-  exists for exactly this, and `RemoteDesktopQueueTests` guards it against
-  starvation.
+  actively controlled can always stop the session. **Done on macOS: `⌃⌥⌘⎋`.**
+
+  The indicator's Stop button is the obvious exit and the weakest one — once
+  control is granted the host's mouse is contested, so pressing a button is a
+  race with the person you are trying to stop. The shortcut is not a race.
+
+  Registered through Carbon's `RegisterEventHotKey`, **not** an `NSEvent` global
+  monitor, because the monitor route needs the Accessibility grant and the whole
+  point of this shortcut is to work when other things have gone wrong —
+  including a grant that was never given or has been revoked. Carbon needs no
+  permission and fires whatever app is frontmost, which is the requirement: a
+  host being actively controlled is by definition not looking at our window.
+
+  The neighbouring combination is deliberate. `⌘⌥⎋` is Force Quit, so a host
+  groping for the escape hatch under stress lands on either this — a clean stop,
+  with a `remote_end` and an audit line — or on Force Quit, which kills the app
+  and therefore the session. Both exits work.
+
+  `RemoteKillSwitch.reserved` is the list WS7's viewer-side capture must consult
+  and never put on the wire, so a viewer can escape their own session and a
+  host's kill switch can never be triggered remotely by the peer it exists to
+  stop. It has a test already, so the rule is in place before the code that has
+  to obey it.
+- **Host watchdog** — already implemented in `MediaSession` (WS3) and guarded
+  against queue starvation by `RemoteDesktopQueueTests`. WS8's remaining share
+  was reacting to it, which `RemoteStopReason.watchdog` now does.
 - Auto-stop on screen lock, user switch, sleep, network loss and app quit.
-- An audit entry in chat history for every session start, stop and control grant.
+  **Done on macOS**, in `RemoteSessionGuard`. Screen lock is the awkward one:
+  it is published only on the *distributed* notification centre under
+  `com.apple.screenIsLocked`, with no public constant and no AppKit equivalent
+  — and without it a locked Mac keeps streaming a lock screen, and then whatever
+  is behind it when the host comes back and types their password.
+
+  The guard disarms as it fires. A lid closing produces sleep *and* a screen
+  lock, and the session must stop once with the first cause rather than twice,
+  since the second callback would arrive after teardown had already run.
+- An audit entry in chat history for every session start, stop and control
+  grant. **Done on macOS.** Stored the way attachments are — an ordinary
+  `MessageEntry` whose `text` carries a `__REMOTE__:` marker and a JSON body —
+  so the history format is unchanged and there is nothing to migrate.
+
+  The cost of that trick is that **every call site inspecting message text needs
+  to know the prefix**, and there are three: the sidebar's last-message preview,
+  the editability guard, and the chat row builder. A fourth that forgets renders
+  raw JSON at somebody. `RemoteAuditTests` pins the conventions apart.
 
 **Window patterns**, so nobody rediscovers them:
 

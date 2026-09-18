@@ -449,6 +449,11 @@ final class AppModel: ObservableObject {
             let path = String(last.text.dropFirst("__FILE__:".count))
             return "📎 \(URL(fileURLWithPath: path).lastPathComponent)"
         }
+        // An audit record is not a message. Without this the sidebar shows the
+        // raw JSON body, which is how a privacy feature ends up looking broken.
+        if let audit = RemoteAuditEntry.decode(last.text) {
+            return audit.summary
+        }
         return Self.collapsedWhitespace(last.text)
     }
 
@@ -589,6 +594,9 @@ final class AppModel: ObservableObject {
     func editMessage(_ entry: MessageEntry, newText: String, peerIP: String) -> Bool {
         guard !entry.incoming, let messageId = entry.messageId else { return false }
         guard !entry.deleted, !entry.text.hasPrefix("__FILE__:") else { return false }
+        // An audit record has no body to replace, and rewriting the trail is
+        // the one thing it exists to prevent.
+        guard !RemoteAuditEntry.isAudit(entry.text) else { return false }
 
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }

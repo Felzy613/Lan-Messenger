@@ -185,6 +185,14 @@ struct ChatView: View {
                 // when many MediaBubbleView tasks complete concurrently.
                 VStack(spacing: 2) {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
+                        if let audit = RemoteAuditEntry.decode(entry.text) {
+                            // A fact about the conversation rather than part of
+                            // it: centred, no bubble, no reply or edit affordance.
+                            RemoteAuditRowView(
+                                entry: audit,
+                                timestamp: Date(timeIntervalSince1970: entry.timestamp))
+                                .id(entry.id)
+                        } else {
                         let prevIncoming = idx > 0 ? entries[idx - 1].incoming : !entry.incoming
                         MessageBubbleView(
                             entry: entry,
@@ -208,6 +216,7 @@ struct ChatView: View {
                             ? Theme.accent.opacity(0.10)
                             : Color.clear
                         )
+                        }
                     }
 
                     // The typing bubble is the last row of the thread, where
