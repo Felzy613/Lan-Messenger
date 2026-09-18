@@ -207,6 +207,15 @@ public sealed class DesktopDuplicator : IDisposable
     /// Returns null when nothing changed, which is the ordinary case and must
     /// not be treated as failure. `timeoutMs` bounds the wait so the caller's
     /// loop stays responsive to a stop request.
+    /// How long the last frame spent in colour conversion, in microseconds.
+    /// Read by the capture loop for its stats line: this is the single most
+    /// expensive step per frame and the first place to look when the loop
+    /// cannot make its slot.
+    public ulong ConvertUs { get; private set; }
+
+    private static ulong NowUs() =>
+        (ulong)(Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1_000_000L));
+
     public CapturedFrame? TryCapture(int timeoutMs = 100)
     {
         var duplication = _duplication;
@@ -249,9 +258,16 @@ public sealed class DesktopDuplicator : IDisposable
 
             SecureDesktopActive = false;
 
+            // Stamped here, before the conversion, because the comment below is
+            // the whole reason the field exists — and it used to be taken after
+            // the Convert call, which quietly excluded the most expensive step
+            // in the loop from every latency figure the viewer reported.
+            ulong captureUs = NowUs();
+
             using var texture = resource.QueryInterface<ID3D11Texture2D>();
             var nv12 = _converter!.Convert(texture, out int stride);
             if (nv12 is null) return null;
+            ConvertUs = NowUs() - captureUs;
 
             return new CapturedFrame
             {
@@ -260,7 +276,7 @@ public sealed class DesktopDuplicator : IDisposable
                 // media frame header. Taken at acquire rather than at delivery:
                 // the difference is the time the frame spent being converted,
                 // which is exactly the latency the measurement exists to catch.
-                CaptureUs = (ulong)(Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1_000_000L)),
+                CaptureUs = captureUs,
             };
         }
         catch (SharpGenException ex)

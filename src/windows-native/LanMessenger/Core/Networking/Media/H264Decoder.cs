@@ -39,6 +39,8 @@ public sealed class H264Decoder : IDisposable
     private static readonly Guid MF_MT_SUBTYPE        = new("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");
     private static readonly Guid MF_MT_INTERLACE_MODE = new("e2724bb8-e676-4806-b4b2-a8d6efb44ccd");
     private static readonly Guid MF_MT_FRAME_SIZE     = new("1652c33d-d6b2-4012-b834-72030849a37d");
+    private static readonly Guid MF_MT_MINIMUM_DISPLAY_APERTURE =
+        new("d7388766-18fe-48c6-a177-ee894867c8c4");
     private static readonly Guid MFMediaType_Video    = new("73646976-0000-0010-8000-00aa00389b71");
     private static readonly Guid MFVideoFormat_H264   = new("34363248-0000-0010-8000-00aa00389b71");
     private static readonly Guid MFVideoFormat_NV12   = new("3231564e-0000-0010-8000-00aa00389b71");
@@ -112,6 +114,29 @@ public sealed class H264Decoder : IDisposable
         return transform;
     }
 
+    /// The MFVideoArea the decoder considers the real picture, if it says.
+    ///
+    /// MFVideoArea is {MFOffset x; MFOffset y; SIZE size}, and MFOffset is
+    /// {WORD fract; short value} — a 16.16 fixed-point pair. That makes the
+    /// blob 16 bytes with the width and height as two Int32s at offset 8,
+    /// which is the only part of it worth reading here.
+    private static (int, int)? ReadDisplayAperture(IMFMediaType type)
+    {
+        try
+        {
+            var blob = type.GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE);
+            if (blob is null || blob.Length < 16) return null;
+            int width = BitConverter.ToInt32(blob, 8);
+            int height = BitConverter.ToInt32(blob, 12);
+            return (width, height);
+        }
+        catch
+        {
+            // Absent is the ordinary case on some decoders, not a fault.
+            return null;
+        }
+    }
+
     private static IMFTransform? EnumerateDecoder(bool hardware)
     {
         uint flags = hardware
@@ -179,6 +204,26 @@ public sealed class H264Decoder : IDisposable
             {
                 ulong packed = candidate.GetUInt64(MF_MT_FRAME_SIZE);
                 int width = (int)(packed >> 32), height = (int)(packed & 0xFFFFFFFF);
+
+                // MF_MT_FRAME_SIZE is the *surface*, not the picture. H.264
+                // codes in 16-pixel macroblocks, so a 1080-line screen decodes
+                // into a 1088-line surface and the last 8 rows are whatever the
+                // encoder padded them with. Presenting the surface size showed
+                // a strip of that padding along the bottom of every session.
+                //
+                // MF_MT_MINIMUM_DISPLAY_APERTURE is the codec's own statement of
+                // which rectangle is real. Where a decoder omits it the surface
+                // size is all there is, and the strip comes back — which is
+                // still better than cropping to a guess.
+                var aperture = ReadDisplayAperture(candidate);
+                if (aperture is (int apertureWidth, int apertureHeight)
+                    && apertureWidth > 0 && apertureHeight > 0
+                    && apertureWidth <= width && apertureHeight <= height)
+                {
+                    width = apertureWidth;
+                    height = apertureHeight;
+                }
+
                 if (width != _width || height != _height)
                 {
                     _width = width;

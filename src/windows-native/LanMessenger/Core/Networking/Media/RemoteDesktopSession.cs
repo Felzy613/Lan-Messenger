@@ -156,6 +156,7 @@ public sealed class RemoteDesktopSession : IDisposable
     private void CaptureLoop()
     {
         long attempts = 0, delivered = 0;
+        long lastStatsAttempts = 0, captureUsTotal = 0, encodeUsTotal = 0;
         var clock = Stopwatch.StartNew();
         long nextSlotMs = 0;
         long intervalMs = 1000 / TargetFrameRate;
@@ -191,7 +192,10 @@ public sealed class RemoteDesktopSession : IDisposable
 
                 // Null means nothing changed. That is the ordinary case on a
                 // still screen and is not a failure of any kind.
+                long t0 = Stopwatch.GetTimestamp();
                 var frame = capture.TryCapture(timeoutMs: 100);
+                long t1 = Stopwatch.GetTimestamp();
+                captureUsTotal += (t1 - t0) / (Stopwatch.Frequency / 1_000_000L);
                 attempts++;
                 if (frame is not null) delivered++;
 
@@ -201,8 +205,15 @@ public sealed class RemoteDesktopSession : IDisposable
                 // next to the number of times we asked.
                 if (attempts % 150 == 0)
                 {
+                    long laps = Math.Max(1, attempts - lastStatsAttempts);
                     LanLogger.Remote("capture_stats",
-                        reason: $"attempts={attempts} delivered={delivered}");
+                        reason: $"attempts={attempts} delivered={delivered} "
+                              + $"convert_us={capture.ConvertUs} "
+                              + $"capture_ms_avg={captureUsTotal / laps / 1000} "
+                              + $"encode_ms_avg={encodeUsTotal / laps / 1000}");
+                    lastStatsAttempts = attempts;
+                    captureUsTotal = 0;
+                    encodeUsTotal = 0;
                 }
 
                 // The secure desktop coming and going is the one capture state a
@@ -217,6 +228,7 @@ public sealed class RemoteDesktopSession : IDisposable
 
                 if (frame is null) continue;
                 encoder.Encode(frame.Nv12, frame.Stride, frame.CaptureUs);
+                encodeUsTotal += (Stopwatch.GetTimestamp() - t1) / (Stopwatch.Frequency / 1_000_000L);
             }
             catch (Exception ex)
             {
