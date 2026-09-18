@@ -361,8 +361,9 @@ remotely, and each needs someone at the physical keyboard:
 
 ## Remaining work
 
-Ordered. Each workstream states its goal, the files it creates, the traps that
-are already known, and what "done" means.
+Reference detail per workstream: the goal, the files it creates, the traps that
+are already known, and what "done" means. For the order to actually do them in,
+see [The plan to finish](#the-plan-to-finish) at the end.
 
 ### WS4b — Windows capture and encode
 
@@ -1035,29 +1036,156 @@ of every test fixture.
 
 ---
 
-## Immediate next steps
+## The plan to finish
 
-For whoever picks this up:
+Five phases, ordered so each one is verifiable before the next begins, and so
+the platform with the slowest feedback loop comes *after* the design is proven
+rather than alongside it.
 
-1. **Grant Screen Recording to the built app and confirm capture delivers.**
-   This is the only unverified link in the macOS chain, and it needs a human:
-   the TCC grant is declined for the process that runs `swift test`, so the
-   refusal path is all that can be asserted here. Build and launch the signed
-   app, grant it, and check that `capture_started` is followed by frames —
-   signing is stable, so the grant will stick across rebuilds.
+### The gap the original plan had
 
-   ```bash
-   cd src/macos && ./scripts/build_app.sh && swift run
-   ```
+There is no workstream for **wiring it together**. Every piece works in
+isolation — capture, encode, transport, decode, present, consent, indicator,
+kill switch, audit — and none of them are connected to anything. There is no
+menu item, no invite, no session object. That is why nothing is usable today
+despite eleven of twelve workstreams being largely complete, and it is the first
+thing to fix.
 
-2. **WS8, session lifecycle and consent.** Everything below it now works and
-   none of it is reachable: there is no invite, no accept, no viewer window and
-   no host indicator. It is also the workstream that decides whether this feature
-   is safe, and retrofitting consent is much harder than building it in.
-3. **At the Dell's physical keyboard**, run the probe to answer Desktop
-   Duplication:
+---
 
-   ```powershell
-   cd C:\Users\Davef\lanmsg\spikes\windows-mf-probe
-   dotnet run -c Release -- --frames=2
-   ```
+### Phase 1 — Make it work on one Mac
+
+**No new platform code.** Everything this needs already exists and is tested;
+the work is the orchestration that was never scoped.
+
+- `RemoteDesktopSession` — the object that ties consent → capture → encode →
+  transport on the host, and transport → decode → present on the viewer. Owns
+  the `RemoteGrantState`, arms the `RemoteSessionGuard`, raises the indicator,
+  writes the audit entries, and honours `remote_end`.
+- A viewer window: `NSPanel` + `NSHostingView` hosting
+  `SampleBufferVideoPresenter.layer`, per the `MediaBubbleView` pattern.
+- The entry point — a menu item on a conversation, enabled by
+  `RemoteDesktopPolicy.availability`, greyed with a reason otherwise.
+- **A self-view mode**: the app views its own screen, in-process, no network.
+
+That last item is the point. It makes the whole pipeline runnable and visible on
+a single machine, with no second Mac and no peer, which is the fastest way to
+find integration bugs while the codebase is still half its final size.
+
+**Done when:** you can start a self-view session from the UI, see your own
+screen in a window, watch the indicator count up, and stop it with `⌃⌥⌘⎋`.
+
+**Verified by:** a human on this Mac. No hardware anyone has to find.
+
+---
+
+### Phase 2 — Two Macs
+
+The first time anything crosses a socket.
+
+- Real `remote_invite` / `remote_accept` / `remote_decline` over TCP 54232.
+- The `media_attach` upgrade exercised for real rather than against a paired
+  in-memory link.
+- `video_config` before the first frame; resolution change and monitor hot-plug.
+- Reconnect: ~30 s warm window, **fresh handshake** — the UI may present it as
+  one continuous session, the crypto must not.
+
+**Done when:** one Mac views another's screen over the LAN, survives a display
+being unplugged, and recovers from the network dropping.
+
+**Verified by:** two Macs. If only one is available, a VM on the same host
+exercises everything except real-network timing.
+
+---
+
+### Phase 3 — Windows, as a mirror
+
+Only now, and deliberately: porting a design that has been proven end to end is
+a different job from inventing two unproven halves in parallel.
+
+- **WS4b** — `DesktopDuplicator`, `ColorConverter`, `H264Encoder`, `CodecApi`.
+  Port the spike's encode stage rather than writing it fresh.
+  `CaptureTargetSelector` already decides *which* GPU and encoder; this is the
+  plumbing underneath it.
+- **WS5 Windows** — `H264Decoder` plus `IVideoPresenter`. Build the
+  `WriteableBitmap` presenter first so the pipeline is never blocked on
+  presentation; the swap-chain window is an optimisation, not a prerequisite.
+- **WS8 Windows** — consent prompt, host indicator, kill switch, audit trail,
+  mirroring the macOS versions.
+
+**Done when:** Mac ↔ Windows works in both directions. **Check blacks and
+whites, not just "there is a picture"** — the colour-range bug is invisible
+unless you look for it.
+
+**Verified by:** the Dell, at the keyboard. Batch this work: every check needs a
+human there, so the loop is slow and should be run few times rather than often.
+
+---
+
+### Phase 4 — Input
+
+Last on purpose. It is the riskiest surface, needs the most manual testing, and
+is useless until there is a session to inject into.
+
+- **Take Chromium's `dom_code_data.inc`** — HID usage, Windows scancode and
+  macOS keycode in one BSD-licensed table. Hand-building this is where two days
+  of bugs live.
+- Ship the **key-echo diagnostic on day one**: the host shows what it received
+  and what it injected. It makes the layout-testing day survivable.
+- `CGEvent` injector on macOS, `SendInput` on Windows. Both are ~300 lines and
+  both are hand-written by everybody, Chrome Remote Desktop included — the
+  cross-platform input libraries target automation ("type hello"), not faithful
+  replay of a remote user's raw events.
+- Wire the **second consent prompt** — `control_request` → `control_grant` —
+  and make the input sub-channel inert until it arrives.
+
+**Done when:** a manual pass across US/UK/German/French layouts is clean, no
+modifier sticks, Right Ctrl and AltGr are distinct from their left counterparts,
+and the arrows work with NumLock on.
+
+---
+
+### Phase 5 — Ship it
+
+- **WS10, kept small.** Measure RTT and loss, step the bitrate, drop stale
+  frames. This is a LAN: sub-millisecond RTT, gigabit, near-zero loss. Do **not**
+  reimplement a congestion-control stack — that is what WebRTC exists for and it
+  is not what this network needs.
+- Populate the stats channel from the numbers the pipeline already counts.
+- **WS11 remainder** — Vortice package references, and the Windows App SDK
+  1.5 decision (only if presentation interop misbehaves; it touches the
+  self-contained story and the `IncludePriFileInPublishOutput` workaround).
+- **A diagnostic report users can run and send back.** We own one Intel GPU. An
+  Optimus laptop, an AMD box or a Windows N SKU will behave differently, and the
+  only way to learn how is to ask. `CaptureTargetSelector` already decides
+  correctly for nine topologies on paper; this is how the paper gets checked.
+
+---
+
+### What this deliberately does not do
+
+**It does not switch to WebRTC.** The question was never asked in the original
+plan and should have been, so for the record: WebRTC would have replaced WS2,
+WS3, WS6 and WS10 — and nothing else. Capture, encode, decode, input and consent
+are written either way; libwebrtc's own `DesktopCapturer` is a wrapper over the
+same DXGI and ScreenCaptureKit calls we make.
+
+Against that, the C# binding story is effectively dead —
+`Microsoft.MixedReality.WebRTC` is archived, and `SIPSorcery` is pure-managed
+with no hardware H.264 — so adopting it means building and binding libwebrtc for
+both Swift and C#, then shipping it in both installers.
+
+And most of what its transport buys you is for the internet: NAT traversal,
+loss recovery, bandwidth estimation across a hostile path. On a LAN those
+problems are largely absent. The transport we have is built, tested, and
+byte-identical across platforms.
+
+The one place the argument genuinely favours WebRTC is congestion control, which
+is why Phase 5 keeps WS10 deliberately small rather than attempting a real one.
+
+---
+
+## Immediate next step
+
+**Phase 1.** Everything it needs exists and is tested, it needs no hardware
+anybody has to find, and it ends with something you can look at.
