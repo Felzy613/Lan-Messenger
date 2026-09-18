@@ -1,0 +1,196 @@
+using LanMessenger.Core.Networking.Media;
+using LanMessenger.Core.Services;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media.Imaging;
+using System;
+using System.Runtime.InteropServices.WindowsRuntime;
+
+namespace LanMessenger.UI.RemoteDesktop;
+
+// The window a Windows viewer watches in, and the WriteableBitmap presenter that
+// fills it.
+//
+// A separate Window rather than a page, following MediaPreviewWindow: a viewer
+// is naturally its own window, and a remote screen inside the chat layout would
+// be both cramped and confusing.
+//
+// The threading rule is the one that bites. Decoded frames arrive on the session
+// read thread; WriteableBitmap must be touched only on the UI thread. So every
+// frame crosses a DispatcherQueue hop, and the presenter **drops** rather than
+// queues when the UI thread is behind — a backlog of stale frames is latency a
+// viewer can never pay off, and on live screen content the newest frame is the
+// only one anybody wants.
+
+public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
+{
+    private readonly DispatcherQueue _dispatcher;
+    private WriteableBitmap? _bitmap;
+    private byte[]? _bgra;
+    private int _width;
+    private int _height;
+
+    /// Set while a frame is already on its way to the UI thread. The next one
+    /// is dropped rather than queued: stale frames are worse than missing ones.
+    private int _framePending;
+    private bool _keyframeRequested;
+    private bool _closed;
+
+    public Action<string>? OnKeyframeNeeded { get; set; }
+    /// Raised when the user closes the window. Closing ends the session — a
+    /// viewer window that is gone while a host's screen is still captured is
+    /// exactly the state the watchdog exists to catch.
+    public Action? OnClosed { get; set; }
+
+    public RemoteViewerWindow(string peerName)
+    {
+        InitializeComponent();
+        _dispatcher = DispatcherQueue.GetForCurrentThread();
+        Title = $"{peerName} — screen";
+
+        Closed += (_, _) =>
+        {
+            _closed = true;
+            var handler = OnClosed;
+            OnClosed = null;
+            handler?.Invoke();
+        };
+    }
+
+    // MARK: - IVideoPresenter
+
+    public void Present(DecodedVideoFrame frame)
+    {
+        if (_closed) return;
+
+        // Drop rather than queue. This is live screen content: a frame that has
+        // been waiting is already wrong, and the backlog only grows.
+        if (Interlocked.Exchange(ref _framePending, 1) == 1)
+        {
+            RequestKeyframe("ui_thread_behind");
+            return;
+        }
+
+        if (!_dispatcher.TryEnqueue(DispatcherQueuePriority.High, () => Render(frame)))
+        {
+            Interlocked.Exchange(ref _framePending, 0);
+        }
+    }
+
+    private void Render(DecodedVideoFrame frame)
+    {
+        try
+        {
+            if (_closed || frame.Width <= 0 || frame.Height <= 0) return;
+
+            if (_bitmap is null || _width != frame.Width || _height != frame.Height)
+            {
+                _width = frame.Width;
+                _height = frame.Height;
+                _bitmap = new WriteableBitmap(_width, _height);
+                _bgra = new byte[Nv12Converter.BgraLength(_width, _height)];
+                VideoImage.Source = _bitmap;
+                ResizeToAspect();
+                LanLogger.Remote("viewer_format", reason: $"{_width}x{_height}");
+            }
+
+            Nv12Converter.ToBgra(frame.Nv12, frame.Stride, _width, _height, _bgra!);
+
+            using (var stream = _bitmap!.PixelBuffer.AsStream())
+            {
+                stream.Write(_bgra!, 0, _bgra!.Length);
+            }
+            _bitmap.Invalidate();
+
+            if (WaitingText.Visibility == Visibility.Visible)
+            {
+                WaitingText.Visibility = Visibility.Collapsed;
+            }
+            _keyframeRequested = false;
+        }
+        catch (Exception ex)
+        {
+            // Nothing that runs inside a WinUI callback may throw — CLAUDE.md
+            // carries two separate scars from exactly that.
+            LanLogger.Remote("error", reason: $"present failed: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _framePending, 0);
+        }
+    }
+
+    public void Flush()
+    {
+        RequestKeyframe("flush");
+    }
+
+    public void Clear()
+    {
+        if (_closed) return;
+        _dispatcher.TryEnqueue(() =>
+        {
+            VideoImage.Source = null;
+            _bitmap = null;
+            _bgra = null;
+            WaitingText.Visibility = Visibility.Visible;
+        });
+    }
+
+    /// What the host says about its own state — the secure desktop being up, an
+    /// elevated window having focus, the machine being locked. Without this the
+    /// viewer sees a frozen picture and no reason for it.
+    public void ShowHostState(RemoteHostState state)
+    {
+        if (_closed) return;
+        _dispatcher.TryEnqueue(() =>
+        {
+            if (!state.IsNotable)
+            {
+                StatusBar.Visibility = Visibility.Collapsed;
+                return;
+            }
+            StatusText.Text = state.SecureDesktop
+                ? "The other machine is showing a Windows security screen, which cannot be shared."
+                : state.Locked
+                    ? "The other machine is locked."
+                    : "An administrator window has focus. Keyboard and mouse will not reach it.";
+            StatusBar.Visibility = Visibility.Visible;
+        });
+    }
+
+    private void RequestKeyframe(string reason)
+    {
+        if (_keyframeRequested) return;
+        _keyframeRequested = true;
+        LanLogger.Remote("presenter_needs_keyframe", reason: reason);
+        OnKeyframeNeeded?.Invoke(reason);
+    }
+
+    /// Shapes the window to the picture. A window whose aspect does not match
+    /// letterboxes forever, and the user cannot tell whether that is the app or
+    /// the remote screen.
+    private void ResizeToAspect()
+    {
+        try
+        {
+            var area = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(
+                AppWindow.Id, Microsoft.UI.Windowing.DisplayAreaFallback.Nearest);
+
+            double maxWidth = area.WorkArea.Width * 0.8;
+            double maxHeight = area.WorkArea.Height * 0.8;
+            double scale = Math.Min(Math.Min(maxWidth / _width, maxHeight / _height), 1.0);
+
+            int width = Math.Max(320, (int)(_width * scale));
+            int height = Math.Max(240, (int)(_height * scale));
+
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(width, height));
+        }
+        catch (Exception ex)
+        {
+            // A window that is the wrong size is a nuisance; one that threw
+            // during resize is a dead session.
+            LanLogger.Remote("error", reason: $"viewer resize failed: {ex.Message}");
+        }
+    }
+}

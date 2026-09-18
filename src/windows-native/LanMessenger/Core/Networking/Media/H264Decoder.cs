@@ -26,22 +26,6 @@ namespace LanMessenger.Core.Networking.Media;
 //     H264Bitstream.SplitAccessUnits' job, and the reason the macOS fixture is
 //     committed: VideoToolbox emits no delimiters at all.
 
-/// One decoded picture. The buffer is NV12 and is only valid until the next
-/// call — the presenter copies what it needs.
-public sealed class DecodedVideoFrame
-{
-    public required int Width { get; init; }
-    public required int Height { get; init; }
-    /// Carried through from the media frame header, for the latency figure.
-    public required ulong CaptureUs { get; init; }
-    /// NV12: a full-size luma plane followed by interleaved half-size chroma.
-    public required byte[] Nv12 { get; init; }
-    /// Bytes per row of the luma plane. Media Foundation pads rows, so this is
-    /// not the same as Width and using Width instead skews the picture into a
-    /// diagonal smear.
-    public required int Stride { get; init; }
-}
-
 public sealed class H264DecoderException(string message) : Exception(message);
 
 public sealed class H264Decoder : IDisposable

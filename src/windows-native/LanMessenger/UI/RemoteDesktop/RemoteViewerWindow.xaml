@@ -1,0 +1,42 @@
+<Window
+    x:Class="LanMessenger.UI.RemoteDesktop.RemoteViewerWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid Background="Black">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Status strip. Carries host_state, which is what turns an
+             inexplicable frozen picture into an explanation: a Windows host
+             cannot capture the secure desktop, and saying so beats a mystery. -->
+        <Border x:Name="StatusBar"
+                Grid.Row="0"
+                Background="#B33A1D"
+                Padding="12,6"
+                Visibility="Collapsed">
+            <TextBlock x:Name="StatusText"
+                       Foreground="White"
+                       FontSize="12"
+                       TextWrapping="Wrap" />
+        </Border>
+
+        <!-- Stretch=Uniform, never UniformToFill: letterboxing is honest, and
+             cropping somebody's screen without telling them is not. -->
+        <Image x:Name="VideoImage"
+               Grid.Row="1"
+               Stretch="Uniform"
+               HorizontalAlignment="Stretch"
+               VerticalAlignment="Stretch" />
+
+        <TextBlock x:Name="WaitingText"
+                   Grid.Row="1"
+                   Text="Waiting for the first frame…"
+                   Foreground="#9AA0A6"
+                   FontSize="13"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center" />
+    </Grid>
+</Window>
