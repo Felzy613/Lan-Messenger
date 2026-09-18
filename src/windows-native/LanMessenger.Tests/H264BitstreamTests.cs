@@ -265,4 +265,63 @@ public class H264BitstreamTests
         var nonIDR = H264Bitstream.ScanAnnexB(data).First(u => u.Type == H264NALType.NonIDRSlice);
         Assert.IsFalse(H264Bitstream.AnnexBContainsKeyframe(H264Bitstream.AnnexB(nonIDR.Payload)));
     }
+
+    // ---- The macOS encoder output, for the other direction ------------------
+
+    private static byte[] MacOSSample()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "macos_h264_sample.h264");
+        if (!File.Exists(path)) path = "macos_h264_sample.h264";
+        return File.ReadAllBytes(path);
+    }
+
+    [TestMethod]
+    public void MacOSSampleIsTheExactShapeTheWindowsOneIsNot()
+    {
+        // Real VideoToolbox output, committed so this suite can assert the
+        // macOS -> Windows direction without a Mac, exactly as the Swift suite
+        // asserts the reverse without a PC.
+        //
+        // Its value is in how unlike the Windows sample it is: VideoToolbox
+        // emits no access unit delimiters at all and parameter sets only at
+        // IDRs. It is direct evidence for the rule that an AUD-based split
+        // collapses a stream — there are no AUDs here to split on.
+        var units = H264Bitstream.ScanAnnexB(MacOSSample());
+        Assert.AreEqual(64, units.Count, "pinned against the recorded run");
+
+        var counts = new Dictionary<byte, int>();
+        foreach (var unit in units)
+        {
+            counts.TryGetValue(unit.Type, out var n);
+            counts[unit.Type] = n + 1;
+        }
+
+        Assert.IsFalse(counts.ContainsKey(H264NALType.AccessUnitDelimiter),
+                       "VideoToolbox emits no AUDs — that is the point of this fixture");
+        Assert.AreEqual(2, counts[H264NALType.IDRSlice]);
+        Assert.AreEqual(58, counts[H264NALType.NonIDRSlice]);
+        Assert.AreEqual(2, counts[H264NALType.SPS], "parameter sets ride the IDRs");
+        Assert.AreEqual(2, counts[H264NALType.PPS]);
+    }
+
+    [TestMethod]
+    public void MacOSSampleCarriesParameterSetsInBandBeforeEveryIDR()
+    {
+        // What Media Foundation depends on: it has no out-of-band channel for
+        // parameter sets, so a stream whose SPS/PPS live only in a
+        // CMVideoFormatDescription decodes to nothing here.
+        var units = H264Bitstream.ScanAnnexB(MacOSSample());
+        for (int i = 0; i < units.Count; i++)
+        {
+            if (units[i].Type != H264NALType.IDRSlice) continue;
+            bool sps = false, pps = false;
+            for (int k = Math.Max(0, i - 4); k < i; k++)
+            {
+                if (units[k].Type == H264NALType.SPS) sps = true;
+                if (units[k].Type == H264NALType.PPS) pps = true;
+            }
+            Assert.IsTrue(sps, $"IDR at {i} has no SPS before it");
+            Assert.IsTrue(pps, $"IDR at {i} has no PPS before it");
+        }
+    }
 }

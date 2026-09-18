@@ -62,18 +62,20 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS4a | macOS capture + encode | **Written, end to end**; capture unverified | Screen Recording grant |
 | WS4b | Windows capture + encode | **Not started** | yes |
 | WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
-| WS6 | Cross-platform conformance | **Converter done; both directions proven** | macOS fixture pending |
-| WS7 | Input capture + injection | **Not started** | yes, both |
+| WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
+| WS7 | Input capture + injection | **Geometry done**, both platforms; injection and key tables not started | yes, both |
 | WS8 | Session lifecycle + consent UI | **Done on macOS** except `video_config` and reconnect; Windows mirror not started | no (UI work) |
 | WS9 | Settings, logging, diagnostics | **Log channel done**, settings not started | no |
 | WS10 | Latency tuning | **Not started** | yes |
-| WS11 | Packaging, docs, CI | **Docs done; `dpiAwareness` outstanding** | no |
+| WS11 | Packaging, docs, CI | **`dpiAwareness` done** (unverified on Windows); Vortice refs and the SDK decision remain | no |
 
 Test counts on this branch, both suites green:
 
-- macOS **400 passing**, 3 skipped (all generators, skipped by design: the
+- macOS **411 passing**, 4 skipped (all generators, skipped by design: the
   H.264 fixture emitter and the UI renderers)
-- Windows **210 passing**, run on real hardware
+- Windows: **64 pure-logic tests pass via the macOS shim** — the policy,
+  capability, bitstream and input-geometry suites. The full MSTest run has not
+  happened since the `caps` commit; that machine has been off the network.
 
 Of those, the remote-desktop tests are:
 
@@ -493,13 +495,17 @@ shows live frames on both platforms.
 
 ### WS6 — Conformance, remainder
 
-The converter and **both** decode directions are done: macOS → Windows on real
-hardware via the WS0 probe, Windows → macOS in `H264DecoderTests` against the
-committed fixture. What remains:
+**Done.** Both decode directions were already proven; what remained was a macOS
+fixture so the Windows suite could assert its direction without a Mac, and that
+is now committed as `macos_h264_sample.h264` in both test directories.
 
-- A macOS fixture committed alongside the Windows one, so the *Windows* suite can
-  assert its direction without hardware too — the macOS side already can. It is
-  currently regenerated on demand:
+Its value is in how *unlike* the Windows fixture it is. 64 NAL units against 126;
+**zero access unit delimiters** against one per frame; parameter sets only at the
+two IDRs. It is direct evidence for the rule that an AUD-based access-unit split
+collapses a stream — there are no AUDs in it to split on. Both suites now pin
+both layouts.
+
+Regenerate with:
 
 ```bash
 cd src/macos

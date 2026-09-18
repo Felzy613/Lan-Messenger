@@ -164,6 +164,57 @@ final class H264BitstreamTests: XCTestCase {
         return try Data(contentsOf: url)
     }
 
+    // MARK: - The macOS encoder output, for the other direction
+
+    private func macOSSample() throws -> Data {
+        let url: URL
+        if let bundled = Bundle(for: H264BitstreamTests.self)
+            .url(forResource: "macos_h264_sample", withExtension: "h264") {
+            url = bundled
+        } else {
+            url = URL(fileURLWithPath: #file).deletingLastPathComponent()
+                .appendingPathComponent("macos_h264_sample.h264")
+        }
+        return try Data(contentsOf: url)
+    }
+
+    func testMacOSSampleIsTheExactShapeTheWindowsOneIsNot() throws {
+        // Committed alongside the Windows fixture so the Windows suite can
+        // assert this direction without a Mac, exactly as this suite asserts the
+        // other direction without a PC.
+        //
+        // Its value is in how *unlike* the Windows sample it is. VideoToolbox
+        // emits no access unit delimiters at all and parameter sets only at
+        // IDRs, so this is direct evidence for the rule that an AUD-based split
+        // collapses a stream: there are no AUDs here to split on.
+        let units = H264Bitstream.scanAnnexB(try macOSSample())
+        XCTAssertEqual(units.count, 64, "pinned against the recorded run")
+
+        var counts: [UInt8: Int] = [:]
+        for unit in units { counts[unit.type, default: 0] += 1 }
+        XCTAssertNil(counts[H264NALType.accessUnitDelimiter],
+                     "VideoToolbox emits no AUDs — that is the point of this fixture")
+        XCTAssertEqual(counts[H264NALType.idrSlice], 2)
+        XCTAssertEqual(counts[H264NALType.nonIDRSlice], 58)
+        XCTAssertEqual(counts[H264NALType.sps], 2, "parameter sets ride the IDRs")
+        XCTAssertEqual(counts[H264NALType.pps], 2)
+
+        XCTAssertEqual(H264Bitstream.splitAccessUnits(try macOSSample()).count, 60,
+                       "60 pictures, found by slice rather than by delimiter")
+    }
+
+    func testMacOSSampleCarriesParameterSetsInBandBeforeEveryIDR() throws {
+        // What a Media Foundation decoder depends on: it has no out-of-band
+        // channel for parameter sets, so a stream whose SPS/PPS live only in our
+        // CMVideoFormatDescription decodes to nothing on the far side.
+        let units = H264Bitstream.scanAnnexB(try macOSSample())
+        for idr in units.indices.filter({ units[$0].isKeyframe }) {
+            let preceding = units[max(0, idr - 4)..<idr].map { $0.type }
+            XCTAssertTrue(preceding.contains(H264NALType.sps), "IDR at \(idr) has no SPS before it")
+            XCTAssertTrue(preceding.contains(H264NALType.pps), "IDR at \(idr) has no PPS before it")
+        }
+    }
+
     func testWindowsSampleStructureMatchesWhatTheEncoderActuallyProduced() throws {
         let data = try windowsSample()
         let units = H264Bitstream.scanAnnexB(data)

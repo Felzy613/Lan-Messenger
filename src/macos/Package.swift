@@ -48,6 +48,7 @@ let package = Package(
                 .copy("remote_handshake_vector.json"),
                 .copy("media_frame_vector.json"),
                 .copy("windows_h264_sample.h264"),
+                .copy("macos_h264_sample.h264"),
             ]
         ),
     ]
