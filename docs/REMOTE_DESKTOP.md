@@ -71,8 +71,11 @@ desktop, and it needs its own channel, size cap and loop guard.
 
 Test counts on this branch, both suites green:
 
-- macOS **423 passing**, 5 skipped (all generators, skipped by design: the
-  H.264 fixture emitter, the control-vector emitter and the UI renderers)
+- Windows GPU/encoder selection covers **nine machine topologies**, only one of
+  which we own
+- macOS **425 passing**, 7 skipped (all generators or hardware-gated: the
+  H.264 fixture emitter, the control-vector emitter, the UI renderers, and the
+  live capture check)
 - Windows **270 passing**, run on real hardware 2026-09-17 from a freshly built
   binary, with the app project compiling — which is what validates the XAML
 
@@ -384,6 +387,21 @@ code against this exact hardware; port it rather than writing from scratch.
 and `IMFMediaType` — **everything except `ICodecAPI`**. So this is Vortice plus
 one hand-rolled COM interface, not a migration to CsWin32. Verified by
 reflection over the NuGet package from the Mac.
+
+**One machine is not every machine.** The probe proved Desktop Duplication on an
+Intel UHD 730 with one attached display. That says nothing about an Optimus
+laptop, an AMD box, a Windows N SKU with no H.264 MFTs, two monitors on two
+adapters, or an RDP session. Buying five GPUs is not an option; describing five
+topologies is.
+
+So **every selection decision is pure and lives in `CaptureTargetSelector.cs`**,
+and real hardware only has to prove the D3D and Media Foundation plumbing works
+once the right objects have been chosen. `CaptureTargetSelectorTests` asserts
+nine topologies, one of which we own: the Dell's own three-adapter shape; an
+Optimus laptop where adapter 0 is the discrete GPU and owns nothing; two monitors
+on two adapters; a Basic Render Driver that must never be chosen; a headless
+machine; a detached output; a monitor unplugged mid-session; and a Windows N SKU
+with no encoder at all.
 
 **Confirmed working on this hardware, 2026-09-17.** The probe, run at the
 physical keyboard, reported `DuplicateOutput: OK` and

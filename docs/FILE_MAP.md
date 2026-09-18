@@ -339,6 +339,7 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 | `src/windows-native/LanMessenger/Core/Crypto/PeerKeyTrust.cs` | Mirror of the Swift key-trust classifier. |
 | `src/windows-native/LanMessenger/Core/Networking/Media/RemoteDesktopPolicy.cs` | Mirror of the Swift consent gate, including `RemoteDesktopMode`. `AppConfig` serializes the raw string rather than the enum: `System.Text.Json` throws on an unknown enum value, which would take the rest of the config with it. |
 | `src/windows-native/LanMessenger/Core/Networking/Media/MediaControlMessage.cs` | Mirror of the Swift control codec. Every object is written by hand with `Utf8JsonWriter` in sorted key order and `UnsafeRelaxedJsonEscaping`, because `System.Text.Json` sorts nothing and escapes `/` and non-ASCII where Foundation does not. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/CaptureTargetSelector.cs` | Which GPU to capture from and which encoder to use, as pure functions of enumerated topology — so the decisions are tested against Optimus laptops, AMD boxes, Windows N SKUs and headless machines nobody here owns. Real hardware only proves the plumbing. |
 | `src/windows-native/LanMessenger/Core/Networking/Media/RemoteInputGeometry.cs` | Mirror of the Swift geometry, plus the SendInput absolute conversion: divisor is `width - 1`, and the virtual screen origin is subtracted. |
 
 There is **no Windows encoder or decoder yet**. `spikes/windows-mf-probe` holds
