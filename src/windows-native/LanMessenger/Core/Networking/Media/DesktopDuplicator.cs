@@ -207,6 +207,14 @@ public sealed class DesktopDuplicator : IDisposable
     /// Returns null when nothing changed, which is the ordinary case and must
     /// not be treated as failure. `timeoutMs` bounds the wait so the caller's
     /// loop stays responsive to a stop request.
+    /// Desktop frames the compositor produced since we last asked. Anything
+    /// above 1 is screen updates we are not sending — the cost of pacing.
+    public uint AccumulatedFrames { get; private set; }
+
+    /// How old the last frame already was when we collected it, in
+    /// microseconds. Pure waiting: it happened before we touched the frame.
+    public ulong FrameAgeUs { get; private set; }
+
     /// How long the last frame spent in colour conversion, in microseconds.
     /// Read by the capture loop for its stats line: this is the single most
     /// expensive step per frame and the first place to look when the loop
@@ -258,11 +266,24 @@ public sealed class DesktopDuplicator : IDisposable
 
             SecureDesktopActive = false;
 
-            // Stamped here, before the conversion, because the comment below is
-            // the whole reason the field exists — and it used to be taken after
-            // the Convert call, which quietly excluded the most expensive step
-            // in the loop from every latency figure the viewer reported.
-            ulong captureUs = NowUs();
+            // The compositor's own timestamp for this desktop frame, not the
+            // moment we got round to collecting it.
+            //
+            // AcquireNextFrame returns the newest frame, which may already be
+            // most of an interval old — we only ask 30 times a second, and the
+            // desktop composes faster than that. Stamping "now" hides that age,
+            // and it is real latency: the user is comparing against when the
+            // screen actually changed, which is what LastPresentTime records.
+            //
+            // It is a QPC value, the same clock and units Stopwatch uses here,
+            // so no conversion beyond the divide. Zero means nothing was
+            // presented — a mouse-only update — and then "now" is the honest
+            // answer rather than 1601.
+            ulong captureUs = info.LastPresentTime > 0
+                ? (ulong)(info.LastPresentTime / (Stopwatch.Frequency / 1_000_000L))
+                : NowUs();
+            AccumulatedFrames = info.AccumulatedFrames;
+            FrameAgeUs = NowUs() - captureUs;
 
             using var texture = resource.QueryInterface<ID3D11Texture2D>();
             var nv12 = _converter!.Convert(texture, out int stride);

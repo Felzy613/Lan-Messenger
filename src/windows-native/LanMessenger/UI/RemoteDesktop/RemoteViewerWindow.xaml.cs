@@ -46,6 +46,10 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
     private long _latencySumMs;
     private long _latencySamples;
     private long _latencyMaxMs;
+    private ulong _awaitingCompositionUs;
+    private long _compositeSumMs;
+    private long _compositeSamples;
+    private long _compositeMaxMs;
     private readonly Stopwatch _statsClock = Stopwatch.StartNew();
 
     /// Set while a frame is already on its way to the UI thread. The next one
@@ -66,9 +70,18 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
         _dispatcher = DispatcherQueue.GetForCurrentThread();
         Title = $"{peerName} — screen";
 
+        // The compositor is the last link, and until now it was outside every
+        // measurement. Writing the bitmap and calling Invalidate does not put a
+        // pixel on the glass — it marks the surface dirty, and the render thread
+        // uploads and composites it on some later vsync. Measuring only as far
+        // as Invalidate reports the latency of the half of the pipeline we
+        // wrote, which is not the half the user is looking at.
+        Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += OnComposited;
+
         Closed += (_, _) =>
         {
             _closed = true;
+            Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnComposited;
             var handler = OnClosed;
             OnClosed = null;
             handler?.Invoke();
@@ -152,6 +165,9 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
                 stream.Write(_bgra, 0, _bgra.Length);
             }
             _bitmap.Invalidate();
+            // Closed out by the next CompositionTarget.Rendering, which is the
+            // first moment this frame can actually be on screen.
+            _awaitingCompositionUs = captureUs;
 
             if (WaitingText.Visibility == Visibility.Visible)
             {
@@ -170,6 +186,24 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
         {
             Interlocked.Exchange(ref _framePending, 0);
         }
+    }
+
+    /// Fires once per compositor frame. The first one after a bitmap write is
+    /// the earliest that write can have reached the glass, so the gap between
+    /// capture and here is the real end-to-end figure — everything the shorter
+    /// measurement leaves off the end.
+    private void OnComposited(object? sender, object e)
+    {
+        ulong captureUs = _awaitingCompositionUs;
+        if (captureUs == 0) return;
+        _awaitingCompositionUs = 0;
+
+        long nowUs = Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1_000_000L);
+        long ms = (nowUs - (long)captureUs) / 1000;
+        if (ms < 0) return;
+        _compositeSumMs += ms;
+        _compositeSamples++;
+        if (ms > _compositeMaxMs) _compositeMaxMs = ms;
     }
 
     /// End-to-end latency, measured rather than reasoned about.
@@ -194,15 +228,20 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
 
         double seconds = _statsClock.ElapsedMilliseconds / 1000.0;
         long avg = _latencySamples > 0 ? _latencySumMs / _latencySamples : -1;
+        long onScreenAvg = _compositeSamples > 0 ? _compositeSumMs / _compositeSamples : -1;
         LanLogger.Remote("viewer_stats",
             reason: $"presented={_presented} dropped={Interlocked.Read(ref _dropped)} "
-                  + $"fps={_presented / seconds:F1} latency_ms_avg={avg} latency_ms_max={_latencyMaxMs}");
+                  + $"fps={_presented / seconds:F1} latency_ms_avg={avg} latency_ms_max={_latencyMaxMs} "
+                  + $"onscreen_ms_avg={onScreenAvg} onscreen_ms_max={_compositeMaxMs}");
 
         _statsClock.Restart();
         _presented = 0;
         _latencySumMs = 0;
         _latencySamples = 0;
         _latencyMaxMs = 0;
+        _compositeSumMs = 0;
+        _compositeSamples = 0;
+        _compositeMaxMs = 0;
     }
 
     public void Flush()

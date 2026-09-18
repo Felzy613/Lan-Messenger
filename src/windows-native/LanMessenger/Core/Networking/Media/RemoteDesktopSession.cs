@@ -208,6 +208,8 @@ public sealed class RemoteDesktopSession : IDisposable
                     long laps = Math.Max(1, attempts - lastStatsAttempts);
                     LanLogger.Remote("capture_stats",
                         reason: $"attempts={attempts} delivered={delivered} "
+                              + $"accum={capture.AccumulatedFrames} "
+                              + $"age_ms={capture.FrameAgeUs / 1000} "
                               + $"convert_us={capture.ConvertUs} "
                               + $"capture_ms_avg={captureUsTotal / laps / 1000} "
                               + $"encode_ms_avg={encodeUsTotal / laps / 1000}");
