@@ -61,21 +61,40 @@ final class RemoteDesktopService {
 
         NetLogger.remote(event: "attach", peer: fromIP, sessionID: window.sessionID,
                          role: window.role.rawValue)
+
+        // Only a responder hosts. An initiator's own attach is the socket it
+        // just opened outbound, and its viewer is already being set up by the
+        // coordinator that opened it.
+        if window.role == .responder {
+            Task { @MainActor [weak self] in
+                self?.onHostAttached?(window.sessionID, session)
+            }
+        }
         return .detached
     }
 
-    /// Routes the four JSON control packets. Session setup (consent, key
-    /// derivation, invite/accept exchange) is WS8's job; this exists now so the
-    /// transport is reachable and so an unhandled case is a compile error there
-    /// rather than a silent drop.
+    /// Set by AppModel. The invite exchange lives with the model because it
+    /// needs the consent prompt, the peer list and the session; this object
+    /// stays free of all three so that `attachInbound` can keep running off the
+    /// main actor.
+    @MainActor var invites: RemoteInviteCoordinator?
+
+    /// A viewer we agreed to has attached its media channel. Set by AppModel;
+    /// this is where hosting actually begins.
+    @MainActor var onHostAttached: ((String, MediaSession) -> Void)?
+
+    /// Routes the four JSON control packets.
     @MainActor
     func handleControlPacket(_ packet: ValidatedPacket) {
         switch packet {
         case .remoteInvite(let pkt, let ip):
             NetLogger.remote(event: "invite_received", peer: ip, sessionID: pkt.sessionId)
+            invites?.handleInvite(pkt, from: ip)
         case .remoteAccept(let pkt, let ip):
             NetLogger.remote(event: "accepted", peer: ip, sessionID: pkt.sessionId)
+            invites?.handleAccept(pkt, from: ip)
         case .remoteDecline(let pkt, let ip):
+            invites?.handleDecline(pkt, from: ip)
             NetLogger.remote(event: "declined", peer: ip, sessionID: pkt.sessionId,
                              reason: pkt.reason)
             registry.cancel(sessionID: pkt.sessionId)

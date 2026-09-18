@@ -124,6 +124,37 @@ final class NetworkCoordinator: NSObject {
         }
     }
 
+    /// Opens a connection, writes one JSON frame, and hands back the still-open
+    /// descriptor for the caller to adopt.
+    ///
+    /// This is the initiator's half of the media upgrade, and the reason it
+    /// cannot use `send(frame:)`: that closes the socket, which is precisely
+    /// what must not happen here. The frame is a `media_attach`, and everything
+    /// after it on this descriptor is binary media framing.
+    ///
+    /// Returns -1 on failure, with nothing left open. The caller owns the
+    /// descriptor on success and must close it if it then declines to use it.
+    func attachOutbound(toIP ip: String, port: Int = 54232, frame: Data) -> Int32 {
+        guard let socket = openSocket(ip: ip, port: port) else { return -1 }
+
+        var sent = 0
+        let ok = frame.withUnsafeBytes { ptr -> Bool in
+            guard let base = ptr.baseAddress else { return false }
+            while sent < frame.count {
+                let n = Darwin.send(socket, base.advanced(by: sent), frame.count - sent, 0)
+                if n <= 0 { return false }
+                sent += n
+            }
+            return true
+        }
+        guard ok else {
+            Darwin.close(socket)
+            NetLogger.remote(event: "error", peer: ip, reason: "media_attach write failed")
+            return -1
+        }
+        return socket
+    }
+
     func send(frames: [Data], toIP: String, port: Int = 54232) {
         for frame in frames { send(frame: frame, toIP: toIP, port: port) }
     }

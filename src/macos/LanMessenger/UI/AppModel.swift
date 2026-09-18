@@ -93,6 +93,57 @@ final class AppModel: ObservableObject {
     /// its records are logged and not filed — a fabricated conversation with
     /// yourself would be worse than no entry.
     private var remoteAuditPeerIP: String?
+
+    /// What a host has agreed to share but not yet started sharing.
+    ///
+    /// The gap between `remote_accept` and the peer's `media_attach` is real
+    /// time — a network round trip plus a connect — and capture must not begin
+    /// until they actually arrive. A viewer that changes its mind therefore
+    /// never causes this screen to be read at all.
+    private var armedHosting: (sessionID: String, peerName: String, peerIP: String)?
+
+    lazy var inviteCoordinator: RemoteInviteCoordinator = {
+        let coordinator = RemoteInviteCoordinator(environment: .init(
+            send: { [weak self] frame, ip in
+                self?.coordinator.send(frame: frame, toIP: ip)
+            },
+            attachOutbound: { [weak self] ip, frame in
+                self?.coordinator.attachOutbound(toIP: ip, frame: frame) ?? -1
+            },
+            ownPublicKeyB64: { KeyManager.shared.publicKeyB64 },
+            ownUsername: { ConfigStore.shared.config.username },
+            privateKey: { KeyManager.shared.privateKey },
+            mode: { ConfigStore.shared.config.remoteDesktopMode },
+            // KnownContact is the policy layer's own shape, deliberately
+            // narrower than the stored one: it carries the three fields the
+            // trust decision uses and nothing a photo or a relay id could
+            // influence.
+            contacts: {
+                ConfigStore.shared.config.contacts.map {
+                    KnownContact(publicKeyB64: $0.publicKeyB64,
+                                 username: $0.username,
+                                 lastIP: $0.lastIP)
+                }
+            },
+            hasLiveSession: { [weak self] in self?.remoteSession.isRunning ?? false },
+            registry: { RemoteDesktopService.shared.registry },
+            presentConsent: { request, onOutcome in
+                RemoteConsentPresenter.shared.present(request, onOutcome: onOutcome)
+            },
+            startViewing: { [weak self] peerName, peerIP, media in
+                self?.startViewing(peerName: peerName, peerIP: peerIP, media: media)
+            },
+            armHosting: { [weak self] sessionID, peerName, peerIP in
+                self?.armedHosting = (sessionID, peerName, peerIP)
+            }))
+        coordinator.onStateChange = { [weak self] message in
+            self?.remoteInviteStatus = message.isEmpty ? nil : message
+        }
+        return coordinator
+    }()
+
+    /// What the contact strip shows while an invite is in flight.
+    @Published private(set) var remoteInviteStatus: String?
     @Published var pendingImportKeyData: Data? = nil
     @Published var availableUpdate: UpdateInfo? = nil
     @Published var updateProgress: UpdateProgress = .idle
@@ -131,6 +182,14 @@ final class AppModel: ObservableObject {
     // MARK: - Start
 
     private func start() {
+        // The transport service is reachable from the socket thread and knows
+        // nothing about consent or the interface; these two hooks are how the
+        // exchange and the session reach back into the model.
+        RemoteDesktopService.shared.invites = inviteCoordinator
+        RemoteDesktopService.shared.onHostAttached = { [weak self] sessionID, media in
+            self?.beginHosting(sessionID: sessionID, media: media)
+        }
+
         // First launch: replace the bare "User" default with the system's full
         // name so peers immediately see something meaningful instead of "User".
         if ConfigStore.shared.config.username == "User" {
@@ -298,18 +357,57 @@ final class AppModel: ObservableObject {
         }
         remoteAuditPeerIP = peerIP
 
-        // The peer handshake — remote_invite, the consent prompt on their side,
-        // remote_accept, and the media_attach upgrade — is the next piece of
-        // work. Everything underneath it is built and proven; what is missing is
-        // the exchange that gets two machines to agree to start.
-        let alert = NSAlert()
-        alert.messageText = "Not connected yet"
-        alert.informativeText = "The screen-sharing pipeline works end to end on "
-            + "this Mac — try Start Self View from the menu bar icon. Asking "
-            + "another machine to share needs the invite exchange, which is the "
-            + "next thing being built."
-        alert.alertStyle = .informational
-        alert.runModal()
+        let peerName = peers[peerKey]?.username ?? "This peer"
+        inviteCoordinator.invite(peerKey: peerKey, peerIP: peerIP, peerName: peerName)
+    }
+
+    /// The peer accepted and their media channel is attached. Show it.
+    private func startViewing(peerName: String, peerIP: String, media: MediaSession) {
+        remoteAuditPeerIP = peerIP
+        Task { @MainActor in
+            do {
+                try await remoteSession.startViewing(peerName: peerName, peerIP: peerIP,
+                                                     media: media)
+                guard let layer = remoteSession.videoLayer else { return }
+                remoteViewerWindow.show(
+                    title: "\(peerName) — screen",
+                    layer: layer,
+                    aspect: remoteSession.dimensions,
+                    onClose: { [weak self] in self?.remoteSession.stop(.userStopped) })
+            } catch {
+                NetLogger.remote(event: "error", peer: peerIP,
+                                 reason: "viewer start failed: \(error)")
+                media.stop()
+                presentRemoteStartFailure(error)
+            }
+        }
+    }
+
+    /// The viewer we agreed to has attached. Start reading this screen.
+    ///
+    /// Called from the media session's own arrival, not from the accept — which
+    /// is the point: everything before this moment is an agreement, and nothing
+    /// before it captures a pixel.
+    func beginHosting(sessionID: String, media: MediaSession) {
+        guard let armed = armedHosting, armed.sessionID == sessionID else {
+            NetLogger.remote(event: "host_ignored", sessionID: sessionID,
+                             reason: "attach with no armed accept")
+            return
+        }
+        armedHosting = nil
+        remoteAuditPeerIP = armed.peerIP
+
+        Task { @MainActor in
+            do {
+                try await remoteSession.startHosting(peerName: armed.peerName,
+                                                     peerIP: armed.peerIP,
+                                                     media: media)
+            } catch {
+                NetLogger.remote(event: "error", peer: armed.peerIP, sessionID: sessionID,
+                                 reason: "host start failed: \(error)")
+                media.stop()
+            }
+        }
     }
 
     func stopRemoteSession() {

@@ -97,6 +97,11 @@ final class RemoteDesktopSession {
     private var capture: ScreenCaptureSource?
     private var sendPipeline: VideoSendPipeline?
     private var receivePipeline: VideoReceivePipeline?
+
+    /// The transport, for the two modes that have a peer. Nil for self-view,
+    /// which is the whole difference between them: everything else in this
+    /// object behaves identically whether the frames cross a socket or not.
+    private var media: MediaSession?
     private var presenter: SampleBufferVideoPresenter?
     private let guardian = RemoteSessionGuard()
 
@@ -124,6 +129,24 @@ final class RemoteDesktopSession {
     func startSelfView(configuration: ScreenCaptureConfiguration = ScreenCaptureConfiguration())
     async throws {
         try await start(mode: .selfView, configuration: configuration)
+    }
+
+    /// Shares this screen with a peer. The media channel is already attached and
+    /// reading by the time this is called — the invite exchange owns that, and
+    /// hands the running session in.
+    func startHosting(peerName: String, peerIP: String, media: MediaSession,
+                      configuration: ScreenCaptureConfiguration = ScreenCaptureConfiguration())
+    async throws {
+        self.media = media
+        try await start(mode: .host(peerName: peerName, peerIP: peerIP),
+                        configuration: configuration)
+    }
+
+    /// Watches a peer's screen. Captures nothing.
+    func startViewing(peerName: String, peerIP: String, media: MediaSession) async throws {
+        self.media = media
+        try await start(mode: .viewer(peerName: peerName, peerIP: peerIP),
+                        configuration: ScreenCaptureConfiguration())
     }
 
     private func start(mode: Mode,
@@ -163,6 +186,17 @@ final class RemoteDesktopSession {
                 }
             }
             self.receivePipeline = receive
+
+            // A viewer's pictures arrive from the socket rather than from a
+            // local encoder. Delivered on the media session's read thread, so
+            // the hop to the main actor is not optional.
+            if let media {
+                media.onFrame = { [weak self] frame in
+                    Task { @MainActor [weak self] in
+                        self?.receivePipeline?.accept(frame)
+                    }
+                }
+            }
         }
 
         if mode.capturesLocally {
@@ -178,12 +212,18 @@ final class RemoteDesktopSession {
                 send = try VideoSendPipeline(
                     dimensions: size,
                     submit: { [weak self] frame in
+                        // A session torn down mid-frame: report the drop
+                        // honestly rather than claiming it was queued.
+                        guard let self else { return .droppedStaleVideo(wasKeyframe: false) }
                         // Self-view short-circuits the socket. The transport is
                         // already proven to carry these exact frames by
                         // VideoPipelineEndToEndTests; what was never proven is
                         // that a real capture reaches a real window.
-                        self?.deliverLocally(frame)
-                        return .queued
+                        guard let media = self.media else {
+                            self.deliverLocally(frame)
+                            return .queued
+                        }
+                        return media.submit(frame)
                     })
             } catch {
                 source.stop()
@@ -280,6 +320,8 @@ final class RemoteDesktopSession {
         capture = nil
         sendPipeline?.stop()
         sendPipeline = nil
+        media?.onFrame = nil
+        media = nil
 
         receivePipeline = nil
         presenter?.clear()
