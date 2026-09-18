@@ -73,9 +73,8 @@ Test counts on this branch, both suites green:
 
 - macOS **423 passing**, 5 skipped (all generators, skipped by design: the
   H.264 fixture emitter, the control-vector emitter and the UI renderers)
-- Windows: **64 pure-logic tests pass via the macOS shim** — the policy,
-  capability, bitstream and input-geometry suites. The full MSTest run has not
-  happened since the `caps` commit; that machine has been off the network.
+- Windows **270 passing**, run on real hardware 2026-09-17 from a freshly built
+  binary, with the app project compiling — which is what validates the XAML
 
 Of those, the remote-desktop tests are:
 

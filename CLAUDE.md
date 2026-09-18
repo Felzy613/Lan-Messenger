@@ -76,9 +76,30 @@ Use VS MSBuild for WinUI packaging tasks.
 cd src\windows-native
 msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
 msbuild LanMessenger.Tests\LanMessenger.Tests.csproj /p:Configuration=Release /p:Platform=x64
-$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse | Select-Object -First 1
+$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+"using $($testDll.FullName) built $($testDll.LastWriteTime)"
 dotnet vstest $testDll.FullName --logger:"console;verbosity=normal"
 ```
+
+`Sort-Object LastWriteTime` and the echo are not decoration. When a build fails,
+the previous binary is still sitting there, and an unsorted `Select-Object -First 1`
+runs it and reports a confident green from stale code — it reported 220/220 from a
+three-day-old DLL once. Print the timestamp and check the totals moved.
+
+When syncing this tree from a Mac, strip AppleDouble sidecars:
+
+```bash
+COPYFILE_DISABLE=1 tar czf out.tgz --exclude='bin' --exclude='obj' --exclude='._*' src/windows-native
+```
+
+macOS `tar` writes a `._Name` file for anything carrying an extended attribute.
+Extracted on Windows those are real files, and the WinUI XAML compiler globs
+`**/*.xaml`, so it parses `._SettingsPage.xaml` and dies with
+`Xaml Internal Error error WMC9999: ... hexadecimal value 0x00 ... Line 1, position 1`.
+One transfer scattered 130 of them. Note that `WMC9999` does not match an
+`error CS|error MSB` log filter, so a filtered build log looks clean while the app
+project has failed.
 
 Build the self-contained app:
 

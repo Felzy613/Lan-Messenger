@@ -104,7 +104,9 @@ Use a Windows machine or CI runner. VS MSBuild is preferred for WinUI projects.
 cd src\windows-native
 msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
 msbuild LanMessenger.Tests\LanMessenger.Tests.csproj /p:Configuration=Release /p:Platform=x64
-$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse | Select-Object -First 1
+$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+"using $($testDll.FullName) built $($testDll.LastWriteTime)"
 dotnet vstest $testDll.FullName --logger:"console;verbosity=normal"
 ```
 
