@@ -47,13 +47,28 @@ enum RemoteDesktopMode: String, Codable, CaseIterable {
     var isEnabled: Bool { self == .on }
 }
 
-/// Why an invite was answered with `remote_decline`. The peer may show this, so
-/// each case has to be true without being more specific than a contact needs.
-enum RemoteDeclineReason: String, Equatable {
-    /// The host has remote desktop switched off.
-    case disabled
+/// Why an invite was answered with `remote_decline`.
+///
+/// The raw values are the **wire tokens** from PROTOCOL.md → `remote_decline`,
+/// not display strings, and the whole set is spelled out here rather than only
+/// the cases the policy currently produces. A receiver must tolerate unknown
+/// values, so a token invented on one platform would not fail loudly anywhere —
+/// it would just show a generic message on the other, forever.
+enum RemoteDeclineReason: String, Equatable, CaseIterable {
+    /// The human said no.
+    case declined
     /// A session with this peer is already in flight or live.
     case busy
+    /// The peer asked for something this build does not implement.
+    case unsupported
+    /// The host has remote desktop switched off.
+    case disabled
+    /// No H.264 encoder on this machine. Windows N/KN SKUs have none at all.
+    case noEncoder = "no_encoder"
+    /// Nobody answered the prompt in time. Better than leaving the initiator
+    /// waiting on a dialog that may be behind a full-screen app on a desk
+    /// nobody is sitting at.
+    case timeout
 }
 
 /// Why an invite was dropped without any reply at all.

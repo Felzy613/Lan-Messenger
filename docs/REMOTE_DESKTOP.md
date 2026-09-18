@@ -64,14 +64,15 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
 | WS6 | Cross-platform conformance | **Converter done; both directions proven** | macOS fixture pending |
 | WS7 | Input capture + injection | **Not started** | yes, both |
-| WS8 | Session lifecycle + consent UI | **Policy core done**, both platforms; UI not started | no (UI work) |
+| WS8 | Session lifecycle + consent UI | **Policy + consent prompt done** (macOS); indicator, hotkey, watchdog outstanding | no (UI work) |
 | WS9 | Settings, logging, diagnostics | **Log channel done**, settings not started | no |
 | WS10 | Latency tuning | **Not started** | yes |
 | WS11 | Packaging, docs, CI | **Docs done; `dpiAwareness` outstanding** | no |
 
 Test counts on this branch, both suites green:
 
-- macOS **342 passing**, 1 skipped (a fixture generator, skipped by design)
+- macOS **362 passing**, 2 skipped (both generators, skipped by design: the
+  H.264 fixture emitter and the consent-prompt renderer)
 - Windows **210 passing**, run on real hardware
 
 Of those, the remote-desktop tests are:
@@ -89,6 +90,7 @@ Of those, the remote-desktop tests are:
 | `ProtocolCapabilityTests` | 10 | 9 |
 | `PeerKeyTrustTests` | 9 | — (folded into the policy suite) |
 | `RemoteDesktopPolicyTests` | 23 | 27 |
+| `RemoteConsentTests` | 19 | — |
 | `RemoteDesktopQueueTests` | 4 | 4 |
 
 ---
@@ -625,7 +627,27 @@ requirements** — a client that does not enforce them is not compatible.
 
 - **Two-stage.** Accepting an invite grants *viewing*. Control is a **separate
   prompt**. Both are built in this pass; this is the consent model, not a scope
-  reduction.
+  reduction. **Done on macOS.** `RemoteGrantState` is the ladder —
+  `none → viewing → control`, with no path to `.control` except from `.viewing`,
+  so there is no code path that arms input for a session nobody agreed to watch.
+  `end()` is terminal: reconnect means a new `session_id` and new keys, so it
+  means a new state rather than this one quietly resuming.
+
+  `RemoteConsentView` + `RemoteConsentPresenter` are the dialog. Four decisions
+  in it are deliberate rather than styling: the peer is **named in the
+  headline**; the **fingerprint is always shown**, monospaced, because one that
+  appears only when something is wrong is one nobody has ever seen before and
+  cannot compare against anything; there is **no reassuring badge on the safe
+  path**, since a green tick on every prompt trains people to look for the tick
+  instead of the words; and **every accidental way out lands on "no"** — Return
+  declines, Escape declines, the close button declines, and the countdown
+  declines with the `timeout` token PROTOCOL.md already reserves.
+
+  The prompt is an `NSPanel` + `NSHostingView` rather than `openWindow`, and its
+  countdown timer runs in `.common` run-loop mode: a plain scheduled timer stops
+  while a menu is open or a window is being dragged, and a countdown that
+  silently pauses is worse than none, because the caller's own expiry still
+  arrives on time.
 - The dialog shows the peer's pinned name, IP and **identity key fingerprint**,
   distinguishing "matches your saved contact" from "new key". A display name
   alone is trivially spoofable; the pinned key is not.
