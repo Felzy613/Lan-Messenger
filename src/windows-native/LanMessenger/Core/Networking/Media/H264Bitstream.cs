@@ -77,24 +77,7 @@ public static class H264Bitstream
     /// </remarks>
     public static List<H264NALUnit> ScanAnnexB(ReadOnlySpan<byte> data)
     {
-        var starts = new List<(int Offset, int CodeLength)>();
-        int i = 0;
-        while (i + 3 <= data.Length)
-        {
-            if (data[i] == 0 && data[i + 1] == 0)
-            {
-                if (i + 4 <= data.Length && data[i + 2] == 0 && data[i + 3] == 1)
-                {
-                    starts.Add((i, 4)); i += 4; continue;
-                }
-                if (data[i + 2] == 1)
-                {
-                    starts.Add((i, 3)); i += 3; continue;
-                }
-            }
-            i++;
-        }
-
+        var starts = StartCodes(data);
         var units = new List<H264NALUnit>(starts.Count);
         for (int k = 0; k < starts.Count; k++)
         {
@@ -120,6 +103,44 @@ public static class H264Bitstream
     }
 
     /// <summary>True if the buffer contains an IDR slice.</summary>
+    /// <summary>
+    /// Splits an Annex-B buffer into access units, one per coded picture.
+    ///
+    /// <b>A slice is the boundary</b> — not an access unit delimiter, and not a
+    /// parameter set. VideoToolbox emits no delimiters at all and parameter sets
+    /// only at IDRs, so splitting on those collapsed a 60-frame stream into two
+    /// units and this decoder emitted almost nothing. Every slice (type 1 or 5)
+    /// is exactly one picture; any AUD, SPS, PPS or SEI ahead of it belongs to
+    /// it, and travels with it.
+    ///
+    /// NAL units trailing the last slice are dropped. They are the prelude to a
+    /// picture this buffer does not contain, and handing a decoder a sample with
+    /// no picture in it is how you get a stall rather than an error.
+    ///
+    /// Mirror of the Swift H264Bitstream.splitAccessUnits.
+    /// </summary>
+    public static List<byte[]> SplitAccessUnits(ReadOnlySpan<byte> data)
+    {
+        var starts = StartCodes(data);
+        var units = new List<byte[]>();
+        if (starts.Count == 0) return units;
+
+        int unitStart = starts[0].Offset;
+        for (int k = 0; k < starts.Count; k++)
+        {
+            int payloadStart = starts[k].Offset + starts[k].CodeLength;
+            if (payloadStart >= data.Length) continue;
+
+            byte type = (byte)(data[payloadStart] & 0x1F);
+            if (type != H264NALType.NonIDRSlice && type != H264NALType.IDRSlice) continue;
+
+            int end = k + 1 < starts.Count ? starts[k + 1].Offset : data.Length;
+            units.Add(data[unitStart..end].ToArray());
+            unitStart = end;
+        }
+        return units;
+    }
+
     public static bool AnnexBContainsKeyframe(ReadOnlySpan<byte> data) =>
         ScanAnnexB(data).Any(u => u.IsKeyframe);
 
@@ -224,6 +245,37 @@ public static class H264Bitstream
     }
 
     // ---- Private -----------------------------------------------------------
+
+    /// <summary>
+    /// Locates every Annex-B start code, with the length of the code found.
+    ///
+    /// The single place the "consume the whole start code" rule lives. A 4-byte
+    /// code <i>contains</i> a 3-byte one at offset+1, so a scanner that advances
+    /// one byte after a match finds a phantom unit inside every 4-byte code and
+    /// reports exactly twice as many NAL units as exist. The tell is suspiciously
+    /// equal 3-byte and 4-byte counts in one stream.
+    /// </summary>
+    private static List<(int Offset, int CodeLength)> StartCodes(ReadOnlySpan<byte> data)
+    {
+        var starts = new List<(int Offset, int CodeLength)>();
+        int i = 0;
+        while (i + 3 <= data.Length)
+        {
+            if (data[i] == 0 && data[i + 1] == 0)
+            {
+                if (i + 4 <= data.Length && data[i + 2] == 0 && data[i + 3] == 1)
+                {
+                    starts.Add((i, 4)); i += 4; continue;
+                }
+                if (data[i + 2] == 1)
+                {
+                    starts.Add((i, 3)); i += 3; continue;
+                }
+            }
+            i++;
+        }
+        return starts;
+    }
 
     private static void RequireLengthSize(int size)
     {

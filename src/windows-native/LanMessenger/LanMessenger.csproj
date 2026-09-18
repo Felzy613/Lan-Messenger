@@ -20,7 +20,7 @@
       Keep this in sync with version/windows.json so local builds show the right
       number in the Settings page.
     -->
-    <Version>1.15.0</Version>
+    <Version>1.16.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,6 +28,14 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.22621.756" PrivateAssets="all" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
     <PackageReference Include="NSec.Cryptography" Version="24.4.0" />
+    <!-- Remote desktop: Media Foundation for H.264, D3D11 and DXGI for Desktop
+         Duplication. Version-pinned to what the WS0 spike proved on real
+         hardware. Vortice covers the whole MFT surface except ICodecAPI, which
+         is hand-rolled — verified by reflection from the Mac before any of this
+         was written. -->
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
+    <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <PackageReference Include="H.NotifyIcon.WinUI" Version="2.1.0" />
     <!--

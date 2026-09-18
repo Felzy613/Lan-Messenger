@@ -324,4 +324,53 @@ public class H264BitstreamTests
             Assert.IsTrue(pps, $"IDR at {i} has no PPS before it");
         }
     }
+
+    // ---- Access unit splitting ---------------------------------------------
+
+    [TestMethod]
+    public void TheWindowsSampleSplitsIntoOneAccessUnitPerPicture()
+    {
+        var units = H264Bitstream.SplitAccessUnits(WindowsSample());
+        Assert.AreEqual(60, units.Count, "60 encoded pictures went in");
+
+        foreach (var unit in units)
+        {
+            int slices = 0;
+            foreach (var nal in H264Bitstream.ScanAnnexB(unit))
+            {
+                if (nal.Type == H264NALType.NonIDRSlice || nal.Type == H264NALType.IDRSlice) slices++;
+            }
+            Assert.AreEqual(1, slices, "an access unit carries exactly one picture");
+        }
+    }
+
+    [TestMethod]
+    public void TheMacOSSampleSplitsOnSlicesWithNoDelimitersToHelp()
+    {
+        // The rule that matters, and the fixture that proves it: VideoToolbox
+        // emits no AUDs at all, so an AUD-based split would find nothing to
+        // split on and collapse 60 pictures into one.
+        Assert.AreEqual(60, H264Bitstream.SplitAccessUnits(MacOSSample()).Count);
+    }
+
+    [TestMethod]
+    public void TrailingNonPictureUnitsAreDropped()
+    {
+        // Parameter sets for a picture that is not in this buffer. Emitting them
+        // as an access unit hands the decoder a sample with no picture in it,
+        // which stalls rather than errors.
+        var stream = H264Bitstream.AnnexB(
+            [H264NALType.IDRSlice, 0x42], [H264NALType.SPS, 0x42], [H264NALType.PPS, 0x42]);
+        Assert.AreEqual(1, H264Bitstream.SplitAccessUnits(stream).Count);
+        Assert.AreEqual(0, H264Bitstream.SplitAccessUnits(new byte[] { 0x41, 0x42 }).Count);
+    }
+
+    [TestMethod]
+    public void SplittingLosesNoBytes()
+    {
+        var sample = WindowsSample();
+        int total = 0;
+        foreach (var unit in H264Bitstream.SplitAccessUnits(sample)) total += unit.Length;
+        Assert.AreEqual(sample.Length, total, "splitting lost or duplicated bytes");
+    }
 }
