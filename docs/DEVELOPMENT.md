@@ -202,7 +202,7 @@ cd src/macos
 swift test
 ```
 
-Current suite: **362 passing, 2 skipped**. The skip is
+Current suite: **376 passing, 3 skipped**. The skip is
 `testEmitMacOSFixtureForCrossPlatformDecode`, a fixture generator rather than an
 assertion; it runs only with `LANMSG_EMIT_H264_FIXTURE` set.
 
@@ -234,15 +234,19 @@ Coverage:
   `SampleBufferVideoPresenterTests` (3), `ScreenCaptureSourceTests` (18),
   `VideoPipelineEndToEndTests` (5), `ProtocolCapabilityTests` (10),
   `PeerKeyTrustTests` (9), `RemoteDesktopPolicyTests` (23),
-  `RemoteConsentTests` (19), `RemoteDesktopQueueTests` (4).
+  `RemoteConsentTests` (19), `RemoteHostIndicatorTests` (13),
+  `RemoteDesktopQueueTests` (4).
 
-The second skip is `RemoteConsentRenderTests`, which draws the consent prompt to
-PNGs with `ImageRenderer` so its layout can be looked at without a running app —
-`screencapture` is unavailable in this development environment. Regenerate with:
+Two of the skips are UI renderers — `RemoteConsentRenderTests` and
+`RemoteHostIndicatorRenderTests` — which draw those views to PNGs with
+`ImageRenderer` so their layout can be looked at without a running app;
+`screencapture` is unavailable in this development environment. They cover
+wrapping, both colour schemes and the warning states, but not focus behaviour,
+window level or animation. Regenerate both with:
 
 ```bash
 cd src/macos
-LANMSG_RENDER_UI=/tmp/ui swift test --filter RemoteConsentRenderTests
+LANMSG_RENDER_UI=/tmp/ui swift test --filter RenderTests
 ```
 
 ### Windows Tests

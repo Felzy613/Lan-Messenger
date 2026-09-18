@@ -64,15 +64,15 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS5 | Decode + present, both platforms | **macOS done**; Windows not started | Windows: yes |
 | WS6 | Cross-platform conformance | **Converter done; both directions proven** | macOS fixture pending |
 | WS7 | Input capture + injection | **Not started** | yes, both |
-| WS8 | Session lifecycle + consent UI | **Policy + consent prompt done** (macOS); indicator, hotkey, watchdog outstanding | no (UI work) |
+| WS8 | Session lifecycle + consent UI | **Policy, consent prompt, host indicator done** (macOS); hotkey, watchdog, audit outstanding | no (UI work) |
 | WS9 | Settings, logging, diagnostics | **Log channel done**, settings not started | no |
 | WS10 | Latency tuning | **Not started** | yes |
 | WS11 | Packaging, docs, CI | **Docs done; `dpiAwareness` outstanding** | no |
 
 Test counts on this branch, both suites green:
 
-- macOS **362 passing**, 2 skipped (both generators, skipped by design: the
-  H.264 fixture emitter and the consent-prompt renderer)
+- macOS **376 passing**, 3 skipped (all generators, skipped by design: the
+  H.264 fixture emitter and the two UI renderers)
 - Windows **210 passing**, run on real hardware
 
 Of those, the remote-desktop tests are:
@@ -91,6 +91,7 @@ Of those, the remote-desktop tests are:
 | `PeerKeyTrustTests` | 9 | — (folded into the policy suite) |
 | `RemoteDesktopPolicyTests` | 23 | 27 |
 | `RemoteConsentTests` | 19 | — |
+| `RemoteHostIndicatorTests` | 13 | — |
 | `RemoteDesktopQueueTests` | 4 | 4 |
 
 ---
@@ -658,7 +659,33 @@ requirements** — a client that does not enforce them is not compatible.
   positional, a saved contact having last lived at this address under a
   different key. Still to mirror on Windows.
 - **Persistent always-on-top host indicator** naming the viewer and the grant
-  level, with a Stop control.
+  level, with a Stop control. **Done on macOS.** A borderless, non-activating
+  `NSPanel` at `.statusBar` level with `.canJoinAllSpaces`, `.stationary` and
+  `.fullScreenAuxiliary`, so it survives a space switch, Mission Control and a
+  host working in full-screen Xcode — and clicking Stop does not pull the app
+  forward and interrupt them.
+
+  **It is deliberately immovable**, and that is a security property rather than
+  a layout choice. A draggable indicator is a hole once control has been
+  granted: a viewer holding the mouse could drag the host's own warning off the
+  edge of the screen and carry on working unobserved, and nothing can tell an
+  injected drag from a real one — that is the entire point of input injection.
+  So placement is a pure function of the screen's visible frame, re-asserted on
+  every `didChangeScreenParameters`, with no stored offset to corrupt. The cost
+  is a host who cannot shift it off something it covers: a small visible
+  annoyance instead of an invisible one.
+
+  Amber for viewing, red for control, with a slowly pulsing dot — a static dot
+  becomes furniture within a minute. Elapsed time is shown because it is the
+  quiet part that catches the session somebody forgot they left open, and it
+  ticks in `.common` run-loop mode so it does not freeze while a menu is open
+  and make a live session look stopped. "Stop Control" appears only when there
+  is control to take back, and leaves the session running — usually what a host
+  actually wants.
+
+  Nothing excludes the panel from `SCStream`, so the viewer sees it too. That is
+  the right way round: it costs a strip of transmitted pixels and lets a host
+  confirm the viewer is seeing what they think.
 - A **host-reserved kill hotkey that is never forwarded**, so a host being
   actively controlled can always stop the session.
 - **Host watchdog** — no input, stats or keepalive for N seconds tears the
