@@ -38,6 +38,15 @@ public sealed class DecodedVideoFrame
     /// not the same as Width, and using Width instead skews the picture into a
     /// diagonal smear.
     public required int Stride { get; init; }
+
+    /// Rows in the luma plane as the decoder laid it out, which is not Height.
+    ///
+    /// H.264 codes in 16-pixel macroblocks, so a 1080-line picture lives in a
+    /// 1088-line surface, and the chroma plane begins after all 1088 rows.
+    /// Height is what to *display*; this is where the buffer actually divides.
+    /// Confusing the two puts the chroma read eight rows out of place — the
+    /// picture stays perfectly sharp and every colour in it is wrong.
+    public required int SurfaceHeight { get; init; }
 }
 
 public interface IVideoPresenter
@@ -65,11 +74,15 @@ public static class Nv12Converter
     /// classic failure here and it does not look like a stride bug — it looks
     /// like a corrupt stream, because each row lands progressively further left
     /// and the picture shears into a diagonal smear.
+    /// `surfaceHeight` is the row count the planes were laid out with, which is
+    /// at least `height` and usually more — see DecodedVideoFrame.SurfaceHeight.
+    /// It decides where chroma begins; `height` decides how much is drawn.
     public static void ToBgra(ReadOnlySpan<byte> nv12, int stride, int width, int height,
-                              Span<byte> destination)
+                              Span<byte> destination, int surfaceHeight = 0)
     {
         if (stride < width) stride = width;
-        int chromaOffset = stride * height;
+        if (surfaceHeight < height) surfaceHeight = height;
+        int chromaOffset = stride * surfaceHeight;
 
         for (int y = 0; y < height; y++)
         {

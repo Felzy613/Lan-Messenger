@@ -182,6 +182,23 @@ public sealed class ColorConverter : IDisposable
         }
     }
 
+    /// One buffer, grown on demand and reused for every frame.
+    ///
+    /// Allocating a fresh NV12 array per frame is roughly 80MB a second at 1080p
+    /// — all of it Large Object Heap, which is swept only on a gen2 collection.
+    /// The process reached 32GB of private commit in ten minutes and starved the
+    /// machine badly enough to crash unrelated builds.
+    ///
+    /// Safe because CapturedFrame.Nv12 is consumed by the encoder inside the
+    /// same capture-loop iteration that produced it.
+    private byte[] _frameBuffer = [];
+
+    private byte[] Rent(int length)
+    {
+        if (_frameBuffer.Length < length) _frameBuffer = new byte[length];
+        return _frameBuffer;
+    }
+
     private byte[]? ReadStaging(out int stride)
     {
         stride = _width;
@@ -192,7 +209,7 @@ public sealed class ColorConverter : IDisposable
             // NV12: a full-height luma plane then a half-height interleaved
             // chroma plane, both at the same row pitch.
             int length = stride * _height * 3 / 2;
-            var managed = new byte[length];
+            var managed = Rent(length);
             Marshal.Copy(mapped.DataPointer, managed, 0, length);
             return managed;
         }
@@ -232,9 +249,9 @@ public sealed class ColorConverter : IDisposable
 
     /// BT.709, limited range — the same numbers the GPU path is configured for,
     /// so a machine that falls back does not also change colour.
-    private static byte[] BgraToNv12(IntPtr source, int sourceStride, int width, int height)
+    private byte[] BgraToNv12(IntPtr source, int sourceStride, int width, int height)
     {
-        var output = new byte[width * height * 3 / 2];
+        var output = Rent(width * height * 3 / 2);
         int chromaOffset = width * height;
 
         unsafe

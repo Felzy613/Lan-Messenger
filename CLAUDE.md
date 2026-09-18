@@ -511,6 +511,38 @@ Use the smallest sufficient set for the change:
   change correct it. In the same path, `MF_E_NOTACCEPTING` (0xC00D36B5) is
   normal flow control, not an error, and input samples without timestamps are
   buffered forever. All four are recorded in `spikes/README.md`.
+- Do not compute an NV12 chroma offset from the height you are displaying. The
+  planes are laid out with the *surface* height, and H.264 codes in 16-pixel
+  macroblocks, so a 1080-line picture lives in a 1088-line surface and chroma
+  begins after all 1088 rows. `MF_MT_FRAME_SIZE` reports the surface;
+  `MF_MT_MINIMUM_DISPLAY_APERTURE` reports the rectangle worth showing, and
+  cropping to it without carrying the surface height along moves the chroma read
+  eight rows out of place. The picture stays perfectly sharp — luma is untouched
+  — and every colour in it is wrong, which reads as a broken decoder rather than
+  as arithmetic in the presenter. `DecodedVideoFrame` carries `SurfaceHeight`
+  beside `Height` for this, and `Nv12Converter.ToBgra` takes both. Covered by
+  `ChromaIsReadFromTheSurfaceHeightNotTheDisplayHeight`.
+- Do not allocate a frame-sized buffer per frame. At 1080p that is a few
+  megabytes, which lands on the Large Object Heap — not compacted, and swept
+  only on a gen2 collection. The capture converter and the decoder were each
+  allocating one per frame, about 80MB a second between them; ten minutes of
+  self-view took the process to **32GB of private commit** and the machine to
+  668MB free. The visible symptom was not the app at all: `csc.exe` began
+  exiting with code -1 during the WinUI build, and MSBuild reported the inline
+  task it had failed to compile as `MSB4036: task not found`, which names
+  neither memory nor LAN Messenger. Both paths now grow one buffer on demand and
+  reuse it, which is safe because `CapturedFrame.Nv12` is consumed inside the
+  capture-loop iteration that produced it and `DecodedVideoFrame` is documented
+  as valid only until the next decode.
+- Do not pace a capture loop with `Thread.Sleep`. It rounds up to the system
+  timer granularity, 15.6ms by default, so a requested 21ms becomes about 31ms
+  and a loop with 12ms of work in it settles at 21fps while believing it is
+  asking for 30. `AcquireNextFrame` is already the correct wait: it blocks until
+  the desktop actually changes, costs nothing while waiting, and does not round.
+  Duplication has to be drained regardless — an unreleased frame blocks the next
+  acquire — so pace by declining the colour conversion, not by declining to
+  acquire. Frames then arrive as fresh as the compositor can make them, which
+  the `age_ms` figure in `capture_stats` reports.
 - Do not hard-code an H.264 NAL length prefix size. Read it from the format
   description. VideoToolbox emits 4 in practice, which is exactly why
   hard-coding it survives testing and fails later against another encoder. The

@@ -46,6 +46,10 @@ public sealed class CapturedFrame
     public required int Height { get; init; }
     public required int Stride { get; init; }
     public required ulong CaptureUs { get; init; }
+
+    // Nv12 above is a shared buffer, reused for every frame, and is valid only
+    // until the next TryCapture. The capture loop hands it straight to the
+    // encoder, which copies it into an MF sample before returning.
 }
 
 public sealed class DesktopDuplicator : IDisposable

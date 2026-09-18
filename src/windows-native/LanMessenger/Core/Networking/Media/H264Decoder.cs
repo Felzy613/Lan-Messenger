@@ -59,6 +59,9 @@ public sealed class H264Decoder : IDisposable
     private bool _keyframeRequested;
     private int _width;
     private int _height;
+    /// Rows the decoder's planes are laid out with; see
+    /// DecodedVideoFrame.SurfaceHeight.
+    private int _surfaceHeight;
 
     /// Raised when the stream cannot progress without an IDR. The session turns
     /// this into a keyframe_request. Debounced: once per stall, not per frame.
@@ -215,6 +218,10 @@ public sealed class H264Decoder : IDisposable
                 // which rectangle is real. Where a decoder omits it the surface
                 // size is all there is, and the strip comes back — which is
                 // still better than cropping to a guess.
+                // The surface is what the buffer is laid out with; the
+                // aperture only narrows what is shown.
+                _surfaceHeight = height;
+
                 var aperture = ReadDisplayAperture(candidate);
                 if (aperture is (int apertureWidth, int apertureHeight)
                     && apertureWidth > 0 && apertureHeight > 0
@@ -367,6 +374,25 @@ public sealed class H264Decoder : IDisposable
         }
     }
 
+    /// The one frame buffer, grown on demand and then reused forever.
+    ///
+    /// A fresh multi-megabyte array per frame is not a leak, but at 1080p and
+    /// 26fps it is about 80MB a second straight onto the Large Object Heap,
+    /// which is not compacted and is only swept on a gen2 collection. Left
+    /// running for ten minutes it took the process to 32GB of private commit
+    /// and the machine to 668MB free — at which point csc.exe started crashing
+    /// and the WinUI build failed with an error naming neither memory nor this.
+    ///
+    /// Safe because DecodedVideoFrame is documented as valid only until the next
+    /// call: the presenter copies what it needs before returning.
+    private byte[] _frameBuffer = [];
+
+    private byte[] Rent(int length)
+    {
+        if (_frameBuffer.Length < length) _frameBuffer = new byte[length];
+        return _frameBuffer;
+    }
+
     /// Copies one NV12 picture out of the sample.
     ///
     /// The stride is read from the buffer rather than assumed equal to the
@@ -384,13 +410,17 @@ public sealed class H264Decoder : IDisposable
             try
             {
                 if (stride <= 0) stride = _width;
-                int length = stride * _height * 3 / 2;
-                var managed = new byte[length];
+                // The SURFACE height, not the displayed one. _height is cropped
+                // to the display aperture, and sizing the copy with it stops
+                // short of the chroma plane, which begins after every surface
+                // row — so the picture arrives with its colour half missing.
+                int length = stride * _surfaceHeight * 3 / 2;
+                var managed = Rent(length);
                 Marshal.Copy(scan0, managed, 0, length);
                 return new DecodedVideoFrame
                 {
                     Width = _width, Height = _height, CaptureUs = captureUs,
-                    Nv12 = managed, Stride = stride,
+                    Nv12 = managed, Stride = stride, SurfaceHeight = _surfaceHeight,
                 };
             }
             finally { buffer2d.Unlock2D(); }
@@ -403,12 +433,12 @@ public sealed class H264Decoder : IDisposable
             try
             {
                 if (current <= 0) return null;
-                var managed = new byte[current];
+                var managed = Rent(current);
                 Marshal.Copy(data, managed, 0, current);
                 return new DecodedVideoFrame
                 {
                     Width = _width, Height = _height, CaptureUs = captureUs,
-                    Nv12 = managed, Stride = _width,
+                    Nv12 = managed, Stride = _width, SurfaceHeight = _surfaceHeight,
                 };
             }
             finally { buffer.Unlock(); }

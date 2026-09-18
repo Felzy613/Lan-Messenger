@@ -125,7 +125,8 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
                 _bgraHeight = frame.Height;
                 _bgra = new byte[Nv12Converter.BgraLength(_bgraWidth, _bgraHeight)];
             }
-            Nv12Converter.ToBgra(frame.Nv12, frame.Stride, _bgraWidth, _bgraHeight, _bgra);
+            Nv12Converter.ToBgra(frame.Nv12, frame.Stride, _bgraWidth, _bgraHeight, _bgra,
+                                 frame.SurfaceHeight);
         }
         catch (Exception ex)
         {

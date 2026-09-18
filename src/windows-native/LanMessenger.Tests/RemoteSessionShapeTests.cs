@@ -187,6 +187,45 @@ public class RemoteSessionShapeTests
     }
 
     [TestMethod]
+    public void ChromaIsReadFromTheSurfaceHeightNotTheDisplayHeight()
+    {
+        // The regression this exists for: cropping 1088 down to 1080 for display
+        // also moved the chroma read, because the offset was computed from the
+        // displayed height. The picture stayed perfectly sharp — luma is
+        // untouched — and every colour in it was wrong, which reads as a broken
+        // decoder rather than as an arithmetic slip in the presenter.
+        const int width = 4, height = 4, surfaceHeight = 8, stride = 4;
+
+        var nv12 = new byte[stride * surfaceHeight * 3 / 2];
+
+        // Mid-grey luma across the whole surface, including the 4 padding rows.
+        for (int i = 0; i < stride * surfaceHeight; i++) nv12[i] = 128;
+
+        // Real chroma begins after ALL surfaceHeight rows. Strongly blue:
+        // Cb high, Cr low.
+        for (int i = stride * surfaceHeight; i < nv12.Length; i += 2)
+        {
+            nv12[i] = 240;      // Cb
+            nv12[i + 1] = 16;   // Cr
+        }
+
+        var bgra = new byte[Nv12Converter.BgraLength(width, height)];
+        Nv12Converter.ToBgra(nv12, stride, width, height, bgra, surfaceHeight);
+
+        // Blue channel first in BGRA.
+        Assert.IsTrue(bgra[0] > bgra[2],
+            "with Cb high and Cr low the result must be blue-dominant");
+
+        // And the failure mode, stated explicitly: read chroma at the display
+        // height and the 128s of padding luma are used as chroma instead, which
+        // is exactly neutral — no colour at all.
+        var wrong = new byte[Nv12Converter.BgraLength(width, height)];
+        Nv12Converter.ToBgra(nv12, stride, width, height, wrong, height);
+        Assert.AreEqual(wrong[0], wrong[2],
+            "the offset-by-padding case should come out neutral, proving the two differ");
+    }
+
+    [TestMethod]
     public void AShortBufferIsTruncatedRatherThanOverrun()
     {
         // Frames arrive from a peer. A decoder that under-delivers must not walk
