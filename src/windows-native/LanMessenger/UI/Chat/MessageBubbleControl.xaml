@@ -3,6 +3,18 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid x:Name="RootGrid" Padding="0,2">
+        <!-- Sender name sits above the bubble (not inside its colored
+             background) for the first message of an incoming run — matches
+             macOS's MessageBubbleView.incomingBubble. HorizontalAlignment is
+             set on this column, not the Border, so the label lines up with
+             whichever side the bubble is on. -->
+        <StackPanel x:Name="BubbleColumn" Spacing="2" HorizontalAlignment="Left">
+            <TextBlock x:Name="SenderNameText"
+                       FontSize="11"
+                       FontWeight="SemiBold"
+                       Foreground="{StaticResource AppAccentBrush}"
+                       Margin="4,0,0,0"
+                       Visibility="Collapsed" />
         <!-- CanDrag is switched on in Refresh() for file bubbles whose file is
              still on disk, so an attachment can be dragged straight out to
              Explorer, Outlook, or anything else that takes a file. -->
@@ -10,7 +22,6 @@
                 CornerRadius="16"
                 Padding="10,7,10,6"
                 MaxWidth="520"
-                HorizontalAlignment="Left"
                 CanDrag="False"
                 DragStarting="Bubble_DragStarting">
             <Border.ContextFlyout>
@@ -204,5 +215,6 @@
                 </StackPanel>
             </StackPanel>
         </Border>
+        </StackPanel>
     </Grid>
 </UserControl>

@@ -3,10 +3,12 @@ using LanMessenger.UI;
 using LanMessenger.UI.Chat;
 using LanMessenger.UI.Settings;
 using LanMessenger.UI.Sidebar;
+using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Input;
@@ -42,6 +44,7 @@ public sealed partial class MainWindow : Window
 
         InitializeComponent();
         Title = "LAN Messenger";
+        ApplyBackdrop();
 
         // Point the code-behind palette (bubbles, dots, check marks) at the
         // light or dark colors. XAML colors follow ThemeDictionaries on their
@@ -88,6 +91,25 @@ public sealed partial class MainWindow : Window
         appWindow.Closing += OnAppWindowClosing;
         appWindow.Changed += OnAppWindowChanged;
         Activated += OnWindowActivated;
+    }
+
+    // Gives the whole window a translucent, wallpaper-tinted backdrop — the
+    // Windows equivalent of the vibrancy macOS gets for free from
+    // `.listStyle(.sidebar)`. Without a SystemBackdrop, the sidebar's
+    // LayerFillColorDefaultBrush (semi-transparent by design) has nothing
+    // translucent to blend with and just reads as flat. The chat pane stays
+    // fully opaque either way (AppChatBackgroundBrush), matching macOS, where
+    // only the sidebar/header/composer chrome is translucent.
+    private void ApplyBackdrop()
+    {
+        if (MicaController.IsSupported())
+        {
+            SystemBackdrop = new MicaBackdrop { Kind = MicaKind.Base };
+        }
+        else if (DesktopAcrylicController.IsSupported())
+        {
+            SystemBackdrop = new DesktopAcrylicBackdrop();
+        }
     }
 
     // Tracks focus so notifications only suppress while the window is both
@@ -181,12 +203,16 @@ public sealed partial class MainWindow : Window
     {
         if (_activeDialog is not null) return;
         var dialog = new NewMessageDialog(Model) { XamlRoot = Content.XamlRoot };
+        var wantsContacts = false;
+        dialog.AddContactRequested += () => wantsContacts = true;
         _activeDialog = dialog;
         try
         {
             var result = await dialog.ShowAsync();
-            // Primary = "Add Contact" branch — open the contacts dialog for adding a peer.
-            if (result == ContentDialogResult.Primary)
+            // Primary = the footer "Add Contact" button; wantsContacts = the
+            // empty state's inline button (see NewMessageDialog.AddContactRequested).
+            // Either way, open the contacts dialog for adding a peer.
+            if (result == ContentDialogResult.Primary || wantsContacts)
             {
                 _activeDialog = null;
                 ShowContactsPage();
