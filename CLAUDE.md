@@ -43,8 +43,19 @@ build commands, CI, packaging, or release behavior.
 cd src/macos
 swift build
 swift test
-swift run
+swift run     # unbundled: no notifications, no TCC identity of its own
 ```
+
+`swift run` produces a bare executable with no `.app` around it, and some
+frameworks refuse to work there. `UNUserNotificationCenter.current()` is the one
+that bites: it raises `NSInternalInconsistencyException` — "bundleProxyForCurrentProcess
+is nil" — from inside a `dispatch_once` during `applicationWillFinishLaunching`,
+so the app dies before its first window and the backtrace is sixty frames of
+SwiftUI with the cause buried in the middle. `NotificationService` guards on
+`Bundle.main.bundleIdentifier` for exactly this reason; anything else reaching
+for a bundle-scoped API needs the same guard. TCC grants also attach to whatever
+app is responsible for the process rather than to the binary, so permissions
+behave differently here than in the packaged app.
 
 Generate an Xcode project only when needed:
 
