@@ -4,6 +4,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices.WindowsRuntime;
 
 namespace LanMessenger.UI.RemoteDesktop;
@@ -21,6 +22,12 @@ namespace LanMessenger.UI.RemoteDesktop;
 // queues when the UI thread is behind — a backlog of stale frames is latency a
 // viewer can never pay off, and on live screen content the newest frame is the
 // only one anybody wants.
+//
+// What crosses that hop is deliberately as little as possible: the NV12 to BGRA
+// conversion happens on the decode thread, and the UI thread does only the
+// bitmap write and the invalidate. The conversion is two million pixels of
+// per-pixel work, and on the UI thread it decides the display rate for the
+// whole app rather than just for this window.
 
 public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
 {
@@ -29,6 +36,17 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
     private byte[]? _bgra;
     private int _width;
     private int _height;
+    /// The size _bgra was allocated for. Written on the decode thread, read on
+    /// the UI thread, and only ever while _framePending gates the two apart.
+    private int _bgraWidth;
+    private int _bgraHeight;
+
+    private long _dropped;
+    private long _presented;
+    private long _latencySumMs;
+    private long _latencySamples;
+    private long _latencyMaxMs;
+    private readonly Stopwatch _statsClock = Stopwatch.StartNew();
 
     /// Set while a frame is already on its way to the UI thread. The next one
     /// is dropped rather than queued: stale frames are worse than missing ones.
@@ -61,44 +79,77 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
 
     public void Present(DecodedVideoFrame frame)
     {
-        if (_closed) return;
+        if (_closed || frame.Width <= 0 || frame.Height <= 0) return;
 
         // Drop rather than queue. This is live screen content: a frame that has
         // been waiting is already wrong, and the backlog only grows.
+        //
+        // Dropping here does NOT need a keyframe, and asking for one was a bug.
+        // The decoder has already decoded this picture and holds it as the
+        // reference for the next; throwing away our *copy* of it costs the
+        // decoder nothing. Requesting an IDR every time the UI thread blinked
+        // meant the slower the display got, the more full-size keyframes the
+        // encoder was told to emit — the one response guaranteed to make it
+        // slower still.
         if (Interlocked.Exchange(ref _framePending, 1) == 1)
         {
-            RequestKeyframe("ui_thread_behind");
+            Interlocked.Increment(ref _dropped);
             return;
         }
 
-        if (!_dispatcher.TryEnqueue(DispatcherQueuePriority.High, () => Render(frame)))
+        try
+        {
+            // Converted here, on the decode thread, not on the UI thread.
+            //
+            // This is per-pixel work across two million pixels. On the UI
+            // thread it competes with the compositor and with every other
+            // window the app owns, and it sets the ceiling on how fast frames
+            // can be shown. Moving it off is the difference between the
+            // display rate being ours and it being XAML's.
+            if (_bgra is null || _bgraWidth != frame.Width || _bgraHeight != frame.Height)
+            {
+                _bgraWidth = frame.Width;
+                _bgraHeight = frame.Height;
+                _bgra = new byte[Nv12Converter.BgraLength(_bgraWidth, _bgraHeight)];
+            }
+            Nv12Converter.ToBgra(frame.Nv12, frame.Stride, _bgraWidth, _bgraHeight, _bgra);
+        }
+        catch (Exception ex)
+        {
+            Interlocked.Exchange(ref _framePending, 0);
+            LanLogger.Remote("error", reason: $"colour conversion failed: {ex.Message}");
+            return;
+        }
+
+        // Only the value is carried across, never the frame: DecodedVideoFrame
+        // is valid until the next decode call and the UI thread will read it
+        // later than that.
+        ulong captureUs = frame.CaptureUs;
+        if (!_dispatcher.TryEnqueue(DispatcherQueuePriority.High, () => Render(captureUs)))
         {
             Interlocked.Exchange(ref _framePending, 0);
         }
     }
 
-    private void Render(DecodedVideoFrame frame)
+    private void Render(ulong captureUs)
     {
         try
         {
-            if (_closed || frame.Width <= 0 || frame.Height <= 0) return;
+            if (_closed || _bgra is null) return;
 
-            if (_bitmap is null || _width != frame.Width || _height != frame.Height)
+            if (_bitmap is null || _width != _bgraWidth || _height != _bgraHeight)
             {
-                _width = frame.Width;
-                _height = frame.Height;
+                _width = _bgraWidth;
+                _height = _bgraHeight;
                 _bitmap = new WriteableBitmap(_width, _height);
-                _bgra = new byte[Nv12Converter.BgraLength(_width, _height)];
                 VideoImage.Source = _bitmap;
                 ResizeToAspect();
                 LanLogger.Remote("viewer_format", reason: $"{_width}x{_height}");
             }
 
-            Nv12Converter.ToBgra(frame.Nv12, frame.Stride, _width, _height, _bgra!);
-
             using (var stream = _bitmap!.PixelBuffer.AsStream())
             {
-                stream.Write(_bgra!, 0, _bgra!.Length);
+                stream.Write(_bgra, 0, _bgra.Length);
             }
             _bitmap.Invalidate();
 
@@ -107,6 +158,7 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
                 WaitingText.Visibility = Visibility.Collapsed;
             }
             _keyframeRequested = false;
+            NotePresented(captureUs);
         }
         catch (Exception ex)
         {
@@ -118,6 +170,39 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
         {
             Interlocked.Exchange(ref _framePending, 0);
         }
+    }
+
+    /// End-to-end latency, measured rather than reasoned about.
+    ///
+    /// capture_us has ridden along with the frame since Desktop Duplication
+    /// handed it over, through encode, decode and conversion, so the subtraction
+    /// here is the whole pipeline and nothing else. Without it "it feels laggy"
+    /// and "it feels smooth" are the only two available measurements.
+    private void NotePresented(ulong captureUs)
+    {
+        _presented++;
+        long nowUs = Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1_000_000L);
+        long latencyMs = ((long)nowUs - (long)captureUs) / 1000;
+        if (latencyMs >= 0)
+        {
+            _latencySumMs += latencyMs;
+            _latencySamples++;
+            if (latencyMs > _latencyMaxMs) _latencyMaxMs = latencyMs;
+        }
+
+        if (_statsClock.ElapsedMilliseconds < 2000) return;
+
+        double seconds = _statsClock.ElapsedMilliseconds / 1000.0;
+        long avg = _latencySamples > 0 ? _latencySumMs / _latencySamples : -1;
+        LanLogger.Remote("viewer_stats",
+            reason: $"presented={_presented} dropped={Interlocked.Read(ref _dropped)} "
+                  + $"fps={_presented / seconds:F1} latency_ms_avg={avg} latency_ms_max={_latencyMaxMs}");
+
+        _statsClock.Restart();
+        _presented = 0;
+        _latencySumMs = 0;
+        _latencySamples = 0;
+        _latencyMaxMs = 0;
     }
 
     public void Flush()
@@ -133,6 +218,8 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
             VideoImage.Source = null;
             _bitmap = null;
             _bgra = null;
+            _bgraWidth = 0;
+            _bgraHeight = 0;
             WaitingText.Visibility = Visibility.Visible;
         });
     }

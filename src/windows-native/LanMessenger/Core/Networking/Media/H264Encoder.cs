@@ -297,6 +297,11 @@ public sealed class H264Encoder : IDisposable
             LanLogger.Remote("encoder_property_failed", reason: $"async unlock: {ex.Message}");
         }
 
+        // The encoder holds frames too — a CBR rate controller works against a
+        // buffer, and the deeper that buffer the longer a frame waits before it
+        // is allowed out. Same argument as the decoder side.
+        MediaFoundationTuning.TrySetLowLatency(encoder, "encoder");
+
         // Output type FIRST. The MF H.264 encoder requires this order and fails
         // unhelpfully in the other one.
         _bitrate = bitrate;
@@ -461,12 +466,15 @@ public sealed class H264Encoder : IDisposable
                         var encoder = _encoder;
                         if (encoder is not null)
                         {
-                            // Normally exactly one ProcessOutput per event. A
-                            // stream change is the exception: it consumed the
-                            // event without producing a frame, and the output
-                            // it was announcing is still waiting behind the
-                            // renegotiated type.
-                            if (ReadOutput(encoder) == OutputStep.StreamChange) ReadOutput(encoder);
+                            // Exactly one ProcessOutput per event, including
+                            // after a stream change. Reading twice looks like
+                            // the obvious way to collect the frame the change
+                            // displaced, but the second call has no event
+                            // behind it and the transform answers E_UNEXPECTED
+                            // — one spurious error per session, logged, for
+                            // nothing. The renegotiated type produces a fresh
+                            // METransformHaveOutput on its own.
+                            ReadOutput(encoder);
                         }
                         break;
 

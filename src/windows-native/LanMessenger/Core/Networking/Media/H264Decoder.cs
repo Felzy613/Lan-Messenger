@@ -81,6 +81,17 @@ public sealed class H264Decoder : IDisposable
             ?? throw new H264DecoderException(
                 "no H.264 decoder MFT — a Windows N/KN SKU without the media feature pack");
 
+        // MF_LOW_LATENCY before any type is set.
+        //
+        // An H.264 decoder is entitled to buffer a whole DPB before it emits
+        // anything, because in ordinary playback that is how B-frame reordering
+        // works and nobody minds a few frames of delay. For a remote desktop
+        // it is the difference between a live screen and a recording: those
+        // held frames are pure latency, on top of whatever the encoder is
+        // holding at the other end. Without this the measured delay was about
+        // two seconds — the picture was correct and useless.
+        MediaFoundationTuning.TrySetLowLatency(transform, "decoder");
+
         using (var inType = MediaFactory.MFCreateMediaType())
         {
             inType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Video);

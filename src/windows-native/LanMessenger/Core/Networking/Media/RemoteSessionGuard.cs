@@ -42,6 +42,7 @@ public sealed class RemoteSessionGuard : IDisposable
 
     private const int NOTIFY_FOR_THIS_SESSION = 0;
     private const int HOTKEY_ID = 0xB0B;
+    private const int ERROR_CLASS_ALREADY_EXISTS = 1410;
 
     private static readonly IntPtr HWND_MESSAGE = new(-3);
 
@@ -135,12 +136,26 @@ public sealed class RemoteSessionGuard : IDisposable
                 hInstance = GetModuleHandleW(null),
                 lpszClassName = "LanMessengerRemoteGuard",
             };
+            // A window class registered by this process stays registered for the
+            // life of the process, so the second Arm() of a session always fails
+            // with ERROR_CLASS_ALREADY_EXISTS. Treating that as fatal is how the
+            // kill switch came to be armed for the first remote session of a run
+            // and dead for every one after it — the log said
+            // "Ctrl+Alt+Shift+Esc unavailable" and the only way out of a live
+            // session was the indicator's Stop button, which is precisely the
+            // exit that is a race once control has been granted.
             ushort atom = RegisterClassExW(ref wc);
             if (atom == 0)
             {
-                LanLogger.Remote("error", reason: "guard window class registration failed");
-                _ready.Set();
-                return;
+                int err = Marshal.GetLastWin32Error();
+                if (err != ERROR_CLASS_ALREADY_EXISTS)
+                {
+                    LanLogger.Remote("error",
+                        reason: $"guard window class registration failed ({err})");
+                    _ready.Set();
+                    return;
+                }
+                // Already registered by an earlier session: carry on and use it.
             }
 
             // HWND_MESSAGE: never shown, never focused, not enumerated.
