@@ -1,3 +1,4 @@
+using LanMessenger.Core.Networking.Media;
 using LanMessenger.Core.Persistence;
 using LanMessenger.Core.Services;
 using LanMessenger.UI;
@@ -40,6 +41,9 @@ public sealed partial class SettingsPage : Page
             ? Visibility.Collapsed : Visibility.Visible;
         UpdateRepoBox.Text = cfg.UpdateRepo;
         CloseToTrayToggle.IsOn = cfg.CloseToTray;
+        RemoteDesktopToggle.IsOn = cfg.RemoteDesktopMode.IsEnabled();
+        RemoteDesktopStopHint.Visibility = cfg.RemoteDesktopMode.IsEnabled()
+            ? Visibility.Visible : Visibility.Collapsed;
         RelayEnabledToggle.IsOn = cfg.RelayEnabled;
         RelayUrlBox.Text = cfg.RelayWorkerUrl;
         RelayUrlBox.IsEnabled = cfg.RelayEnabled;
@@ -226,6 +230,18 @@ public sealed partial class SettingsPage : Page
     {
         _model?.InstallUpdate();
         RefreshUpdateUI();
+    }
+
+    private void RemoteDesktopToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        // One switch for the whole feature in both directions: a host that will
+        // not be viewed also does not offer to view. Stored through the enum so
+        // an unrecognised value in a config written elsewhere fails closed.
+        ConfigStore.Shared.Config.RemoteDesktopMode =
+            RemoteDesktopToggle.IsOn ? RemoteDesktopMode.On : RemoteDesktopMode.Off;
+        ConfigStore.Shared.Save();
+        RemoteDesktopStopHint.Visibility =
+            RemoteDesktopToggle.IsOn ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void RelayEnabledToggle_Toggled(object sender, RoutedEventArgs e)

@@ -87,6 +87,26 @@
                 </StackPanel>
             </StackPanel>
 
+            <!-- Remote Desktop -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Remote Desktop"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <ToggleSwitch x:Name="RemoteDesktopToggle"
+                              Header="Allow remote desktop"
+                              OnContent="On"
+                              OffContent="Off"
+                              Toggled="RemoteDesktopToggle_Toggled" />
+                <TextBlock Text="When enabled, a saved contact can ask to view your screen, and separately to control it. You are asked every time — there is no unattended access, and peers who are not in your contacts are ignored without being told anything."
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           TextWrapping="Wrap" />
+                <TextBlock x:Name="RemoteDesktopStopHint"
+                           Text="Stop a session at any time from the indicator at the top of the screen."
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+
             <!-- Cloud Relay -->
             <StackPanel Spacing="6">
                 <TextBlock Text="Cloud Relay"

@@ -11,6 +11,8 @@ struct SettingsView: View {
     @State private var screenshotDir = ConfigStore.shared.config.screenshotDir
     @State private var hideFromDock = ConfigStore.shared.config.hideFromDock
     @State private var launchAtLogin = ConfigStore.shared.config.launchAtLogin
+    @State private var remoteDesktopEnabled =
+        ConfigStore.shared.config.remoteDesktopMode.isEnabled
     @State private var relayEnabled = ConfigStore.shared.config.relayEnabled
     @State private var relayWorkerURL = ConfigStore.shared.config.relayWorkerURL
     @State private var loginItemStatusText = ""
@@ -106,6 +108,29 @@ struct SettingsView: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
+                    }
+                }
+
+                Section("Remote Desktop") {
+                    Toggle("Allow remote desktop", isOn: $remoteDesktopEnabled)
+                    // Says what it actually permits, in the second person, and
+                    // names the limits that are the point of the design: saved
+                    // contacts only, asked every time, never unattended. A
+                    // setting this consequential should read as a decision
+                    // rather than a feature.
+                    Text("When enabled, a saved contact can ask to view your screen, "
+                         + "and separately to control it. You are asked every time — "
+                         + "there is no unattended access, and peers who are not in "
+                         + "your contacts are ignored without being told anything.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    if remoteDesktopEnabled {
+                        Text("Stop a session at any time from the indicator at the top "
+                             + "of the screen, or with \(RemoteKillSwitch.shortcut.displayName), "
+                             + "which works even while the other side is controlling "
+                             + "your keyboard and mouse.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -376,6 +401,7 @@ struct SettingsView: View {
         ConfigStore.shared.config.inboxDir = inboxDir
         ConfigStore.shared.config.screenshotDir = screenshotDir
         ConfigStore.shared.config.hideFromDock = hideFromDock
+        ConfigStore.shared.config.remoteDesktopMode = remoteDesktopEnabled ? .on : .off
         ConfigStore.shared.config.relayEnabled = relayEnabled
         ConfigStore.shared.config.relayWorkerURL = relayWorkerURL.trimmingCharacters(in: .whitespaces)
         ConfigStore.shared.save()

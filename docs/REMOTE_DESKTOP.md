@@ -65,7 +65,7 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
 | WS7 | Input capture + injection | **Geometry done**, both platforms; injection and key tables not started | yes, both |
 | WS8 | Session lifecycle + consent UI | **Done on macOS**; control channel done both platforms; reconnect remains | no (UI work) |
-| WS9 | Settings, logging, diagnostics | **Log channel and stats contents done**; the settings toggle remains | no |
+| WS9 | Settings, logging, diagnostics | **Done** — log channel, stats contents, and the settings toggle on both platforms | no |
 | WS10 | Latency tuning | **Not started** | yes |
 | WS11 | Packaging, docs, CI | **`dpiAwareness` done** (unverified on Windows); Vortice refs and the SDK decision remain | no |
 
@@ -780,9 +780,14 @@ decoded fps, dropped frames, decode queue depth and end-to-end latency from
 negative: when the two machines' clocks disagree the figure is nonsense, and a
 nonsense number visible is better than a plausible one invented.
 
-What remains is the `remoteDesktopMode` setting in the UI — the 3-step
-`SettingsPage` recipe on Windows, the `@State` mirror + `save()` pattern on
-macOS.
+The `remoteDesktopMode` toggle is now in both settings screens. Its explanatory
+text is deliberately specific rather than reassuring: it names what a contact can
+ask for, that viewing and control are separate asks, that consent is per session,
+that there is no unattended access, and that non-contacts are ignored without
+being told anything. A setting this consequential should read as a decision
+rather than a feature. When it is on, the macOS copy also names the kill shortcut
+by its symbol, since a shortcut nobody has read about is one nobody uses in a
+panic.
 
 ### WS10 — Latency tuning
 
