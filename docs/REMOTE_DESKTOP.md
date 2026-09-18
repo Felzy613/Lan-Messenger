@@ -73,7 +73,7 @@ Test counts on this branch, both suites green:
 
 - Windows GPU/encoder selection covers **nine machine topologies**, only one of
   which we own
-- macOS **425 passing**, 7 skipped (all generators or hardware-gated: the
+- macOS **432 passing**, 11 skipped (all generators or hardware-gated: the
   H.264 fixture emitter, the control-vector emitter, the UI renderers, and the
   live capture check)
 - Windows **270 passing**, run on real hardware 2026-09-17 from a freshly built
@@ -1053,7 +1053,21 @@ thing to fix.
 
 ---
 
-### Phase 1 — Make it work on one Mac
+### Phase 1 — Make it work on one Mac — **DONE 2026-09-17**
+
+`RemoteDesktopSession` is the object the plan forgot, and it now exists:
+`RemoteDesktopSession.swift`, `RemoteViewerWindow.swift`, the `AppModel`
+wiring and a **Remote Desktop** menu with *Start Self View*, gated on the same
+setting and policy a real session is judged by.
+
+Verified live on this Mac: **30 frames** from `SCStream` through the encoder,
+the Annex-B conversion, the decoder and into the display layer, with each
+decoded sample's format description checked against the capture dimensions —
+because "frames arrived" alone would also be true of a pipeline producing
+green rubbish at the wrong size. Teardown asserted too: capture released,
+layer gone, grant ended, audit trail reading start → end with a duration.
+
+What follows is the original scope, kept for the record.
 
 **No new platform code.** Everything this needs already exists and is tested;
 the work is the orchestration that was never scoped.

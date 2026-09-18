@@ -182,6 +182,26 @@ struct LanMessengerApp: App {
                 Button("Show Main Window") { WindowController.showMainWindow() }
                     .keyboardShortcut("1", modifiers: [.command])
             }
+            // The only entry point into remote desktop today. Self-view needs no
+            // peer, which is what makes the whole pipeline runnable on one
+            // machine — and it is gated on the same setting a real session is,
+            // so nobody can capture their screen without having switched the
+            // feature on.
+            CommandMenu("Remote Desktop") {
+                if appModel.remoteSessionRunning {
+                    Button("Stop Sharing") { appModel.stopRemoteSession() }
+                        .keyboardShortcut(".", modifiers: [.command, .shift])
+                    if let summary = appModel.remoteSessionSummary {
+                        Text(summary)
+                    }
+                } else {
+                    Button("Start Self View…") { appModel.startRemoteSelfView() }
+                        .disabled(!ConfigStore.shared.config.remoteDesktopMode.isEnabled)
+                    if !ConfigStore.shared.config.remoteDesktopMode.isEnabled {
+                        Text("Turn on Remote Desktop in Settings")
+                    }
+                }
+            }
         }
 
         MenuBarExtra {

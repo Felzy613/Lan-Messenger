@@ -66,6 +66,33 @@ final class AppModel: ObservableObject {
     @Published var typingStates: [String: (sender: String, active: Bool)] = [:]
     @Published var activeTransfers: [String: (label: String, bytes: Int64, total: Int64)] = [:]
     @Published var showMigrationPrompt = false
+
+    // MARK: - Remote desktop
+
+    /// The live session, or nil. One at a time: this Mac has one screen, and
+    /// `RemoteSessionRegistry` already enforces one in flight per peer.
+    @Published private(set) var remoteSessionSummary: String?
+    @Published private(set) var remoteSessionRunning = false
+
+    /// Built lazily so the audit sink can close over `self`.
+    private lazy var remoteSession: RemoteDesktopSession = {
+        let session = RemoteDesktopSession(appendAudit: { [weak self] record in
+            self?.recordRemoteAudit(record)
+        })
+        session.onChange = { [weak self] in self?.refreshRemoteSessionState() }
+        session.onEnded = { [weak self] _ in
+            self?.remoteViewerWindow.close()
+            self?.refreshRemoteSessionState()
+        }
+        return session
+    }()
+
+    private let remoteViewerWindow = RemoteViewerWindowController()
+
+    /// The conversation an audit record belongs to. Self-view has no peer, so
+    /// its records are logged and not filed — a fabricated conversation with
+    /// yourself would be worse than no entry.
+    private var remoteAuditPeerIP: String?
     @Published var pendingImportKeyData: Data? = nil
     @Published var availableUpdate: UpdateInfo? = nil
     @Published var updateProgress: UpdateProgress = .idle
@@ -229,6 +256,99 @@ final class AppModel: ObservableObject {
     func acceptMigrationWithFreshKey() {
         showMigrationPrompt = false
         pendingImportKeyData = nil
+    }
+
+    // MARK: - Remote desktop
+
+    /// Starts a session that captures this screen and shows it back in a window.
+    ///
+    /// No peer and no socket: the transport is already proven to carry these
+    /// frames by `VideoPipelineEndToEndTests`, and what this exercises instead
+    /// is everything that test cannot — a real capture reaching a real window,
+    /// the indicator, the guard, the kill shortcut and the teardown ordering.
+    func startRemoteSelfView() {
+        guard !remoteSession.isRunning else { return }
+        remoteAuditPeerIP = nil
+
+        Task { @MainActor in
+            do {
+                try await remoteSession.startSelfView()
+                guard let layer = remoteSession.videoLayer else { return }
+                remoteViewerWindow.show(
+                    title: "This Mac — self view",
+                    layer: layer,
+                    aspect: remoteSession.dimensions,
+                    onClose: { [weak self] in self?.remoteSession.stop(.userStopped) })
+            } catch {
+                NetLogger.remote(event: "error", reason: "self view failed: \(error)")
+                presentRemoteStartFailure(error)
+            }
+        }
+    }
+
+    func stopRemoteSession() {
+        remoteSession.stop(.userStopped)
+    }
+
+    /// Whether the menu item should be offered for a peer, and why not when it
+    /// should not. The policy is the same one an inbound invite is judged by, so
+    /// the interface can never offer something the gate would refuse.
+    func remoteDesktopAvailability(forPeerKey key: String) -> RemoteInviteAvailability {
+        let peer = peers[key]
+        let isContact = ConfigStore.shared.config.contacts.contains { $0.publicKeyB64 == key }
+        return RemoteDesktopPolicy.availability(
+            mode: ConfigStore.shared.config.remoteDesktopMode,
+            target: RemoteInviteTarget(
+                isSavedContact: isContact,
+                isOnline: peer?.isOnline ?? false,
+                advertisesRemoteDesktop: peer?.supportsRemoteDesktop ?? false,
+                hasSessionInFlight: remoteSession.isRunning))
+    }
+
+    private func refreshRemoteSessionState() {
+        remoteSessionRunning = remoteSession.isRunning
+        if let mode = remoteSession.mode, let size = remoteSession.dimensions {
+            remoteSessionSummary = "\(mode.peerName) · \(size.width)x\(size.height)"
+        } else {
+            remoteSessionSummary = nil
+        }
+        if let size = remoteSession.dimensions, remoteViewerWindow.isOpen {
+            remoteViewerWindow.updateAspect(size)
+        }
+    }
+
+    /// Files an audit record into the conversation it belongs to.
+    ///
+    /// A record with no peer — self-view — is logged rather than written. There
+    /// is no conversation with yourself to file it in, and inventing one would
+    /// put a system row in somebody's sidebar for a diagnostic they ran.
+    private func recordRemoteAudit(_ record: RemoteAuditEntry) {
+        NetLogger.remote(event: "audit", reason: record.summary)
+        guard let ip = remoteAuditPeerIP else { return }
+        let entry = record.historyEntry()
+        HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+        HistoryStore.shared.save()
+        messages[ip, default: []].append(entry)
+        refreshConversations()
+    }
+
+    private func presentRemoteStartFailure(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Could not start screen sharing"
+        // ScreenCaptureError says something useful; anything else is at least
+        // honest about being unexpected.
+        if let capture = error as? RemoteDesktopSession.StartFailure {
+            alert.informativeText = capture.description
+        } else {
+            alert.informativeText = "\(error)"
+        }
+        if case RemoteDesktopSession.StartFailure.capture(.permissionDenied) = error {
+            alert.informativeText = "LAN Messenger needs Screen Recording permission. "
+                + "Open System Settings → Privacy & Security → Screen Recording, "
+                + "enable LAN Messenger, then quit and reopen the app."
+        }
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     // MARK: - Peers
