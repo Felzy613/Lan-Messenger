@@ -286,6 +286,32 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The contact-strip button. Judges the request against the same policy an
+    /// inbound invite is judged by, so the interface can never start something
+    /// the gate would refuse.
+    func requestRemoteDesktop(peerKey: String, peerIP: String) {
+        let availability = remoteDesktopAvailability(forPeerKey: peerKey)
+        guard availability.isAvailable else {
+            NetLogger.remote(event: "invite_blocked", peer: peerIP,
+                             reason: "\(availability)")
+            return
+        }
+        remoteAuditPeerIP = peerIP
+
+        // The peer handshake — remote_invite, the consent prompt on their side,
+        // remote_accept, and the media_attach upgrade — is the next piece of
+        // work. Everything underneath it is built and proven; what is missing is
+        // the exchange that gets two machines to agree to start.
+        let alert = NSAlert()
+        alert.messageText = "Not connected yet"
+        alert.informativeText = "The screen-sharing pipeline works end to end on "
+            + "this Mac — try Start Self View from the menu bar icon. Asking "
+            + "another machine to share needs the invite exchange, which is the "
+            + "next thing being built."
+        alert.alertStyle = .informational
+        alert.runModal()
+    }
+
     func stopRemoteSession() {
         remoteSession.stop(.userStopped)
     }

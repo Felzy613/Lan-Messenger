@@ -198,7 +198,7 @@ struct LanMessengerApp: App {
                     Button("Start Self View…") { appModel.startRemoteSelfView() }
                         .disabled(!ConfigStore.shared.config.remoteDesktopMode.isEnabled)
                     if !ConfigStore.shared.config.remoteDesktopMode.isEnabled {
-                        Text("Turn on Remote Desktop in Settings")
+                        Text("Turn this on in LAN Messenger Settings (the gear icon), under Remote Desktop")
                     }
                 }
             }
@@ -330,6 +330,14 @@ struct TrayMenuView: View {
 
         Divider()
 
+        // Remote desktop lives here rather than only in the app menu bar.
+        // `hideFromDock` defaults to true, which makes this an `.accessory`
+        // process — and an accessory app has no menu bar at all, so a
+        // `CommandMenu` is invisible to most users. The MenuBarExtra always
+        // renders, which is the same reason CLAUDE.md insists `openWindow` be
+        // captured here.
+        RemoteDesktopTrayItems()
+
         if model.conversations.isEmpty {
             Text("No conversations")
                 .foregroundStyle(.secondary)
@@ -395,5 +403,33 @@ struct MigrationView: View {
         }
         .padding(32)
         .frame(width: 440)
+    }
+}
+
+// MARK: - Remote desktop tray items
+
+/// The remote-desktop entry point, in the one menu that is always present.
+private struct RemoteDesktopTrayItems: View {
+
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if model.remoteSessionRunning {
+            if let summary = model.remoteSessionSummary {
+                Text("Sharing: \(summary)")
+            }
+            Button("Stop Sharing") { model.stopRemoteSession() }
+        } else if ConfigStore.shared.config.remoteDesktopMode.isEnabled {
+            Button("Start Self View") { model.startRemoteSelfView() }
+        } else {
+            // Disabled rather than hidden, with the reason attached. A menu item
+            // that simply is not there reads as a missing feature; one that is
+            // greyed out with an explanation reads as a setting.
+            Button("Start Self View") {}
+                .disabled(true)
+            Text("Turn this on in LAN Messenger Settings (the gear icon), under Remote Desktop")
+        }
+
+        Divider()
     }
 }

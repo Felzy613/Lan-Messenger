@@ -122,6 +122,15 @@ struct SettingsView: View {
                          + "and separately to control it. You are asked every time — "
                          + "there is no unattended access, and peers who are not in "
                          + "your contacts are ignored without being told anything.")
+                    // macOS has its own System Settings pane called "Remote
+                    // Desktop" — the Apple Remote Desktop privacy permission —
+                    // which is unrelated and always empty for this app. People
+                    // find it, see nothing, and conclude the feature is broken.
+                    Text("This is separate from the “Remote Desktop” pane in macOS "
+                         + "System Settings, which is for Apple Remote Desktop and "
+                         + "is not used here.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     if remoteDesktopEnabled {
