@@ -159,6 +159,59 @@ public sealed partial class AppModel : ObservableObject
 
     [ObservableProperty] private string? _remoteInviteStatus;
 
+    /// <summary>The contact-strip button.</summary>
+    /// <remarks>
+    /// Judged against the same policy an inbound invite is, so the interface can
+    /// never start something the gate would refuse.
+    /// </remarks>
+    public void RequestRemoteDesktop(string peerKey, string peerIP)
+    {
+        var availability = RemoteDesktopAvailability(peerKey);
+        if (!availability.IsAvailable)
+        {
+            LanLogger.Remote("invite_blocked", peer: peerIP, reason: availability.Reason.ToString());
+            return;
+        }
+        var peer = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == peerKey);
+        InviteCoordinator.Invite(peerKey, peerIP, peer?.Username ?? peerIP);
+    }
+
+    /// <summary>Whether the button should be offered, and why not when it should not.</summary>
+    public RemoteInviteAvailability RemoteDesktopAvailability(string peerKey)
+    {
+        var peer = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == peerKey);
+        bool isContact = ConfigStore.Shared.Config.Contacts.Any(c => c.PublicKeyB64 == peerKey);
+        return RemoteDesktopPolicy.Availability(
+            ConfigStore.Shared.Config.RemoteDesktopMode,
+            new RemoteInviteTarget
+            {
+                IsSavedContact = isContact,
+                IsOnline = peer?.IsOnline ?? false,
+                AdvertisesRemoteDesktop = peer?.SupportsRemoteDesktop ?? false,
+                HasSessionInFlight = RemoteDesktopController.Shared.IsRunning
+                                     || InviteCoordinator.HasInviteInFlight,
+            });
+    }
+
+    /// <summary>The tooltip. Same wording as the macOS build.</summary>
+    public static string RemoteDesktopHint(RemoteInviteAvailability availability, string peerName)
+    {
+        if (availability.IsAvailable) return $"Ask {peerName} to share their screen";
+        return availability.Reason switch
+        {
+            RemoteUnavailableReason.LocalFeatureOff =>
+                "Turn this on in LAN Messenger Settings (the gear icon), under Remote Desktop",
+            RemoteUnavailableReason.PeerNotAContact => $"{peerName} is not a saved contact",
+            RemoteUnavailableReason.PeerOffline => $"{peerName} is offline",
+            // The whole reason the `caps` discovery field exists: without it
+            // this would be an invite that vanishes and a spinner forever.
+            RemoteUnavailableReason.PeerLacksCapability =>
+                $"{peerName}'s version does not support remote desktop",
+            RemoteUnavailableReason.SessionInFlight => "A remote desktop session is already running",
+            _ => "Screen sharing is not available with this contact",
+        };
+    }
+
     private RemoteInviteCoordinator BuildInviteCoordinator()
     {
         var coordinator = new RemoteInviteCoordinator(new RemoteInviteEnvironment

@@ -102,6 +102,32 @@ final class AppModel: ObservableObject {
     /// never causes this screen to be read at all.
     private var armedHosting: (sessionID: String, peerName: String, peerIP: String)?
 
+    /// Makes the channel closing end the session, without discarding whatever
+    /// the transport already put on `onClosed`.
+    ///
+    /// The peer ending a session reaches us two ways: `remote_end` over TCP,
+    /// which stops the MediaSession, and the socket simply closing, which is
+    /// the only one a crashing peer produces. Both funnel through here. Before
+    /// this, the Mac freed its registry entry and left the viewer window open
+    /// on a frozen picture — the session had ended everywhere except on screen.
+    ///
+    /// Composed rather than assigned: `attachInbound` and the coordinator each
+    /// install a handler that frees the registry entry, and replacing it strands
+    /// the peer as in-flight forever.
+    private func adoptChannelClose(_ media: MediaSession, reason: RemoteStopReason) {
+        let previous = media.onClosed
+        media.onClosed = { [weak self] error in
+            previous?(error)
+            Task { @MainActor [weak self] in
+                guard let self, self.remoteSession.isRunning else { return }
+                NetLogger.remote(event: "channel_closed",
+                                 sessionID: media.sessionID,
+                                 reason: error.map { "\($0)" } ?? "peer ended")
+                self.remoteSession.stop(reason)
+            }
+        }
+    }
+
     /// Wired once, on the session, because a session can end from six places —
     /// the Stop button, the kill switch, the screen locking, sleep, the
     /// watchdog, or the window being closed — and every one of them has to tell
@@ -378,6 +404,7 @@ final class AppModel: ObservableObject {
     /// The peer accepted and their media channel is attached. Show it.
     private func startViewing(peerName: String, peerIP: String, media: MediaSession) {
         remoteAuditPeerIP = peerIP
+        adoptChannelClose(media, reason: .networkLost)
         Task { @MainActor in
             do {
                 try await remoteSession.startViewing(peerName: peerName, peerIP: peerIP,
@@ -410,6 +437,7 @@ final class AppModel: ObservableObject {
         }
         armedHosting = nil
         remoteAuditPeerIP = armed.peerIP
+        adoptChannelClose(media, reason: .networkLost)
 
         Task { @MainActor in
             do {

@@ -32,6 +32,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <Grid Grid.Column="0">
@@ -66,6 +67,22 @@
                                            HorizontalAlignment="Left"
                                            Margin="0,3,0,2" />
             </StackPanel>
+            <!-- Ask this contact to share their screen.
+                 Always present, never hidden. A button that disappears reads as
+                 a missing feature and sends people to the release notes; one
+                 that is greyed out with the reason in its tooltip answers the
+                 question where it was asked. The reasons come from
+                 RemoteDesktopPolicy, the same gate an inbound invite is judged
+                 by, so the interface can never offer what the policy refuses. -->
+            <Button x:Name="RemoteDesktopBtn"
+                    Grid.Column="2"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    Padding="8"
+                    VerticalAlignment="Center"
+                    Click="RemoteDesktop_Click">
+                <FontIcon Glyph="&#xE7F4;" FontSize="16" />
+            </Button>
         </Grid>
 
         <!-- File transfer banner -->
