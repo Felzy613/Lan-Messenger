@@ -113,7 +113,19 @@ public sealed class H264Encoder : IDisposable
     private readonly int _frameRate;
     private int _bitrate;
     private IMFTransform? _encoder;
-    private ICodecAPI? _codecApi;
+    /// ICodecAPI, acquired separately on each thread that uses it.
+    ///
+    /// A single RCW is bound to the apartment of the thread that created it, and
+    /// ICodecAPI has no registered proxy/stub — so using one from another thread
+    /// fails with E_NOINTERFACE at the cast, not at the call. That is what broke
+    /// forced keyframes: the interface was acquired during construction and then
+    /// used from the capture thread, so every viewer's request to repair a
+    /// damaged picture failed silently with "Unable to cast COM object".
+    ///
+    /// Each thread queries the MFT itself, so each gets an RCW born in its own
+    /// apartment and nothing is ever marshalled across one.
+    private ThreadLocal<ICodecAPI?>? _codecApi;
+    private IntPtr _mftUnknown;
     private long _sampleIndex;
     private ulong _firstCaptureUs;
     private long _lastSampleTime = -1;
@@ -328,17 +340,23 @@ public sealed class H264Encoder : IDisposable
         // for video. Every setting is best-effort: support varies by vendor and
         // driver, and a missing property is a worse session rather than a broken
         // one.
-        _codecApi = CodecApiExtensions.TryGetCodecApi(encoder.NativePointer);
-        if (_codecApi is null)
+        // The MFT's own IUnknown, kept alive for the life of the encoder so any
+        // thread can query it later.
+        _mftUnknown = encoder.NativePointer;
+        Marshal.AddRef(_mftUnknown);
+        _codecApi = new ThreadLocal<ICodecAPI?>(
+            () => CodecApiExtensions.TryGetCodecApi(_mftUnknown), trackAllValues: true);
+
+        if (_codecApi.Value is null)
         {
             LanLogger.Remote("encoder_property_unsupported", reason: "ICodecAPI not available");
         }
         else
         {
-            _codecApi.TrySet(CodecApiProperty.LowLatencyMode, true, "AVLowLatencyMode");
-            _codecApi.TrySet(CodecApiProperty.CommonRateControlMode, 0u, "RateControlMode=CBR");
-            _codecApi.TrySet(CodecApiProperty.CommonMeanBitRate, (uint)bitrate, "MeanBitRate");
-            _codecApi.TrySet(CodecApiProperty.VideoMaxNumRefFrame, 1u, "MaxNumRefFrame=1");
+            _codecApi.Value!.TrySet(CodecApiProperty.LowLatencyMode, true, "AVLowLatencyMode");
+            _codecApi.Value!.TrySet(CodecApiProperty.CommonRateControlMode, 0u, "RateControlMode=CBR");
+            _codecApi.Value!.TrySet(CodecApiProperty.CommonMeanBitRate, (uint)bitrate, "MeanBitRate");
+            _codecApi.Value!.TrySet(CodecApiProperty.VideoMaxNumRefFrame, 1u, "MaxNumRefFrame=1");
         }
 
         // Begin streaming is what makes an async MFT start issuing events, so
@@ -530,7 +548,7 @@ public sealed class H264Encoder : IDisposable
 
         if (Interlocked.Exchange(ref _forceKeyframe, 0) == 1)
         {
-            _codecApi?.TrySet(CodecApiProperty.VideoForceKeyFrame, 1u, "ForceKeyFrame");
+            _codecApi?.Value?.TrySet(CodecApiProperty.VideoForceKeyFrame, 1u, "ForceKeyFrame");
         }
 
         int size = nv12.Length;
@@ -870,8 +888,21 @@ public sealed class H264Encoder : IDisposable
 
         if (_codecApi is not null)
         {
-            Marshal.ReleaseComObject(_codecApi);
+            // One RCW per thread that touched it, so all of them are released.
+            foreach (var api in _codecApi.Values)
+            {
+                if (api is not null)
+                {
+                    try { Marshal.ReleaseComObject(api); } catch { /* already gone */ }
+                }
+            }
+            _codecApi.Dispose();
             _codecApi = null;
+        }
+        if (_mftUnknown != IntPtr.Zero)
+        {
+            Marshal.Release(_mftUnknown);
+            _mftUnknown = IntPtr.Zero;
         }
 
         if (pumpStopped)
