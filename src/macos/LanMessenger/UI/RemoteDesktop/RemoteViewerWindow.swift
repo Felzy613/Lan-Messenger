@@ -30,6 +30,24 @@ final class RemoteViewerWindowController {
     /// re-applied when the host's resolution changes — a window whose shape does
     /// not match the stream letterboxes forever, and the user has no way to know
     /// whether that is the app or the remote screen.
+    /// Where captured input goes. Set before `show` so no event can be produced
+    /// before there is somewhere to send it.
+    var onInput: (([RemoteInputRecord]) -> Void)?
+
+    /// Whether the viewer is driving the remote machine. False until the host
+    /// grants control, so a viewer that is only watching never sends anything.
+    var isControlling: Bool = false {
+        didSet {
+            hostView?.isCapturing = isControlling
+            updateControlButton()
+        }
+    }
+
+    /// Asks the host for the keyboard and mouse. Nil while viewing self.
+    var onRequestControl: (() -> Void)?
+
+    private var controlButton: NSButton?
+
     func show(title: String,
               layer: CALayer,
               aspect: H264VideoDimensions?,
@@ -43,10 +61,21 @@ final class RemoteViewerWindowController {
         if hostView == nil {
             let view = VideoHostView()
             view.attach(layer)
+            view.onRecords = { [weak self] records in self?.onInput?(records) }
+            view.isCapturing = isControlling
             panel.contentView = view
             hostView = view
         }
 
+        // The capture view needs the remote picture's size for its aspect-fit
+        // arithmetic — without it every coordinate is normalized against the
+        // window including its letterbox bars.
+        if let aspect {
+            hostView?.remoteSize = CGSize(width: CGFloat(aspect.width),
+                                          height: CGFloat(aspect.height))
+        }
+
+        if onRequestControl != nil { installControlButton(on: panel) }
         if let aspect { applyAspect(aspect, to: panel) }
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -56,15 +85,56 @@ final class RemoteViewerWindowController {
     /// yanking it out from under the user — position and rough size are
     /// preserved, only the shape is corrected.
     func updateAspect(_ dimensions: H264VideoDimensions) {
+        hostView?.remoteSize = CGSize(width: CGFloat(dimensions.width),
+                                      height: CGFloat(dimensions.height))
         guard let panel else { return }
         applyAspect(dimensions, to: panel)
     }
 
     func close() {
         onClose = nil
+        controlButton = nil
+        onRequestControl = nil
+        // Lifts anything still held, so the host does not keep a key down
+        // because the window went away mid-chord.
+        hostView?.isCapturing = false
         hostView = nil
         panel?.orderOut(nil)
         panel = nil
+    }
+
+    /// A titlebar accessory rather than an overlay on the picture.
+    ///
+    /// Anything drawn over the video is something the user will eventually click
+    /// while trying to click the remote machine — and once control is granted
+    /// that click goes to the remote machine instead, which is the worst of both.
+    private func installControlButton(on panel: NSPanel) {
+        guard controlButton == nil else { return }
+
+        let button = NSButton(title: "", target: nil, action: nil)
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.target = self
+        button.action = #selector(controlButtonPressed)
+        controlButton = button
+        updateControlButton()
+
+        let accessory = NSTitlebarAccessoryViewController()
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 150, height: 28))
+        button.frame = NSRect(x: 4, y: 2, width: 142, height: 24)
+        container.addSubview(button)
+        accessory.view = container
+        accessory.layoutAttribute = .right
+        panel.addTitlebarAccessoryViewController(accessory)
+    }
+
+    private func updateControlButton() {
+        controlButton?.title = isControlling ? "Controlling" : "Request Control"
+        controlButton?.isEnabled = !isControlling
+    }
+
+    @objc private func controlButtonPressed() {
+        onRequestControl?()
     }
 
     // MARK: - Private
@@ -123,7 +193,7 @@ final class RemoteViewerWindowController {
 /// A layer-backed view that hosts the display layer and keeps it filling the
 /// window. The layer does not resize itself with its superlayer, so without
 /// `layout()` the picture stays 960x540 in the corner of a resized window.
-private final class VideoHostView: NSView {
+private final class VideoHostView: RemoteInputCaptureView {
 
     private var videoLayer: CALayer?
 

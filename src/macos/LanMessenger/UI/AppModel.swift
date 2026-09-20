@@ -94,6 +94,11 @@ final class AppModel: ObservableObject {
     /// yourself would be worse than no entry.
     private var remoteAuditPeerIP: String?
 
+    /// Who the live session is with. The second consent prompt needs the peer's
+    /// key to show a fingerprint, and by the time control is requested the
+    /// invite that carried it is long gone.
+    private var remoteSessionPeer: (name: String, ip: String, key: String)?
+
     /// What a host has agreed to share but not yet started sharing.
     ///
     /// The gap between `remote_accept` and the peer's `media_attach` is real
@@ -133,6 +138,46 @@ final class AppModel: ObservableObject {
     /// watchdog, or the window being closed — and every one of them has to tell
     /// the peer and free the session id. Doing it at each call site is how five
     /// of the six end up forgetting.
+    /// The peer asked for the keyboard and mouse.
+    ///
+    /// A second prompt, never an escalation of the first. PROTOCOL.md makes the
+    /// two-stage grant a requirement rather than an interface nicety: viewing
+    /// and control are one step apart and wildly different in consequence, so a
+    /// single "accept" that quietly included input would be a protocol
+    /// violation, not a shortcut.
+    private func presentControlRequest(peerName: String, peerIP: String, peerKey: String) {
+        let sessionID = RemoteDesktopService.shared.registry
+            .inFlightSessionID(forPeer: peerKey) ?? ""
+        let trust = PeerKeyTrustEvaluator.evaluate(
+            peerPublicKeyB64: peerKey,
+            peerIP: peerIP,
+            contacts: ConfigStore.shared.config.contacts.map {
+                KnownContact(publicKeyB64: $0.publicKeyB64, username: $0.username,
+                             lastIP: $0.lastIP)
+            })
+
+        RemoteConsentPresenter.shared.present(
+            RemoteConsentRequest(sessionID: sessionID,
+                                 kind: .control,
+                                 peerName: peerName,
+                                 peerIP: peerIP,
+                                 peerPublicKeyB64: peerKey,
+                                 trust: trust,
+                                 expiresAt: Date().addingTimeInterval(
+                                    RemoteConsentRequest.defaultTimeout))
+        ) { [weak self] outcome in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard case .accepted = outcome else {
+                    NetLogger.remote(event: "control_refused", peer: peerIP)
+                    return
+                }
+                guard self.remoteSession.grantControl() else { return }
+                self.remoteSession.sendControl(.controlGrant)
+            }
+        }
+    }
+
     private func wireSessionTeardown(_ session: RemoteDesktopSession) {
         session.announceEnd = { [weak self] sessionID, peerIP, reason in
             self?.inviteCoordinator.sendEnd(sessionID: sessionID, to: peerIP, reason: reason)
@@ -226,6 +271,11 @@ final class AppModel: ObservableObject {
         // exchange and the session reach back into the model.
         RemoteDesktopService.shared.invites = inviteCoordinator
         wireSessionTeardown(remoteSession)
+
+        remoteSession.onControlRequested = { [weak self] in
+            guard let self, let peer = self.remoteSessionPeer else { return }
+            self.presentControlRequest(peerName: peer.name, peerIP: peer.ip, peerKey: peer.key)
+        }
         RemoteDesktopService.shared.onHostAttached = { [weak self] sessionID, media in
             self?.beginHosting(sessionID: sessionID, media: media)
         }
@@ -404,12 +454,22 @@ final class AppModel: ObservableObject {
     /// The peer accepted and their media channel is attached. Show it.
     private func startViewing(peerName: String, peerIP: String, media: MediaSession) {
         remoteAuditPeerIP = peerIP
+        remoteSessionPeer = (peerName, peerIP, media.peerPublicKeyB64)
         adoptChannelClose(media, reason: .networkLost)
         Task { @MainActor in
             do {
                 try await remoteSession.startViewing(peerName: peerName, peerIP: peerIP,
                                                      media: media)
                 guard let layer = remoteSession.videoLayer else { return }
+                remoteViewerWindow.onInput = { [weak self] records in
+                    self?.remoteSession.sendInput(records)
+                }
+                remoteViewerWindow.onRequestControl = { [weak self] in
+                    // Asking is all a viewer may do. The host's second consent
+                    // prompt decides, and nothing here can pre-empt it.
+                    self?.remoteSession.sendControl(.controlRequest)
+                    NetLogger.remote(event: "control_request_sent", peer: peerIP)
+                }
                 remoteViewerWindow.show(
                     title: "\(peerName) — screen",
                     layer: layer,
@@ -437,6 +497,7 @@ final class AppModel: ObservableObject {
         }
         armedHosting = nil
         remoteAuditPeerIP = armed.peerIP
+        remoteSessionPeer = (armed.peerName, armed.peerIP, media.peerPublicKeyB64)
         adoptChannelClose(media, reason: .networkLost)
 
         Task { @MainActor in
@@ -473,6 +534,11 @@ final class AppModel: ObservableObject {
 
     private func refreshRemoteSessionState() {
         remoteSessionRunning = remoteSession.isRunning
+        // The viewer only captures once the host has said yes, and stops the
+        // moment they take it back. Driven from here rather than from the grant
+        // call sites so a revoke arriving over the wire is treated identically
+        // to one made locally.
+        remoteViewerWindow.isControlling = remoteSession.grant.grant == .control
         if let mode = remoteSession.mode, let size = remoteSession.dimensions {
             remoteSessionSummary = "\(mode.peerName) · \(size.width)x\(size.height)"
         } else {

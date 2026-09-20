@@ -23,7 +23,7 @@ import CoreGraphics
 // injected key-downs, so a host waiting for repeats it will never generate shows
 // one character where the user held a key.
 
-final class RemoteInputCaptureView: NSView {
+class RemoteInputCaptureView: NSView {
 
     /// Where records go. Set by the window controller.
     var onRecords: (([RemoteInputRecord]) -> Void)?
