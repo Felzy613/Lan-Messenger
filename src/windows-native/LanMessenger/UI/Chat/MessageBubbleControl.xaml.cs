@@ -82,6 +82,20 @@ public sealed partial class MessageBubbleControl : UserControl
         MessageText.Foreground = Theme.BubbleTextBrush;
         ImagePreview.Source = null;
 
+        // Sender name floats above the bubble for the first message of an
+        // incoming run — matches macOS's incomingBubble label. Never shown
+        // for our own outgoing messages or for a deleted placeholder.
+        SenderNameText.Visibility = (Row.Incoming && Row.IsFirstInRun && !Row.Deleted)
+            ? Visibility.Visible : Visibility.Collapsed;
+        SenderNameText.Text = Row.Sender;
+
+        // Tail corner: 4px on the side that touches the next bubble in the
+        // same run, 16px everywhere else. Set once here rather than per
+        // content-type branch below, since every branch shares one Border.
+        Bubble.CornerRadius = Row.Incoming
+            ? new CornerRadius(16, 16, 16, Row.IsFirstInRun ? 4 : 16)
+            : new CornerRadius(16, 16, Row.IsFirstInRun ? 4 : 16, 16);
+
         if (Row.Deleted)
         {
             MessageText.Text = "This message was deleted";
@@ -93,13 +107,13 @@ public sealed partial class MessageBubbleControl : UserControl
 
             if (Row.Incoming)
             {
-                Bubble.HorizontalAlignment = HorizontalAlignment.Left;
-                Bubble.Background          = Theme.IncomingBubbleBrush;
+                BubbleColumn.HorizontalAlignment = HorizontalAlignment.Left;
+                Bubble.Background                = Theme.IncomingBubbleBrush;
             }
             else
             {
-                Bubble.HorizontalAlignment = HorizontalAlignment.Right;
-                Bubble.Background          = Theme.OutgoingBubbleBrush;
+                BubbleColumn.HorizontalAlignment = HorizontalAlignment.Right;
+                Bubble.Background                = Theme.OutgoingBubbleBrush;
             }
             UpdateStatusGlyph();
             return;
@@ -141,13 +155,13 @@ public sealed partial class MessageBubbleControl : UserControl
         // Bubble side / colour + reply chip + status.
         if (Row.Incoming)
         {
-            Bubble.HorizontalAlignment = HorizontalAlignment.Left;
-            Bubble.Background          = Theme.IncomingBubbleBrush;
+            BubbleColumn.HorizontalAlignment = HorizontalAlignment.Left;
+            Bubble.Background                = Theme.IncomingBubbleBrush;
         }
         else
         {
-            Bubble.HorizontalAlignment = HorizontalAlignment.Right;
-            Bubble.Background          = Theme.OutgoingBubbleBrush;
+            BubbleColumn.HorizontalAlignment = HorizontalAlignment.Right;
+            Bubble.Background                = Theme.OutgoingBubbleBrush;
         }
         MessageText.Foreground = Theme.BubbleTextBrush;
 

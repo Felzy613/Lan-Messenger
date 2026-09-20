@@ -65,6 +65,8 @@ public sealed partial class ComposerControl : UserControl
         InitializeComponent();
         _typingIdleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         _typingIdleTimer.Tick += OnTypingTimerTick;
+        // Matches macOS: the send button starts disabled/gray until there's a draft.
+        SendBtn.IsEnabled = false;
     }
 
     private void SendBtn_Click(object sender, RoutedEventArgs e) => DoSend();
@@ -112,6 +114,9 @@ public sealed partial class ComposerControl : UserControl
 
     private void InputBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        // Matches macOS: greyed out and inert until there's a non-blank draft.
+        SendBtn.IsEnabled = !string.IsNullOrWhiteSpace(InputBox.Text);
+
         _typingIdleTimer?.Stop();
         if (InputBox.Text.Length > 0)
         {

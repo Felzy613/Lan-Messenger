@@ -29,6 +29,11 @@ public sealed class MessageRowViewModel : INotifyPropertyChanged
     public string? ReplyFilePath    { get; init; }
     /// True when this message was deleted — the bubble renders a placeholder.
     public bool Deleted             { get; init; }
+    /// True when this is the first message of a run from one side (i.e. the
+    /// previous message, if any, was from the other side). Drives the bubble's
+    /// "tail" corner and, for incoming runs, the sender-name label above it —
+    /// matches macOS's `isFirstInRun: entry.incoming != prevIncoming`.
+    public bool IsFirstInRun         { get; init; }
 
     // Status and DeliveredViaRelay are mutable — checkmarks and the relay
     // badge update in place without rebuilding the row. DeliveredViaRelay
@@ -388,7 +393,7 @@ public sealed partial class ChatPage : Page
             // Append new ones.
             var wasAtBottom = IsScrolledToBottom();
             for (var i = _rows.Count; i < entries.Count; i++)
-                _rows.Add(MapEntry(entries[i], entries));
+                _rows.Add(MapEntry(entries, i));
 
             if (wasAtBottom)
                 DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
@@ -408,7 +413,7 @@ public sealed partial class ChatPage : Page
         // Fallback — rebuild but try to preserve scroll position.
         var verticalOffset = _scroll?.VerticalOffset ?? 0;
         _rows.Clear();
-        foreach (var e in entries) _rows.Add(MapEntry(e, entries));
+        for (var i = 0; i < entries.Count; i++) _rows.Add(MapEntry(entries, i));
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             _scroll?.ChangeView(null, verticalOffset, null, disableAnimation: true);
@@ -466,20 +471,23 @@ public sealed partial class ChatPage : Page
 
     private static string MapStatus(string raw) => raw;  // pass through; bubble interprets it
 
-    private static MessageRowViewModel MapEntry(MessageEntry e, IReadOnlyList<MessageEntry>? allEntries = null)
+    private static MessageRowViewModel MapEntry(IReadOnlyList<MessageEntry> allEntries, int index)
     {
+        var e = allEntries[index];
         var isFile = e.Text.StartsWith("__FILE__:");
         var path   = isFile ? e.Text["__FILE__:".Length..] : "";
 
         // Resolve the file path of the replied-to message so the bubble can
         // show a thumbnail instead of plain text in the reply chip.
         string? replyFilePath = null;
-        if (e.ReplyToMessageId is { Length: > 0 } replyId && allEntries is not null)
+        if (e.ReplyToMessageId is { Length: > 0 } replyId)
         {
             var orig = allEntries.FirstOrDefault(x => x.MessageId == replyId);
             if (orig is not null && orig.Text.StartsWith("__FILE__:"))
                 replyFilePath = orig.Text["__FILE__:".Length..];
         }
+
+        var prevIncoming = index > 0 ? allEntries[index - 1].Incoming : !e.Incoming;
 
         return new MessageRowViewModel
         {
@@ -498,6 +506,7 @@ public sealed partial class ChatPage : Page
             DeliveredViaRelay = e.DeliveryPath == "relay",
             Deleted           = e.Deleted,
             Edited            = e.Edited,
+            IsFirstInRun      = e.Incoming != prevIncoming,
         };
     }
 

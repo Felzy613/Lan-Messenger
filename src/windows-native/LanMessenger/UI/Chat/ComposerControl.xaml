@@ -118,12 +118,17 @@
                 <SolidColorBrush x:Key="ButtonBackground"             Color="#25D366"/>
                 <SolidColorBrush x:Key="ButtonBackgroundPointerOver"  Color="#1EBE5D"/>
                 <SolidColorBrush x:Key="ButtonBackgroundPressed"      Color="#1AAD54"/>
+                <!-- Empty draft — matches macOS, where the send glyph renders
+                     in .tertiary gray and is disabled until there's text. -->
+                <SolidColorBrush x:Key="ButtonBackgroundDisabled"     Color="#8E8E93"/>
                 <SolidColorBrush x:Key="ButtonForeground"             Color="White"/>
                 <SolidColorBrush x:Key="ButtonForegroundPointerOver"  Color="White"/>
                 <SolidColorBrush x:Key="ButtonForegroundPressed"      Color="White"/>
+                <SolidColorBrush x:Key="ButtonForegroundDisabled"     Color="White"/>
                 <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
+                <SolidColorBrush x:Key="ButtonBorderBrushDisabled"    Color="Transparent"/>
             </Button.Resources>
             <FontIcon x:Name="SendIcon"
                       FontFamily="{ThemeResource SymbolThemeFontFamily}"
