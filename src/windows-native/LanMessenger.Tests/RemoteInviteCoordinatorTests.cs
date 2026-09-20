@@ -385,6 +385,59 @@ public class RemoteInviteCoordinatorTests
         Assert.IsNull(RemoteDeclineReasonExtensions.Parse("NoEncoder"));
     }
 
+    // ---- Teardown ----------------------------------------------------------
+
+    [TestMethod]
+    public void AClosedSessionFreesThePeerForANewInvite()
+    {
+        // The regression: the controller replaced the MediaSession's OnClosed
+        // handler, and the handler it replaced was the one freeing the registry
+        // entry. The peer stayed marked in-flight forever, so the next invite
+        // was refused as busy with no session actually running — which presents
+        // as "it worked once, and now it will not start again".
+        using var peers = new Peers();
+        var registry = new RemoteSessionRegistry();
+        var keys = FakeKeys();
+
+        var first = registry.Open("a".PadLeft(32, '0'), peers.RemoteKeyB64, "10.0.0.9",
+                                  RemoteSessionRole.Responder, keys);
+        Assert.AreEqual(RemoteOpenKind.Opened, first.Kind);
+
+        // A second session with the same peer while the first is in flight.
+        var blocked = registry.Open("b".PadLeft(32, '0'), peers.RemoteKeyB64, "10.0.0.9",
+                                    RemoteSessionRole.Responder, keys);
+        Assert.AreEqual(RemoteOpenKind.Busy, blocked.Kind, "one at a time, per peer");
+
+        registry.Remove("a".PadLeft(32, '0'));
+
+        var afterClose = registry.Open("c".PadLeft(32, '0'), peers.RemoteKeyB64, "10.0.0.9",
+                                       RemoteSessionRole.Responder, keys);
+        Assert.AreEqual(RemoteOpenKind.Opened, afterClose.Kind,
+            "once a session has closed the peer must be invitable again");
+    }
+
+    [TestMethod]
+    public void CancellingAnInviteFreesThePeerToo()
+    {
+        // The other way a session id is released: an accept that was never
+        // attached. Without this an initiator that walked away would lock the
+        // peer out until the accept window expired.
+        using var peers = new Peers();
+        var registry = new RemoteSessionRegistry();
+        var keys = FakeKeys();
+
+        registry.Open("a".PadLeft(32, '0'), peers.RemoteKeyB64, "10.0.0.9",
+                      RemoteSessionRole.Responder, keys);
+        registry.Cancel("a".PadLeft(32, '0'));
+
+        var again = registry.Open("b".PadLeft(32, '0'), peers.RemoteKeyB64, "10.0.0.9",
+                                  RemoteSessionRole.Responder, keys);
+        Assert.AreEqual(RemoteOpenKind.Opened, again.Kind);
+    }
+
+    private static RemoteSessionKeys FakeKeys() => new(
+        new byte[32], new byte[32], new byte[4], new byte[4], new byte[32]);
+
     // ---- Sealed body -------------------------------------------------------
 
     [TestMethod]

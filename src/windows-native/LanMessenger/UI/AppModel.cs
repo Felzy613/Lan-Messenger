@@ -202,6 +202,14 @@ public sealed partial class AppModel : ObservableObject
         RemoteDesktopService.Shared.OnHostAttached = (sessionId, media) =>
             RemoteDesktopController.Shared.BeginHosting(_dq, sessionId, media);
 
+        // Wired once, on the controller, because a session can end from six
+        // places — the Stop button, the kill switch, the workstation locking,
+        // sleep, the watchdog, or the viewer window closing — and every one of
+        // them has to tell the peer. Doing it at each call site is how five of
+        // the six end up forgetting.
+        RemoteDesktopController.Shared.AnnounceEnd = (sessionId, peerIP, reason) =>
+            InviteCoordinator.SendEnd(sessionId, peerIP, reason);
+
         // First launch: replace the bare "User" default with the OS account
         // name so peers immediately see something meaningful instead of "User".
         if (ConfigStore.Shared.Config.Username == "User")

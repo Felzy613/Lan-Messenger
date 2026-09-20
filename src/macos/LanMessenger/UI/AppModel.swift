@@ -102,6 +102,19 @@ final class AppModel: ObservableObject {
     /// never causes this screen to be read at all.
     private var armedHosting: (sessionID: String, peerName: String, peerIP: String)?
 
+    /// Wired once, on the session, because a session can end from six places —
+    /// the Stop button, the kill switch, the screen locking, sleep, the
+    /// watchdog, or the window being closed — and every one of them has to tell
+    /// the peer and free the session id. Doing it at each call site is how five
+    /// of the six end up forgetting.
+    private func wireSessionTeardown(_ session: RemoteDesktopSession) {
+        session.announceEnd = { [weak self] sessionID, peerIP, reason in
+            self?.inviteCoordinator.sendEnd(sessionID: sessionID, to: peerIP, reason: reason)
+            RemoteDesktopService.shared.registry.remove(sessionID: sessionID)
+            RemoteDesktopService.shared.registry.cancel(sessionID: sessionID)
+        }
+    }
+
     lazy var inviteCoordinator: RemoteInviteCoordinator = {
         let coordinator = RemoteInviteCoordinator(environment: .init(
             send: { [weak self] frame, ip in
@@ -186,6 +199,7 @@ final class AppModel: ObservableObject {
         // nothing about consent or the interface; these two hooks are how the
         // exchange and the session reach back into the model.
         RemoteDesktopService.shared.invites = inviteCoordinator
+        wireSessionTeardown(remoteSession)
         RemoteDesktopService.shared.onHostAttached = { [weak self] sessionID, media in
             self?.beginHosting(sessionID: sessionID, media: media)
         }

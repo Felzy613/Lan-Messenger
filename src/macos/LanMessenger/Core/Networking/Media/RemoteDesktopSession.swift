@@ -114,6 +114,11 @@ final class RemoteDesktopSession {
 
     private let appendAudit: (RemoteAuditEntry) -> Void
 
+    /// Tells the peer why this ended, over TCP 54232 rather than the media
+    /// channel — so it still works when the media channel is what broke.
+    /// Injected, because the session knows nothing about the invite exchange.
+    var announceEnd: ((String, String, RemoteStopReason) -> Void)?
+
     /// - Parameter appendAudit: writes a record into the conversation. Injected
     ///   rather than reached for, so a session can be exercised without a
     ///   history store — and so self-view, which has no conversation, simply
@@ -320,7 +325,20 @@ final class RemoteDesktopSession {
         capture = nil
         sendPipeline?.stop()
         sendPipeline = nil
-        media?.onFrame = nil
+
+        // Close the channel, do not merely forget it.
+        //
+        // Dropping the reference left the socket open, so the peer never
+        // learned the session was over: their indicator stayed up, their
+        // capture kept running, and the registry kept the session id in flight
+        // so the next invite was refused as busy. The socket closing is the
+        // signal that always arrives — a crashing peer sends nothing else —
+        // and remote_end rides alongside it to supply the reason.
+        if let media {
+            announceEnd?(media.sessionID, media.peerIP, reason)
+            media.onFrame = nil
+            media.stop()
+        }
         media = nil
 
         receivePipeline = nil

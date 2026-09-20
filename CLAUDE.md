@@ -459,6 +459,25 @@ Use the smallest sufficient set for the change:
   `ToToken`/`Parse` rather than derived from the enum names, because
   `no_encoder` is not `NoEncoder` lowercased and the two platforms have to agree
   byte for byte. Covered by `EveryDeclineReasonRoundTripsThroughItsWireToken`.
+- Do not end a remote-desktop session by dropping the `MediaSession` reference.
+  Forgetting it leaves the socket open, so the peer never learns: their
+  indicator stays up, their capture keeps running, and the registry keeps the
+  session id in flight so the next invite is refused as `busy` — which presents
+  as "it worked once and now it will not start again". Call `stop()`/`Stop()`,
+  which closes the socket (the one signal that always arrives, because a
+  crashing peer sends nothing else), and send `remote_end` alongside it for the
+  reason. Both platforms route every exit through one place — `announceEnd` on
+  macOS, `AnnounceEnd` on Windows — because a session can end from six
+  directions and doing it per call site is how five of them forget.
+- Do not replace a `MediaSession`'s `OnClosed`/`onClosed` handler. `AttachInbound`
+  already installs one that frees the registry entry, so overwriting it strands
+  the peer as in-flight forever. Compose: call the previous handler, then your
+  own. Covered by `AClosedSessionFreesThePeerForANewInvite`.
+- Do not leave `hidesOnDeactivate` at its default on a remote-desktop viewer
+  panel. `NSPanel` hides itself when its app deactivates, which is right for a
+  utility palette and wrong for a window showing another machine's screen —
+  clicking any other app makes the thing you are watching vanish, and somebody
+  driving a remote machine is by definition not activating this app.
 - Do not open a remote-desktop accept window after sending `remote_accept`. The
   peer may attach the instant it reads the answer, and a `media_attach` with no
   matching window is dropped and the connection closed — so the wrong order

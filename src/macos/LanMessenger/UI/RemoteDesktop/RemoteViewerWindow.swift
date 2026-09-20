@@ -77,6 +77,15 @@ final class RemoteViewerWindowController {
             defer: false)
 
         panel.isReleasedWhenClosed = false
+
+        // NSPanel hides itself when its app is deactivated — that is the
+        // default, and for a utility palette it is the right one. For a window
+        // showing another machine's screen it is not: clicking any other app
+        // makes the thing you are watching vanish, and the only way back is to
+        // re-activate this app, which is precisely what somebody driving a
+        // remote machine is not doing.
+        panel.hidesOnDeactivate = false
+
         panel.backgroundColor = .black
         panel.collectionBehavior = [.fullScreenPrimary]
         panel.onWillClose = { [weak self] in

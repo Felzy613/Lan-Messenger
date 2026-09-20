@@ -40,6 +40,9 @@ public sealed class RemoteDesktopController
     /// Where audit records go. Set by AppModel so a session can be exercised
     /// without a history store.
     public Action<RemoteAuditRecord>? AppendAudit { get; set; }
+
+    /// <summary>Tells the peer why a session ended. Set by AppModel.</summary>
+    public Action<string, string, RemoteStopReason>? AnnounceEnd { get; set; }
     public Action? OnChanged { get; set; }
 
     public bool IsRunning => _session?.IsRunning ?? false;
@@ -188,7 +191,18 @@ public sealed class RemoteDesktopController
                         session.AcceptVideo(frame.Payload, frame.CaptureUs);
                     }
                 };
-                media.OnClosed = _ => Stop(RemoteStopReason.Error);
+                // Composed, not replaced. AttachInbound already puts a handler
+                // here that frees the registry entry, and overwriting it leaves
+                // the peer marked in-flight forever — the next invite is then
+                // refused as busy with no session actually running, which is
+                // exactly the "it will not start again" symptom.
+                var previous = media.OnClosed;
+                media.OnClosed = error =>
+                {
+                    previous?.Invoke(error);
+                    RemoteDesktopService.Shared.Registry.Remove(channel.SessionId);
+                    Stop(RemoteStopReason.Error);
+                };
 
                 RemoteDesktopService.Shared.Registry.Register(media);
                 _media = media;
@@ -260,7 +274,12 @@ public sealed class RemoteDesktopController
                     MediaChannel.Video, frame.AnnexB, frame.CaptureUs, frame.IsKeyframe));
                 session.OnControlMessage = message => media.Submit(new MediaOutboundFrame(
                     MediaChannel.Control, MediaControlCodec.Encode(message), 0));
-                media.OnClosed = _ => Stop(RemoteStopReason.Error);
+                var previous = media.OnClosed;
+                media.OnClosed = error =>
+                {
+                    previous?.Invoke(error);       // frees the registry entry
+                    Stop(RemoteStopReason.Error);
+                };
 
                 session.StartHosting(armed.PeerName);
 
@@ -302,7 +321,22 @@ public sealed class RemoteDesktopController
         // catch, and closing it here means the watchdog never has to.
         MediaSession? media;
         lock (_gate) { media = _media; _media = null; _armedHosting = null; }
-        media?.Stop();
+
+        if (media is not null)
+        {
+            // remote_end goes over TCP 54232 rather than the media channel, so
+            // it still works when the media channel is what broke. The socket
+            // closing is the signal that always arrives; this supplies the
+            // reason alongside it.
+            try { AnnounceEnd?.Invoke(media.SessionId, media.PeerIP, reason); }
+            catch (Exception ex)
+            {
+                LanLogger.Remote("error", reason: $"announcing the end failed: {ex.Message}");
+            }
+            media.Stop();
+            RemoteDesktopService.Shared.Registry.Remove(media.SessionId);
+            RemoteDesktopService.Shared.Registry.Cancel(media.SessionId);
+        }
 
         _guard?.Disarm();
         _guard?.Dispose();
