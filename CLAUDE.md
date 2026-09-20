@@ -504,6 +504,35 @@ Use the smallest sufficient set for the change:
   attachment and `__REMOTE__:` marks a remote-desktop audit record; both keep
   the stored history format unchanged, which is the whole reason for the trick.
   Covered by `RemoteAuditTests`.
+- Do not route every inbound media frame to the video pipeline. Frames carry a
+  channel — video, control, input, cursor, stats — and sending them all to the
+  decoder worked only while nothing else was being sent: a control message handed
+  to a decoder is not an error anywhere, it simply produces no picture. Both
+  platforms dispatch on `frame.channel`/`frame.Channel` now, and input is gated
+  twice over — a viewer has no injector at all, and the injector re-checks the
+  grant at every call rather than trusting its caller.
+- Do not normalize remote-desktop input against the viewer's window. The picture
+  is aspect-fitted, so there are letterbox bars whenever the window's shape does
+  not match the remote screen's, and a click in a bar is not a click on the
+  remote machine. Normalize against the video rectangle, and return nothing for
+  a point in the bars rather than clamping it to an edge — clamping puts the
+  pointer where the user did not aim. Both capture paths compute the fitted
+  rectangle the same way their presenter does.
+- Do not write a second key table for the reverse direction. `HidKeyMap` is the
+  single source of truth on each platform and the capture side inverts it:
+  macOS's `RemoteHidUsage` and Windows's `HidKeyMap.UsageForScanCode` are both
+  built from the forward table at startup, because a second hand-written table
+  is a second place for the same typo. On Windows the extended flag is part of
+  the inverse key — keypad 7 and Home share scan code 0x47, and inverting on the
+  code alone makes the arrow keys type digits. Covered by the round-trip tests
+  in both suites.
+- Do not leave a remote-desktop session holding keys. A session that ends
+  mid-chord leaves the host with whatever was down, and a machine with Alt or
+  Command stuck behaves as if possessed — the user's first instinct is to blame
+  their keyboard. Both injectors expose `releaseEverything`/`ReleaseEverything`
+  and every teardown path calls it first, before capture stops. The viewer side
+  lifts held keys too, when focus leaves and when capture stops: releasing a key
+  outside the window means the key-up is never seen and so never sent.
 - Do not register the remote-desktop kill shortcut through an `NSEvent` global
   monitor. That route needs the Accessibility grant, and the shortcut exists to
   work when things have gone wrong — including a grant that was never given or

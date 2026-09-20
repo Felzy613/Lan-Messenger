@@ -63,7 +63,7 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS4b | Windows capture + encode | **Done and verified on hardware** — Desktop Duplication + Quick Sync async MFT, measured end to end 2026-09-18 | no |
 | WS5 | Decode + present, both platforms | **Both done and verified on hardware** — Windows self-view measured 2026-09-18 | no |
 | WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
-| WS7 | Input capture + injection | **Geometry done**, both platforms; injection and key tables not started | yes, both |
+| WS7 | Input capture + injection | **Done on both platforms** — HID usages on the wire, scan codes on Windows, CGEvent on macOS; two-stage control grant wired 2026-09-20 | yes, a controlled session |
 | WS8 | Consent, indicator, kill switch, invite exchange | **Done on both platforms** — the exchange landed 2026-09-19; not yet run between two machines | yes, a two-machine session |
 | WS9 | Settings, logging, diagnostics | **Done** — log channel, stats contents, and the settings toggle on both platforms | no |
 | WS10 | Latency tuning | **Not started** | yes |

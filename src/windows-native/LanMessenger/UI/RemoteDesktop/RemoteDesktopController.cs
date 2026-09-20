@@ -184,13 +184,12 @@ public sealed class RemoteDesktopController
                 // Pictures arrive from the socket rather than a local encoder.
                 // Delivered on the media session's read thread; AcceptVideo
                 // decodes there and the presenter marshals to the UI itself.
-                media.OnFrame = frame =>
-                {
-                    if (frame.Channel == MediaChannel.Video)
-                    {
-                        session.AcceptVideo(frame.Payload, frame.CaptureUs);
-                    }
-                };
+                // Routed by channel. Sending everything to AcceptVideo worked
+                // only while nothing else was being sent: a control message
+                // handed to the decoder is not an error anywhere, it simply
+                // produces no picture, so this would have failed silently the
+                // moment input existed.
+                media.OnFrame = frame => Route(session, frame);
                 // Composed, not replaced. AttachInbound already puts a handler
                 // here that frees the registry entry, and overwriting it leaves
                 // the peer marked in-flight forever — the next invite is then
@@ -207,6 +206,30 @@ public sealed class RemoteDesktopController
                 RemoteDesktopService.Shared.Registry.Register(media);
                 _media = media;
                 media.Start();
+
+                viewer.OnInput = records =>
+                {
+                    // Silently dropped without a grant, so a keystroke already
+                    // in flight when control is revoked cannot still arrive.
+                    if (session.Grant != RemoteGrant.Control) return;
+                    byte[] payload = RemoteInputCodec.Encode(records);
+                    if (payload.Length == 0) return;
+                    media.Submit(new MediaOutboundFrame(MediaChannel.Input, payload, 0));
+                };
+                viewer.OnRequestControl = () =>
+                {
+                    // Asking is all a viewer may do. The host's second consent
+                    // prompt decides, and nothing here can pre-empt it.
+                    media.Submit(new MediaOutboundFrame(
+                        MediaChannel.Control,
+                        MediaControlCodec.Encode(MediaControlMessage.ControlRequest()), 0));
+                    LanLogger.Remote("control_request_sent", peer: peerIP);
+                };
+                session.OnChanged = () =>
+                {
+                    OnUi(() => viewer.IsCapturing = session.Grant == RemoteGrant.Control);
+                    OnChanged?.Invoke();
+                };
 
                 session.StartViewing(peerName, viewer);
                 viewer.Activate();
@@ -225,6 +248,54 @@ public sealed class RemoteDesktopController
             }
         }
         OnChanged?.Invoke();
+    }
+
+    /// <summary>The second consent prompt: the peer wants keyboard and mouse.</summary>
+    /// <remarks>
+    /// Shows the same fingerprint the first prompt did, because the question is
+    /// the same one — is this who you think it is — asked about a much larger
+    /// permission. Anything other than an explicit yes leaves the grant where
+    /// it was.
+    /// </remarks>
+    private void PresentControlConsent(DispatcherQueue ui, string peerName, string peerIP,
+                                       string sessionId)
+    {
+        var request = new RemoteConsentRequest(
+            sessionId, RemoteConsentKind.Control, peerName, peerIP,
+            _media?.PeerPublicKeyB64 ?? "", PeerKeyTrust.Unknown,
+            DateTime.UtcNow.AddSeconds(RemoteConsentRequest.DefaultTimeoutSeconds));
+
+        PresentConsent(ui, request, outcome =>
+        {
+            if (outcome.Kind != RemoteConsentOutcomeKind.Accepted)
+            {
+                LanLogger.Remote("control_refused", peer: peerIP, sessionId: sessionId);
+                return;
+            }
+            GrantControl();
+        });
+    }
+
+    private static void Route(RemoteDesktopSession session, MediaInboundFrame frame)
+    {
+        switch (frame.Channel)
+        {
+            case MediaChannel.Video:
+                session.AcceptVideo(frame.Payload, frame.CaptureUs);
+                break;
+
+            case MediaChannel.Control:
+                try { session.AcceptControl(MediaControlCodec.Decode(frame.Payload)); }
+                catch (Exception ex)
+                {
+                    LanLogger.Remote("error", reason: $"undecodable control message: {ex.Message}");
+                }
+                break;
+
+            case MediaChannel.Input:
+                session.AcceptInput(frame.Payload);
+                break;
+        }
     }
 
     /// <summary>We accepted an invite. Be ready, but do not capture yet.</summary>
@@ -275,11 +346,18 @@ public sealed class RemoteDesktopController
                 session.OnControlMessage = message => media.Submit(new MediaOutboundFrame(
                     MediaChannel.Control, MediaControlCodec.Encode(message), 0));
                 var previous = media.OnClosed;
+                media.OnFrame = frame => Route(session, frame);
                 media.OnClosed = error =>
                 {
                     previous?.Invoke(error);       // frees the registry entry
                     Stop(RemoteStopReason.Error);
                 };
+
+                // The peer asked for the keyboard and mouse. A second prompt,
+                // never an escalation of the first — PROTOCOL.md makes the
+                // two-stage grant a requirement, not an interface nicety.
+                session.OnControlRequested = () => PresentControlConsent(ui, armed.PeerName,
+                                                                         armed.PeerIP, sessionId);
 
                 session.StartHosting(armed.PeerName);
 
@@ -349,12 +427,32 @@ public sealed class RemoteDesktopController
     /// The second consent prompt's result.
     public void GrantControl()
     {
-        if (_session?.GrantControl() == true) RefreshIndicator();
+        if (_session?.GrantControl() != true) return;
+        RefreshIndicator();
+        SendControl(MediaControlMessage.ControlGrant());
     }
 
     public void RevokeControl()
     {
-        if (_session?.RevokeControl() == true) RefreshIndicator();
+        if (_session?.RevokeControl() != true) return;
+        RefreshIndicator();
+        SendControl(MediaControlMessage.ControlRevoke());
+    }
+
+    private void SendControl(MediaControlMessage message)
+    {
+        MediaSession? media;
+        lock (_gate) { media = _media; }
+        if (media is null) return;
+        try
+        {
+            media.Submit(new MediaOutboundFrame(
+                MediaChannel.Control, MediaControlCodec.Encode(message), 0));
+        }
+        catch (Exception ex)
+        {
+            LanLogger.Remote("error", reason: $"sending {message.Type} failed: {ex.Message}");
+        }
     }
 
     // ---- Windows -----------------------------------------------------------

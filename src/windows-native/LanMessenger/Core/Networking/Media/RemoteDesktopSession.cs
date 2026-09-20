@@ -105,6 +105,16 @@ public sealed class RemoteDesktopSession : IDisposable
             if (mode is Mode.SelfView or Mode.Host)
             {
                 _capture = new DesktopDuplicator(display);
+                // Host only. Built here rather than at grant time so the
+                // surface it resolves coordinates against is the one actually
+                // being captured.
+                if (mode == Mode.Host)
+                {
+                    int width = _capture.Width, height = _capture.Height;
+                    _injector = new RemoteInputInjector(
+                        () => _grant.Grant, () => (0, 0, width, height));
+                }
+
                 _encoder = new H264Encoder(_capture.Width, _capture.Height);
                 _encoder.OnEncodedFrame = HandleEncodedFrame;
 
@@ -252,6 +262,65 @@ public sealed class RemoteDesktopSession : IDisposable
     }
 
     /// A video frame arriving from the wire.
+    /// <summary>Host side only. A viewer has none, which is the first of the two
+    /// gates on injection — the second is the grant check inside the injector.</summary>
+    private RemoteInputInjector? _injector;
+
+    /// <summary>Raised when the peer asks for control. The second consent prompt
+    /// is the interface's business, so this only reports the request.</summary>
+    public Action? OnControlRequested { get; set; }
+
+    /// <summary>An input burst arrived from the viewer.</summary>
+    /// <remarks>
+    /// Gated twice over: a viewer has no injector at all, and the injector
+    /// re-checks the grant at every call rather than trusting this one.
+    /// </remarks>
+    public void AcceptInput(ReadOnlySpan<byte> payload)
+    {
+        if (CurrentMode != Mode.Host || _injector is null) return;
+
+        var records = RemoteInputCodec.Decode(payload);
+        if (records is null)
+        {
+            LanLogger.Remote("error", reason: "malformed input payload");
+            return;
+        }
+        _injector.Inject(records);
+    }
+
+    /// <summary>A control message arrived from the peer.</summary>
+    public void AcceptControl(MediaControlMessage message)
+    {
+        switch (message.Type)
+        {
+            case "control_request":
+                // The second consent. Never granted here — this only asks.
+                if (CurrentMode != Mode.Host) return;
+                LanLogger.Remote("control_requested", reason: _peerName);
+                OnControlRequested?.Invoke();
+                break;
+
+            case "control_grant":
+                // We are the viewer and the host said yes.
+                if (CurrentMode != Mode.Viewer) return;
+                _grant.GrantControl();
+                LanLogger.Remote("control_granted", reason: "by the host");
+                OnChanged?.Invoke();
+                break;
+
+            case "control_revoke":
+                if (CurrentMode != Mode.Viewer) return;
+                _grant.RevokeControl();
+                LanLogger.Remote("control_revoked", reason: "by the host");
+                OnChanged?.Invoke();
+                break;
+
+            case "keyframe_request":
+                _encoder?.LatchKeyframe();
+                break;
+        }
+    }
+
     public void AcceptVideo(ReadOnlySpan<byte> annexB, ulong captureUs)
         => DecodeAndPresent(annexB, captureUs);
 
@@ -317,7 +386,13 @@ public sealed class RemoteDesktopSession : IDisposable
             mode = CurrentMode;
             duration = _startedAt is { } start ? (DateTime.UtcNow - start).TotalSeconds : 0;
 
-            // Capture first, always. A host whose screen is still being read
+            // Before anything else: a session that ends mid-chord must not leave the
+        // host holding keys. A machine with Alt stuck behaves as if possessed,
+        // and the user's first instinct is to blame their keyboard.
+        _injector?.ReleaseEverything();
+        _injector = null;
+
+        // Capture first, always. A host whose screen is still being read
             // after they pressed Stop is the worst possible ordering bug, so it
             // goes before anything that could throw or block.
             _capturing = false;

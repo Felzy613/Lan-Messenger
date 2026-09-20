@@ -12,6 +12,15 @@
         <!-- Status strip. Carries host_state, which is what turns an
              inexplicable frozen picture into an explanation: a Windows host
              cannot capture the secure desktop, and saying so beats a mystery. -->
+        <Button x:Name="ControlButton"
+                Grid.Row="0"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="0,6,10,0"
+                Padding="10,4"
+                Content="Request Control"
+                Click="ControlButton_Click" />
+
         <Border x:Name="StatusBar"
                 Grid.Row="0"
                 Background="#B33A1D"
@@ -25,11 +34,25 @@
 
         <!-- Stretch=Uniform, never UniformToFill: letterboxing is honest, and
              cropping somebody's screen without telling them is not. -->
-        <Image x:Name="VideoImage"
-               Grid.Row="1"
-               Stretch="Uniform"
-               HorizontalAlignment="Stretch"
-               VerticalAlignment="Stretch" />
+        <!-- The capture surface is a Grid over the image rather than the image
+             itself: an Image is not focusable, so it can never receive key
+             events, and pointer events on a Stretch=Uniform Image report
+             coordinates in the image's own space rather than the control's. -->
+        <Grid x:Name="InputSurface"
+              Grid.Row="1"
+              Background="Transparent"
+              IsTabStop="True"
+              PointerMoved="Surface_PointerMoved"
+              PointerPressed="Surface_PointerPressed"
+              PointerReleased="Surface_PointerReleased"
+              PointerWheelChanged="Surface_PointerWheelChanged"
+              KeyDown="Surface_KeyDown"
+              KeyUp="Surface_KeyUp">
+            <Image x:Name="VideoImage"
+                   Stretch="Uniform"
+                   HorizontalAlignment="Stretch"
+                   VerticalAlignment="Stretch" />
+        </Grid>
 
         <TextBlock x:Name="WaitingText"
                    Grid.Row="1"

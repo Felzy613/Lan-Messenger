@@ -115,6 +115,38 @@ public static class HidKeyMap
 
     private static HidScanCode New(ushort code, bool extended = false) => new(code, extended);
 
+    /// <summary>
+    /// The inverse: a hardware scan code back to its HID usage, or null.
+    /// </summary>
+    /// <remarks>
+    /// Built by inverting the forward table rather than written out again, so
+    /// the two can never disagree — a second hand-written table is a second
+    /// place for the same typo, and this direction is the one that decides what
+    /// a viewer sends.
+    ///
+    /// The keypad is why the extended flag is part of the key: keypad 1-9, 0 and
+    /// decimal share scan codes with the navigation block, and only the flag
+    /// tells Home from keypad 7.
+    /// </remarks>
+    public static ushort? UsageForScanCode(ushort scanCode, bool extended)
+        => Inverse.TryGetValue((scanCode, extended), out ushort usage) ? usage : null;
+
+    private static readonly Dictionary<(ushort, bool), ushort> Inverse = BuildInverse();
+
+    private static Dictionary<(ushort, bool), ushort> BuildInverse()
+    {
+        var map = new Dictionary<(ushort, bool), ushort>();
+        // Ascending, so where two usages share a code the lower one wins — that
+        // is the navigation block rather than the keypad, which is what an
+        // extended-flagged key means.
+        for (ushort usage = 0; usage < 0x100; usage++)
+        {
+            if (ScanCode(usage) is not { } mapped) continue;
+            map.TryAdd((mapped.ScanCode, mapped.Extended), usage);
+        }
+        return map;
+    }
+
     /// <summary>HID usages for the modifier keys, for releasing a stuck one.</summary>
     /// <remarks>
     /// A session that ends mid-chord leaves the host holding whatever was down —

@@ -131,6 +131,44 @@ public class HidKeyMapTests
     }
 
     [TestMethod]
+    public void TheInverseTableAgreesWithTheForwardOne()
+    {
+        // The viewer inverts this table rather than repeating it, so the two
+        // cannot drift. This asserts the inversion is total for everything the
+        // keypad does not deliberately alias: every key a host can press is one
+        // a viewer can send.
+        var keypadAliases = new HashSet<ushort> { 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E,
+                                                  0x5F, 0x60, 0x61, 0x62, 0x63, 0x55 };
+        for (ushort usage = 0; usage < 0x100; usage++)
+        {
+            if (keypadAliases.Contains(usage)) continue;
+            if (HidKeyMap.ScanCode(usage) is not { } mapped) continue;
+
+            Assert.AreEqual(usage,
+                HidKeyMap.UsageForScanCode(mapped.ScanCode, mapped.Extended),
+                $"HID 0x{usage:X2} did not survive the round trip");
+        }
+    }
+
+    [TestMethod]
+    public void TheExtendedFlagSeparatesTheKeypadFromTheNavigationBlock()
+    {
+        // Keypad 7 and Home share scan code 0x47; only the extended flag tells
+        // them apart. Inverting on the code alone would make the arrow keys type
+        // digits — the single most visible way this could go wrong.
+        Assert.AreEqual((ushort)0x4A, HidKeyMap.UsageForScanCode(0x47, extended: true));   // Home
+        Assert.AreEqual((ushort)0x5F, HidKeyMap.UsageForScanCode(0x47, extended: false));  // Keypad 7
+    }
+
+    [TestMethod]
+    public void AnUnknownScanCodeProducesNoUsage()
+    {
+        // Returning a usage for an unmapped code would send a keystroke nobody
+        // pressed.
+        Assert.IsNull(HidKeyMap.UsageForScanCode(0xFFFF, extended: false));
+    }
+
+    [TestMethod]
     public void AnUnknownUsageIsNullRatherThanZero()
     {
         // Zero is a valid scan code, so returning it for "I do not know this key"

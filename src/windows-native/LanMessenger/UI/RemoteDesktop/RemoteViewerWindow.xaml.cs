@@ -2,6 +2,12 @@ using LanMessenger.Core.Networking.Media;
 using LanMessenger.Core.Services;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using Windows.Foundation;
+using System.Linq;
+using System.Collections.Generic;
+using Microsoft.UI.Input;
+using Windows.UI.Core;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System;
 using System.Diagnostics;
@@ -89,6 +95,184 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
             handler?.Invoke();
         };
     }
+
+    // ---- Input capture -----------------------------------------------------
+    //
+    // The mirror of RemoteInputInjector, and the easier half: nothing here is
+    // dangerous on its own, because the host decides what it will act on. What
+    // it must get right is geometry and the one shortcut it must never send.
+    //
+    // Coordinates are normalized to the video rectangle, not the control. The
+    // image is Stretch=Uniform, so there are letterbox bars whenever the window
+    // shape does not match the remote screen's, and a click in a bar is not a
+    // click on the remote machine at all — normalizing against the control would
+    // make every coordinate wrong by the width of the bars, and worse the
+    // further the window is from the right aspect.
+
+    /// Where captured input goes. Set by the controller.
+    public Action<IReadOnlyList<RemoteInputRecord>>? OnInput { get; set; }
+
+    /// Asks the host for keyboard and mouse.
+    public Action? OnRequestControl { get; set; }
+
+    private bool _capturing;
+    private readonly HashSet<ushort> _heldUsages = [];
+
+    /// <summary>True only while the host has granted control.</summary>
+    public bool IsCapturing
+    {
+        get => _capturing;
+        set
+        {
+            if (_capturing == value) return;
+            _capturing = value;
+            if (value) InputSurface.Focus(FocusState.Programmatic);
+            else ReleaseHeldKeys();
+            UpdateControlButton();
+        }
+    }
+
+    /// <summary>The rectangle the video actually occupies inside the surface.</summary>
+    private Rect VideoRect()
+    {
+        double surfaceWidth = InputSurface.ActualWidth, surfaceHeight = InputSurface.ActualHeight;
+        if (_width <= 0 || _height <= 0 || surfaceWidth <= 0 || surfaceHeight <= 0)
+            return new Rect(0, 0, surfaceWidth, surfaceHeight);
+
+        double scale = Math.Min(surfaceWidth / _width, surfaceHeight / _height);
+        double w = _width * scale, h = _height * scale;
+        return new Rect((surfaceWidth - w) / 2, (surfaceHeight - h) / 2, w, h);
+    }
+
+    /// <summary>
+    /// Normalized position inside the video, or null for a point in a letterbox
+    /// bar — which is not a click at the edge of the remote screen, and
+    /// pretending otherwise puts the pointer where the user did not aim.
+    /// </summary>
+    private (float X, float Y)? Normalized(PointerRoutedEventArgs e)
+    {
+        var point = e.GetCurrentPoint(InputSurface).Position;
+        var rect = VideoRect();
+        if (rect.Width <= 0 || rect.Height <= 0) return null;
+        if (point.X < rect.Left || point.X > rect.Right
+            || point.Y < rect.Top || point.Y > rect.Bottom) return null;
+
+        return ((float)((point.X - rect.Left) / rect.Width),
+                (float)((point.Y - rect.Top) / rect.Height));
+    }
+
+    private void Surface_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_capturing || Normalized(e) is not { } p) return;
+        OnInput?.Invoke([RemoteInputRecord.PointerMove(p.X, p.Y)]);
+    }
+
+    private void Surface_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_capturing || Normalized(e) is not { } p) return;
+        InputSurface.CapturePointer(e.Pointer);
+        var properties = e.GetCurrentPoint(InputSurface).Properties;
+        var button = properties.IsRightButtonPressed ? RemotePointerButton.Right
+                   : properties.IsMiddleButtonPressed ? RemotePointerButton.Middle
+                   : RemotePointerButton.Left;
+        OnInput?.Invoke([RemoteInputRecord.PointerButton(button, true, p.X, p.Y)]);
+    }
+
+    private void Surface_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_capturing || Normalized(e) is not { } p) return;
+        InputSurface.ReleasePointerCapture(e.Pointer);
+        var update = e.GetCurrentPoint(InputSurface).Properties.PointerUpdateKind;
+        var button = update == PointerUpdateKind.RightButtonReleased ? RemotePointerButton.Right
+                   : update == PointerUpdateKind.MiddleButtonReleased ? RemotePointerButton.Middle
+                   : RemotePointerButton.Left;
+        OnInput?.Invoke([RemoteInputRecord.PointerButton(button, false, p.X, p.Y)]);
+    }
+
+    private void Surface_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_capturing || Normalized(e) is not { } p) return;
+        // WHEEL_DELTA is one notch; the wire carries lines.
+        int delta = e.GetCurrentPoint(InputSurface).Properties.MouseWheelDelta;
+        if (delta == 0) return;
+        OnInput?.Invoke([RemoteInputRecord.PointerScroll(0, delta / 120f, p.X, p.Y)]);
+    }
+
+    private void Surface_KeyDown(object sender, KeyRoutedEventArgs e) => ForwardKey(e, true);
+    private void Surface_KeyUp(object sender, KeyRoutedEventArgs e) => ForwardKey(e, false);
+
+    private void ForwardKey(KeyRoutedEventArgs e, bool down)
+    {
+        if (!_capturing) return;
+        e.Handled = true;
+
+        // From the scan code, not the VirtualKey. KeyRoutedEventArgs carries the
+        // hardware scan code, so the usage can be recovered by inverting the
+        // injector's own table — a second hand-written map would be a second
+        // place for the same typo, and this direction decides what gets sent.
+        ushort? mapped = HidKeyMap.UsageForScanCode(
+            (ushort)e.KeyStatus.ScanCode, e.KeyStatus.IsExtendedKey);
+        if (mapped is not { } usage) return;
+
+        var modifiers = CurrentModifiers();
+
+        // Never forwarded. This is the host's way out of a session they have
+        // lost control of, and a viewer able to press it remotely could stop the
+        // host stopping them. Refused again on the host, in the injector.
+        if (down && usage == 0x29
+            && modifiers.HasFlag(RemoteInputModifiers.Control)
+            && modifiers.HasFlag(RemoteInputModifiers.Alt)
+            && modifiers.HasFlag(RemoteInputModifiers.Shift))
+        {
+            LanLogger.Remote("input_withheld", reason: "kill shortcut not forwarded");
+            return;
+        }
+
+        if (down) _heldUsages.Add(usage); else _heldUsages.Remove(usage);
+        OnInput?.Invoke([RemoteInputRecord.Key(usage, down, e.KeyStatus.WasKeyDown, modifiers)]);
+    }
+
+    private static RemoteInputModifiers CurrentModifiers()
+    {
+        var modifiers = RemoteInputModifiers.None;
+        if (IsDown(Windows.System.VirtualKey.Shift))   modifiers |= RemoteInputModifiers.Shift;
+        if (IsDown(Windows.System.VirtualKey.Control)) modifiers |= RemoteInputModifiers.Control;
+        if (IsDown(Windows.System.VirtualKey.Menu))    modifiers |= RemoteInputModifiers.Alt;
+        if (IsDown(Windows.System.VirtualKey.LeftWindows) || IsDown(Windows.System.VirtualKey.RightWindows))
+            modifiers |= RemoteInputModifiers.Meta;
+        return modifiers;
+
+        static bool IsDown(Windows.System.VirtualKey key) =>
+            InputKeyboardSource.GetKeyStateForCurrentThread(key)
+                .HasFlag(CoreVirtualKeyStates.Down);
+    }
+
+    /// <summary>
+    /// Lifts anything this window believes is held.
+    /// </summary>
+    /// <remarks>
+    /// Releasing a key outside the window means we never see the key-up, so we
+    /// never send one, and the host is left holding it. Called when capture
+    /// stops, when focus leaves, and at teardown.
+    /// </remarks>
+    private void ReleaseHeldKeys()
+    {
+        if (_heldUsages.Count == 0) return;
+        var records = _heldUsages
+            .Select(u => RemoteInputRecord.Key(u, false, false, RemoteInputModifiers.None))
+            .ToList();
+        _heldUsages.Clear();
+        OnInput?.Invoke(records);
+        LanLogger.Remote("input_released", reason: $"{records.Count} key(s) lifted by the viewer");
+    }
+
+    private void UpdateControlButton()
+    {
+        ControlButton.Content = _capturing ? "Controlling" : "Request Control";
+        ControlButton.IsEnabled = !_capturing;
+    }
+
+    private void ControlButton_Click(object sender, RoutedEventArgs e) => OnRequestControl?.Invoke();
 
     // MARK: - IVideoPresenter
 
