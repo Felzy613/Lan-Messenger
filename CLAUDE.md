@@ -504,6 +504,19 @@ Use the smallest sufficient set for the change:
   attachment and `__REMOTE__:` marks a remote-desktop audit record; both keep
   the stored history format unchanged, which is the whole reason for the trick.
   Covered by `RemoteAuditTests`.
+- Do not hand an empty control frame to the JSON decoder. The keepalive **is**
+  an empty frame on the control sub-channel — `MediaSession` sends one every 5
+  seconds, and it exists precisely because a still screen sends no video to prove
+  the link with. Decoding it produced one "undecodable control message" every
+  five seconds for the life of every session, on both sides. Check for an empty
+  payload before decoding.
+- Do not forget to arm `MediaFrameReader.inputArmed`/`InputArmed` when control is
+  granted. It is a second, transport-level gate on the receiving side, deliberately
+  independent of the grant the session tracks — and it defaults to closed. Left
+  unconnected, both apps agree control has been granted while every input frame is
+  dropped at the socket with `input before control_grant`, which is exactly what
+  the first real control session did. Arm it in `grantControl`/`GrantControl`,
+  disarm it in the revoke path and at teardown.
 - Do not route every inbound media frame to the video pipeline. Frames carry a
   channel — video, control, input, cursor, stats — and sending them all to the
   decoder worked only while nothing else was being sent: a control message handed

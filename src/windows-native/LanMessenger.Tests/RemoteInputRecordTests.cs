@@ -167,6 +167,19 @@ public class RemoteInputRecordTests
         Assert.AreEqual(RemoteInputModifiers.Known, decoded![0].Modifiers);
     }
 
+    // ---- The two gates -----------------------------------------------------
+
+    [TestMethod]
+    public void AnEmptyPayloadDecodesToNoRecordsRatherThanFailing()
+    {
+        // The keepalive is an empty CONTROL frame, but the same reasoning
+        // applies here: empty is not malformed. Returning null would make a
+        // zero-length burst look like a corrupt peer.
+        var decoded = RemoteInputCodec.Decode([]);
+        Assert.IsNotNull(decoded);
+        Assert.AreEqual(0, decoded!.Count);
+    }
+
     private static string Hex(byte[] data) =>
         string.Concat(data.Select(b => b.ToString("x2")));
 }

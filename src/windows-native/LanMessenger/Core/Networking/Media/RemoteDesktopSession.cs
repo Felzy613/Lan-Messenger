@@ -345,9 +345,19 @@ public sealed class RemoteDesktopSession : IDisposable
 
     /// The second consent prompt's result. Viewing is already granted; this arms
     /// the input channel, and nothing else may.
+    /// <summary>The transport's own input gate. Set by the controller.</summary>
+    /// <remarks>
+    /// MediaFrameReader drops every input frame until this is armed — a
+    /// deliberate belt-and-braces check on the receiving side, built in WS3 and
+    /// left unconnected until now, so input was refused at the socket with
+    /// "input before control_grant" while both apps agreed control was granted.
+    /// </remarks>
+    public Action<bool>? OnInputArmedChanged { get; set; }
+
     public bool GrantControl()
     {
         if (!_grant.GrantControl()) return false;
+        OnInputArmedChanged?.Invoke(true);
         _appendAudit(new RemoteAuditRecord(RemoteAuditEvent.ControlGranted, _peerName));
         OnControlMessage?.Invoke(MediaControlMessage.ControlGrant());
         OnChanged?.Invoke();
@@ -356,6 +366,8 @@ public sealed class RemoteDesktopSession : IDisposable
 
     public bool RevokeControl()
     {
+        OnInputArmedChanged?.Invoke(false);
+        _injector?.ReleaseEverything();
         if (!_grant.RevokeControl()) return false;
         _appendAudit(new RemoteAuditRecord(RemoteAuditEvent.ControlRevoked, _peerName));
         OnControlMessage?.Invoke(MediaControlMessage.ControlRevoke());
@@ -391,6 +403,7 @@ public sealed class RemoteDesktopSession : IDisposable
         // and the user's first instinct is to blame their keyboard.
         _injector?.ReleaseEverything();
         _injector = null;
+        OnInputArmedChanged?.Invoke(false);
 
         // Capture first, always. A host whose screen is still being read
             // after they pressed Stop is the worst possible ordering bug, so it

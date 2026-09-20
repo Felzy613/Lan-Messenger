@@ -285,6 +285,13 @@ public sealed class RemoteDesktopController
                 break;
 
             case MediaChannel.Control:
+                // The keepalive is an empty control frame — MediaSession sends
+                // one every 5 seconds to prove the link is alive, and a still
+                // screen sends no video for anything else to prove it with.
+                // Handing it to the JSON decoder produced one "control payload
+                // is not JSON" every five seconds for the life of every session.
+                if (frame.Payload.Length == 0) break;
+
                 try { session.AcceptControl(MediaControlCodec.Decode(frame.Payload)); }
                 catch (Exception ex)
                 {
@@ -358,6 +365,7 @@ public sealed class RemoteDesktopController
                 // two-stage grant a requirement, not an interface nicety.
                 session.OnControlRequested = () => PresentControlConsent(ui, armed.PeerName,
                                                                          armed.PeerIP, sessionId);
+                session.OnInputArmedChanged = armedNow => media.InputArmed = armedNow;
 
                 session.StartHosting(armed.PeerName);
 
@@ -427,16 +435,17 @@ public sealed class RemoteDesktopController
     /// The second consent prompt's result.
     public void GrantControl()
     {
+        // The session raises ControlGrant through OnControlMessage, which is
+        // already wired to the wire — sending it here as well delivered two,
+        // and the viewer logged "control granted by the host" twice.
         if (_session?.GrantControl() != true) return;
         RefreshIndicator();
-        SendControl(MediaControlMessage.ControlGrant());
     }
 
     public void RevokeControl()
     {
         if (_session?.RevokeControl() != true) return;
         RefreshIndicator();
-        SendControl(MediaControlMessage.ControlRevoke());
     }
 
     private void SendControl(MediaControlMessage message)

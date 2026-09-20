@@ -315,6 +315,13 @@ final class RemoteDesktopSession {
             receivePipeline?.accept(frame)
 
         case .control:
+            // The keepalive is an empty control frame — MediaSession sends one
+            // every 5 seconds to prove the link is alive, and a still screen
+            // sends no video for anything else to prove it with. Handing it to
+            // the JSON decoder produced one "undecodable control message" every
+            // five seconds for the life of every session.
+            guard !frame.payload.isEmpty else { return }
+
             guard let message = try? MediaControlCodec.decode(frame.payload) else {
                 NetLogger.remote(event: "error", reason: "undecodable control message")
                 return
@@ -401,6 +408,14 @@ final class RemoteDesktopSession {
     @discardableResult
     func grantControl() -> Bool {
         guard grant.grantControl() else { return false }
+
+        // Arm the transport's own gate. `MediaFrameReader` drops every input
+        // frame until this is set — a deliberate belt-and-braces check on the
+        // receiving side, built in WS3 and left unconnected until now, so input
+        // was refused at the socket with "input before control_grant" while
+        // both apps agreed control had been granted.
+        media?.inputArmed = true
+
         appendAudit(RemoteAuditEntry(event: .controlGranted,
                                      peerName: mode?.peerName ?? ""))
         showIndicator()
@@ -411,6 +426,8 @@ final class RemoteDesktopSession {
     @discardableResult
     func revokeControl() -> Bool {
         guard grant.revokeControl() else { return false }
+        media?.inputArmed = false
+        injector?.releaseEverything()
         appendAudit(RemoteAuditEntry(event: .controlRevoked,
                                      peerName: mode?.peerName ?? ""))
         showIndicator()
@@ -436,6 +453,7 @@ final class RemoteDesktopSession {
         // possessed, and the user's first instinct is to blame their keyboard.
         injector?.releaseEverything()
         injector = nil
+        media?.inputArmed = false
 
         capture?.stop()
         capture = nil
