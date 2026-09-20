@@ -102,6 +102,14 @@ final class RemoteDesktopSession {
     /// which is the whole difference between them: everything else in this
     /// object behaves identically whether the frames cross a socket or not.
     private var media: MediaSession?
+
+    /// Host side only. A viewer has none, which is the first of the two gates on
+    /// injection — the second is the grant check inside the injector itself.
+    private var injector: RemoteInputInjector?
+
+    /// Raised when the peer asks for control. The second consent prompt is the
+    /// interface's business, so this object only reports the request.
+    var onControlRequested: (() -> Void)?
     private var presenter: SampleBufferVideoPresenter?
     private let guardian = RemoteSessionGuard()
 
@@ -198,7 +206,7 @@ final class RemoteDesktopSession {
             if let media {
                 media.onFrame = { [weak self] frame in
                     Task { @MainActor [weak self] in
-                        self?.receivePipeline?.accept(frame)
+                        self?.route(frame)
                     }
                 }
             }
@@ -252,6 +260,16 @@ final class RemoteDesktopSession {
             self.capture = source
             self.sendPipeline = send
             self.dimensions = size
+
+            // Host only. Built here rather than at grant time so the surface it
+            // resolves coordinates against is the one actually being captured.
+            if case .host = mode {
+                let captured = size
+                self.injector = RemoteInputInjector(
+                    grant: { [weak self] in self?.grant.grant ?? .none },
+                    surface: { CGRect(x: 0, y: 0, width: CGFloat(captured.width),
+                                      height: CGFloat(captured.height)) })
+            }
         }
 
         self.mode = mode
@@ -282,6 +300,98 @@ final class RemoteDesktopSession {
                 payload: frame.payload,
                 fragmentCount: 1))
         }
+    }
+
+    /// Sends every inbound frame to the sub-channel that owns it.
+    ///
+    /// Everything used to go to the video pipeline regardless of channel, which
+    /// worked only because nothing else was being sent yet. A control message
+    /// arriving as video is not an error anywhere — the decoder simply makes
+    /// nothing of it — so this would have failed silently the moment input
+    /// existed.
+    private func route(_ frame: MediaInboundFrame) {
+        switch frame.channel {
+        case .video:
+            receivePipeline?.accept(frame)
+
+        case .control:
+            guard let message = try? MediaControlCodec.decode(frame.payload) else {
+                NetLogger.remote(event: "error", reason: "undecodable control message")
+                return
+            }
+            handleControl(message)
+
+        case .input:
+            // Host only, and gated twice: the injector re-checks the grant, and
+            // a viewer has no injector at all. A peer that sends input to a
+            // machine that is itself viewing has misunderstood the session.
+            guard mode?.capturesLocally == true, let injector else { return }
+            guard let records = RemoteInputCodec.decode(frame.payload) else {
+                NetLogger.remote(event: "error", reason: "malformed input payload")
+                return
+            }
+            injector.inject(records)
+
+        case .cursor, .stats:
+            break
+        }
+    }
+
+    /// The control sub-channel. Only the messages that change what the peer may
+    /// do are acted on here; the rest are for the interface.
+    private func handleControl(_ message: MediaControlMessage) {
+        switch message {
+        case .controlRequest:
+            // The second consent. Never granted here — this only asks.
+            guard mode?.capturesLocally == true else { return }
+            NetLogger.remote(event: "control_requested", reason: mode?.peerName ?? "")
+            onControlRequested?()
+
+        case .controlGrant:
+            // We are the viewer and the host said yes.
+            guard mode?.capturesLocally == false else { return }
+            _ = grant.grantControl()
+            NetLogger.remote(event: "control_granted", reason: "by the host")
+            onChange?()
+
+        case .controlRevoke:
+            guard mode?.capturesLocally == false else { return }
+            _ = grant.revokeControl()
+            injector?.releaseEverything()
+            NetLogger.remote(event: "control_revoked", reason: "by the host")
+            onChange?()
+
+        case .keyframeRequest(let reason):
+            sendPipeline?.latchKeyframe()
+            NetLogger.remote(event: "keyframe_request", reason: reason)
+
+        default:
+            break
+        }
+    }
+
+    /// Sends one control message to the peer. No-op without a channel.
+    func sendControl(_ message: MediaControlMessage) {
+        guard let media else { return }
+        // A control message we cannot encode is a bug here, not a peer problem,
+        // and dropping it silently would hide it.
+        guard let payload = try? MediaControlCodec.encode(message) else {
+            NetLogger.remote(event: "error", reason: "could not encode \(message.type)")
+            return
+        }
+        _ = media.submit(MediaOutboundFrame(channel: .control, payload: payload,
+                                            captureUs: 0, keyframe: false))
+    }
+
+    /// Sends a burst of input records. Viewer side; silently does nothing
+    /// without a control grant, so a race between revoke and a keystroke that is
+    /// already in flight cannot deliver it.
+    func sendInput(_ records: [RemoteInputRecord]) {
+        guard grant.grant == .control, let media else { return }
+        let payload = RemoteInputCodec.encode(records)
+        guard !payload.isEmpty else { return }
+        _ = media.submit(MediaOutboundFrame(channel: .input, payload: payload,
+                                            captureUs: 0, keyframe: false))
     }
 
     // MARK: - Grant
@@ -321,6 +431,12 @@ final class RemoteDesktopSession {
         // Capture first, always. A host whose screen is still being read after
         // they pressed Stop is the worst possible ordering bug, so it goes
         // before anything that could throw or block.
+        // Before anything else: a session that ends mid-chord must not leave
+        // the host holding keys. A Mac with Command stuck behaves as if
+        // possessed, and the user's first instinct is to blame their keyboard.
+        injector?.releaseEverything()
+        injector = nil
+
         capture?.stop()
         capture = nil
         sendPipeline?.stop()
