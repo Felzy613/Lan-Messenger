@@ -180,6 +180,42 @@ public class RemoteInputRecordTests
         Assert.AreEqual(0, decoded!.Count);
     }
 
+    [TestMethod]
+    public void AbsoluteCoordinatesSpanTheVirtualDesktopNotTheSharedDisplay()
+    {
+        // The bug this exists for, found on a two-monitor host. A centre click
+        // on a 1920-wide shared display resolves to pixel 960. Scaled against
+        // the SURFACE that is 32767/65535 — but MOUSEEVENTF_VIRTUALDESK reads
+        // 0..65535 as spanning the whole 3840-wide desktop, so the pointer
+        // landed at ~1920px: the left edge of the second monitor. Exactly a
+        // factor of two, and completely invisible on one monitor.
+        var virtualScreen = new VirtualScreen(0, 0, 3840, 1080);
+
+        var (absX, _) = RemoteInputGeometry.ToAbsolute(960, 540, virtualScreen);
+        Assert.IsTrue(absX > 16000 && absX < 16800,
+            $"pixel 960 of 3840 should be about a quarter of 65535, got {absX}");
+
+        // And the far edge of the shared display is the MIDDLE of the desktop.
+        var (edgeX, _) = RemoteInputGeometry.ToAbsolute(1919, 540, virtualScreen);
+        Assert.IsTrue(edgeX > 32000 && edgeX < 33000,
+            $"pixel 1919 of 3840 should be about half of 65535, got {edgeX}");
+    }
+
+    [TestMethod]
+    public void ASecondMonitorSharedFromANonZeroOriginStillResolves()
+    {
+        // The other half: a shared display need not start at zero. Sharing the
+        // right-hand monitor means normalized 0 is virtual pixel 1920, and
+        // assuming an origin of zero would put every click on the wrong screen.
+        var virtualScreen = new VirtualScreen(0, 0, 3840, 1080);
+
+        var (leftEdge, _) = RemoteInputGeometry.ToAbsolute(1920, 540, virtualScreen);
+        var (rightEdge, _) = RemoteInputGeometry.ToAbsolute(3839, 540, virtualScreen);
+
+        Assert.IsTrue(leftEdge > 32000 && leftEdge < 33200, $"got {leftEdge}");
+        Assert.AreEqual(65535, rightEdge, "the far edge must reach the top of the range");
+    }
+
     private static string Hex(byte[] data) =>
         string.Concat(data.Select(b => b.ToString("x2")));
 }

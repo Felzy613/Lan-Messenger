@@ -110,9 +110,13 @@ public sealed class RemoteDesktopSession : IDisposable
                 // being captured.
                 if (mode == Mode.Host)
                 {
+                    // The display's real position, not an assumed (0,0): on a
+                    // multi-monitor host the shared display may start anywhere,
+                    // including at a negative coordinate.
                     int width = _capture.Width, height = _capture.Height;
+                    int originX = _capture.OriginX, originY = _capture.OriginY;
                     _injector = new RemoteInputInjector(
-                        () => _grant.Grant, () => (0, 0, width, height));
+                        () => _grant.Grant, () => (originX, originY, width, height));
                 }
 
                 _encoder = new H264Encoder(_capture.Width, _capture.Height);

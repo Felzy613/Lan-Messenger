@@ -88,6 +88,7 @@ public sealed class RemoteInputInjector
     private const int SM_YVIRTUALSCREEN  = 77;
     private const int SM_CXVIRTUALSCREEN = 78;
     private const int SM_CYVIRTUALSCREEN = 79;
+    private const int SM_CMONITORS       = 80;
 
     // ---- State -------------------------------------------------------------
 
@@ -96,6 +97,8 @@ public sealed class RemoteInputInjector
     private readonly HashSet<ushort> _keysDown = [];
     private readonly object _gate = new();
     private long _refused;
+    private int _movesLogged;
+    private int _buttonsLogged;
 
     /// <param name="grant">Read at every injection, never cached.</param>
     /// <param name="surface">
@@ -152,6 +155,12 @@ public sealed class RemoteInputInjector
             case RemoteInputRecordKind.PointerButton:
                 MoveTo(record.X, record.Y);
                 SendMouse(ButtonFlag(record.Button, record.Down), 0);
+                if (Interlocked.Increment(ref _buttonsLogged) <= 6)
+                {
+                    LanLogger.Remote("input_button",
+                        reason: $"{record.Button} {(record.Down ? "down" : "up")} "
+                              + $"at ({record.X:F4},{record.Y:F4})");
+                }
                 break;
 
             case RemoteInputRecordKind.PointerScroll:
@@ -186,11 +195,37 @@ public sealed class RemoteInputInjector
         int pixelX = originX + (int)Math.Round(clampedX * (width - 1));
         int pixelY = originY + (int)Math.Round(clampedY * (height - 1));
 
-        // SendInput's absolute coordinates are 0..65535 across the virtual
-        // desktop, not pixels — and the virtual desktop can start at a negative
-        // origin when a monitor sits left of or above the primary one.
-        var (absX, absY) = RemoteInputGeometry.ToAbsolute(
-            pixelX, pixelY, new VirtualScreen(originX, originY, width, height));
+        // Absolute coordinates are 0..65535 across the VIRTUAL DESKTOP, not
+        // across the shared display — MOUSEEVENTF_VIRTUALDESK says so. Scaling
+        // against the surface instead put a centre click on a 1920-wide shared
+        // display at 32784/65535 of a 3840-wide desktop, which is the left edge
+        // of the *second* monitor: exactly a factor-of-two error that is
+        // invisible on any single-monitor machine.
+        var virtualScreen = new VirtualScreen(
+            GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+            Math.Max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN)),
+            Math.Max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN)));
+        var (absX, absY) = RemoteInputGeometry.ToAbsolute(pixelX, pixelY, virtualScreen);
+
+        // The first few resolutions, said out loud.
+        //
+        // "the pointer lands in the wrong place" has several possible causes —
+        // the shared surface not being where we think, the virtual desktop
+        // spanning more than one monitor, or the normalisation being against
+        // the wrong rectangle — and none of them can be told apart from
+        // outside. This prints every number involved, a bounded number of times.
+        if (Interlocked.Increment(ref _movesLogged) <= 5)
+        {
+            LanLogger.Remote("input_pointer",
+                reason: $"norm=({normalizedX:F4},{normalizedY:F4}) "
+                      + $"surface=({originX},{originY},{width}x{height}) "
+                      + $"pixel=({pixelX},{pixelY}) abs=({absX},{absY}) "
+                      + $"virtual=({GetSystemMetrics(SM_XVIRTUALSCREEN)},"
+                      + $"{GetSystemMetrics(SM_YVIRTUALSCREEN)},"
+                      + $"{GetSystemMetrics(SM_CXVIRTUALSCREEN)}x"
+                      + $"{GetSystemMetrics(SM_CYVIRTUALSCREEN)}) "
+                      + $"monitors={GetSystemMetrics(SM_CMONITORS)}");
+        }
 
         SendMouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
                   0, absX, absY);

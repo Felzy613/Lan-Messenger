@@ -75,6 +75,15 @@ public sealed class DesktopDuplicator : IDisposable
 
     public int Width => _width;
     public int Height => _height;
+
+    /// <summary>Where the captured display starts on the virtual desktop.</summary>
+    /// <remarks>
+    /// Zero for a single-monitor machine, and for the primary display of most
+    /// multi-monitor ones — which is exactly why assuming zero survives testing
+    /// and then puts the pointer on the wrong monitor at somebody else's desk.
+    /// </remarks>
+    public int OriginX { get; private set; }
+    public int OriginY { get; private set; }
     public string DisplayName => _target?.Output.DeviceName ?? "";
 
     public DesktopDuplicator(string? preferredDisplay = null)
@@ -145,6 +154,14 @@ public sealed class DesktopDuplicator : IDisposable
             using (output)
             using (var output1 = output.QueryInterface<IDXGIOutput1>())
             {
+                // Where this display sits on the virtual desktop. Needed by the
+                // input injector: a normalized coordinate means "somewhere on
+                // the shared display", and turning that into a virtual-desktop
+                // pixel is impossible without knowing where the display starts.
+                var coordinates = output.Description.DesktopCoordinates;
+                OriginX = coordinates.Left;
+                OriginY = coordinates.Top;
+
                 _duplication = output1.DuplicateOutput(device);
             }
 
@@ -155,7 +172,8 @@ public sealed class DesktopDuplicator : IDisposable
 
         _converter = new ColorConverter(_device!, _context!, _width, _height);
         LanLogger.Remote("capture_started",
-            reason: $"{DisplayName} {_width}x{_height} adapter={target.Adapter.Description}");
+            reason: $"{DisplayName} {_width}x{_height} at ({OriginX},{OriginY}) "
+                  + $"adapter={target.Adapter.Description}");
     }
 
     private static List<GpuAdapterInfo> EnumerateAdapters()

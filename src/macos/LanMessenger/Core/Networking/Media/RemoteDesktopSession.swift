@@ -198,6 +198,19 @@ final class RemoteDesktopSession {
                     self?.onChange?()
                 }
             }
+            // A viewer has no capture to learn the picture size from, so it
+            // learns it from the decoder. Without this `dimensions` stays nil
+            // for the whole session: the window never gets its aspect, and the
+            // capture view normalizes pointer coordinates against the window
+            // including its letterbox bars instead of against the picture.
+            receive.onDimensionsChanged = { [weak self] size in
+                Task { @MainActor [weak self] in
+                    guard let self, self.mode?.capturesLocally == false else { return }
+                    self.dimensions = size
+                    self.onChange?()
+                }
+            }
+
             self.receivePipeline = receive
 
             // A viewer's pictures arrive from the socket rather than from a
@@ -274,6 +287,16 @@ final class RemoteDesktopSession {
 
         self.mode = mode
         self.startedAt = Date()
+
+        // A FRESH ladder for every session. `RemoteGrantState` is deliberately
+        // one-way — "a session that has ended stays ended" — and this object is
+        // a long-lived singleton, so carrying the old state forward left
+        // `ended` true and made `accept()` refuse. The first session after
+        // launch worked and every one after it silently had no grant at all:
+        // the host granted control, the viewer logged that it had been granted,
+        // and the capture view stayed switched off because the ladder had
+        // quietly refused to climb.
+        grant = RemoteGrantState()
         _ = grant.accept()
 
         armGuard()
@@ -357,8 +380,17 @@ final class RemoteDesktopSession {
         case .controlGrant:
             // We are the viewer and the host said yes.
             guard mode?.capturesLocally == false else { return }
-            _ = grant.grantControl()
-            NetLogger.remote(event: "control_granted", reason: "by the host")
+
+            // The result is reported, not discarded. Logging "control_granted"
+            // unconditionally said the grant had been taken when the ladder had
+            // actually refused it, so the viewer sat there not capturing while
+            // its own log insisted it had control.
+            let took = grant.grantControl()
+            NetLogger.remote(event: took ? "control_granted" : "error",
+                             reason: took
+                                ? "by the host"
+                                : "the host granted control but the ladder refused it "
+                                  + "(grant was \(grant.grant))")
             onChange?()
 
         case .controlRevoke:

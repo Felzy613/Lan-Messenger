@@ -1,5 +1,7 @@
 using LanMessenger.Core.Networking.Media;
 using LanMessenger.Core.Crypto;
+using LanMessenger.Core.Persistence;
+using System.Linq;
 using System.Net.Sockets;
 using LanMessenger.Core.Services;
 using Microsoft.UI.Dispatching;
@@ -260,9 +262,18 @@ public sealed class RemoteDesktopController
     private void PresentControlConsent(DispatcherQueue ui, string peerName, string peerIP,
                                        string sessionId)
     {
+        // The real trust, not a placeholder. Hardcoding Unknown made the second
+        // prompt warn "This device is not in your contacts" about a peer that
+        // IS a saved contact — a false warning on the safe path, which is
+        // exactly how people learn to click through warnings.
+        string peerKey = _media?.PeerPublicKeyB64 ?? "";
+
         var request = new RemoteConsentRequest(
             sessionId, RemoteConsentKind.Control, peerName, peerIP,
-            _media?.PeerPublicKeyB64 ?? "", PeerKeyTrust.Unknown,
+            peerKey, PeerKeyTrustEvaluator.Evaluate(peerKey, peerIP,
+                ConfigStore.Shared.Config.Contacts
+                    .Select(c => new KnownContact(c.PublicKeyB64, c.Username, c.LastIP))
+                    .ToList()),
             DateTime.UtcNow.AddSeconds(RemoteConsentRequest.DefaultTimeoutSeconds));
 
         PresentConsent(ui, request, outcome =>

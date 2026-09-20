@@ -545,6 +545,7 @@ final class AppModel: ObservableObject {
             remoteSessionSummary = nil
         }
         if let size = remoteSession.dimensions, remoteViewerWindow.isOpen {
+            // Also feeds the capture view its aspect-fit rectangle.
             remoteViewerWindow.updateAspect(size)
         }
     }

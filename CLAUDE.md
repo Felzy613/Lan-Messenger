@@ -524,6 +524,27 @@ Use the smallest sufficient set for the change:
   platforms dispatch on `frame.channel`/`frame.Channel` now, and input is gated
   twice over — a viewer has no injector at all, and the injector re-checks the
   grant at every call rather than trusting its caller.
+- Do not scale `MOUSEEVENTF_ABSOLUTE` coordinates against the shared display.
+  With `MOUSEEVENTF_VIRTUALDESK` the 0..65535 range spans the **whole virtual
+  desktop**, so scaling against a 1920-wide shared display on a 3840-wide desktop
+  puts a centre click at the left edge of the *second* monitor — exactly a factor
+  of two, and completely invisible on any single-monitor machine. Resolve the
+  normalized coordinate to a virtual-desktop pixel using the shared display's
+  real origin (`DesktopDuplicator.OriginX/OriginY`, never an assumed zero), then
+  scale that against `SM_XVIRTUALSCREEN`/`SM_CXVIRTUALSCREEN`. Covered by
+  `AbsoluteCoordinatesSpanTheVirtualDesktopNotTheSharedDisplay`.
+- Do not carry a `RemoteGrantState` from one session into the next. It is
+  deliberately one-way — "a session that has ended stays ended" — and the macOS
+  `RemoteDesktopSession` is a long-lived singleton, so reusing the value left
+  `ended` true and made `accept()` refuse. The first session after launch worked
+  and every one after it silently had no grant at all: the host granted control,
+  the viewer logged that it had, and the capture view stayed switched off because
+  the ladder had quietly refused to climb. `start(mode:)` builds a fresh one.
+  Covered by `testASecondSessionGetsAFreshGrantLadder`.
+- Do not discard the Bool from `grantControl()`. Logging "control_granted"
+  unconditionally is how the viewer came to insist in its own log that it had
+  control while the ladder had refused it — the one record that could have
+  explained the silence said the opposite.
 - Do not normalize remote-desktop input against the viewer's window. The picture
   is aspect-fitted, so there are letterbox bars whenever the window's shape does
   not match the remote screen's, and a click in a bar is not a click on the

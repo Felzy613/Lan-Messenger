@@ -192,4 +192,30 @@ final class RemoteDesktopSessionTests: XCTestCase {
         XCTAssertEqual(audit.last?.summary,
                        RemoteStopReason.killSwitch.auditDescription)
     }
+    // MARK: - Reuse
+
+    func testASecondSessionGetsAFreshGrantLadder() async throws {
+        // The bug this exists for: RemoteGrantState is deliberately one-way —
+        // "a session that has ended stays ended" — and the session object is a
+        // long-lived singleton. Carrying the old state into the next session
+        // left `ended` true, so `accept()` refused and the whole ladder stayed
+        // at `.none`. The host would grant control, the viewer would log that it
+        // had been granted, and nothing would be captured: the first session
+        // after launch worked and every one after it silently did not.
+        var state = RemoteGrantState()
+        XCTAssertTrue(state.accept())
+        XCTAssertTrue(state.grantControl())
+        state.end()
+
+        // The same value reused is dead, by design.
+        XCTAssertFalse(state.accept(), "an ended ladder must not climb again")
+        XCTAssertEqual(state.grant, .none)
+
+        // Which is exactly why a new session must build a new one.
+        var fresh = RemoteGrantState()
+        XCTAssertTrue(fresh.accept())
+        XCTAssertTrue(fresh.grantControl())
+        XCTAssertEqual(fresh.grant, .control)
+    }
+
 }

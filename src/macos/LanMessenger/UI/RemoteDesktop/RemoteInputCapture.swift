@@ -108,13 +108,49 @@ class RemoteInputCaptureView: NSView {
     }
 
     private func sendPointer(_ event: NSEvent) {
-        guard isCapturing, let (x, y) = normalized(event) else { return }
+        guard let (x, y) = accepted(event, "move") else { return }
         onRecords?([.pointerMove(x: x, y: y)])
     }
 
     private func sendButton(_ event: NSEvent, _ button: RemotePointerButton, down: Bool) {
-        guard isCapturing, let (x, y) = normalized(event) else { return }
+        guard let (x, y) = accepted(event, down ? "button_down" : "button_up") else { return }
         onRecords?([.pointerButton(button: button, down: down, x: x, y: y)])
+    }
+
+    /// The two reasons a pointer event produces nothing, said out loud.
+    ///
+    /// Both are silent by design in the hot path — a viewer that is only
+    /// watching must send nothing, and a click in a letterbox bar is not a click
+    /// on the remote machine. But "the pointer does nothing" has exactly these
+    /// two causes and no way to tell them apart from outside, so the first few
+    /// of each are logged.
+    private func accepted(_ event: NSEvent, _ what: String) -> (Float, Float)? {
+        guard isCapturing else {
+            if noteRejection("not capturing") { }
+            return nil
+        }
+        guard let point = normalized(event) else {
+            if noteRejection("outside the video rectangle") { }
+            return nil
+        }
+        if accepted < 3 {
+            accepted += 1
+            NetLogger.remote(event: "input_captured",
+                             reason: "\(what) at \(point.0), \(point.1)")
+        }
+        return point
+    }
+
+    private var accepted = 0
+    private var rejected: [String: Int] = [:]
+
+    private func noteRejection(_ reason: String) -> Bool {
+        let seen = (rejected[reason] ?? 0) + 1
+        rejected[reason] = seen
+        if seen <= 3 {
+            NetLogger.remote(event: "input_not_captured", reason: reason)
+        }
+        return true
     }
 
     // MARK: - Keyboard
