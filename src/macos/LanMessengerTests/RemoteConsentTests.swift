@@ -20,12 +20,14 @@ final class RemoteConsentTests: XCTestCase {
                          trust: PeerKeyTrust = .pinned(username: "Dave"),
                          key: String? = nil,
                          expiresIn: TimeInterval = 45,
+                         canInject: Bool = true,
                          from origin: Date = Date(timeIntervalSince1970: 1_000_000))
     -> RemoteConsentRequest {
         RemoteConsentRequest(
             sessionID: sessionID, kind: kind, peerName: "Dave", peerIP: "10.0.0.5",
             peerPublicKeyB64: key ?? realKey, trust: trust,
-            expiresAt: origin.addingTimeInterval(expiresIn))
+            expiresAt: origin.addingTimeInterval(expiresIn),
+            canInject: canInject)
     }
 
     // MARK: - The grant ladder
@@ -151,6 +153,41 @@ final class RemoteConsentTests: XCTestCase {
 
     func testAnUnknownKeyWarnsToo() {
         XCTAssertNotNil(request(trust: .unknown).warning)
+    }
+
+    func testAControlPromptSaysWhenThisMacCannotActuallyInject() {
+        // Input needs the **Accessibility** grant, which is a different TCC
+        // permission from the Screen Recording one the session already has by
+        // this point — being given one says nothing about the other. Without
+        // it `CGEvent.post` fails silently: no error, no exception, nothing
+        // happening, and a user who has just granted control watching a pointer
+        // that does not move cannot tell that from a dead network.
+        //
+        // This is the moment they are deciding, so this is where it is said.
+        let blocked = request(kind: .control, canInject: false)
+        guard let notice = blocked.systemNotice else {
+            return XCTFail("a control prompt that cannot inject said nothing about it")
+        }
+        XCTAssertTrue(notice.contains("Accessibility"), notice)
+        XCTAssertTrue(notice.contains("System Settings"),
+                      "a notice with no way to act on it is just bad news: \(notice)")
+    }
+
+    func testNothingIsSaidWhenThereIsNothingToSay() {
+        // Not on the viewing prompt, which does not depend on the grant at all,
+        // and not when the grant is present — a permanent notice is one nobody
+        // reads, including on the one prompt where it matters.
+        XCTAssertNil(request(kind: .control, canInject: true).systemNotice)
+        XCTAssertNil(request(kind: .viewing, canInject: false).systemNotice)
+        XCTAssertNil(request(kind: .viewing, canInject: true).systemNotice)
+    }
+
+    func testTheSystemNoticeIsNotDressedAsATrustWarning() {
+        // `warning` is about the PEER and gets orange chrome. This is about our
+        // own permissions, and borrowing that treatment teaches people to
+        // dismiss the one that matters.
+        XCTAssertNil(request(kind: .control, canInject: false).warning,
+                     "a pinned key must still get no warning chrome")
     }
 
     func testTheFingerprintIsShownOrItsAbsenceIs() {

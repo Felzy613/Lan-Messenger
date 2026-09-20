@@ -70,6 +70,14 @@ struct RemoteConsentView: View {
                 warningRow(warning)
             }
 
+            // About this Mac rather than about the peer, so it is deliberately
+            // not the orange security treatment — an "our permissions are off"
+            // note dressed as a trust warning teaches people to dismiss trust
+            // warnings.
+            if let notice = request.systemNotice {
+                noticeRow(notice)
+            }
+
             identityRow(label: "Address", value: request.peerIP)
 
             // Monospaced, and never truncated: this is the one string on the
@@ -94,6 +102,21 @@ struct RemoteConsentView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
+    }
+
+    private func noticeRow(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(.secondary)
+                .font(.system(size: 13))
+            Text(text)
+                .font(.system(size: 12))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color.primary.opacity(scheme == .dark ? 0.08 : 0.05),
+                    in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func warningRow(_ text: String) -> some View {

@@ -89,18 +89,50 @@ final class RemoteSessionStopTests: XCTestCase {
     func testEveryReasonHasAnAuditLineThatNamesTheCause() {
         // The audit trail is read weeks later by somebody asking "why was my
         // screen shared at 11pm". A reason token is not an answer.
+        //
+        // Both roles, because a viewer writes these lines too and a missing
+        // case there would be an empty sentence in somebody's history.
         for reason in RemoteStopReason.allCases {
-            let line = reason.auditDescription
-            XCTAssertFalse(line.isEmpty, "\(reason) has no audit line")
-            XCTAssertTrue(line.hasSuffix("."), "\(reason): audit lines are sentences")
-            // A leaked token is what this is actually guarding against, and it
-            // would show up as snake_case in a sentence. `.error`'s line
-            // legitimately contains the word "error", so matching the raw value
-            // outright would be a cleverness that fails on the honest case.
-            XCTAssertFalse(line.contains("_"),
-                           "\(reason): a wire token leaked into the audit line")
-            XCTAssertNotEqual(line, reason.rawValue)
+            for viewing in [false, true] {
+                let line = reason.auditDescription(viewing: viewing)
+                XCTAssertFalse(line.isEmpty, "\(reason) has no audit line")
+                XCTAssertTrue(line.hasSuffix("."), "\(reason): audit lines are sentences")
+                // A leaked token is what this is actually guarding against, and
+                // it would show up as snake_case in a sentence. `.error`'s line
+                // legitimately contains the word "error", so matching the raw
+                // value outright would be a cleverness that fails on the honest
+                // case.
+                XCTAssertFalse(line.contains("_"),
+                               "\(reason): a wire token leaked into the audit line")
+                XCTAssertNotEqual(line, reason.rawValue)
+            }
         }
+    }
+
+    func testAViewerNeverClaimsItsOwnScreenWasShared() {
+        // The bug: every one of these sentences was written from the host's
+        // chair, so a Mac that had spent ten minutes WATCHING somebody else's
+        // screen ended the session and recorded "You stopped sharing your
+        // screen." That is not a wording slip — it is a false entry in the one
+        // record a user consults to find out whether their screen was ever
+        // shared.
+        for reason in RemoteStopReason.allCases {
+            let line = reason.auditDescription(viewing: true)
+            XCTAssertFalse(line.lowercased().contains("sharing your screen"),
+                           "\(reason): a viewer's line claims its own screen was shared")
+            XCTAssertFalse(line.lowercased().contains("screen sharing stopped"),
+                           "\(reason): a viewer's line is written from the host's chair")
+        }
+
+        XCTAssertEqual(RemoteStopReason.userStopped.auditDescription(viewing: false),
+                       "You stopped sharing your screen.")
+        XCTAssertEqual(RemoteStopReason.userStopped.auditDescription(viewing: true),
+                       "You stopped viewing their screen.")
+
+        // The one cause that reads identically from both chairs: the peer's
+        // decision is the peer's decision whichever end we are.
+        XCTAssertEqual(RemoteStopReason.peerEnded.auditDescription(viewing: false),
+                       RemoteStopReason.peerEnded.auditDescription(viewing: true))
     }
 
     func testTheWireTokensAreSnakeCase() {

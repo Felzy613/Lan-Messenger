@@ -154,7 +154,8 @@ public sealed class RemoteDesktopSession : IDisposable
             }
 
             _grant.Accept();
-            _appendAudit(new RemoteAuditRecord(RemoteAuditEvent.SessionStarted, _peerName));
+            _appendAudit(new RemoteAuditRecord(RemoteAuditEvent.SessionStarted, _peerName,
+                                               viewing: mode == Mode.Viewer));
             LanLogger.Remote("session_started", reason: $"{mode} {Width}x{Height}");
         }
         OnChanged?.Invoke();
@@ -362,7 +363,8 @@ public sealed class RemoteDesktopSession : IDisposable
     {
         if (!_grant.GrantControl()) return false;
         OnInputArmedChanged?.Invoke(true);
-        _appendAudit(new RemoteAuditRecord(RemoteAuditEvent.ControlGranted, _peerName));
+        _appendAudit(new RemoteAuditRecord(RemoteAuditEvent.ControlGranted, _peerName,
+                                           viewing: CurrentMode == Mode.Viewer));
         OnControlMessage?.Invoke(MediaControlMessage.ControlGrant());
         OnChanged?.Invoke();
         return true;
@@ -373,7 +375,8 @@ public sealed class RemoteDesktopSession : IDisposable
         OnInputArmedChanged?.Invoke(false);
         _injector?.ReleaseEverything();
         if (!_grant.RevokeControl()) return false;
-        _appendAudit(new RemoteAuditRecord(RemoteAuditEvent.ControlRevoked, _peerName));
+        _appendAudit(new RemoteAuditRecord(RemoteAuditEvent.ControlRevoked, _peerName,
+                                           viewing: CurrentMode == Mode.Viewer));
         OnControlMessage?.Invoke(MediaControlMessage.ControlRevoke());
         OnChanged?.Invoke();
         return true;
@@ -395,6 +398,9 @@ public sealed class RemoteDesktopSession : IDisposable
     {
         Mode? mode;
         double duration;
+        DesktopDuplicator? capture;
+        H264Encoder? encoder;
+        H264Decoder? decoder;
 
         lock (_gate)
         {
@@ -402,20 +408,27 @@ public sealed class RemoteDesktopSession : IDisposable
             mode = CurrentMode;
             duration = _startedAt is { } start ? (DateTime.UtcNow - start).TotalSeconds : 0;
 
-            // Before anything else: a session that ends mid-chord must not leave the
-        // host holding keys. A machine with Alt stuck behaves as if possessed,
-        // and the user's first instinct is to blame their keyboard.
-        _injector?.ReleaseEverything();
-        _injector = null;
-        OnInputArmedChanged?.Invoke(false);
+            // Before anything else: a session that ends mid-chord must not
+            // leave the host holding keys. A machine with Alt stuck behaves as
+            // if possessed, and the user's first instinct is to blame their
+            // keyboard.
+            _injector?.ReleaseEverything();
+            _injector = null;
+            OnInputArmedChanged?.Invoke(false);
 
-        // Capture first, always. A host whose screen is still being read
-            // after they pressed Stop is the worst possible ordering bug, so it
-            // goes before anything that could throw or block.
+            // Capture stops FIRST — a host whose screen is still being read
+            // after they pressed Stop is the worst possible ordering bug — but
+            // the things it reads are disposed LAST, after the thread has
+            // actually come back. Disposing them here, with the loop possibly
+            // mid-frame, is what produced "VideoProcessorBlt failed
+            // E_INVALIDARG" followed by a NullReferenceException in the colour
+            // converter at the end of every session: the loop was still using
+            // what had just been freed.
             _capturing = false;
-            _capture?.Dispose(); _capture = null;
-            _encoder?.Dispose(); _encoder = null;
-            _decoder?.Dispose(); _decoder = null;
+
+            capture = _capture; _capture = null;
+            encoder = _encoder; _encoder = null;
+            decoder = _decoder; _decoder = null;
 
             _presenter?.Clear();
             _presenter = null;
@@ -434,8 +447,14 @@ public sealed class RemoteDesktopSession : IDisposable
             thread.Join(TimeSpan.FromSeconds(2));
         }
 
+        // The loop has returned; now nothing is reading these.
+        capture?.Dispose();
+        encoder?.Dispose();
+        decoder?.Dispose();
+
         _appendAudit(new RemoteAuditRecord(RemoteAuditEvent.SessionEnded, _peerName,
-                                           reason.ToToken(), duration));
+                                           reason.ToToken(), duration,
+                                           viewing: mode == Mode.Viewer));
         LanLogger.Remote("session_stopped",
             reason: $"{reason.ToToken()} after {(int)duration}s ({mode})");
 

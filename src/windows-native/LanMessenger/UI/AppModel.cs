@@ -159,6 +159,15 @@ public sealed partial class AppModel : ObservableObject
 
     [ObservableProperty] private string? _remoteInviteStatus;
 
+    /// <summary>Changes whenever a remote-desktop session starts or ends.</summary>
+    /// <remarks>
+    /// The contact-strip button's enabled state depends on it, and nothing else
+    /// in the chat header changes when a session ends — so without this the
+    /// button was computed once while a session was running and stayed greyed
+    /// out for the rest of the app's life.
+    /// </remarks>
+    [ObservableProperty] private bool _remoteSessionRunning;
+
     /// <summary>The contact-strip button.</summary>
     /// <remarks>
     /// Judged against the same policy an inbound invite is, so the interface can
@@ -262,6 +271,9 @@ public sealed partial class AppModel : ObservableObject
         // the six end up forgetting.
         RemoteDesktopController.Shared.AnnounceEnd = (sessionId, peerIP, reason) =>
             InviteCoordinator.SendEnd(sessionId, peerIP, reason);
+
+        RemoteDesktopController.Shared.OnChanged = () =>
+            _dq.TryEnqueue(() => RemoteSessionRunning = RemoteDesktopController.Shared.IsRunning);
 
         // First launch: replace the bare "User" default with the OS account
         // name so peers immediately see something meaningful instead of "User".

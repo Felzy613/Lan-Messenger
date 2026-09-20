@@ -517,6 +517,48 @@ Use the smallest sufficient set for the change:
   dropped at the socket with `input before control_grant`, which is exactly what
   the first real control session did. Arm it in `grantControl`/`GrantControl`,
   disarm it in the revoke path and at teardown.
+- Do not decide whether to wire a `MediaSession`'s inbound callback from the
+  session's role. `onFrame`/`OnFrame` lived inside macOS `start()`'s
+  `presentsLocally` block, so a **host never set it at all** and silently
+  ignored everything its viewer ever said: `control_request`, every input
+  record, every keyframe request. Nothing logged it, because a host has nothing
+  to say about frames it was never handed; video is one-way and `MediaSession`
+  consumes the keepalives itself, so both ends looked healthy at 29fps for the
+  whole session. It presented as "Request Control does nothing, anywhere". The
+  transport and its routing are adopted together — macOS `adopt(_:)`, called by
+  both entry points before `start` — so there is no role that can miss it.
+  Covered by `testAHostWiresRoutingEvenWhenItsCaptureNeverStarts`.
+- Do not subtract a peer's `capture_us` from your own clock and call it latency.
+  The stamp is on the HOST's `Stopwatch`/mach timebase, so across two machines
+  the difference is dominated by the gap between their two origins: the first
+  real cross-machine session reported `latency_ms_avg=2813817527` — about 32.5
+  days — in a window visibly keeping up at 29fps. A figure that wrong is worse
+  than none, because it is still a number and somebody will act on it.
+  `RemoteLatencyClock` keeps the session's smallest difference as the zero and
+  reports delay above it, and `viewer_stats` prints `clock=shared` or
+  `clock=rel` so the reading always says which it is. Self-view keeps its true
+  capture-to-glass figure because there the clocks really are the same one.
+- Do not write the remote-desktop audit trail from the host's chair regardless
+  of role. A Mac that had spent ten minutes *watching* the Dell ended the
+  session and recorded "You stopped sharing your screen." in its own history —
+  not a wording slip but a false entry, in the one record a user consults to
+  find out whether their screen was ever shared. `RemoteAuditRecord` carries an
+  optional `viewing` flag (absent means host, so stored history needed no
+  migration) and every sentence has both forms. Derived text is `[JsonIgnore]`
+  on Windows and computed on read on both platforms: System.Text.Json serializes
+  get-only properties, so the record used to store its own rendered `Summary`,
+  which both diverged from the Swift bytes and froze wording into storage.
+- Do not let a macOS control grant be given without saying whether this Mac can
+  act on it. Input injection needs the **Accessibility** grant, a different TCC
+  permission from the Screen Recording one the session already has — being given
+  one says nothing about the other — and `CGEvent.post` fails silently without
+  it. The user grants control, the peer's pointer does nothing, and neither end
+  can tell that from a dead network. The control consent prompt reads
+  `RemoteInputInjector.hasAccessibilityGrant` and says so, in plain chrome
+  rather than the orange trust treatment, because a permissions note dressed as
+  a security warning teaches people to dismiss security warnings. Note also that
+  every rebuild of an ad-hoc-signed bundle is a new code identity, so both TCC
+  grants drop and have to be given again.
 - Do not route every inbound media frame to the video pipeline. Frames carry a
   channel — video, control, input, cursor, stats — and sending them all to the
   decoder worked only while nothing else was being sent: a control message handed

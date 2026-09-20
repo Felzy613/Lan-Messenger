@@ -20,9 +20,10 @@ final class RemoteAuditTests: XCTestCase {
 
     private func entry(_ event: RemoteAuditEntry.Event,
                        reason: String? = nil,
-                       duration: Double? = nil) -> RemoteAuditEntry {
+                       duration: Double? = nil,
+                       viewing: Bool = false) -> RemoteAuditEntry {
         RemoteAuditEntry(event: event, peerName: "Dave Felzy",
-                         reason: reason, duration: duration)
+                         reason: reason, duration: duration, viewing: viewing)
     }
 
     // MARK: - Storage
@@ -79,9 +80,48 @@ final class RemoteAuditTests: XCTestCase {
         // The stored record keeps the token so it survives a change of wording;
         // the line shown is the sentence.
         XCTAssertEqual(entry(.sessionEnded, reason: "screen_locked").summary,
-                       RemoteStopReason.screenLocked.auditDescription)
+                       RemoteStopReason.screenLocked.auditDescription(viewing: false))
         XCTAssertEqual(entry(.sessionEnded, reason: "watchdog").summary,
-                       RemoteStopReason.watchdog.auditDescription)
+                       RemoteStopReason.watchdog.auditDescription(viewing: false))
+    }
+
+    func testAViewersTrailNeverSaysItsOwnScreenWasShared() {
+        // The bug: every sentence here was written from the host's chair, so a
+        // Mac that spent ten minutes WATCHING the Dell ended the session and
+        // wrote "You stopped sharing your screen." into its own history. The
+        // trail exists to answer "was my screen shared, and when" — an entry
+        // that answers it wrongly is worse than no entry at all.
+        XCTAssertEqual(entry(.sessionStarted, viewing: true).summary,
+                       "You started viewing Dave Felzy's screen.")
+        XCTAssertEqual(entry(.sessionStarted).summary,
+                       "Dave Felzy started viewing your screen.")
+
+        XCTAssertEqual(entry(.controlGranted, viewing: true).summary,
+                       "Dave Felzy gave you control of their screen.")
+        XCTAssertEqual(entry(.controlGranted).summary,
+                       "You gave Dave Felzy control of your screen.")
+
+        XCTAssertEqual(entry(.sessionEnded, reason: "user_stopped", viewing: true).summary,
+                       "You stopped viewing their screen.")
+    }
+
+    func testARecordWrittenBeforeTheRoleExistedReadsAsAHost() {
+        // `viewing` is optional precisely so stored history does not need
+        // migrating. Absent has to mean host, because that is what every
+        // record written before this field existed was.
+        let legacy = "__REMOTE__:{\"event\":\"session_started\",\"peerName\":\"Dave Felzy\"}"
+        guard let decoded = RemoteAuditEntry.decode(legacy) else {
+            return XCTFail("a record without `viewing` no longer decodes")
+        }
+        XCTAssertFalse(decoded.wasViewing)
+        XCTAssertEqual(decoded.summary, "Dave Felzy started viewing your screen.")
+    }
+
+    func testAHostsRecordKeepsTheBytesItAlwaysHad() {
+        // Written only when true, so the common case is byte-identical to what
+        // older builds stored and a diff of history stays readable.
+        XCTAssertFalse(entry(.sessionStarted).encoded().contains("viewing"))
+        XCTAssertTrue(entry(.sessionStarted, viewing: true).encoded().contains("\"viewing\":true"))
     }
 
     func testAnUnknownEndReasonStillProducesASentence() {

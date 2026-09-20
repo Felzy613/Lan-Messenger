@@ -1423,6 +1423,26 @@ that does not enforce them is not compatible.
 - Session start, stop, and every control grant are recorded in the conversation
   history as an audit trail.
 
+The audit record is a local storage format rather than a wire format — it never
+leaves the machine that wrote it — but both platforms write it, so its shape is
+fixed here. It is an ordinary history entry whose `text` is `__REMOTE__:` and a
+JSON object with exactly these keys:
+
+| key | type | presence |
+|---|---|---|
+| `event` | string — `session_started`, `control_granted`, `control_revoked`, `session_ended` | always |
+| `peerName` | string | always |
+| `reason` | string — a `remote_end` stop token | `session_ended` only |
+| `duration` | number — seconds | `session_ended` only |
+| `viewing` | `true` | only when WE were the viewer |
+
+`viewing` is written only when true, so a host's record is byte-identical to one
+written before the field existed, and a reader that does not know the key treats
+the record as a host's — which is what every record predating it was. Derived
+text (the rendered sentence, the duration phrase) is **never** stored: it is
+recomputed on read, so a change of wording does not leave stale sentences in
+somebody's history.
+
 ## Compatibility Notes
 
 - New packet fields must be optional unless the protocol version is explicitly

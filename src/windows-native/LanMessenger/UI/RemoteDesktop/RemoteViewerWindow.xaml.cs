@@ -60,6 +60,13 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
     private long _compositeMaxMs;
     private readonly Stopwatch _statsClock = Stopwatch.StartNew();
 
+    /// <summary>
+    /// Makes <c>now - capture_us</c> mean milliseconds whichever clock stamped
+    /// the frame. See <see cref="RemoteLatencyClock"/> — across two machines the
+    /// raw subtraction is the gap between their Stopwatch origins, not latency.
+    /// </summary>
+    private readonly RemoteLatencyClock _latencyClock = new();
+
     /// Set while a frame is already on its way to the UI thread. The next one
     /// is dropped rather than queued: stale frames are worse than missing ones.
     private int _framePending;
@@ -389,24 +396,27 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
         _awaitingCompositionUs = 0;
 
         long nowUs = Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1_000_000L);
-        long ms = (nowUs - (long)captureUs) / 1000;
+        long ms = _latencyClock.Adjust(nowUs - (long)captureUs) / 1000;
         if (ms < 0) return;
         _compositeSumMs += ms;
         _compositeSamples++;
         if (ms > _compositeMaxMs) _compositeMaxMs = ms;
     }
 
-    /// End-to-end latency, measured rather than reasoned about.
+    /// Latency, measured rather than reasoned about.
     ///
-    /// capture_us has ridden along with the frame since Desktop Duplication
-    /// handed it over, through encode, decode and conversion, so the subtraction
-    /// here is the whole pipeline and nothing else. Without it "it feels laggy"
-    /// and "it feels smooth" are the only two available measurements.
+    /// capture_us has ridden along with the frame since capture handed it over,
+    /// through encode, decode and conversion, so in self-view the subtraction
+    /// here is the whole pipeline and nothing else. Across two machines it is
+    /// delay above the best frame of the session instead, because the stamp is
+    /// on the host's clock — `RemoteLatencyClock` decides which, and the stats
+    /// line says which one it printed. Without any of it, "it feels laggy" and
+    /// "it feels smooth" are the only two available measurements.
     private void NotePresented(ulong captureUs)
     {
         _presented++;
         long nowUs = Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1_000_000L);
-        long latencyMs = ((long)nowUs - (long)captureUs) / 1000;
+        long latencyMs = _latencyClock.Adjust(nowUs - (long)captureUs) / 1000;
         if (latencyMs >= 0)
         {
             _latencySumMs += latencyMs;
@@ -425,9 +435,14 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
         // once too few — and no amount of staring at the C# will show it.
         long gcMb = GC.GetTotalMemory(false) / (1024 * 1024);
         long processMb = Environment.WorkingSet / (1024 * 1024);
+        // Say which kind of latency these are. "shared" is the whole pipeline,
+        // capture to glass; "rel" is delay above the best frame of the session,
+        // because the host stamped capture_us on a clock that is not ours.
+        string clock = _latencyClock.Label;
         LanLogger.Remote("viewer_stats",
             reason: $"presented={_presented} dropped={Interlocked.Read(ref _dropped)} "
-                  + $"fps={_presented / seconds:F1} latency_ms_avg={avg} latency_ms_max={_latencyMaxMs} "
+                  + $"fps={_presented / seconds:F1} clock={clock} "
+                  + $"latency_ms_avg={avg} latency_ms_max={_latencyMaxMs} "
                   + $"onscreen_ms_avg={onScreenAvg} onscreen_ms_max={_compositeMaxMs} "
                   + $"gc_mb={gcMb} ws_mb={processMb} gen2={GC.CollectionCount(2)}");
 
@@ -449,6 +464,9 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
     public void Clear()
     {
         if (_closed) return;
+        // The next thing presented here may come from a different machine, and
+        // the latency floor is only meaningful against the clock that set it.
+        _latencyClock.Reset();
         _dispatcher.TryEnqueue(() =>
         {
             VideoImage.Source = null;

@@ -164,7 +164,13 @@ final class AppModel: ObservableObject {
                                  peerPublicKeyB64: peerKey,
                                  trust: trust,
                                  expiresAt: Date().addingTimeInterval(
-                                    RemoteConsentRequest.defaultTimeout))
+                                    RemoteConsentRequest.defaultTimeout),
+                                 // Read at the moment the question is asked. A
+                                 // grant given without this permission produces
+                                 // a session where the peer's pointer does
+                                 // nothing at all, silently — indistinguishable
+                                 // from a dead network from either end.
+                                 canInject: RemoteInputInjector.hasAccessibilityGrant)
         ) { [weak self] outcome in
             MainActor.assumeIsolated {
                 guard let self else { return }

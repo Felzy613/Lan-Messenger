@@ -59,7 +59,19 @@ enum RemoteStopReason: String, Equatable, CaseIterable {
 
     /// One line for the conversation's audit trail, in the past tense, naming
     /// the cause rather than the mechanism.
-    var auditDescription: String {
+    ///
+    /// **Takes the role**, because every one of these sentences used to be
+    /// written from the host's chair. A Mac that had spent ten minutes watching
+    /// somebody else's screen ended the session and wrote "You stopped sharing
+    /// your screen." into the thread — which is not a wording slip but a false
+    /// record, in the one place a user goes to find out whether their screen
+    /// was ever shared.
+    func auditDescription(viewing: Bool) -> String {
+        if viewing { return viewerDescription }
+        return hostDescription
+    }
+
+    private var hostDescription: String {
         switch self {
         case .userStopped:  return "You stopped sharing your screen."
         case .killSwitch:   return "You stopped sharing your screen with the emergency shortcut."
@@ -71,6 +83,24 @@ enum RemoteStopReason: String, Equatable, CaseIterable {
         case .watchdog:     return "Screen sharing stopped because the other side stopped responding."
         case .peerEnded:    return "The other side ended the session."
         case .error:        return "Screen sharing stopped because of an error."
+        }
+    }
+
+    /// The same causes, said by the machine that was doing the watching. No
+    /// sentence here claims anything about our own screen, because nothing was
+    /// captured on this side at all.
+    private var viewerDescription: String {
+        switch self {
+        case .userStopped:  return "You stopped viewing their screen."
+        case .killSwitch:   return "You stopped viewing their screen with the emergency shortcut."
+        case .screenLocked: return "The session ended because this Mac was locked."
+        case .userSwitched: return "The session ended because the user account was switched."
+        case .systemSleep:  return "The session ended because this Mac went to sleep."
+        case .networkLost:  return "The session ended because the network connection was lost."
+        case .appQuit:      return "The session ended because LAN Messenger quit."
+        case .watchdog:     return "The session ended because the other side stopped responding."
+        case .peerEnded:    return "The other side ended the session."
+        case .error:        return "The session ended because of an error."
         }
     }
 }

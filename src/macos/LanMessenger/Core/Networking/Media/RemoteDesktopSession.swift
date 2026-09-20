@@ -150,16 +150,39 @@ final class RemoteDesktopSession {
     func startHosting(peerName: String, peerIP: String, media: MediaSession,
                       configuration: ScreenCaptureConfiguration = ScreenCaptureConfiguration())
     async throws {
-        self.media = media
+        adopt(media)
         try await start(mode: .host(peerName: peerName, peerIP: peerIP),
                         configuration: configuration)
     }
 
     /// Watches a peer's screen. Captures nothing.
     func startViewing(peerName: String, peerIP: String, media: MediaSession) async throws {
-        self.media = media
+        adopt(media)
         try await start(mode: .viewer(peerName: peerName, peerIP: peerIP),
                         configuration: ScreenCaptureConfiguration())
+    }
+
+    /// Takes the transport and wires inbound routing — for BOTH roles, which is
+    /// the entire point of it being here rather than inside `start`.
+    ///
+    /// This wiring used to live inside `start`'s `presentsLocally` block, so a
+    /// **host never set `onFrame` at all** and ignored everything the viewer
+    /// ever said: `control_request`, every input record, every keyframe
+    /// request. Nothing logged it, because a host has nothing to say about
+    /// frames it was never handed. Video is one-way and the keepalives that
+    /// keep the watchdog quiet are consumed inside `MediaSession` before this
+    /// callback, so the session looked perfect from both ends — it presented
+    /// as "Request Control does nothing, anywhere, silently".
+    ///
+    /// Frames arrive on the media session's read thread, so the hop to the main
+    /// actor is not optional.
+    func adopt(_ media: MediaSession) {
+        self.media = media
+        media.onFrame = { [weak self] frame in
+            Task { @MainActor [weak self] in
+                self?.route(frame)
+            }
+        }
     }
 
     private func start(mode: Mode,
@@ -192,12 +215,6 @@ final class RemoteDesktopSession {
             receive.onKeyframeNeeded = { [weak self] _ in
                 Task { @MainActor in self?.sendPipeline?.latchKeyframe() }
             }
-            receive.onDimensionsChanged = { [weak self] size in
-                Task { @MainActor in
-                    self?.dimensions = size
-                    self?.onChange?()
-                }
-            }
             // A viewer has no capture to learn the picture size from, so it
             // learns it from the decoder. Without this `dimensions` stays nil
             // for the whole session: the window never gets its aspect, and the
@@ -212,18 +229,8 @@ final class RemoteDesktopSession {
             }
 
             self.receivePipeline = receive
-
-            // A viewer's pictures arrive from the socket rather than from a
-            // local encoder. Delivered on the media session's read thread, so
-            // the hop to the main actor is not optional.
-            if let media {
-                media.onFrame = { [weak self] frame in
-                    Task { @MainActor [weak self] in
-                        self?.route(frame)
-                    }
-                }
-            }
         }
+
 
         if mode.capturesLocally {
             let source = ScreenCaptureSource(configuration: configuration)
@@ -301,7 +308,8 @@ final class RemoteDesktopSession {
 
         armGuard()
         showIndicator()
-        appendAudit(RemoteAuditEntry(event: .sessionStarted, peerName: mode.peerName))
+        appendAudit(RemoteAuditEntry(event: .sessionStarted, peerName: mode.peerName,
+                                     viewing: !mode.capturesLocally))
 
         NetLogger.remote(event: "session_started",
                          reason: "\(describe(mode)) \(dimensions.map { "\($0.width)x\($0.height)" } ?? "?")")
@@ -449,7 +457,8 @@ final class RemoteDesktopSession {
         media?.inputArmed = true
 
         appendAudit(RemoteAuditEntry(event: .controlGranted,
-                                     peerName: mode?.peerName ?? ""))
+                                     peerName: mode?.peerName ?? "",
+                                     viewing: mode?.capturesLocally == false))
         showIndicator()
         onChange?()
         return true
@@ -461,7 +470,8 @@ final class RemoteDesktopSession {
         media?.inputArmed = false
         injector?.releaseEverything()
         appendAudit(RemoteAuditEntry(event: .controlRevoked,
-                                     peerName: mode?.peerName ?? ""))
+                                     peerName: mode?.peerName ?? "",
+                                     viewing: mode?.capturesLocally == false))
         showIndicator()
         onChange?()
         return true
@@ -523,7 +533,8 @@ final class RemoteDesktopSession {
         appendAudit(RemoteAuditEntry(event: .sessionEnded,
                                      peerName: mode.peerName,
                                      reason: reason.rawValue,
-                                     duration: duration))
+                                     duration: duration,
+                                     viewing: !mode.capturesLocally))
         NetLogger.remote(event: "session_stopped",
                          reason: "\(reason.rawValue) after \(Int(duration))s")
 

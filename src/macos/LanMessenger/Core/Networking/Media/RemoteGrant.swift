@@ -119,6 +119,12 @@ struct RemoteConsentRequest: Equatable, Identifiable {
     let trust: PeerKeyTrust
     /// When the prompt stops waiting and answers `timeout` on the user's behalf.
     let expiresAt: Date
+    /// Whether this Mac can actually post the input a control grant promises.
+    ///
+    /// Passed in rather than read here, so the dialog stays testable without a
+    /// TCC grant. Defaults to true because the viewing prompt does not depend
+    /// on it at all.
+    let canInject: Bool
 
     init(sessionID: String,
          kind: Kind,
@@ -126,7 +132,8 @@ struct RemoteConsentRequest: Equatable, Identifiable {
          peerIP: String,
          peerPublicKeyB64: String,
          trust: PeerKeyTrust,
-         expiresAt: Date) {
+         expiresAt: Date,
+         canInject: Bool = true) {
         self.sessionID = sessionID
         self.kind = kind
         self.peerName = peerName
@@ -134,6 +141,7 @@ struct RemoteConsentRequest: Equatable, Identifiable {
         self.peerPublicKeyB64 = peerPublicKeyB64
         self.trust = trust
         self.expiresAt = expiresAt
+        self.canInject = canInject
     }
 
     /// How long a prompt waits before declining with `timeout`.
@@ -187,6 +195,24 @@ struct RemoteConsentRequest: Equatable, Identifiable {
         case .unknown:
             return "This device is not in your contacts."
         }
+    }
+
+    /// Something about THIS Mac the user needs to know before answering, as
+    /// opposed to `warning`, which is about the peer.
+    ///
+    /// Only one so far, and it earned its place: input injection needs the
+    /// **Accessibility** grant, which is a different TCC permission from the
+    /// Screen Recording one a session already has by this point. Without it
+    /// `CGEvent.post` fails silently — no error, no exception, simply nothing
+    /// happening — so a user grants control, watches the peer's pointer do
+    /// absolutely nothing, and has no way at all to tell that from a dead
+    /// network. The log says so; nobody reads the log. This is the moment the
+    /// user is making the decision, so this is where it belongs.
+    var systemNotice: String? {
+        guard kind == .control, !canInject else { return nil }
+        return "Accessibility is turned off for LAN Messenger, so their keyboard "
+            + "and mouse will do nothing. Turn it on in System Settings > Privacy "
+            + "& Security > Accessibility."
     }
 
     var acceptButtonTitle: String {

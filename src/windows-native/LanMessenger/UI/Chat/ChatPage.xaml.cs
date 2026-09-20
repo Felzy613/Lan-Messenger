@@ -216,6 +216,12 @@ public sealed partial class ChatPage : Page
         if (_model is null) return;
         switch (e.PropertyName)
         {
+            case nameof(AppModel.RemoteSessionRunning):
+                // A session ending re-enables the button. Nothing else in the
+                // header changes at that moment, so without this it stays
+                // greyed out from the first session onward.
+                UpdateRemoteDesktopButton();
+                break;
             case nameof(AppModel.SelectedPeerIP):
                 RefreshForSelectedPeer(forceReload: true);
                 break;

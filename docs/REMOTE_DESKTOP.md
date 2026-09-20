@@ -63,20 +63,20 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS4b | Windows capture + encode | **Done and verified on hardware** — Desktop Duplication + Quick Sync async MFT, measured end to end 2026-09-18 | no |
 | WS5 | Decode + present, both platforms | **Both done and verified on hardware** — Windows self-view measured 2026-09-18 | no |
 | WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
-| WS7 | Input capture + injection | **Done on both platforms** — HID usages on the wire, scan codes on Windows, CGEvent on macOS; two-stage control grant wired 2026-09-20 | yes, a controlled session |
-| WS8 | Consent, indicator, kill switch, invite exchange | **Done on both platforms** — the exchange landed 2026-09-19; not yet run between two machines | yes, a two-machine session |
+| WS7 | Input capture + injection | **Done on both platforms and proven between the two machines** 2026-09-20 — Mac → Dell drives the mouse and keyboard; Dell → Mac reaches the injector and is gated only by the macOS Accessibility TCC grant | done |
+| WS8 | Consent, indicator, kill switch, invite exchange | **Done on both platforms and proven between the two machines** 2026-09-20 — invite, consent, accept, attach, capture, the second control prompt and the grant, in both directions | done |
 | WS9 | Settings, logging, diagnostics | **Done** — log channel, stats contents, and the settings toggle on both platforms | no |
-| WS10 | Latency tuning | **Not started** | yes |
+| WS10 | Latency tuning | **Not started.** Video across the two machines settles at ~29fps; the absolute cross-machine latency is not measurable without a clock exchange the protocol does not have (see `RemoteLatencyClock`) | yes |
 | WS11 | Packaging, docs, CI | **`dpiAwareness` done**, and the app builds with it; Vortice refs and the SDK decision wait on WS4b | no |
 
 Test counts on this branch, both suites green:
 
 - Windows GPU/encoder selection covers **nine machine topologies**, only one of
   which we own
-- macOS **432 passing**, 11 skipped (all generators or hardware-gated: the
+- macOS **481 passing**, 11 skipped (all generators or hardware-gated: the
   H.264 fixture emitter, the control-vector emitter, the UI renderers, and the
   live capture check)
-- Windows **270 passing**, run on real hardware 2026-09-17 from a freshly built
+- Windows **364 passing**, run on real hardware 2026-09-20 from a freshly built
   binary, with the app project compiling — which is what validates the XAML
 
 Of those, the remote-desktop tests are:
@@ -85,22 +85,25 @@ Of those, the remote-desktop tests are:
 |---|---|---|
 | `RemoteSessionCryptoTests` | 32 | 34 |
 | `MediaFrameTests` | 26 | 26 |
-| `H264BitstreamTests` | 15 | 15 |
-| `H264EncoderTests` | 12 | — (no encoder yet) |
-| `H264DecoderTests` | 14 | — (no decoder yet) |
+| `H264BitstreamTests` | — (folded into the codec suites) | 21 |
 | `SampleBufferVideoPresenterTests` | 3 | — |
-| `ScreenCaptureSourceTests` | 18 | — (no capture yet) |
+| `ScreenCaptureSourceTests` | 18 | — (`CaptureTargetSelectorTests`, 14) |
 | `VideoPipelineEndToEndTests` | 5 | — |
-| `ProtocolCapabilityTests` | 10 | 9 |
+| `ProtocolCapabilityTests` | 10 | 10 |
 | `PeerKeyTrustTests` | 9 | — (folded into the policy suite) |
-| `RemoteDesktopPolicyTests` | 23 | 27 |
-| `RemoteConsentTests` | 19 | — |
+| `RemoteDesktopPolicyTests` | 23 | 26 |
+| `RemoteConsentTests` | 22 | — (folded into `RemoteSessionShapeTests`, 23) |
 | `RemoteHostIndicatorTests` | 13 | — |
-| `RemoteSessionStopTests` | 11 | — |
-| `RemoteAuditTests` | 13 | — |
+| `RemoteSessionStopTests` | 12 | — (folded into `RemoteSessionShapeTests`) |
+| `RemoteAuditTests` | 16 | — (folded into `RemoteSessionShapeTests`) |
+| `RemoteDesktopSessionTests` | 10 | — |
+| `RemoteInviteCoordinatorTests` | 16 | 18 |
+| `RemoteInputRecordTests` | 14 | 17 |
 | `RemoteInputGeometryTests` | 8 | 11 |
+| `HidKeyMapTests` | 9 | 12 |
 | `MediaControlMessageTests` | 11 | 11 |
 | `RemoteDesktopQueueTests` | 4 | 4 |
+| `RemoteLatencyClockTests` | — (macOS reports no viewer latency) | 6 |
 
 ---
 
@@ -299,19 +302,47 @@ sample data, a format description built back to front, or access units split on
 the wrong NAL type all produce well-formed objects that simply never become a
 picture.
 
+### Proven between the two machines, 2026-09-20
+
+A full session was run in both directions between this Mac and the Dell, over a
+real socket and the `media_attach` upgrade:
+
+| | Mac → Dell | Dell → Mac |
+|---|---|---|
+| invite, consent, accept, attach | yes | yes |
+| video | yes, ~26fps | yes, ~29fps |
+| second control prompt and grant | yes | yes |
+| input arriving at the host's injector | yes, and moving the pointer | yes, refused by TCC — see below |
+
+Four defects were found by doing it, each of which is invisible in one-machine
+testing and each now has a rule in `CLAUDE.md`:
+
+1. **A macOS host never routed a single inbound frame.** `onFrame` was wired
+   inside `start()`'s `presentsLocally` block, so only a viewer set it. Video is
+   one-way and `MediaSession` eats the keepalives itself, so both ends looked
+   healthy while the host ignored every `control_request`, input record and
+   keyframe request it was sent.
+2. **`viewer_stats` latency was meaningless across machines** — `capture_us` is
+   the host's clock. It reported 32.5 days.
+3. **The audit trail was written from the host's chair in both roles**, so a
+   viewer recorded "You stopped sharing your screen." about a session where it
+   shared nothing.
+4. **The Windows audit record serialized its own derived properties**, so the
+   two platforms wrote different bytes for the same record.
+
 ### Not yet proven
 
-- The **hardware** encode path end to end. The probe enumerated and unlocked
-  both Quick Sync MFTs but its stage 4 encoded through the *software* MFT, so
-  the async `METransformNeedInput` / `METransformHaveOutput` pump has still never
-  actually produced a frame.
+- Dell → Mac **injection actually moving the Mac's pointer**. The records arrive
+  and reach `RemoteInputInjector`, which logs
+  `no Accessibility grant — CGEvent.post will do nothing silently` and stops
+  there. That is the designed behaviour, not a defect: injection needs the
+  **Accessibility** TCC grant, which is separate from Screen Recording, and
+  every rebuild of an ad-hoc-signed bundle is a new code identity that loses
+  both. The control consent prompt now says so when the grant is missing.
 - macOS → macOS presentation. The decoder's output has been decoded, but nothing
-  has been on screen yet: `SampleBufferVideoPresenter` is tested against a layer
-  with no window behind it, which catches a rejected sample but not a blank one.
-- Anything over a real socket, or between two machines. The end-to-end test runs
-  two sessions in one process over a paired in-memory link, so it proves framing,
-  sealing, sequencing and reassembly — but not `SocketMediaLink`, not the
-  `media_attach` upgrade, and nothing about a real network.
+  has been on screen in that configuration: `SampleBufferVideoPresenter` is
+  tested against a layer with no window behind it, which catches a rejected
+  sample but not a blank one.
 
 ---
 

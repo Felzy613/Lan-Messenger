@@ -1,5 +1,7 @@
 using LanMessenger.Core.Networking.Media;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.Linq;
+using System.Text.Json;
 
 namespace LanMessenger.Tests;
 
@@ -76,9 +78,44 @@ public class RemoteSessionShapeTests
         foreach (RemoteStopReason r in Enum.GetValues<RemoteStopReason>())
         {
             Assert.AreEqual(r.ToToken(), r.ToToken().ToLowerInvariant(), $"{r} has uppercase");
-            Assert.IsFalse(string.IsNullOrEmpty(r.AuditDescription()), $"{r} has no audit line");
-            Assert.IsTrue(r.AuditDescription().EndsWith('.'), $"{r}: audit lines are sentences");
+            // Both roles: a viewer writes these lines too, and a missing case
+            // there would be an empty sentence in somebody's history.
+            foreach (bool viewing in new[] { false, true })
+            {
+                string line = r.AuditDescription(viewing);
+                Assert.IsFalse(string.IsNullOrEmpty(line), $"{r} has no audit line");
+                Assert.IsTrue(line.EndsWith('.'), $"{r}: audit lines are sentences");
+                Assert.IsFalse(line.Contains('_'), $"{r}: a wire token leaked into the audit line");
+            }
         }
+    }
+
+    [TestMethod]
+    public void AViewerNeverClaimsItsOwnScreenWasShared()
+    {
+        // The bug: every one of these sentences was written from the host's
+        // chair, so a PC that had spent ten minutes WATCHING somebody else's
+        // screen ended the session and recorded "You stopped sharing your
+        // screen." That is not a wording slip — it is a false entry in the one
+        // record a user consults to find out whether their screen was shared.
+        foreach (RemoteStopReason r in Enum.GetValues<RemoteStopReason>())
+        {
+            string line = r.AuditDescription(viewing: true).ToLowerInvariant();
+            Assert.IsFalse(line.Contains("sharing your screen"),
+                           $"{r}: a viewer's line claims its own screen was shared");
+            Assert.IsFalse(line.Contains("screen sharing stopped"),
+                           $"{r}: a viewer's line is written from the host's chair");
+        }
+
+        Assert.AreEqual("You stopped sharing your screen.",
+                        RemoteStopReason.UserStopped.AuditDescription(viewing: false));
+        Assert.AreEqual("You stopped viewing their screen.",
+                        RemoteStopReason.UserStopped.AuditDescription(viewing: true));
+
+        // The one cause that reads identically from both chairs: the peer's
+        // decision is the peer's decision whichever end we are.
+        Assert.AreEqual(RemoteStopReason.PeerEnded.AuditDescription(viewing: false),
+                        RemoteStopReason.PeerEnded.AuditDescription(viewing: true));
     }
 
     [TestMethod]
@@ -139,6 +176,75 @@ public class RemoteSessionShapeTests
         var record = new RemoteAuditRecord(RemoteAuditEvent.SessionEnded, "Dave", "screen_locked");
         Assert.AreEqual(RemoteStopReason.ScreenLocked.AuditDescription(), record.Summary);
         Assert.IsFalse(record.Summary.Contains('_'), "a wire token leaked into the trail");
+    }
+
+    [TestMethod]
+    public void AViewersTrailNeverSaysItsOwnScreenWasShared()
+    {
+        // Mirror of AViewersTrailNeverSaysItsOwnScreenWasShared in the Swift
+        // suite. The two write into the same history format and are read by the
+        // same person, so the sentences have to agree.
+        Assert.AreEqual("You started viewing Dave's screen.",
+            new RemoteAuditRecord(RemoteAuditEvent.SessionStarted, "Dave", viewing: true).Summary);
+        Assert.AreEqual("Dave started viewing your screen.",
+            new RemoteAuditRecord(RemoteAuditEvent.SessionStarted, "Dave").Summary);
+
+        Assert.AreEqual("Dave gave you control of their screen.",
+            new RemoteAuditRecord(RemoteAuditEvent.ControlGranted, "Dave", viewing: true).Summary);
+        Assert.AreEqual("You gave Dave control of your screen.",
+            new RemoteAuditRecord(RemoteAuditEvent.ControlGranted, "Dave").Summary);
+
+        Assert.AreEqual("You stopped viewing their screen.",
+            new RemoteAuditRecord(RemoteAuditEvent.SessionEnded, "Dave", "user_stopped",
+                                  viewing: true).Summary);
+    }
+
+    [TestMethod]
+    public void ARecordWrittenBeforeTheRoleExistedReadsAsAHost()
+    {
+        // `viewing` is optional precisely so stored history needs no migration.
+        // Absent has to mean host, because that is what every record written
+        // before this field existed was.
+        var legacy = RemoteAuditRecord.Decode(
+            """__REMOTE__:{"event":"session_started","peerName":"Dave"}""");
+        Assert.IsNotNull(legacy, "a record without `viewing` no longer decodes");
+        Assert.IsFalse(legacy!.WasViewing);
+        Assert.AreEqual("Dave started viewing your screen.", legacy.Summary);
+    }
+
+    [TestMethod]
+    public void AHostsRecordKeepsTheBytesItAlwaysHad()
+    {
+        // Written only when true, so the common case is byte-identical to what
+        // older builds stored and a diff of history stays readable.
+        Assert.IsFalse(new RemoteAuditRecord(RemoteAuditEvent.SessionStarted, "Dave")
+                            .Encoded().Contains("viewing"));
+        Assert.IsTrue(new RemoteAuditRecord(RemoteAuditEvent.SessionStarted, "Dave", viewing: true)
+                            .Encoded().Contains("\"viewing\":true"));
+    }
+
+    [TestMethod]
+    public void OnlyTheStoredFieldsAreWrittenAndNotTheDerivedOnes()
+    {
+        // System.Text.Json writes get-only properties, so this record used to
+        // store Event, Summary and DurationSummary beside the four real fields:
+        // keys the Swift record never writes, and RENDERED SENTENCES frozen into
+        // history that a later change of wording would leave stale. The two
+        // platforms write into the same history and are supposed to produce the
+        // same bytes.
+        //
+        // Found by a test that assumed a host's record contained no "viewing"
+        // and was defeated by "started viewing your screen." inside a serialized
+        // Summary.
+        string json = new RemoteAuditRecord(RemoteAuditEvent.SessionEnded, "Dave",
+                                            "user_stopped", 12).Encoded();
+        json = json[RemoteAuditRecord.Marker.Length..];
+
+        using var document = JsonDocument.Parse(json);
+        var keys = document.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n);
+        CollectionAssert.AreEqual(new[] { "duration", "event", "peerName", "reason" },
+                                  keys.ToArray(),
+                                  $"the stored record's shape drifted: {json}");
     }
 
     [TestMethod]

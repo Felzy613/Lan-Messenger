@@ -26,16 +26,32 @@ public sealed class RemoteAuditRecord
     [JsonPropertyName("reason")]   public string? Reason { get; set; }
     /// Seconds. Present on SessionEnded.
     [JsonPropertyName("duration")] public double? Duration { get; set; }
+    /// <summary>Whether WE were the one watching.</summary>
+    /// <remarks>
+    /// Optional, and absent means host — both backwards compatible with records
+    /// written before this field existed and the right default, since the trail
+    /// was designed around the machine whose screen was shared. Without it every
+    /// sentence is written from the host's chair, so a PC that spent ten minutes
+    /// watching somebody else's screen recorded "You stopped sharing your
+    /// screen." in its own history. Written only when true, so a host's records
+    /// keep exactly the bytes they had before.
+    /// </remarks>
+    [JsonPropertyName("viewing")]  public bool? Viewing { get; set; }
+
+    /// <summary>True when we were watching. Null is host, for older records.</summary>
+    [JsonIgnore] public bool WasViewing => Viewing == true;
 
     public RemoteAuditRecord() { }
 
     public RemoteAuditRecord(RemoteAuditEvent e, string peerName,
-                             string? reason = null, double? duration = null)
+                             string? reason = null, double? duration = null,
+                             bool viewing = false)
     {
         EventToken = Token(e);
         PeerName = peerName;
         Reason = reason;
         Duration = duration;
+        Viewing = viewing ? true : null;
     }
 
     /// The prefix that marks a history entry as an audit record rather than a
@@ -51,7 +67,16 @@ public sealed class RemoteAuditRecord
         _                               => "session_ended",
     };
 
-    public RemoteAuditEvent? Event => EventToken switch
+    /// <summary>
+    /// The decoded event. Ignored by the serializer, like every other derived
+    /// member here: System.Text.Json writes get-only properties, so without
+    /// these attributes a stored record carried <c>Event</c>, <c>Summary</c> and
+    /// <c>DurationSummary</c> beside the four real fields — keys the Swift
+    /// record never writes, and rendered sentences frozen into storage that a
+    /// change of wording would leave stale. The two platforms are supposed to
+    /// produce the same bytes for the same record.
+    /// </summary>
+    [JsonIgnore] public RemoteAuditEvent? Event => EventToken switch
     {
         "session_started" => RemoteAuditEvent.SessionStarted,
         "control_granted" => RemoteAuditEvent.ControlGranted,
@@ -83,12 +108,23 @@ public sealed class RemoteAuditRecord
 
     public static bool IsAudit(string text) => text.StartsWith(Marker, StringComparison.Ordinal);
 
-    /// The sentence shown in the thread and in the sidebar preview.
-    public string Summary => Event switch
+    /// <summary>The sentence shown in the thread and in the sidebar preview.</summary>
+    /// <remarks>
+    /// Said from whichever chair we were sitting in. A record claiming our
+    /// screen was shared when it was not is worse than no record, because this
+    /// is the trail somebody reads weeks later to answer exactly that question.
+    /// </remarks>
+    [JsonIgnore] public string Summary => Event switch
     {
-        RemoteAuditEvent.SessionStarted => $"{PeerName} started viewing your screen.",
-        RemoteAuditEvent.ControlGranted => $"You gave {PeerName} control of your screen.",
-        RemoteAuditEvent.ControlRevoked => $"You took back control from {PeerName}.",
+        RemoteAuditEvent.SessionStarted => WasViewing
+            ? $"You started viewing {PeerName}'s screen."
+            : $"{PeerName} started viewing your screen.",
+        RemoteAuditEvent.ControlGranted => WasViewing
+            ? $"{PeerName} gave you control of their screen."
+            : $"You gave {PeerName} control of your screen.",
+        RemoteAuditEvent.ControlRevoked => WasViewing
+            ? $"{PeerName} took back control."
+            : $"You took back control from {PeerName}.",
         RemoteAuditEvent.SessionEnded   => EndSummary(),
         _                               => "",
     };
@@ -97,14 +133,16 @@ public sealed class RemoteAuditRecord
     {
         foreach (RemoteStopReason r in Enum.GetValues<RemoteStopReason>())
         {
-            if (r.ToToken() == Reason) return r.AuditDescription();
+            if (r.ToToken() == Reason) return r.AuditDescription(WasViewing);
         }
-        return $"Screen sharing with {PeerName} ended.";
+        return WasViewing
+            ? $"Your session with {PeerName} ended."
+            : $"Screen sharing with {PeerName} ended.";
     }
 
     /// Appended when a session ended, so the trail answers "for how long"
     /// without arithmetic on two timestamps.
-    public string? DurationSummary
+    [JsonIgnore] public string? DurationSummary
     {
         get
         {

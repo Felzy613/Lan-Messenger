@@ -36,12 +36,28 @@ struct RemoteAuditEntry: Codable, Equatable {
     let reason: String?
     /// Seconds. Present on `sessionEnded`.
     let duration: Double?
+    /// Whether WE were the one watching.
+    ///
+    /// Optional, and absent means host — which is both backwards compatible
+    /// with records written before this field existed and the right default,
+    /// since the trail was designed around the machine whose screen was shared.
+    /// Without it every sentence is written from the host's chair, so a Mac that
+    /// spent ten minutes watching somebody else's screen recorded "You stopped
+    /// sharing your screen." in its own history.
+    let viewing: Bool?
 
-    init(event: Event, peerName: String, reason: String? = nil, duration: Double? = nil) {
+    /// True when we were watching. Nil is host, for records from older builds.
+    var wasViewing: Bool { viewing == true }
+
+    init(event: Event, peerName: String, reason: String? = nil, duration: Double? = nil,
+         viewing: Bool? = nil) {
         self.event = event
         self.peerName = peerName
         self.reason = reason
         self.duration = duration
+        // Written only when true, so a host's records keep exactly the bytes
+        // they had before this field existed.
+        self.viewing = (viewing == true) ? true : nil
     }
 
     /// The prefix that marks a history entry as an audit record rather than a
@@ -80,17 +96,31 @@ struct RemoteAuditEntry: Codable, Equatable {
     static func isAudit(_ text: String) -> Bool { text.hasPrefix(marker) }
 
     /// The sentence shown in the thread and in the sidebar preview.
+    ///
+    /// Said from whichever chair we were sitting in. A record that says our
+    /// screen was shared when it was not is worse than no record, because this
+    /// is the trail somebody reads weeks later to answer exactly that question.
     var summary: String {
         switch event {
         case .sessionStarted:
-            return "\(peerName) started viewing your screen."
+            return wasViewing
+                ? "You started viewing \(peerName)'s screen."
+                : "\(peerName) started viewing your screen."
         case .controlGranted:
-            return "You gave \(peerName) control of your screen."
+            return wasViewing
+                ? "\(peerName) gave you control of their screen."
+                : "You gave \(peerName) control of your screen."
         case .controlRevoked:
-            return "You took back control from \(peerName)."
+            return wasViewing
+                ? "\(peerName) took back control."
+                : "You took back control from \(peerName)."
         case .sessionEnded:
-            let cause = reason.flatMap { RemoteStopReason(rawValue: $0)?.auditDescription }
-            return cause ?? "Screen sharing with \(peerName) ended."
+            let cause = reason.flatMap {
+                RemoteStopReason(rawValue: $0)?.auditDescription(viewing: wasViewing)
+            }
+            return cause ?? (wasViewing
+                ? "Your session with \(peerName) ended."
+                : "Screen sharing with \(peerName) ended.")
         }
     }
 

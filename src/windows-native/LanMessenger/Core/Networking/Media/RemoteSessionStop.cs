@@ -50,9 +50,21 @@ public static class RemoteStopReasonExtensions
         _ => false,
     };
 
-    /// One line for the conversation's audit trail, in the past tense, naming the
-    /// cause rather than the mechanism.
-    public static string AuditDescription(this RemoteStopReason reason) => reason switch
+    /// <summary>
+    /// One line for the conversation's audit trail, in the past tense, naming
+    /// the cause rather than the mechanism.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="viewing"/> is not decoration. Every one of these
+    /// sentences used to be written from the host's chair, so a PC that had
+    /// spent ten minutes watching somebody else's screen ended the session and
+    /// recorded "You stopped sharing your screen." — a false record, in the one
+    /// place a user looks to find out whether their screen was ever shared.
+    /// </remarks>
+    public static string AuditDescription(this RemoteStopReason reason, bool viewing = false) =>
+        viewing ? ViewerDescription(reason) : HostDescription(reason);
+
+    private static string HostDescription(RemoteStopReason reason) => reason switch
     {
         RemoteStopReason.UserStopped  => "You stopped sharing your screen.",
         RemoteStopReason.KillSwitch   => "You stopped sharing your screen with the emergency shortcut.",
@@ -64,6 +76,25 @@ public static class RemoteStopReasonExtensions
         RemoteStopReason.Watchdog     => "Screen sharing stopped because the other side stopped responding.",
         RemoteStopReason.PeerEnded    => "The other side ended the session.",
         _                             => "Screen sharing stopped because of an error.",
+    };
+
+    /// <summary>
+    /// The same causes, said by the machine that was doing the watching. No
+    /// sentence here claims anything about our own screen, because nothing was
+    /// captured on this side at all.
+    /// </summary>
+    private static string ViewerDescription(RemoteStopReason reason) => reason switch
+    {
+        RemoteStopReason.UserStopped  => "You stopped viewing their screen.",
+        RemoteStopReason.KillSwitch   => "You stopped viewing their screen with the emergency shortcut.",
+        RemoteStopReason.ScreenLocked => "The session ended because this PC was locked.",
+        RemoteStopReason.UserSwitched => "The session ended because the user account was switched.",
+        RemoteStopReason.SystemSleep  => "The session ended because this PC went to sleep.",
+        RemoteStopReason.NetworkLost  => "The session ended because the network connection was lost.",
+        RemoteStopReason.AppQuit      => "The session ended because LAN Messenger quit.",
+        RemoteStopReason.Watchdog     => "The session ended because the other side stopped responding.",
+        RemoteStopReason.PeerEnded    => "The other side ended the session.",
+        _                             => "The session ended because of an error.",
     };
 }
 
