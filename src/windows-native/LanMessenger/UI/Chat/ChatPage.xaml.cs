@@ -1,5 +1,6 @@
 using LanMessenger.Core.Persistence;
 using LanMessenger.Core.Services;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -79,6 +80,24 @@ public sealed partial class ChatPage : Page
     private readonly ObservableCollection<MessageRowViewModel> _rows = [];
     private string? _boundPeerIP;
     private ScrollViewer? _scroll;   // inner scroll viewer of MessagesList, cached after layout
+
+    /// Whether the thread is following new content down. Latched rather than
+    /// measured on the spot: the extent is still growing when a message is
+    /// appended, so a reading taken then says the reader is adrift when they
+    /// are not — and a thread that concludes that stops following at all.
+    private bool _pinnedToBottom = true;
+    /// Re-runs the scroll for a short while after it is asked for. One
+    /// ChangeView is not enough: the row has not been measured when the merge
+    /// path runs, and an image bubble grows again when its bitmap decodes.
+    private DispatcherQueueTimer? _settleTimer;
+    private int _settleTicks;
+    /// Last extent seen by the scroll handlers. A ViewChanged that lands on a
+    /// bigger extent is the content having grown, not the reader having moved
+    /// — and the distance-to-bottom it reports is exactly that growth.
+    private double _lastExtentHeight;
+    private const int SettleTickCount    = 8;    // × 80 ms ≈ 0.64 s
+    private const int SettleIntervalMs   = 80;
+    private bool IsSettling => _settleTimer?.IsRunning == true;
 
     private AppModel? _model;
     public AppModel? Model
@@ -195,7 +214,13 @@ public sealed partial class ChatPage : Page
             var sv = FindDescendant<ScrollViewer>(MessagesList);
             if (sv is null) return;
             _scroll = sv;
-            _scroll.ViewChanged += (_, _) => UpdateJumpToLatest();
+            _scroll.ViewChanged += OnScrollViewChanged;
+            // The ScrollViewer's own content is what grows when a bubble
+            // settles — a decoded image, a rewrapped line — and that growth
+            // raises no ViewChanged. Without following it the thread is left
+            // showing the message but not the picture in it.
+            if (_scroll.Content is FrameworkElement scrollContent)
+                scrollContent.SizeChanged += OnScrollContentSizeChanged;
             MessagesList.LayoutUpdated -= layoutHandler;
             UpdateJumpToLatest();
         };
@@ -284,8 +309,9 @@ public sealed partial class ChatPage : Page
         // Send read receipts for any unread incoming messages (clears the badge).
         if (ip is not null) _model.MarkConversationRead(ip);
 
-        // Scroll to the latest message after layout settles.
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
+        // Opening a conversation always lands on the newest message.
+        DispatcherQueue.TryEnqueue(
+            DispatcherQueuePriority.Low, ScrollToBottomSettled);
     }
 
     private void UpdateHeaderName()
@@ -330,16 +356,18 @@ public sealed partial class ChatPage : Page
                      && t.Active;
         if (typing == ThreadTyping.IsActive) return;
 
-        var wasAtBottom = IsScrolledToBottom();
+        var wasAtBottom = _pinnedToBottom;
 
         ThreadTyping.IsActive    = typing;
         HeaderTyping.IsActive    = typing;
         HeaderSubtext.Visibility = typing ? Visibility.Collapsed : Visibility.Visible;
 
         if (typing && wasAtBottom)
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
+            DispatcherQueue.TryEnqueue(
+                DispatcherQueuePriority.Low, ScrollToBottomSettled);
         else
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdateJumpToLatest);
+            DispatcherQueue.TryEnqueue(
+                DispatcherQueuePriority.Low, UpdateJumpToLatest);
     }
 
     private void UpdateTransferBanner()
@@ -391,16 +419,28 @@ public sealed partial class ChatPage : Page
             }
 
             // Append new ones.
-            var wasAtBottom = IsScrolledToBottom();
+            var wasAtBottom = _pinnedToBottom;
+            var rowsBefore  = _rows.Count;
             for (var i = _rows.Count; i < entries.Count; i++)
                 _rows.Add(MapEntry(entries, i));
+            var appended = _rows.Count > rowsBefore;
 
-            if (wasAtBottom)
-                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollToBottom);
+            // Sending always jumps to the newest message, the way opening a
+            // conversation does; receiving only follows when the reader was
+            // already at the bottom. Gated on something actually having been
+            // appended — this method also runs for status-only and edit-only
+            // updates, and those must not move the thread.
+            var sentByUs = appended && entries.Count > 0 && !entries[^1].Incoming;
+            if (appended && (wasAtBottom || sentByUs))
+                DispatcherQueue.TryEnqueue(
+                    DispatcherQueuePriority.Low, ScrollToBottomSettled);
             else
-                // Reading back through history: the thread stays put, and the
-                // jump button is what says there is something newer below.
-                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdateJumpToLatest);
+                // Reading back through history, or nothing new to show: the
+                // thread stays put and the jump button is what says there is
+                // something newer below. A bubble that grows in place here is
+                // picked up by OnScrollContentSizeChanged.
+                DispatcherQueue.TryEnqueue(
+                    DispatcherQueuePriority.Low, UpdateJumpToLatest);
 
             // Auto-read newly-arrived incoming messages only while the window is
             // visible — messages that arrive after the user hides to tray should
@@ -414,11 +454,56 @@ public sealed partial class ChatPage : Page
         var verticalOffset = _scroll?.VerticalOffset ?? 0;
         _rows.Clear();
         for (var i = 0; i < entries.Count; i++) _rows.Add(MapEntry(entries, i));
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
         {
             _scroll?.ChangeView(null, verticalOffset, null, disableAnimation: true);
             UpdateJumpToLatest();
         });
+    }
+
+    /// Scrolls to the newest message and keeps doing so for a moment
+    /// afterwards, while the rows that triggered it finish laying out.
+    ///
+    /// A single ChangeView regularly lands short: the appended row has not
+    /// been measured yet when the merge path runs, so ScrollableHeight is
+    /// still the old one, and a bubble holding an image grows again when the
+    /// bitmap decodes. Repeating the scroll for ~0.6 s covers both without
+    /// having to know which is happening.
+    private void ScrollToBottomSettled()
+    {
+        _pinnedToBottom = true;
+        _settleTicks    = 0;
+
+        _settleTimer ??= CreateSettleTimer();
+        _settleTimer.Stop();          // restart the window from now
+        // Started before the first scroll, not after: ChangeView can raise
+        // ViewChanged synchronously, and a reading taken then — with the
+        // extent still growing — would unpin us and stop the settle on its
+        // very first tick.
+        _settleTimer.Start();
+        ScrollToBottom();
+    }
+
+    private DispatcherQueueTimer CreateSettleTimer()
+    {
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(SettleIntervalMs);
+        timer.Tick += (t, _) =>
+        {
+            if (!_pinnedToBottom || ++_settleTicks >= SettleTickCount)
+            {
+                t.Stop();
+                UpdateJumpToLatest();
+                return;
+            }
+            ScrollToBottom();
+        };
+        return timer;
+    }
+
+    private void StopSettling()
+    {
+        _settleTimer?.Stop();
     }
 
     private void ScrollToBottom()
@@ -437,6 +522,42 @@ public sealed partial class ChatPage : Page
             || (_scroll.ScrollableHeight - _scroll.VerticalOffset) < 40;
     }
 
+    private void OnScrollViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+    {
+        // A wheel or drag from the user outranks a settle in progress: they
+        // asked to be somewhere else, so stop putting them back.
+        if (e.IsIntermediate) StopSettling();
+
+        var extent = _scroll?.ExtentHeight ?? 0;
+        var grew   = extent > _lastExtentHeight + 0.5;
+        _lastExtentHeight = extent;
+
+        // Only a reading taken at rest, with the content the size it already
+        // was, gets to decide the reader has scrolled away — mid-settle, or
+        // right after a bubble grew, the extent is moving under them.
+        if (!IsSettling && !grew) _pinnedToBottom = IsScrolledToBottom();
+        UpdateJumpToLatest();
+    }
+
+    private void OnScrollContentSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.NewSize.Height <= e.PreviousSize.Height + 0.5) return;
+        _lastExtentHeight = _scroll?.ExtentHeight ?? _lastExtentHeight;
+        if (!_pinnedToBottom || IsSettling) return;
+        DispatcherQueue.TryEnqueue(
+            DispatcherQueuePriority.Low, ScrollToBottomSettled);
+    }
+
+    /// Called when the window comes back from the tray or a minimize. The
+    /// page is never unloaded in either case, so nothing else re-runs the
+    /// "open a conversation, land on the newest message" step.
+    public void OnWindowShown()
+    {
+        if (!_pinnedToBottom) return;
+        DispatcherQueue.TryEnqueue(
+            DispatcherQueuePriority.Low, ScrollToBottomSettled);
+    }
+
     // ── Jump to latest ───────────────────────────────────────────────────────
 
     /// Shows the floating jump button exactly while the newest message is out of
@@ -445,11 +566,13 @@ public sealed partial class ChatPage : Page
     /// calls this too.
     private void UpdateJumpToLatest()
     {
-        var show = _rows.Count > 0 && !IsScrolledToBottom();
+        // Hidden while a scroll is settling too: the extent is mid-flight
+        // there and would flash the button on for a frame or two.
+        var show = _rows.Count > 0 && !IsSettling && !IsScrolledToBottom();
         JumpToLatestBtn.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void JumpToLatestBtn_Click(object sender, RoutedEventArgs e) => ScrollToBottom();
+    private void JumpToLatestBtn_Click(object sender, RoutedEventArgs e) => ScrollToBottomSettled();
 
     private static bool SameMessage(MessageRowViewModel row, MessageEntry entry)
     {

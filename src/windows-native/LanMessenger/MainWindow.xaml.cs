@@ -242,6 +242,9 @@ public sealed partial class MainWindow : Window
             // Catch up on any unread messages that arrived while minimized.
             if (nowVisible && Model.SelectedPeerIP is not null)
                 Model.MarkConversationRead(Model.SelectedPeerIP);
+            // …and land on them. The page is never unloaded while minimized,
+            // so nothing else re-runs the scroll.
+            if (nowVisible) _chatPage?.OnWindowShown();
         }
     }
 
@@ -282,6 +285,9 @@ public sealed partial class MainWindow : Window
         Model.IsWindowVisible = true;
         if (Model.SelectedPeerIP is not null)
             Model.MarkConversationRead(Model.SelectedPeerIP);
+        // Messages that arrived while hidden are below the fold; put the
+        // thread back on the newest one.
+        _chatPage?.OnWindowShown();
     }
 
     private void QuitFromTray()

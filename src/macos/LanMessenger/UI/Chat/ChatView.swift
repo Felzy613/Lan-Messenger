@@ -19,10 +19,28 @@ struct ChatView: View {
     /// distance still to scroll is `contentBottom - viewportHeight`.
     @State private var contentBottom: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
+    /// Height of the message content itself, independent of where the thread
+    /// is scrolled. `contentBottom` conflates the two, so this is what tells
+    /// a bubble growing apart from the reader scrolling away from it.
+    @State private var contentHeight: CGFloat = 0
+    /// Whether the thread is following new content down. Latched rather than
+    /// recomputed on the spot: geometry taken mid-scroll reads as "adrift",
+    /// and acting on that reading is how a thread stops following at all.
+    @State private var pinnedToBottom = true
+    /// True from the moment a scroll-to-bottom is asked for until the repeats
+    /// below have run. Geometry arriving in that window is in flight and must
+    /// not unpin us, and the jump button must not flash.
+    @State private var isSettling = false
+    @State private var settleUntil: Date = .distantPast
 
     /// Slack enough that resting at the bottom still counts as "at the bottom"
     /// after a bubble's height settles. Matches the Windows threshold.
     private static let atBottomSlack: CGFloat = 40
+    /// A scroll-to-bottom is repeated at these offsets (seconds) rather than
+    /// performed once. SwiftUI has not laid the new row out when the change
+    /// fires, so a single `scrollTo` lands on the *old* bottom and leaves the
+    /// message that caused it just off screen.
+    private static let settleDelays: [TimeInterval] = [0.0, 0.05, 0.15, 0.35, 0.6]
     private static let scrollSpace = "chatScroll"
     /// Identity of the row that always sits at the very end of the thread —
     /// the typing bubble when the peer is typing, a zero-height placeholder
@@ -31,6 +49,7 @@ struct ChatView: View {
 
     private var distanceFromBottom: CGFloat { max(0, contentBottom - viewportHeight) }
     private var isNearBottom: Bool { distanceFromBottom < Self.atBottomSlack }
+    private var showJumpButton: Bool { !isNearBottom && !isSettling }
 
     private var conv: ConversationViewModel? {
         model.conversations.first { $0.peerIP == peerIP }
@@ -176,73 +195,92 @@ struct ChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                // Use VStack (not LazyVStack) because history is capped at 200 messages.
-                // LazyVStack + proxy.scrollTo() forces SwiftUI to materialise and measure
-                // every cell to compute the scroll destination, defeating lazy loading and
-                // causing the main-thread hang observed in the hang reports.  A plain VStack
-                // renders all rows once up-front, which is cheap for ≤200 messages and
-                // eliminates the DynamicContainerInfo layout-cycle that LazyVStack triggers
-                // when many MediaBubbleView tasks complete concurrently.
-                VStack(spacing: 2) {
-                    ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
-                        let prevIncoming = idx > 0 ? entries[idx - 1].incoming : !entry.incoming
-                        MessageBubbleView(
-                            entry: entry,
-                            isFirstInRun: entry.incoming != prevIncoming,
-                            onReply: { withAnimation { editTarget = nil; replyTarget = entry } },
-                            onTapReplyTarget: {
-                                guard let targetId = entry.replyToMessageId,
-                                      let match = entries.first(where: { $0.messageId == targetId }) else { return }
-                                withAnimation { proxy.scrollTo(match.id, anchor: .center) }
-                                scrollHighlightID = match.id
-                            },
-                            replyFilePath: resolvedReplyFilePath(for: entry),
-                            onDelete: { forEveryone in
-                                model.deleteMessage(entry, peerIP: peerIP, forEveryone: forEveryone)
-                            },
-                            onEdit: { withAnimation { replyTarget = nil; editTarget = entry } }
-                        )
-                        .id(entry.id)
-                        .background(
-                            scrollHighlightID == entry.id
-                            ? Theme.accent.opacity(0.10)
-                            : Color.clear
+                // Zero spacing so the sentinels below sit exactly on the content
+                // edges; the implicit container's default spacing would otherwise
+                // land the scroll a stray few points short of the bottom.
+                VStack(spacing: 0) {
+                    // Top edge of the content, in the scroll view's own coordinate
+                    // space. Paired with the bottom sentinel it gives the content
+                    // height, and both arrive in one preference so the two can
+                    // never be read from different layout passes — see
+                    // `onPreferenceChange` below.
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ScrollGeometryKey.self,
+                            value: ScrollGeometry(top: geo.frame(in: .named(Self.scrollSpace)).minY)
                         )
                     }
+                    .frame(height: 0)
 
-                    // The typing bubble is the last row of the thread, where
-                    // the peer's message is about to appear. The wrapper is
-                    // always in the layout — zero-height when nobody is typing
-                    // — so `threadEndID` is a stable scroll target and the
-                    // insertion animates on its own without putting an
-                    // .animation() over the whole message list.
-                    VStack(spacing: 0) {
-                        if peerIsTyping {
-                            TypingBubbleView(peerName: peerName)
-                                .transition(.opacity)
+                    // Use VStack (not LazyVStack) because history is capped at 200 messages.
+                    // LazyVStack + proxy.scrollTo() forces SwiftUI to materialise and measure
+                    // every cell to compute the scroll destination, defeating lazy loading and
+                    // causing the main-thread hang observed in the hang reports.  A plain VStack
+                    // renders all rows once up-front, which is cheap for ≤200 messages and
+                    // eliminates the DynamicContainerInfo layout-cycle that LazyVStack triggers
+                    // when many MediaBubbleView tasks complete concurrently.
+                    VStack(spacing: 2) {
+                        ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
+                            let prevIncoming = idx > 0 ? entries[idx - 1].incoming : !entry.incoming
+                            MessageBubbleView(
+                                entry: entry,
+                                isFirstInRun: entry.incoming != prevIncoming,
+                                onReply: { withAnimation { editTarget = nil; replyTarget = entry } },
+                                onTapReplyTarget: {
+                                    guard let targetId = entry.replyToMessageId,
+                                          let match = entries.first(where: { $0.messageId == targetId }) else { return }
+                                    withAnimation { proxy.scrollTo(match.id, anchor: .center) }
+                                    scrollHighlightID = match.id
+                                },
+                                replyFilePath: resolvedReplyFilePath(for: entry),
+                                onDelete: { forEveryone in
+                                    model.deleteMessage(entry, peerIP: peerIP, forEveryone: forEveryone)
+                                },
+                                onEdit: { withAnimation { replyTarget = nil; editTarget = entry } }
+                            )
+                            .id(entry.id)
+                            .background(
+                                scrollHighlightID == entry.id
+                                ? Theme.accent.opacity(0.10)
+                                : Color.clear
+                            )
                         }
+
+                        // The typing bubble is the last row of the thread, where
+                        // the peer's message is about to appear. The wrapper is
+                        // always in the layout — zero-height when nobody is typing
+                        // — so `threadEndID` is a stable scroll target and the
+                        // insertion animates on its own without putting an
+                        // .animation() over the whole message list.
+                        VStack(spacing: 0) {
+                            if peerIsTyping {
+                                TypingBubbleView(peerName: peerName)
+                                    .transition(.opacity)
+                            }
+                        }
+                        .id(Self.threadEndID)
+                        .animation(.easeInOut(duration: 0.18), value: peerIsTyping)
                     }
-                    .id(Self.threadEndID)
-                    .animation(.easeInOut(duration: 0.18), value: peerIsTyping)
+                    .padding(.vertical, 12)
+
+                    // Bottom edge of the content: its maxY in the scroll view's own
+                    // coordinate space is where the bottom of the thread currently
+                    // sits. Subtracting the viewport height gives the distance still
+                    // to scroll, which is what drives both the jump button and the
+                    // "don't yank the reader" check below.
+                    //
+                    // Both sentinels have to be real siblings of the content, not
+                    // .background() on it: preferences raised inside a background
+                    // subtree never reach .onPreferenceChange here (verified on
+                    // macOS 13/14 — the value stays at the default forever).
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ScrollGeometryKey.self,
+                            value: ScrollGeometry(bottom: geo.frame(in: .named(Self.scrollSpace)).maxY)
+                        )
+                    }
+                    .frame(height: 0)
                 }
-                .padding(.vertical, 12)
-                // Zero-height sentinel pinned to the end of the thread: its maxY
-                // in the scroll view's own coordinate space is where the bottom
-                // of the content currently sits. Subtracting the viewport height
-                // gives the distance still to scroll, which is what drives both
-                // the jump button and the "don't yank the reader" check below.
-                //
-                // It has to be a real sibling of the content, not a .background()
-                // on it: preferences raised inside a background subtree never
-                // reach .onPreferenceChange here (verified on macOS 13/14 — the
-                // value stays at the default forever).
-                GeometryReader { geo in
-                    Color.clear.preference(
-                        key: ContentBottomKey.self,
-                        value: geo.frame(in: .named(Self.scrollSpace)).maxY
-                    )
-                }
-                .frame(height: 0)
             }
             .coordinateSpace(name: Self.scrollSpace)
             // Viewport height, read straight out of the geometry rather than
@@ -254,11 +292,36 @@ struct ChatView: View {
                         .onChange(of: geo.size.height) { viewportHeight = $0 }
                 }
             )
-            .onPreferenceChange(ContentBottomKey.self) { contentBottom = $0 }
-            .overlay(alignment: .bottomTrailing) {
-                jumpToLatestButton { scrollToBottom(proxy: proxy, animated: true) }
+            .onPreferenceChange(ScrollGeometryKey.self) { geometry in
+                guard let top = geometry.top, let bottom = geometry.bottom else { return }
+                let newHeight = bottom - top
+                let grew = newHeight > contentHeight + 0.5
+                contentHeight = newHeight
+                contentBottom = bottom
+
+                if grew, pinnedToBottom {
+                    // A bubble settled — a thumbnail finished decoding, a line
+                    // rewrapped — and pushed the newest message below the fold.
+                    // Follow it down, off this layout pass: scrolling from
+                    // inside one re-enters layout and SwiftUI complains about
+                    // state written during a view update.
+                    //
+                    // Growth must be handled here rather than unpinning: the
+                    // reading that arrives with it says we are adrift by
+                    // exactly the amount the content just grew, and acting on
+                    // that is how the thread stops following at all.
+                    DispatchQueue.main.async { pinToBottom(proxy: proxy, animated: false) }
+                } else if !isSettling, !grew {
+                    // Only a reading taken at rest, with the content the size
+                    // it already was, gets to decide the reader has scrolled
+                    // away.
+                    pinnedToBottom = max(0, bottom - viewportHeight) < Self.atBottomSlack
+                }
             }
-            .onAppear { scrollToBottom(proxy: proxy, animated: false) }
+            .overlay(alignment: .bottomTrailing) {
+                jumpToLatestButton { pinToBottom(proxy: proxy, animated: true) }
+            }
+            .onAppear { pinToBottom(proxy: proxy, animated: false) }
             .onChange(of: entries.count) { _ in
                 // Sending always jumps to the newest message. Receiving only
                 // does when the newest message is already on screen — otherwise
@@ -266,16 +329,23 @@ struct ChatView: View {
                 // reading back through history. The jump button is how they get
                 // back down.
                 let outgoing = entries.last.map { !$0.incoming } ?? false
-                if outgoing || isNearBottom {
-                    scrollToBottom(proxy: proxy, animated: true)
+                if outgoing || pinnedToBottom {
+                    pinToBottom(proxy: proxy, animated: true)
                 }
             }
             .onChange(of: peerIsTyping) { nowTyping in
                 // Same rule as an arriving message: follow the thread down only
-                // when the reader is already at the bottom. Deferred a runloop
-                // because the bubble has not been laid out yet at this point.
-                guard nowTyping, isNearBottom else { return }
-                DispatchQueue.main.async { scrollToBottom(proxy: proxy, animated: true) }
+                // when the reader is already at the bottom.
+                guard nowTyping, pinnedToBottom else { return }
+                pinToBottom(proxy: proxy, animated: true)
+            }
+            .onChange(of: controlActiveState) { state in
+                // Re-showing the window — from the tray, the Dock, or a
+                // deminiaturize — re-activates the scene without re-running
+                // onAppear, and the thread is left wherever the geometry was
+                // when it went away. Land on the newest message again.
+                guard state != .inactive, pinnedToBottom else { return }
+                pinToBottom(proxy: proxy, animated: false)
             }
             .onChange(of: scrollHighlightID) { newValue in
                 guard newValue != nil else { return }
@@ -305,11 +375,36 @@ struct ChatView: View {
         .help("Jump to latest")
         .padding(.trailing, 18)
         .padding(.bottom, 10)
-        .opacity(isNearBottom ? 0 : 1)
+        // Hidden while a scroll is settling too: the geometry is mid-flight
+        // there and would flash the button on for a frame or two.
+        .opacity(showJumpButton ? 1 : 0)
         // Kept in the layout but inert when hidden, so a fade-out never eats a
         // click aimed at the bubble underneath it.
-        .allowsHitTesting(!isNearBottom)
-        .animation(.easeInOut(duration: 0.15), value: isNearBottom)
+        .allowsHitTesting(showJumpButton)
+        .animation(.easeInOut(duration: 0.15), value: showJumpButton)
+    }
+
+    /// Scrolls to the newest message and keeps doing so for a moment
+    /// afterwards, while the rows that triggered it finish laying out.
+    private func pinToBottom(proxy: ScrollViewProxy, animated: Bool) {
+        pinnedToBottom = true
+        isSettling = true
+        let deadline = Date().addingTimeInterval(Self.settleDelays.last ?? 0)
+        settleUntil = deadline
+
+        scrollToBottom(proxy: proxy, animated: animated)
+        for delay in Self.settleDelays.dropFirst() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                // A later pin supersedes this schedule; its own repeats cover
+                // the rest of the window.
+                guard settleUntil <= deadline else { return }
+                scrollToBottom(proxy: proxy, animated: false)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (Self.settleDelays.last ?? 0) + 0.05) {
+            guard settleUntil <= deadline else { return }
+            isSettling = false
+        }
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
@@ -405,10 +500,24 @@ struct ChatView: View {
 
 // MARK: - Scroll geometry
 
-/// Bottom edge of the thread's content, measured in the scroll view's own
-/// coordinate space: roughly the viewport height when the newest message is
-/// fully on screen, larger by the remaining scroll distance otherwise.
-private struct ContentBottomKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+/// Both edges of the thread's content, measured in the scroll view's own
+/// coordinate space. `bottom` is roughly the viewport height when the newest
+/// message is fully on screen and larger by the remaining scroll distance
+/// otherwise; `bottom - top` is the content height.
+///
+/// They travel as one value on purpose. Read through separate callbacks, the
+/// distance-to-bottom can arrive before the height it belongs to, and a thread
+/// that grew looks exactly like a thread the reader scrolled away from.
+private struct ScrollGeometry: Equatable {
+    var top: CGFloat?
+    var bottom: CGFloat?
+}
+
+private struct ScrollGeometryKey: PreferenceKey {
+    static var defaultValue = ScrollGeometry()
+    static func reduce(value: inout ScrollGeometry, nextValue: () -> ScrollGeometry) {
+        let next = nextValue()
+        if let top = next.top { value.top = top }
+        if let bottom = next.bottom { value.bottom = bottom }
+    }
 }
