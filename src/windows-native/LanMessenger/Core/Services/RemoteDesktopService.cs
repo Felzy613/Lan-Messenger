@@ -1,3 +1,4 @@
+using LanMessenger.Core.Crypto;
 using LanMessenger.Core.Networking.Media;
 using LanMessenger.Core.Protocol;
 using System.Net.Sockets;

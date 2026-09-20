@@ -1,9 +1,11 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using LanMessenger.Core.Crypto;
 using LanMessenger.Core.Networking;
+using LanMessenger.Core.Networking.Media;
 using LanMessenger.Core.Persistence;
 using LanMessenger.Core.Protocol;
 using LanMessenger.Core.Services;
+using LanMessenger.UI.RemoteDesktop;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 
@@ -146,9 +148,59 @@ public sealed partial class AppModel : ObservableObject
 
     // MARK: - Start
 
+    /// <summary>The invite exchange, built from this model's own dependencies.</summary>
+    /// <remarks>
+    /// Lives here rather than on RemoteDesktopService because it needs the
+    /// consent prompt, the peer list and the session; the service stays free of
+    /// all three so AttachInbound can keep running on the socket thread.
+    /// </remarks>
+    public RemoteInviteCoordinator InviteCoordinator => _inviteCoordinator ??= BuildInviteCoordinator();
+    private RemoteInviteCoordinator? _inviteCoordinator;
+
+    [ObservableProperty] private string? _remoteInviteStatus;
+
+    private RemoteInviteCoordinator BuildInviteCoordinator()
+    {
+        var coordinator = new RemoteInviteCoordinator(new RemoteInviteEnvironment
+        {
+            Send = (frame, ip) => Coordinator.Send(frame, ip),
+            AttachOutbound = (ip, frame) => Coordinator.AttachOutbound(ip, frame),
+            OwnPublicKeyB64 = () => KeyManager.Shared.PublicKeyB64,
+            OwnUsername = () => ConfigStore.Shared.Config.Username,
+            PrivateKey = () => KeyManager.Shared.PrivateKey,
+            Mode = () => ConfigStore.Shared.Config.RemoteDesktopMode,
+            // KnownContact is the policy layer's own shape, deliberately
+            // narrower than the stored one: it carries the three fields the
+            // trust decision uses and nothing a photo or a relay id could
+            // influence.
+            Contacts = () => ConfigStore.Shared.Config.Contacts
+                .Select(c => new KnownContact(c.PublicKeyB64, c.Username, c.LastIP))
+                .ToList(),
+            HasLiveSession = () => RemoteDesktopController.Shared.IsRunning,
+            Registry = () => RemoteDesktopService.Shared.Registry,
+            PresentConsent = (request, onOutcome) =>
+                RemoteDesktopController.Shared.PresentConsent(_dq, request, onOutcome),
+            StartViewing = (peerName, peerIP, channel) =>
+                RemoteDesktopController.Shared.StartViewing(
+                    _dq, peerName, peerIP, (RemoteAttachedChannel)channel),
+            ArmHosting = (sessionId, peerName, peerIP) =>
+                RemoteDesktopController.Shared.ArmHosting(sessionId, peerName, peerIP),
+        });
+        coordinator.OnStateChange = message =>
+            _dq.TryEnqueue(() => RemoteInviteStatus = string.IsNullOrEmpty(message) ? null : message);
+        return coordinator;
+    }
+
     private void Start()
     {
         CryptoRuntimeDiagnostics.LogOnce();
+
+        // The transport service is reachable from the socket thread and knows
+        // nothing about consent or the interface; these two hooks are how the
+        // exchange and the session reach back into the model.
+        RemoteDesktopService.Shared.Invites = InviteCoordinator;
+        RemoteDesktopService.Shared.OnHostAttached = (sessionId, media) =>
+            RemoteDesktopController.Shared.BeginHosting(_dq, sessionId, media);
 
         // First launch: replace the bare "User" default with the OS account
         // name so peers immediately see something meaningful instead of "User".

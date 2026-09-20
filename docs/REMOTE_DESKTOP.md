@@ -64,7 +64,7 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS5 | Decode + present, both platforms | **Both done and verified on hardware** — Windows self-view measured 2026-09-18 | no |
 | WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
 | WS7 | Input capture + injection | **Geometry done**, both platforms; injection and key tables not started | yes, both |
-| WS8 | Session lifecycle + consent UI | **Done on macOS**; control channel done both platforms; reconnect remains | no (UI work) |
+| WS8 | Consent, indicator, kill switch, invite exchange | **Done on both platforms** — the exchange landed 2026-09-19; not yet run between two machines | yes, a two-machine session |
 | WS9 | Settings, logging, diagnostics | **Done** — log channel, stats contents, and the settings toggle on both platforms | no |
 | WS10 | Latency tuning | **Not started** | yes |
 | WS11 | Packaging, docs, CI | **`dpiAwareness` done**, and the app builds with it; Vortice refs and the SDK decision wait on WS4b | no |
