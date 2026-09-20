@@ -1341,6 +1341,37 @@ platform auto-repeats synthetic key-down events, so a host that waits for
 repeats it will never generate produces a single character where the user held
 a key down.
 
+#### Record Layout
+
+Every record is `[1 byte type][payload]`, big-endian like the rest of the
+protocol. Records are fixed-shape so a host can reject a malformed one on length
+alone, before interpreting anything a viewer sent.
+
+| type | name             | payload                                                     | total |
+|------|------------------|-------------------------------------------------------------|-------|
+| 0x01 | `pointer_move`   | `f32 x`, `f32 y`                                              | 9     |
+| 0x02 | `pointer_button` | `u8 button`, `u8 down`, `f32 x`, `f32 y`                      | 11    |
+| 0x03 | `pointer_scroll` | `f32 dx`, `f32 dy`, `f32 x`, `f32 y`                          | 17    |
+| 0x04 | `key`            | `u16 usage`, `u8 down`, `u8 repeat`, `u16 modifiers`          | 7     |
+| 0x05 | `text`           | `u16 byteCount`, UTF-8 bytes                                  | 3+n   |
+
+- Floats are IEEE-754 binary32. `x` and `y` are normalized to the **video
+  surface**, and a host clamps them to `[0,1]` rather than trusting them: they
+  arrive from a peer, and a coordinate outside the surface is the cheapest way
+  to try to drive something that is not being shared.
+- `button` is `0` left, `1` right, `2` middle. Higher values are reserved and a
+  host ignores records naming them.
+- `usage` is a USB HID usage on page `0x07`. Never a character, never a platform
+  virtual key code.
+- `modifiers` is a bitmask: `0x01` shift, `0x02` control, `0x04` alt/option,
+  `0x08` meta (Command/Windows), `0x10` caps lock. Unknown bits are ignored.
+- `text` carries at most 1024 bytes. Longer strings are split by the viewer.
+- Scroll deltas are in lines, not pixels or device units, and a host clamps them.
+
+A record whose length does not match its type exactly is dropped and the rest of
+the frame with it — a partial record cannot be safely resynchronized, and the
+next frame arrives in milliseconds.
+
 Some combinations can never be captured by the viewer because its own operating
 system consumes them first — Cmd+Tab, Cmd+Space, Ctrl+Alt+Del, Win+L. These are
 sent explicitly from a "send special keys" menu rather than forwarded, and the
