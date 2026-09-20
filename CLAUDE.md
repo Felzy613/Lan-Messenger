@@ -777,9 +777,43 @@ Use the smallest sufficient set for the change:
 - Do not raise a SwiftUI preference from inside a `.background()` or
   `.overlay()` subtree and expect `onPreferenceChange` to see it. On macOS 13/14
   the value stays at its default forever, silently. `ChatView`'s scroll geometry
-  depends on this: the content-bottom sentinel is a real sibling inside the
+  depends on this: the content-edge sentinels are real siblings inside the
   `ScrollView`, and the viewport height is written from `onAppear`/`onChange`
   rather than through a second preference key.
+- Do not scroll a thread to the bottom exactly once and assume it landed. The
+  new row has not been laid out when the "a message arrived" callback runs, so
+  the scroll hits the *old* bottom, and a media bubble grows again hundreds of
+  milliseconds later when its thumbnail decodes. Both platforms repeat the
+  scroll for ~0.6 s (`ChatView.pinToBottom`, `ChatPage.ScrollToBottomSettled`)
+  and separately follow content growth while pinned.
+- Do not decide "is the reader at the bottom?" by measuring at the moment of
+  the event. Measured mid-settle, or in the same pass as content that just
+  grew, the reading is "adrift by exactly what changed" — the thread unpins
+  itself and then never follows another message. Keep the latched
+  `pinnedToBottom` / `_pinnedToBottom` flag and only let a reading taken at
+  rest, with the content the size it already was, clear it. On macOS this is
+  why both content edges travel in ONE `ScrollGeometryKey` preference: split
+  across two callbacks, the distance can arrive before the height it belongs
+  to, and growth becomes indistinguishable from a user scrolling away.
+- Do not order the updater's release feed by publish date or tag style. Both
+  pickers sort by semantic version descending and use "combined first, then
+  newest published" only as a tiebreak *within* one version. A combined release
+  exists only once both platforms have published, so a date-ordered,
+  combined-first scan prefers an older combined release over a newer
+  `windows-v`/`macos-v` pre-release and reports "up to date" with a newer
+  installer sitting in the feed. Windows shipped that bug until 2026-09-19.
+- Do not let one platform's tag be read as the other's version. The platforms
+  version independently, so `extractVersion`/`ExtractVersion` return "" for a
+  tag naming only the other side — otherwise `macos-v1.9.0` reads as Windows
+  1.9.0 and its changelog appears in the Windows update panel under a version
+  Windows never had. Covered by `UpdateNotesTests`.
+- Do not show only the newest release's notes when an update skips versions.
+  A user several builds behind gets one release's changelog and no sign the
+  others existed. `mergedReleaseNotes`/`MergedReleaseNotes` merge every release
+  above the installed version and at or below the offered one, de-duplicated
+  (each build appears as both a platform pre-release and a combined release).
+  The upper bound is not optional: without it the panel advertises changes the
+  download does not contain. Covered by `UpdateNotesTests`.
 - Do not shrink the attachment drop target back to the composer strip, and keep
   every attachment route (picker, screenshot, drop, paste, drag-out) converging
   on `sendFile`/`SendFile` so queueing, offline persistence, and history stay

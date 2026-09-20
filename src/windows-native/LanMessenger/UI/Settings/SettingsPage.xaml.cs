@@ -76,15 +76,18 @@ public sealed partial class SettingsPage : Page
         UpdateAvailableText.Text  = $"Version {info.Version} available";
 
         // Populate the RichTextBlock with Markdown-rendered release notes.
+        // Info.Notes arrives ready to render: UpdateService has already
+        // stripped the release-page sections and merged every version between
+        // the installed build and the offered one, so there is nothing to trim
+        // here.
         if (!string.IsNullOrWhiteSpace(info.Notes))
         {
-            var trimmed = MarkdownHelper.TrimNotes(info.Notes);
-            MarkdownHelper.PopulateBlocks(UpdateNotesBlock, trimmed);
+            MarkdownHelper.PopulateBlocks(UpdateNotesBlock, info.Notes);
             UpdateNotesScroll.Visibility = Visibility.Visible;
             _notesExpanded = false;
             UpdateNotesScroll.MaxHeight = 120;
 
-            var isLong = trimmed.Split('\n').Length > 8;
+            var isLong = info.Notes.Split('\n').Length > 8;
             NotesToggleBtn.Visibility = isLong ? Visibility.Visible : Visibility.Collapsed;
             NotesToggleBtn.Content    = "Show more";
         }

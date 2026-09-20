@@ -66,7 +66,11 @@ final class UpdateService {
     func check(repo: String) async -> UpdateCheckResult {
         let trimmed = repo.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              let url = URL(string: "https://api.github.com/repos/\(trimmed)/releases") else {
+              // per_page=100 rather than GitHub's default 30: every version
+              // ships as up to three releases (macos-v, windows-v, combined),
+              // so 30 is only ~10 versions of history — not enough to merge
+              // the changelog for someone a long way behind.
+              let url = URL(string: "https://api.github.com/repos/\(trimmed)/releases?per_page=100") else {
             return .error("Invalid update repo")
         }
 
@@ -263,7 +267,17 @@ final class UpdateService {
             )
 
             let size = (asset["size"] as? Int64) ?? (asset["size"] as? Int).map(Int64.init) ?? 0
-            let notes = (release["body"] as? String) ?? ""
+            // Every release between what is installed and what is being
+            // offered, not just the newest one's body — see
+            // `mergedReleaseNotes`.
+            let notes = Self.mergedReleaseNotes(
+                from: sorted.map { candidate in
+                    (version: Self.extractVersion(fromTag: (candidate["tag_name"] as? String) ?? ""),
+                     body: (candidate["body"] as? String) ?? "")
+                },
+                after: Self.appVersion,
+                through: version
+            )
             return (UpdateInfo(
                 version: version,
                 notes: notes,
@@ -293,14 +307,98 @@ final class UpdateService {
         return nil
     }
 
+    // MARK: - Release notes
+
+    /// Strips the parts of a GitHub release body that belong on the release
+    /// page rather than in an in-app changelog: everything from the first
+    /// `---` rule or a `## Downloads` / `## Install` heading, plus a leading
+    /// `## What's New` heading (combined releases carry one, per-platform
+    /// pre-releases do not, and the panel already names the version).
+    static func stripReleasePageSections(_ raw: String) -> String {
+        var result: [String] = []
+        for line in raw.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t == "---" || t.hasPrefix("## Downloads") || t.hasPrefix("## Install") {
+                break
+            }
+            if result.isEmpty {
+                if t.isEmpty { continue }
+                if t.lowercased().hasPrefix("## what's new") { continue }
+            }
+            result.append(line)
+        }
+        while result.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            result.removeLast()
+        }
+        return result.joined(separator: "\n")
+    }
+
+    /// Changelog for an update, covering *every* release between the running
+    /// version and the one being offered — newest first, each under its own
+    /// `## Version X.Y.Z` heading.
+    ///
+    /// Skipping releases is the ordinary case: anyone who has not opened the
+    /// app for a week is several versions behind. Showing only the newest
+    /// release's body hid every change made in between, so "what am I about to
+    /// install" was only ever answered for the last hop.
+    ///
+    /// `releases` may list the same version twice — a per-platform pre-release
+    /// and the combined release carry the same build — so versions are
+    /// de-duplicated and the caller's ordering decides which body wins. A
+    /// release whose body is empty after stripping loses to the duplicate that
+    /// still has content.
+    static func mergedReleaseNotes(
+        from releases: [(version: String, body: String)],
+        after currentVersion: String,
+        through targetVersion: String
+    ) -> String {
+        // Stable version-descending order. `sorted(by:)` is not guaranteed
+        // stable in Swift, so the original index is the explicit tiebreak.
+        let candidates = releases.enumerated()
+            .filter { _, release in
+                !release.version.isEmpty
+                    && compareVersions(release.version, currentVersion) > 0
+                    && compareVersions(release.version, targetVersion) <= 0
+            }
+            .sorted { a, b in
+                let cmp = compareVersions(a.element.version, b.element.version)
+                return cmp != 0 ? cmp > 0 : a.offset < b.offset
+            }
+
+        var sections: [(version: String, body: String)] = []
+        var seen = Set<String>()
+        for (_, release) in candidates {
+            guard !seen.contains(release.version) else { continue }
+            let body = stripReleasePageSections(release.body)
+            guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            seen.insert(release.version)
+            sections.append((release.version, body))
+        }
+
+        // One hop reads better without a heading repeating what the panel
+        // already says; two or more need to be told apart.
+        if sections.count <= 1 { return sections.first?.body ?? "" }
+        return sections
+            .map { "## Version \($0.version)\n\n\($0.body)" }
+            .joined(separator: "\n\n")
+    }
+
     // MARK: - Helpers
 
-    // Extracts X.Y.Z from "macos-vX.Y.Z" or "release-winA.B.C-macX.Y.Z".
+    // Extracts the macOS X.Y.Z from "macos-vX.Y.Z" or
+    // "release-winA.B.C-macX.Y.Z", and "" from a tag that names only Windows.
+    //
+    // The Windows-only rejection matters because the two platforms version
+    // independently: without it "windows-v1.9.0" reads as macOS 1.9.0, and
+    // that release's changelog lands in the macOS update panel under a version
+    // macOS never had.
     static func extractVersion(fromTag tag: String) -> String {
         if let r = tag.range(of: "mac", options: [.caseInsensitive]) {
             let after = String(tag[r.upperBound...]).drop(while: { !$0.isNumber })
             let chars = after.prefix { $0.isNumber || $0 == "." }
             if !chars.isEmpty { return String(chars) }
+        } else if tag.range(of: "win", options: [.caseInsensitive]) != nil {
+            return ""
         }
         let chars = tag.drop(while: { !$0.isNumber }).prefix { $0.isNumber || $0 == "." }
         return String(chars)

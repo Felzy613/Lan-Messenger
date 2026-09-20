@@ -6,6 +6,8 @@ sessions and should stay aligned with the current native app tree.
 - [Windows reliability + UI audit](windows-reliability-audit.md) — 2026-07-01 full Windows audit: TCP retry + heartbeat-driven pending redelivery, probe-reply-before-dedup presence fix, timer crash shields, atomic history/config saves, dark mode + Fluent icons.
 - [macOS reliability fixes](macos-reliability-fixes.md) — 2026-07-01 ported the Windows audit's macOS-side bugs: presence probe-reply-before-dedup, message dedup + pending in-flight guard, TCP accept-loop spin, dead discovery unicast hints, file-retry cooldown. Also documents a local Keychain test hang (not a code bug — skip that one test on this dev machine).
 
+- [Thread scroll reliability and merged release notes](thread-scroll-and-merged-release-notes.md) — 2026-09-19: latched pinnedToBottom + settle repeats so the thread actually lands on the newest message, and the update panel now merges every skipped version's changelog.
+
 - [Relay system audit & hardening](relay-system-audit.md) — Relay bugs fixed 2026-05-29 (delivery-mode tracking, offline-only gating, synthetic IP migration) and 2026-07-02 (confirmed-store-before-badge, global message-id dedup, durable outbox retry).
 
 - [Remote desktop](remote-desktop.md) — working notes for the unreleased

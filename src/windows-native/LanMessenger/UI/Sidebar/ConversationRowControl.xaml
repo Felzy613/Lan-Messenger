@@ -49,7 +49,7 @@
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                        HorizontalAlignment="Right" />
             <Border x:Name="UnreadBadge"
-                    Background="{ThemeResource AccentFillColorDefaultBrush}"
+                    Background="{StaticResource AppAccentBrush}"
                     CornerRadius="10"
                     MinWidth="20" Height="20"
                     Padding="4,0"

@@ -517,29 +517,60 @@ Conversation rows are created from saved contacts or existing history.
 Both platforms follow the same rule, so a conversation behaves identically on
 either side:
 
-- Opening a conversation, and sending a message, always land on the newest
-  message.
+- Opening a conversation, re-showing the window, and sending a message always
+  land on the newest message.
 - An *incoming* message only scrolls the thread when the newest message is
   already on screen (within 40 pt / px of the bottom). Someone reading back
   through history is never yanked away from what they are reading.
 - Whenever the newest message is off screen, a floating chevron button appears
   over the bottom-right of the thread and jumps back to it.
 
+Two things make that harder than it reads, and both platforms handle them the
+same way.
+
+**One scroll is not enough.** When the "a message arrived" callback runs, the
+new row has not been laid out, so the scroll lands on the *old* bottom and
+leaves the message that caused it just off screen. Worse, a media bubble starts
+at a placeholder size and grows when its thumbnail finishes decoding, which can
+be hundreds of milliseconds later. Both platforms therefore *repeat* the scroll
+for about 0.6 s after it is asked for — macOS from
+`ChatView.pinToBottom(proxy:animated:)`, Windows from `ChatPage`'s settle
+`DispatcherQueueTimer` — and separately follow the content down whenever it
+grows while the thread is pinned.
+
+**"Am I at the bottom?" cannot be asked at any moment.** Measured while a
+scroll is settling, or in the same pass as content that just grew, the answer
+is "adrift by exactly the amount that changed" — and a thread that believes
+that stops following new messages altogether. So neither platform re-measures
+per event: each keeps a latched `pinnedToBottom` / `_pinnedToBottom` flag, set
+when the thread is scrolled to the bottom and cleared only by a reading taken
+at rest with the content at the size it already was.
+
 Windows reads the position straight off the `ListView`'s inner `ScrollViewer`
-(`ChatPage._scroll`, cached once after layout) and refreshes the button from
-`ViewChanged` plus the merge path — appending rows grows the extent without
-necessarily raising `ViewChanged`.
+(`ChatPage._scroll`, cached once after layout). `OnScrollViewChanged` compares
+`ExtentHeight` against the last one it saw to tell growth from scrolling, and
+an intermediate (drag/wheel) event cancels an in-flight settle so the reader
+always wins. Content growth that raises no `ViewChanged` at all arrives as
+`SizeChanged` on the scroll viewer's content.
 
 macOS has to measure it. SwiftUI exposes no scroll offset for a `ScrollView`
 before macOS 15, so `ChatView` reads the viewport height from a `GeometryReader`
-in the scroll view's `.background` and the content's bottom edge from a
-zero-height `GeometryReader` pinned after the message `VStack`, reported through
-`ContentBottomKey` in a named coordinate space; the distance still to scroll is
-the difference. The sentinel has to be a real sibling of the content: a
-preference raised inside a `.background()` subtree never reaches
-`onPreferenceChange` (verified on macOS 13/14 — the value sits at its default
-forever), which is also why the viewport height is written from `onAppear` /
-`onChange` rather than through a second preference key.
+in the scroll view's `.background`, and both content edges from zero-height
+`GeometryReader` sentinels placed before and after the message `VStack`. They
+report through a *single* `ScrollGeometryKey` preference carrying `top` and
+`bottom` together: `bottom - viewportHeight` is the distance still to scroll and
+`bottom - top` is the content height, and read through separate callbacks the
+distance can arrive before the height it belongs to — at which point growth is
+indistinguishable from the reader scrolling away. The sentinels have to be real
+siblings of the content: a preference raised inside a `.background()` subtree
+never reaches `onPreferenceChange` (verified on macOS 13/14 — the value sits at
+its default forever), which is also why the viewport height is written from
+`onAppear` / `onChange` rather than through a second preference key.
+
+Re-showing the window is its own case on both sides, because the view is never
+unloaded: macOS re-pins from `onChange(of: controlActiveState)`, Windows from
+`ChatPage.OnWindowShown()`, called by `MainWindow` on un-minimize and on restore
+from the tray.
 
 ### Typing Indicator
 
@@ -835,13 +866,58 @@ Release tags:
 - Windows platform release: `windows-vX.Y.Z`
 - combined release: `release-winX.Y.Z-macA.B.C`
 
-Updaters prefer combined releases when they include the needed asset, but they
-also search platform releases for update-channel artifacts and SHA256 sidecars.
+Both updaters pick the **highest platform version that actually ships the asset
+they need**, sorting the whole feed by semantic version descending and using
+"combined release first, then newest published" only as a tiebreak within one
+version. Tag style and publish date never outrank the version number: a
+combined release is created only once *both* platforms have published, so
+between a platform build and its combined release an older combined release
+still carrying the right asset would otherwise be preferred and the updater
+would report "up to date" with a newer installer sitting in the feed.
+
+Sidecars are searched across every release, because the public combined release
+intentionally ships only the bare installer.
+
+Version numbers are read from the tag per platform — `macos-vX.Y.Z` and the
+`mac…` half of a combined tag on macOS, `windows-vX.Y.Z` and the `win…` half on
+Windows — and a tag naming only the *other* platform yields no version at all.
+The two platforms version independently, so without that rejection a
+`macos-v1.9.0` release reads as Windows 1.9.0 and its changelog lands in the
+Windows update panel under a version Windows never had.
+
+### Release Notes Shown In App
+
+The "what you are about to install" panel shows **every** release between the
+running build and the one being offered, not just the newest one's body.
+Skipping versions is the ordinary case — anyone who has not opened the app for
+a week is several releases behind — and showing only the last hop hid every
+change made in between.
+
+`UpdateService.mergedReleaseNotes` (macOS) / `UpdateService.MergedReleaseNotes`
+(Windows) build it from the release feed the updater already fetched:
+
+1. Keep releases whose version is greater than the installed one and no greater
+   than the build being offered. The upper bound matters: a newer release whose
+   platform asset has not been published yet must not advertise changes the
+   download does not contain.
+2. De-duplicate by version — the same build appears twice, once as
+   `macos-vX.Y.Z` / `windows-vX.Y.Z` and once inside the combined release — and
+   prefer the first body that survives stripping, so an empty duplicate never
+   shadows the copy with content.
+3. Strip the release-page furniture from each body: everything from the first
+   `---` rule or a `## Downloads` / `## Install` heading, plus a leading
+   `## What's New` (combined releases carry one, platform pre-releases do not).
+4. Emit newest first. A single hop renders bare; two or more get a
+   `## Version X.Y.Z` heading each.
+
+The settings UIs render the result directly — `SettingsView.releaseNotesView`
+and `MarkdownHelper.PopulateBlocks` — and no longer trim anything themselves.
+Covered by `UpdateNotesTests` on both platforms.
 
 ### macOS Update Install
 
-1. Query releases.
-2. Pick macOS ZIP asset.
+1. Query releases (`per_page=100`).
+2. Pick the highest-version macOS ZIP asset.
 3. Fetch SHA256 sidecar when available.
 4. Download to app-data staging.
 5. Verify size and SHA256.
@@ -852,8 +928,8 @@ also search platform releases for update-channel artifacts and SHA256 sidecars.
 
 ### Windows Update Install
 
-1. Query releases.
-2. Pick Windows installer EXE.
+1. Query releases (`per_page=100`).
+2. Pick the highest-version Windows installer EXE.
 3. Fetch SHA256 sidecar when available.
 4. Download to app-data staging.
 5. Verify size and SHA256.

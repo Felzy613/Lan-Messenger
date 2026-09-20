@@ -67,7 +67,16 @@
                               Header="Keep running in the background when window is closed"
                               OnContent="On"
                               OffContent="Off"
-                              Toggled="CloseToTrayToggle_Toggled" />
+                              Toggled="CloseToTrayToggle_Toggled">
+                    <ToggleSwitch.Resources>
+                        <StaticResource x:Key="ToggleSwitchFillOn"              ResourceKey="AppAccentBrush"/>
+                        <StaticResource x:Key="ToggleSwitchFillOnPointerOver"   ResourceKey="AppAccentBrushPointerOver"/>
+                        <StaticResource x:Key="ToggleSwitchFillOnPressed"       ResourceKey="AppAccentBrushPressed"/>
+                        <StaticResource x:Key="ToggleSwitchStrokeOn"            ResourceKey="AppAccentBrush"/>
+                        <StaticResource x:Key="ToggleSwitchStrokeOnPointerOver" ResourceKey="AppAccentBrushPointerOver"/>
+                        <StaticResource x:Key="ToggleSwitchStrokeOnPressed"     ResourceKey="AppAccentBrushPressed"/>
+                    </ToggleSwitch.Resources>
+                </ToggleSwitch>
             </StackPanel>
 
             <!-- Logging -->
@@ -133,7 +142,16 @@
                               Header="Enable cloud relay"
                               OnContent="On"
                               OffContent="Off"
-                              Toggled="RelayEnabledToggle_Toggled" />
+                              Toggled="RelayEnabledToggle_Toggled">
+                    <ToggleSwitch.Resources>
+                        <StaticResource x:Key="ToggleSwitchFillOn"              ResourceKey="AppAccentBrush"/>
+                        <StaticResource x:Key="ToggleSwitchFillOnPointerOver"   ResourceKey="AppAccentBrushPointerOver"/>
+                        <StaticResource x:Key="ToggleSwitchFillOnPressed"       ResourceKey="AppAccentBrushPressed"/>
+                        <StaticResource x:Key="ToggleSwitchStrokeOn"            ResourceKey="AppAccentBrush"/>
+                        <StaticResource x:Key="ToggleSwitchStrokeOnPointerOver" ResourceKey="AppAccentBrushPointerOver"/>
+                        <StaticResource x:Key="ToggleSwitchStrokeOnPressed"     ResourceKey="AppAccentBrushPressed"/>
+                    </ToggleSwitch.Resources>
+                </ToggleSwitch>
                 <TextBlock Text="When enabled, messages sent to offline contacts are stored in the cloud and delivered when they reconnect. Deploy your own Cloudflare Worker (see README) and paste its URL below."
                            Style="{ThemeResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -162,7 +180,7 @@
                 </StackPanel>
 
                 <Border x:Name="UpdatePanel"
-                        BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                        BorderBrush="{StaticResource AppAccentBrush}"
                         BorderThickness="1"
                         CornerRadius="6"
                         Padding="12"
@@ -170,13 +188,21 @@
                     <StackPanel Spacing="8">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEBD3;"
-                                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                      Foreground="{StaticResource AppAccentBrush}" />
                             <TextBlock x:Name="UpdateAvailableText"
                                        Style="{ThemeResource BodyStrongTextBlockStyle}" />
                             <Button x:Name="InstallNowBtn"
                                     Content="Install &amp; Restart"
-                                    Style="{ThemeResource AccentButtonStyle}"
-                                    Click="InstallNow_Click" />
+                                    Background="{StaticResource AppAccentBrush}"
+                                    Foreground="White"
+                                    Click="InstallNow_Click">
+                                <Button.Resources>
+                                    <StaticResource x:Key="ButtonBackgroundPointerOver" ResourceKey="AppAccentBrushPointerOver"/>
+                                    <StaticResource x:Key="ButtonBackgroundPressed"     ResourceKey="AppAccentBrushPressed"/>
+                                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White"/>
+                                    <SolidColorBrush x:Key="ButtonForegroundPressed"     Color="White"/>
+                                </Button.Resources>
+                            </Button>
                         </StackPanel>
                         <!-- Release notes rendered as Markdown (headings, lists, bold,
                              inline code, links).  Collapsed to ~5 lines initially;
@@ -194,7 +220,7 @@
                                 Padding="0"
                                 BorderThickness="0"
                                 Background="Transparent"
-                                Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                Foreground="{StaticResource AppAccentBrush}"
                                 Visibility="Collapsed"
                                 Click="NotesToggleBtn_Click" />
                         <ProgressBar x:Name="UpdateProgressBar"

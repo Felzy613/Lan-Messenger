@@ -263,24 +263,6 @@ struct SettingsView: View {
 
     // MARK: - Update UI helpers
 
-    // Strips the "Downloads / Install" section that belongs in CI release pages,
-    // not in an in-app changelog. Everything from the first "---" separator or
-    // a "## Downloads" / "## Install" heading is removed.
-    private func trimmedNotes(_ raw: String) -> String {
-        var result: [String] = []
-        for line in raw.components(separatedBy: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t == "---" || t.hasPrefix("## Downloads") || t.hasPrefix("## Install") {
-                break
-            }
-            result.append(line)
-        }
-        while result.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
-            result.removeLast()
-        }
-        return result.joined(separator: "\n")
-    }
-
     // Parses inline markdown (bold, code, links) within a single line of text.
     private func inlineText(_ s: String) -> Text {
         let attr = (try? AttributedString(
@@ -330,10 +312,13 @@ struct SettingsView: View {
 
     // Renders release notes with proper heading hierarchy and bullet formatting.
     // Collapses to 8 lines; a "Show more" toggle reveals the rest.
+    //
+    // `info.notes` arrives ready to render: UpdateService has already stripped
+    // the release-page sections and merged every version between the installed
+    // build and the offered one, so there is nothing to trim here.
     @ViewBuilder
     private func releaseNotesView(notes: String) -> some View {
-        let trimmed = trimmedNotes(notes)
-        let lines = trimmed.components(separatedBy: "\n")
+        let lines = notes.components(separatedBy: "\n")
         let isLong = lines.count > 8
         let visibleLines = isLong && !notesExpanded ? Array(lines.prefix(8)) : lines
 
