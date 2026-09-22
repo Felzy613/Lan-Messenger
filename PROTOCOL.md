@@ -1148,7 +1148,17 @@ Rules:
 - `TCP_NODELAY` must be set on the media socket. Without it, Nagle plus delayed
   ACK parks small input frames for tens of milliseconds.
 - Never buffer more than two video frames anywhere. For remote control, dropping
-  a frame is always better than delaying one.
+  a frame is always better than delaying one. "Anywhere" is five independent
+  places and each needs its own enforcement, because none of them bounds
+  another:
+
+  | place | what bounds it |
+  |---|---|
+  | capture | the capture source's own pool: SCK's `queueDepth`, and Desktop Duplication's one-frame acquire/release |
+  | encoder | an explicit in-flight count. A codec saying it has room is **not** a bound — an asynchronous hardware MFT issues one `METransformNeedInput` per pipeline slot, and will happily hold several frames |
+  | socket writer | one frame in progress plus one queued; a third displaces the **queued** one, never the in-progress one |
+  | TCP | a capped send buffer. An unbounded `SO_SNDBUF` lets the kernel hold seconds of video that no drop policy can reach |
+  | decode / display | drop rather than queue at the presenter, and ask for a keyframe when you do |
 
 ### Media Session Key Derivation
 
@@ -1278,7 +1288,48 @@ encrypted like any other media payload.
 | `display_list` | host → viewer | Available displays, for selection |
 | `display_select` | viewer → host | Switch to another display |
 | `host_state` | host → viewer | `secure_desktop`, `elevated_focus`, `locked` |
-| `ping` / `pong` | either | Keepalive and round-trip measurement |
+| `ping` / `pong` | either | Round-trip measurement and clock-offset estimation |
+
+#### Clock offset, and why `pong` does not echo
+
+`capture_us` in the media frame header is on the **sender's** media clock, which
+on both platforms is monotonic-since-boot with an arbitrary origin. Subtracting
+it from the receiver's own clock is therefore not a latency: between two machines
+the difference is dominated by the gap between two boot times. A real session
+reported an average latency of **32.5 days** while visibly keeping up at 29fps.
+
+`ping` and `pong` measure that gap.
+
+| field | meaning |
+|---|---|
+| `id` | An opaque token. A `pong` must carry back the `id` of the `ping` it answers. |
+| `sent_us` | **The sender's own media clock**, in microseconds, at the moment it sent this message. A `pong` must report the responder's clock — it must not echo the `ping`'s value. |
+
+A peer that echoes the ping's timestamp is not answering the question, and the
+receiver cannot tell the difference: the resulting offset is exactly zero, which
+looks like two perfectly synchronised machines.
+
+The requester keeps `t1` (its clock when the ping left), reads `t3` from the
+pong, notes `t4` on arrival, and computes
+
+```text
+rtt    = t4 - t1                    entirely on its own clock
+offset = t3 - (t1 + t4) / 2         the peer's clock, minus its own
+```
+
+The estimate assumes the two legs took the same time, so its error is bounded by
+half the round trip. **Keep the sample with the lowest RTT** rather than the
+newest or an average: that sample has the tightest error bound, and averaging
+drags it towards the samples that sat in a queue.
+
+A peer timestamp is converted with `local = peer - offset`, so a frame's latency
+is `now - capture_us + offset`. Until an offset has been measured a receiver
+must **not** report an absolute latency; saying so is required, because a
+plausible wrong number is worse than a missing one.
+
+Both sides answer `ping`, and either may send one. Neither is required to: a
+peer that never pings simply never learns the offset, and a peer that never
+answers costs the requester nothing but the estimate.
 
 `video_config` must arrive before the first video frame and again after any
 resolution or display change — the viewer needs dimensions to lay out and to map

@@ -461,6 +461,16 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
         RequestKeyframe("flush");
     }
 
+    /// <summary>
+    /// The measured gap between the host's clock and ours. Until this arrives
+    /// the stats line reports delay above the best frame; after it, the real
+    /// capture-to-glass figure.
+    /// </summary>
+    public void SetPeerClockOffset(long offsetUs)
+    {
+        _latencyClock.PeerOffsetUs = offsetUs;
+    }
+
     public void Clear()
     {
         if (_closed) return;

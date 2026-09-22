@@ -192,6 +192,13 @@ public sealed class RemoteDesktopController
                 // produces no picture, so this would have failed silently the
                 // moment input existed.
                 media.OnFrame = frame => Route(session, frame);
+                // The clock estimate rides the keepalive rather than owning a
+                // timer: that tick already runs on the media session's timer
+                // context, which is the one context guaranteed not to be the
+                // read loop. A ping scheduled onto the read loop would never be
+                // dequeued, which is the failure this project has had three
+                // times.
+                media.OnKeepaliveTick = session.SendPing;
                 // Composed, not replaced. AttachInbound already puts a handler
                 // here that frees the registry entry, and overwriting it leaves
                 // the peer marked in-flight forever — the next invite is then
@@ -231,6 +238,13 @@ public sealed class RemoteDesktopController
                 {
                     OnUi(() => viewer.IsCapturing = session.Grant == RemoteGrant.Control);
                     OnChanged?.Invoke();
+                };
+                // Only a viewer has a latency to report, so only a viewer's
+                // presenter is told. The host measures the same offset and uses
+                // it for the round-trip figure in its own log line.
+                session.OnClockSynced = sync =>
+                {
+                    if (sync.OffsetUs is { } offset) viewer.SetPeerClockOffset(offset);
                 };
 
                 session.StartViewing(peerName, viewer);
@@ -365,6 +379,13 @@ public sealed class RemoteDesktopController
                     MediaChannel.Control, MediaControlCodec.Encode(message), 0));
                 var previous = media.OnClosed;
                 media.OnFrame = frame => Route(session, frame);
+                // The clock estimate rides the keepalive rather than owning a
+                // timer: that tick already runs on the media session's timer
+                // context, which is the one context guaranteed not to be the
+                // read loop. A ping scheduled onto the read loop would never be
+                // dequeued, which is the failure this project has had three
+                // times.
+                media.OnKeepaliveTick = session.SendPing;
                 media.OnClosed = error =>
                 {
                     previous?.Invoke(error);       // frees the registry entry

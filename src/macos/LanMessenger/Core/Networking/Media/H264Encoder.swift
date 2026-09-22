@@ -144,7 +144,15 @@ final class H264Encoder {
             configuration.expectedFrameRate as CFNumber, "ExpectedFrameRate")
         // Do not hold frames back looking for a better encode. Commonly left at
         // its default, and it is pure added latency for this use.
-        set(kVTCompressionPropertyKey_MaxFrameDelayCount, 0 as CFNumber, "MaxFrameDelayCount=0")
+        // Zero is what we want and some encoders refuse it — this Mac's answers
+        // `kVTPropertyNotSupportedErr`. Falling back to one still bounds the
+        // encoder to a single held frame, where giving up leaves it unbounded;
+        // the log says which of the two took.
+        if VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxFrameDelayCount,
+                                value: 0 as CFNumber) != noErr {
+            set(kVTCompressionPropertyKey_MaxFrameDelayCount, 1 as CFNumber,
+                "MaxFrameDelayCount=1 (0 refused)")
+        }
 
         // Explicit colour tags so the VUI says what the pixels mean. Without
         // them the far side guesses, and guesses differently from us.
@@ -162,6 +170,14 @@ final class H264Encoder {
                              value: bitrate as CFNumber)
     }
 
+    /// A runaway guard on the encoder, and the only place the codec's own depth
+    /// is visible. Deliberately NOT the protocol's two: see `VideoFrameBudget`
+    /// — a capped-at-two encoder produced no output at all on the Windows
+    /// hardware transform, because a pipeline's depth is fixed latency rather
+    /// than growth. VideoToolbox in `RealTime` mode is shallow, so this almost
+    /// never refuses; the peak it reports is what says so.
+    let budget = VideoFrameBudget(capacity: VideoFrameBudget.pipelineCapacity)
+
     // MARK: - Encode
 
     /// Submits one frame. `forceKeyframe` is how a viewer's keyframe request is
@@ -170,6 +186,14 @@ final class H264Encoder {
         lock.lock()
         guard let session else { lock.unlock(); return }
         lock.unlock()
+
+        // A bound, enforced here rather than trusted from the codec. `RealTime`
+        // and `AllowFrameReordering=false` make VideoToolbox emit promptly, but
+        // neither is a limit: a session that falls behind accumulates
+        // submissions, and every one of them is latency the viewer can never pay
+        // back. Dropping is the right answer for live screen content — there is
+        // no value in a late frame, only in the next one.
+        guard budget.tryAcquire() else { return }
 
         let presentation = CMTime(value: CMTimeValue(captureUs), timescale: 1_000_000)
         var frameProperties: CFDictionary?
@@ -188,6 +212,11 @@ final class H264Encoder {
             infoFlagsOut: nil
         ) { [weak self] status, infoFlags, sampleBuffer in
             guard let self else { return }
+            // Released on EVERY path out of the callback, including the ones
+            // that produce nothing. A slot leaked on an error path shrinks the
+            // budget permanently, and after two of them the encoder stops
+            // accepting frames with no error anywhere to explain it.
+            self.budget.release()
             guard status == noErr else { self.onError?(.encodeFailed(status)); return }
             guard let sampleBuffer,
                   CMSampleBufferDataIsReady(sampleBuffer),
@@ -195,7 +224,11 @@ final class H264Encoder {
             self.handle(sampleBuffer: sampleBuffer, captureUs: captureUs)
         }
 
-        if status != noErr { throw H264EncoderError.encodeFailed(status) }
+        if status != noErr {
+            // The callback never runs for a submit that failed synchronously.
+            budget.release()
+            throw H264EncoderError.encodeFailed(status)
+        }
     }
 
     /// Drains frames the encoder is still holding. Called on teardown and on a
@@ -204,6 +237,7 @@ final class H264Encoder {
         lock.lock(); let session = self.session; lock.unlock()
         guard let session else { return }
         VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
+        budget.reset()
     }
 
     func invalidate() {
@@ -213,6 +247,7 @@ final class H264Encoder {
         lock.unlock()
         VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
         VTCompressionSessionInvalidate(session)
+        budget.reset()
     }
 
     // MARK: - Output

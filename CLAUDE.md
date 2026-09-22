@@ -633,6 +633,27 @@ Use the smallest sufficient set for the change:
   controlled is by definition not looking at our window. The combination is
   `⌃⌥⌘⎋`, it lives in `RemoteKillSwitch`, and WS7's viewer-side capture must
   consult `RemoteKillSwitch.reserved` and never put it on the wire.
+- Do not subtract a peer's `capture_us` from your own clock and call it latency,
+  and do not stop at calling the result useless. Both clocks are
+  monotonic-since-boot with unrelated origins, so the difference is mostly the
+  gap between two boot times — measured, on the two machines here, at **32.57
+  days**. `ping`/`pong` have been in PROTOCOL.md since WS1 for exactly this and
+  went unimplemented for eleven workstreams; they now carry each side's own
+  clock (**a `pong` must never echo the ping's timestamp** — that yields an
+  offset of zero, which looks like two perfectly synchronised machines).
+  `RemoteClockSync` keeps the lowest-RTT sample, because a sample's error is
+  bounded by half its round trip and averaging drags the best one back towards
+  the queued ones. With it, the same link reads 26–31ms glass to glass.
+- Do not enforce the protocol's two-frame rule inside a codec. "Never buffer
+  more than two video frames anywhere" is about queues, and **a hardware
+  encoder's pipeline is not a queue** — it is fixed latency. An async MFT issues
+  one `METransformNeedInput` per pipeline slot and emits nothing until enough of
+  them are filled, so a cap of two starved it before its first output: no video,
+  and not one `encoder_stats` line to say why. Its steady-state depth is 2 and
+  it never refuses at 8, which is why the encoder gets a *runaway* guard
+  (`VideoFrameBudget.pipelineCapacity`) and reports `peak=`, while the places
+  that genuinely queue keep `protocolCapacity`. The five places and what bounds
+  each are tabulated in PROTOCOL.md.
 - Do not treat an absence of captured frames as a fault. `SCStream` and DXGI
   Desktop Duplication are both change-driven: a screen with nothing moving on it
   delivers no frames at all, indefinitely, and that is correct. A watchdog,

@@ -151,6 +151,21 @@ public sealed class H264Encoder : IDisposable
     /// frame, so there are no B-frames to reorder anything.
     private readonly ConcurrentQueue<ulong> _pendingCaptureUs = new();
 
+    /// <summary>
+    /// A runaway guard on the encoder, and the only place the codec's own depth
+    /// is visible.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately <b>not</b> the protocol's two. An asynchronous hardware MFT
+    /// issues a <c>METransformNeedInput</c> for every slot in its pipeline and
+    /// emits nothing until enough of them are filled — capped at two, the Quick
+    /// Sync encoder here produced no output whatsoever, and no
+    /// <c>encoder_stats</c> line to explain it. A pipeline's depth is fixed
+    /// latency rather than growth, so what this catches is a runaway, and what
+    /// it reports (<c>peak=</c>) is the depth itself, which nothing else can see.
+    /// </remarks>
+    private readonly VideoFrameBudget _budget = new(VideoFrameBudget.PipelineCapacity);
+
     private readonly ManualResetEventSlim _drainComplete = new(false);
 
     private int _consecutiveFailures;
@@ -419,7 +434,8 @@ public sealed class H264Encoder : IDisposable
           + $"submitted={Interlocked.Read(ref _submitted)} "
           + $"dropped={Interlocked.Read(ref _droppedForBackpressure)} "
           + $"have_output={Interlocked.Read(ref _haveOutput)} "
-          + $"emitted={Interlocked.Read(ref _emitted)}";
+          + $"emitted={Interlocked.Read(ref _emitted)} "
+          + _budget.Summary();
 
         // Unchanged counters still get through every 30s, so a stalled session
         // is visibly stalled rather than merely absent from the log.
@@ -497,6 +513,11 @@ public sealed class H264Encoder : IDisposable
                         break;
 
                     case MediaEventTypes.TransformDrainComplete:
+                        // Everything the transform was holding has come out or
+                        // been abandoned, so nothing is in flight. A slot still
+                        // counted here would shrink the budget for the rest of
+                        // the session.
+                        _budget.Reset();
                         _drainComplete.Set();
                         break;
                 }
@@ -592,8 +613,18 @@ public sealed class H264Encoder : IDisposable
         // picture that is already stale — and on a still screen the next capture
         // may be minutes away, so blocking here would wedge the capture thread
         // rather than merely delay it.
+        // Ahead of the credit wait: a frame refused here must not also consume a
+        // credit, or the MFT's idea of how many frames it is owed drifts away
+        // from ours and the pump waits forever for an input already dropped.
+        if (!_budget.TryAcquire())
+        {
+            Interlocked.Increment(ref _droppedForBackpressure);
+            return;
+        }
+
         if (!_inputCredits!.Wait(Math.Max(1, 1000 / _frameRate)))
         {
+            _budget.Release();
             Interlocked.Increment(ref _droppedForBackpressure);
             return;
         }
@@ -612,8 +643,10 @@ public sealed class H264Encoder : IDisposable
         }
         catch (SharpGenException ex)
         {
-            // The credit was never spent, and the timestamp never used.
+            // The credit was never spent, the timestamp never used, and the
+            // slot never occupied.
             _pendingCaptureUs.TryDequeue(out _);
+            _budget.Release();
             try { _inputCredits.Release(); } catch (ObjectDisposedException) { }
             NoteEncoderFailure("ProcessInput", ex.ResultCode);
         }
@@ -623,6 +656,17 @@ public sealed class H264Encoder : IDisposable
     /// in, then pull until it asks for more.
     private void SubmitSync(IMFTransform encoder, IMFSample sample, ulong captureUs)
     {
+        // The same guard on the synchronous path. `Drain` pulls everything the
+        // transform has after each attempt, so this should never bite here — but
+        // a machine with no Quick Sync still runs this loop, and "should never"
+        // is not a bound.
+        if (!_budget.TryAcquire())
+        {
+            Interlocked.Increment(ref _droppedForBackpressure);
+            Drain(encoder);
+            return;
+        }
+
         for (int attempt = 0; attempt < 8; attempt++)
         {
             try
@@ -641,6 +685,7 @@ public sealed class H264Encoder : IDisposable
             catch (SharpGenException ex) when (ex.ResultCode.Code == MF_E_TRANSFORM_ASYNC_LOCKED)
             {
                 _pendingCaptureUs.TryDequeue(out _);
+                _budget.Release();
                 LanLogger.Remote("error",
                     reason: "MF_E_TRANSFORM_ASYNC_LOCKED — MF_TRANSFORM_ASYNC_UNLOCK was not accepted");
                 return;
@@ -648,6 +693,7 @@ public sealed class H264Encoder : IDisposable
             catch (SharpGenException ex)
             {
                 _pendingCaptureUs.TryDequeue(out _);
+                _budget.Release();
                 NoteEncoderFailure("ProcessInput", ex.ResultCode);
                 return;
             }
@@ -742,12 +788,20 @@ public sealed class H264Encoder : IDisposable
         {
             var annexB = CopyOut(output.Sample);
             LogFirstOutcomes(hr, info.Flags, info.Size, annexB?.Length ?? 0);
-            if (annexB is null || annexB.Length == 0) return OutputStep.Emitted;
 
             // The submission-time capture timestamp, not whatever is current:
             // on the async path this runs on the pump thread, long after the
             // frame it describes was captured.
+            //
+            // Both of these happen BEFORE the empty-output check. A transform
+            // that hands back a zero-length sample has still consumed the input
+            // that produced it, and returning early without giving the slot back
+            // leaks one — two of those and the encoder silently stops accepting
+            // frames, with nothing in the log to say why.
             if (!_pendingCaptureUs.TryDequeue(out ulong captureUs)) captureUs = 0;
+            _budget.Release();
+
+            if (annexB is null || annexB.Length == 0) return OutputStep.Emitted;
 
             // This encoder emits Annex-B with in-band parameter sets before
             // every IDR, which is exactly the wire format — no conversion,

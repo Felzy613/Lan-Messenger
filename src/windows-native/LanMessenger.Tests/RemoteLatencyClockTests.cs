@@ -93,6 +93,58 @@ public class RemoteLatencyClockTests
     }
 
     [TestMethod]
+    public void AMeasuredOffsetRetiresTheFloorHeuristicEntirely()
+    {
+        // The floor can only ever report delay ABOVE the best frame. Once
+        // `RemoteClockSync` has measured the real gap between the two clocks,
+        // the true capture-to-glass figure is available and the approximation
+        // must not be preferred to it — including for the frame that set the
+        // floor, which the floor reports as 0ms and is not.
+        const long epoch = 2_813_817_000L * Ms;
+        var clock = new RemoteLatencyClock();
+
+        Assert.AreEqual(0, clock.Adjust(epoch + 40 * Ms), "unsynced, this is all we have");
+        Assert.AreEqual("rel", clock.Label);
+
+        clock.PeerOffsetUs = -epoch;          // their clock is `epoch` ahead of ours
+        Assert.AreEqual(40 * Ms, clock.Adjust(epoch + 40 * Ms));
+        Assert.AreEqual(65 * Ms, clock.Adjust(epoch + 65 * Ms));
+        Assert.AreEqual("synced", clock.Label);
+    }
+
+    [TestMethod]
+    public void TheLabelSaysWhichOfThreeDifferentThingsWasMeasured()
+    {
+        // The three are not comparable and somebody will compare them, so the
+        // reading states which one it is rather than leaving it to be inferred.
+        var unsynced = new RemoteLatencyClock();
+        unsynced.Adjust(2_813_817_000L * Ms);
+        Assert.AreEqual("rel", unsynced.Label);
+
+        var selfView = new RemoteLatencyClock();
+        selfView.Adjust(40 * Ms);
+        Assert.AreEqual("shared", selfView.Label);
+
+        var synced = new RemoteLatencyClock();
+        synced.Adjust(2_813_817_000L * Ms);
+        synced.PeerOffsetUs = -2_813_817_000L * Ms;
+        Assert.AreEqual("synced", synced.Label);
+    }
+
+    [TestMethod]
+    public void ResetForgetsTheOffsetTooBecauseTheNextPeerHasADifferentOne()
+    {
+        var clock = new RemoteLatencyClock();
+        clock.PeerOffsetUs = 5_000 * Ms;
+        Assert.AreEqual("synced", clock.Label);
+
+        clock.Reset();
+        Assert.IsNull(clock.PeerOffsetUs);
+        Assert.AreEqual(40 * Ms, clock.Adjust(40 * Ms), "and the floor is forgotten as well");
+        Assert.AreEqual("shared", clock.Label);
+    }
+
+    [TestMethod]
     public void ResetForgetsTheFloorForTheNextSession()
     {
         // The next session may be against a different machine, so carrying the

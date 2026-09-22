@@ -107,11 +107,79 @@ final class SampleBufferVideoPresenter: VideoPresenter {
             layer.enqueue(sampleBuffer)
         }
         presentedFrames += 1
+        notePresented(sampleBuffer)
 
         // The stall is over only once a keyframe has actually gone in. Clearing
         // on any enqueue would re-arm the debounce every frame and turn a
         // persistent failure into one request per frame.
         if H264Decoder.isKeyframe(sampleBuffer) { keyframeRequestSent = false }
+    }
+
+    // MARK: - Measurement
+
+    /// How far the host's clock is from ours. Nil until the ping exchange has
+    /// produced an estimate, and while it is nil no latency is reported at all
+    /// — a figure computed straight off `capture_us` is out by the gap between
+    /// two boot times, and a wrong number is worse than none because somebody
+    /// will act on it.
+    var clockSync: RemoteClockSync? {
+        didSet { if clockSync?.isSynced == true, oldValue?.isSynced != true { resetStats() } }
+    }
+
+    private var statsStartedAt = Date()
+    private var latencySumMs: Int64 = 0
+    private var latencySamples: Int64 = 0
+    private var latencyMaxMs: Int64 = 0
+    private var statsPresented = 0
+
+    /// Glass-to-glass, as far as this side can see it: the frame's capture
+    /// stamp converted onto our clock and subtracted from now.
+    ///
+    /// "As far as this side can see it" is the honest caveat. The enqueue is the
+    /// last moment we control; the compositor puts it on the glass a frame or so
+    /// later, and the host's own capture-to-encode time is already inside
+    /// `capture_us`. What is missing is bounded and known, which is the
+    /// difference between a measurement and a guess.
+    private func notePresented(_ sampleBuffer: CMSampleBuffer) {
+        statsPresented += 1
+
+        if let sync = clockSync, sync.isSynced {
+            let stamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let captureUs = CMTimeConvertScale(stamp, timescale: 1_000_000,
+                                               method: .roundHalfAwayFromZero).value
+            if captureUs > 0, let local = sync.toLocalUs(peerUs: UInt64(captureUs)) {
+                let latencyMs = (Int64(MediaClock.nowUs()) - local) / 1000
+                // A slightly-off estimate can put a fast frame marginally
+                // negative. Skipped rather than clamped: a zero would look like
+                // a real reading.
+                if latencyMs >= 0 {
+                    latencySumMs += latencyMs
+                    latencySamples += 1
+                    latencyMaxMs = max(latencyMaxMs, latencyMs)
+                }
+            }
+        }
+
+        let elapsed = Date().timeIntervalSince(statsStartedAt)
+        guard elapsed >= 2 else { return }
+
+        let fps = String(format: "%.1f", Double(statsPresented) / elapsed)
+        let latency = latencySamples > 0
+            ? "clock=synced latency_ms_avg=\(latencySumMs / latencySamples) "
+              + "latency_ms_max=\(latencyMaxMs)"
+            : "clock=unsynced"
+        NetLogger.remote(event: "viewer_stats",
+                         reason: "presented=\(statsPresented) drops_not_ready=\(dropsNotReady) "
+                               + "flushes=\(flushes) fps=\(fps) \(latency)")
+        resetStats()
+    }
+
+    private func resetStats() {
+        statsStartedAt = Date()
+        statsPresented = 0
+        latencySumMs = 0
+        latencySamples = 0
+        latencyMaxMs = 0
     }
 
     func flush() {

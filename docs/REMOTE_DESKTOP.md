@@ -66,17 +66,17 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS7 | Input capture + injection | **Done on both platforms and proven between the two machines** 2026-09-20 — Mac → Dell drives the mouse and keyboard; Dell → Mac reaches the injector and is gated only by the macOS Accessibility TCC grant | done |
 | WS8 | Consent, indicator, kill switch, invite exchange | **Done on both platforms and proven between the two machines** 2026-09-20 — invite, consent, accept, attach, capture, the second control prompt and the grant, in both directions | done |
 | WS9 | Settings, logging, diagnostics | **Done** — log channel, stats contents, and the settings toggle on both platforms | no |
-| WS10 | Latency tuning | **Not started.** Video across the two machines settles at ~29fps; the absolute cross-machine latency is not measurable without a clock exchange the protocol does not have (see `RemoteLatencyClock`) | yes |
+| WS10 | Latency tuning | **Done and measured between the two machines** 2026-09-21 — **26–31ms glass to glass at 29–30fps**, against a clock offset of 32.57 days that `ping`/`pong` now measures. The two-frame rule is enforced or accounted for at all five places | done |
 | WS11 | Packaging, docs, CI | **`dpiAwareness` done**, and the app builds with it; Vortice refs and the SDK decision wait on WS4b | no |
 
 Test counts on this branch, both suites green:
 
 - Windows GPU/encoder selection covers **nine machine topologies**, only one of
   which we own
-- macOS **481 passing**, 11 skipped (all generators or hardware-gated: the
+- macOS **513 passing**, 11 skipped (all generators or hardware-gated: the
   H.264 fixture emitter, the control-vector emitter, the UI renderers, and the
   live capture check)
-- Windows **364 passing**, run on real hardware 2026-09-20 from a freshly built
+- Windows **400 passing**, run on real hardware 2026-09-21 from a freshly built
   binary, with the app project compiling — which is what validates the XAML
 
 Of those, the remote-desktop tests are:
@@ -103,7 +103,9 @@ Of those, the remote-desktop tests are:
 | `HidKeyMapTests` | 9 | 12 |
 | `MediaControlMessageTests` | 11 | 11 |
 | `RemoteDesktopQueueTests` | 4 | 4 |
-| `RemoteLatencyClockTests` | — (macOS reports no viewer latency) | 6 |
+| `RemoteLatencyClockTests` | — (the macOS presenter reports its own) | 9 |
+| `RemoteClockSyncTests` | 9 | 9 |
+| `VideoFrameBudgetTests` | 9 | 9 |
 
 ---
 
@@ -863,17 +865,58 @@ panic.
 
 ### WS10 — Latency tuning
 
-A named phase, not a hope. Budget a week.
+**Done 2026-09-21, and measured rather than estimated.**
 
-Every stage defaults to buffering, and "never more than two frames in flight"
-has to be enforced at **five** places, not one: the capture queue, the encoder,
-the socket writer, TCP itself, and the decoder/display. `MediaWriteScheduler`
-already implements the writer's share of this — it drops the **queued** video
-frame, never the in-progress one, because abandoning a frame whose first
-fragment is already on the wire desyncs the peer's reassembler permanently.
+The measurement had to come first, because the one that existed was wrong. A
+viewer subtracting the host's `capture_us` from its own clock was reading the
+gap between two boot times, and reported an average latency of 32.5 days while
+visibly keeping up at 29fps.
 
-Build a glass-to-glass measurement mode off `capture_us`. It is mandatory from
-the first commit precisely so this phase measures rather than estimates.
+`ping` and `pong` had been in PROTOCOL.md since WS1, described as "keepalive and
+round-trip measurement", and nothing had ever sent one. They now carry each
+side's own clock, and `RemoteClockSync` turns a round trip into an offset by the
+usual four-timestamp argument, keeping the **lowest-RTT** sample because that is
+the one whose error bound is tightest. `viewer_stats` says `clock=synced`,
+`clock=shared` (self-view) or `clock=rel` so a reading always states what it is.
+
+Measured on the two machines, Dell hosting and Mac viewing over the LAN:
+
+| | |
+|---|---|
+| clock offset | 2,813,816,251 ms — **32.57 days**, which is what the old figure was reporting |
+| round trip | 5 ms |
+| **glass to glass** | **26–31 ms average**, 96–113 ms max |
+| frame rate | 29–30 fps, no presenter drops, no flushes |
+| encoder depth | `in_flight=1/8 peak=2 refused=0` |
+| capture | `attempts=2550 delivered=1262 age_ms=0` — paced by declining conversion, frames as fresh as the compositor makes them |
+
+The two-frame rule now has an enforcement at each of the five places, and the
+one that had none — the encoder — turned out to need a different number:
+
+| place | what bounds it |
+|---|---|
+| capture | SCK's `queueDepth`; Desktop Duplication's one-frame acquire/release |
+| encoder | `VideoFrameBudget`, at **pipeline** capacity, not the protocol's two |
+| socket writer | `MediaWriteScheduler`: one in progress, one queued |
+| TCP | `TCP_NODELAY`, and `SO_SNDBUF` capped at 128 KiB |
+| decode / display | drop rather than queue, and request a keyframe when dropping |
+
+**The encoder is the interesting one.** Capping it at two produced no video at
+all and not one `encoder_stats` line: an asynchronous hardware MFT issues a
+`METransformNeedInput` for every slot in its pipeline and emits nothing until
+enough of them are filled, so the cap bit before the first frame ever came out.
+A pipeline's depth is fixed latency, not growth. At a capacity of 8 the Quick
+Sync encoder's measured depth is **2**, and it refuses nothing — so what the
+budget provides there is a runaway guard and, more usefully, the only view
+anything has of the codec's own contribution to latency.
+
+### Still open
+
+- The macOS **host** side of the synced measurement has not been run: the Mac
+  lost its Screen Recording grant when the app moved to `~/Applications`, and
+  restoring it needs the user's password. The arithmetic is shared and unit
+  tested on both sides, and the Windows viewer path is covered by
+  `RemoteLatencyClockTests`.
 
 ### WS11 — Packaging and CI, remainder
 

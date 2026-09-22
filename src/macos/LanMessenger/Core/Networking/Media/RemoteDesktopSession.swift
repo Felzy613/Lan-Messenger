@@ -91,6 +91,9 @@ final class RemoteDesktopSession {
     var onChange: (() -> Void)?
     /// Fires with the reason a session ended, for anything that wants to say so.
     var onEnded: ((RemoteStopReason) -> Void)?
+    /// Fires when the clock estimate improves, so a presenter can start
+    /// reporting a latency that means something.
+    var onClockSynced: ((RemoteClockSync) -> Void)?
 
     // MARK: - Machinery
 
@@ -106,6 +109,16 @@ final class RemoteDesktopSession {
     /// Host side only. A viewer has none, which is the first of the two gates on
     /// injection — the second is the grant check inside the injector itself.
     private var injector: RemoteInputInjector?
+
+    /// How far the peer's media clock is from ours, measured rather than
+    /// assumed. Until this is synced a viewer's latency figure is off by the gap
+    /// between two boot times — 32.5 days, on the first real session.
+    private(set) var clockSync = RemoteClockSync()
+
+    /// Pings sent and not yet answered, by id. Bounded: a peer that never
+    /// answers must not grow this forever.
+    private var outstandingPings: [UInt64: UInt64] = [:]
+    private var nextPingID: UInt64 = 1
 
     /// Raised when the peer asks for control. The second consent prompt is the
     /// interface's business, so this object only reports the request.
@@ -183,6 +196,34 @@ final class RemoteDesktopSession {
                 self?.route(frame)
             }
         }
+        // The clock estimate rides the keepalive rather than owning a timer:
+        // that tick already runs on the media session's timer context, which is
+        // the one context guaranteed not to be the read loop. A ping scheduled
+        // onto the read loop would never be dequeued, which is the failure this
+        // project has now had three times.
+        media.onKeepaliveTick = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.sendPing()
+            }
+        }
+    }
+
+    // MARK: - Clock sync
+
+    /// Asks the peer what time it is. Both roles ping: the host wants the
+    /// estimate too, for the round-trip figure in its own stats.
+    private func sendPing() {
+        guard media != nil else { return }
+        // A peer that answers nothing must not grow this without bound. Sixteen
+        // is already far more history than the best-sample rule can use.
+        if outstandingPings.count >= 16 {
+            outstandingPings.removeAll()
+            NetLogger.remote(event: "clock_sync", reason: "peer is not answering pings")
+        }
+        let id = nextPingID
+        nextPingID &+= 1
+        outstandingPings[id] = MediaClock.nowUs()
+        sendControl(.ping(id: id, sentUs: outstandingPings[id]!))
     }
 
     private func start(mode: Mode,
@@ -306,6 +347,14 @@ final class RemoteDesktopSession {
         grant = RemoteGrantState()
         _ = grant.accept()
 
+        // Same reasoning as the grant ladder: this object is a long-lived
+        // singleton, and the next session may be against a different machine.
+        // A carried-over offset would subtract one peer's boot time from
+        // another peer's timestamps, which is worse than no estimate at all
+        // because it produces a plausible number.
+        clockSync = RemoteClockSync()
+        outstandingPings.removeAll()
+
         armGuard()
         showIndicator()
         appendAudit(RemoteAuditEntry(event: .sessionStarted, peerName: mode.peerName,
@@ -407,6 +456,28 @@ final class RemoteDesktopSession {
             injector?.releaseEverything()
             NetLogger.remote(event: "control_revoked", reason: "by the host")
             onChange?()
+
+        case .ping(let id, _):
+            // Answered with OUR clock, not by echoing theirs. The whole point
+            // of the exchange is to learn the difference between the two, so a
+            // pong that parroted the ping's timestamp would measure nothing.
+            sendControl(.pong(id: id, sentUs: MediaClock.nowUs()))
+
+        case .pong(let id, let theirSendUs):
+            guard let ourSendUs = outstandingPings.removeValue(forKey: id) else {
+                // An id we never sent, or one already answered. Not fatal, but
+                // it would corrupt the estimate, so it is dropped rather than
+                // folded in.
+                return
+            }
+            let improved = clockSync.record(pingSentUs: ourSendUs,
+                                            pongSentUs: theirSendUs,
+                                            pongReceivedUs: MediaClock.nowUs())
+            if improved {
+                NetLogger.remote(event: "clock_sync", reason: clockSync.summary)
+                presenter?.clockSync = clockSync
+                onClockSynced?(clockSync)
+            }
 
         case .keyframeRequest(let reason):
             sendPipeline?.latchKeyframe()
@@ -513,6 +584,7 @@ final class RemoteDesktopSession {
         if let media {
             announceEnd?(media.sessionID, media.peerIP, reason)
             media.onFrame = nil
+            media.onKeepaliveTick = nil
             media.stop()
         }
         media = nil

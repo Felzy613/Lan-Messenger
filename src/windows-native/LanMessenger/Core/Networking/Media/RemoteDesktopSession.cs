@@ -1,4 +1,5 @@
 using LanMessenger.Core.Services;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace LanMessenger.Core.Networking.Media;
@@ -52,6 +53,22 @@ public sealed class RemoteDesktopSession : IDisposable
     /// Control messages this session wants sent — keyframe requests,
     /// video_config, host_state.
     public Action<MediaControlMessage>? OnControlMessage { get; set; }
+
+    /// <summary>
+    /// How far the peer's media clock is from ours, measured rather than
+    /// assumed. Until this is synced a viewer's latency figure is out by the gap
+    /// between two boot times — 32.5 days, on the first real session.
+    /// </summary>
+    public RemoteClockSync ClockSync { get; private set; } = new();
+
+    /// <summary>Fires when the estimate improves, so a presenter can start
+    /// reporting a latency that means something.</summary>
+    public Action<RemoteClockSync>? OnClockSynced { get; set; }
+
+    /// Pings sent and not yet answered, by id. Bounded: a peer that never
+    /// answers must not grow this forever.
+    private readonly Dictionary<ulong, ulong> _outstandingPings = new();
+    private ulong _nextPingId = 1;
     public Action<RemoteStopReason>? OnEnded { get; set; }
     public Action? OnChanged { get; set; }
 
@@ -85,6 +102,13 @@ public sealed class RemoteDesktopSession : IDisposable
             _peerName = peerName;
             CurrentMode = mode;
             _startedAt = DateTime.UtcNow;
+
+            // Same reasoning as the grant ladder: the next session may be
+            // against a different machine, and a carried-over offset would
+            // subtract one peer's boot time from another peer's timestamps —
+            // worse than no estimate, because it produces a plausible number.
+            ClockSync = new RemoteClockSync();
+            _outstandingPings.Clear();
 
             // Presentation first. A viewer that starts capturing before it has
             // anywhere to put frames spends its first second discarding them.
@@ -320,10 +344,68 @@ public sealed class RemoteDesktopSession : IDisposable
                 OnChanged?.Invoke();
                 break;
 
+            case "ping":
+                // Answered with OUR clock, not by echoing theirs. The whole
+                // point of the exchange is to learn the difference between the
+                // two, so a pong that parroted the ping's timestamp would
+                // measure nothing.
+                OnControlMessage?.Invoke(MediaControlMessage.Pong(message.Id, MediaClock.NowUs()));
+                break;
+
+            case "pong":
+                AcceptPong(message.Id, message.SentUs);
+                break;
+
             case "keyframe_request":
                 _encoder?.LatchKeyframe();
                 break;
         }
+    }
+
+    private void AcceptPong(ulong id, ulong theirSendUs)
+    {
+        ulong ourSendUs;
+        lock (_gate)
+        {
+            // An id we never sent, or one already answered. Not fatal, but it
+            // would corrupt the estimate, so it is dropped rather than folded in.
+            if (!_outstandingPings.Remove(id, out ourSendUs)) return;
+        }
+
+        if (!ClockSync.Record(ourSendUs, theirSendUs, MediaClock.NowUs())) return;
+        LanLogger.Remote("clock_sync", reason: ClockSync.Summary());
+        OnClockSynced?.Invoke(ClockSync);
+    }
+
+    /// <summary>
+    /// Asks the peer what time it is. Both roles ping: the host wants the
+    /// round-trip figure for its own stats.
+    /// </summary>
+    /// <remarks>
+    /// Driven from the media session's keepalive tick, which already runs on the
+    /// timer context — the one context guaranteed not to be the read loop. A
+    /// ping scheduled onto the read loop would never be dequeued, which is the
+    /// failure this project has now had three times.
+    /// </remarks>
+    public void SendPing()
+    {
+        ulong id, now;
+        lock (_gate)
+        {
+            if (CurrentMode is null) return;
+            // A peer that answers nothing must not grow this without bound.
+            // Sixteen is already far more history than the best-sample rule
+            // can use.
+            if (_outstandingPings.Count >= 16)
+            {
+                _outstandingPings.Clear();
+                LanLogger.Remote("clock_sync", reason: "peer is not answering pings");
+            }
+            id = _nextPingId++;
+            now = MediaClock.NowUs();
+            _outstandingPings[id] = now;
+        }
+        OnControlMessage?.Invoke(MediaControlMessage.Ping(id, now));
     }
 
     public void AcceptVideo(ReadOnlySpan<byte> annexB, ulong captureUs)
