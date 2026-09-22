@@ -31,6 +31,10 @@ The repo does not commit `LanMessenger.xcodeproj`. macOS development uses
   handoff, and the plan for the remaining workstreams. Read this before touching
   anything under `Core/Networking/Media` or `RemoteSessionCrypto`.
 - [memory/](memory/) - repo-local project memory for future sessions.
+- [design/liquid-glass/](design/liquid-glass/) - the LAN Messenger Glass design
+  system: tokens for both themes, component guidelines with reference previews,
+  and the WinUI/SwiftUI mapping in `implementation.md`. Read it before changing
+  colours, materials, radii or any chat chrome on either platform.
 
 Update the relevant docs when changing behavior, storage formats, protocol fields,
 build commands, CI, packaging, or release behavior.
