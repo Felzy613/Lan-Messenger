@@ -336,9 +336,12 @@ testing and each now has a rule in `CLAUDE.md`:
   and reach `RemoteInputInjector`, which logs
   `no Accessibility grant — CGEvent.post will do nothing silently` and stops
   there. That is the designed behaviour, not a defect: injection needs the
-  **Accessibility** TCC grant, which is separate from Screen Recording, and
-  every rebuild of an ad-hoc-signed bundle is a new code identity that loses
-  both. The control consent prompt now says so when the grant is missing.
+  **Accessibility** TCC grant, which is separate from Screen Recording. Note
+  that every rebuild of an *ad-hoc-signed* bundle is a new code identity and
+  loses both grants; `scripts/macos/create-dev-identity.sh` plus the dev-signing
+  branch in `package.sh` fix that, so grant once and rebuild freely — see
+  [DEVELOPMENT.md → TCC grants](DEVELOPMENT.md#tcc-grants). The control consent
+  prompt says so when the grant is missing.
 - macOS → macOS presentation. The decoder's output has been decoded, but nothing
   has been on screen in that configuration: `SampleBufferVideoPresenter` is
   tested against a layer with no window behind it, which catches a rejected

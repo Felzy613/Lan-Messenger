@@ -185,7 +185,10 @@ Main stages:
 2. Generate Xcode project with XcodeGen.
 3. Build Release with xcodebuild.
 4. Copy the app from DerivedData.
-5. Code-sign ad-hoc or with Developer ID.
+5. Code-sign with Developer ID, the local `LAN Messenger Dev` certificate,
+   or ad-hoc — in that order of preference. The dev-certificate branch is
+   skipped when `CI`/`GITHUB_ACTIONS` is set, so CI sees only the first and
+   last. See [DEVELOPMENT.md → TCC grants](DEVELOPMENT.md#tcc-grants).
 6. Optionally notarize the app.
 7. Stage `LAN Messenger.app`.
 8. Build update ZIP with `ditto --keepParent`.

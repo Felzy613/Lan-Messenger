@@ -82,7 +82,9 @@ Useful environment variables:
 | Variable | Purpose |
 |---|---|
 | `VERSION` | Required by canonical script; wrapper reads from `version/macos.json` |
-| `SIGNING_IDENTITY` | Developer ID Application identity; empty means ad-hoc signing |
+| `SIGNING_IDENTITY` | Developer ID Application identity; empty falls back to the local dev certificate, then to ad-hoc |
+| `DEV_SIGNING_IDENTITY` | Name of the local dev certificate to prefer (default `LAN Messenger Dev`) — see [TCC grants](#tcc-grants) |
+| `DEV_SIGNING=0` | Ignore the local dev certificate and sign ad-hoc |
 | `NOTARIZE=1` | Enables notarization when notary credentials exist |
 | `SKIP_PKG=1` | Skips PKG for faster local builds |
 | `KEEP_BUILD=1` | Keeps `src/macos/build/` for debugging |
@@ -162,14 +164,85 @@ shim-csproj recipe in `memory/` — see the repo memory index. That covers
 
 ### TCC grants
 
-macOS signing is stable (`DEVELOPMENT_TEAM` is set in `project.yml`, bundle id
-`com.dave.lanmessenger`), so Screen Recording and Accessibility grants survive a
-rebuild. To reset one while testing:
+Remote desktop needs two separate TCC grants: **Screen Recording** to capture,
+and **Accessibility** to inject input on a machine being controlled. Neither is
+implied by the other, and the app deliberately never calls
+`CGRequestScreenCaptureAccess` — an incoming invite must not be able to raise a
+permission dialog — so nothing ever re-prompts. They have to be granted by hand,
+and granting them needs your password.
+
+That makes the *stability* of those grants worth some care. TCC does not key on
+the bundle id alone; it stores the bundle's **designated requirement** at the
+moment you grant, and re-checks the running binary against it every time. An
+ad-hoc signature's designated requirement is the binary's own cdhash:
+
+```text
+designated => cdhash H"b93e5a95…" or cdhash H"7eae17e4…"
+```
+
+Every rebuild produces a different cdhash, so **an ad-hoc build is a different
+app to TCC every time**. Both grants silently stop applying while the System
+Settings toggle still shows as on, and the API just returns false. `project.yml`
+sets `DEVELOPMENT_TEAM`, which makes builds from Xcode stable — but
+`scripts/macos/package.sh` overrides it with `CODE_SIGN_IDENTITY="-"` and
+re-signs the bundle itself, so the packaged app never inherited that stability.
+This cost a password-protected re-grant on every single deploy during the
+2026-09-20 remote-desktop testing.
+
+The fix is a stable local signing certificate. Create it once:
+
+```bash
+scripts/macos/create-dev-identity.sh
+```
+
+That generates a self-signed code-signing certificate called `LAN Messenger Dev`
+in your login keychain. Keychain Access does the same thing by hand: Certificate
+Assistant → *Create a Certificate…* → Name `LAN Messenger Dev`, Identity Type
+*Self Signed Root*, Certificate Type *Code Signing*.
+
+`package.sh` then picks it up automatically for local builds, and the designated
+requirement becomes a property of the certificate rather than of the binary:
+
+```text
+designated => identifier "com.dave.lanmessenger" and certificate leaf = H"e4e7c151…"
+```
+
+which is identical for every build signed with that certificate. Grant the two
+permissions once, and they survive from then on.
+
+To confirm a build is picking the certificate up:
+
+```bash
+codesign -dv --verbose=2 "/Applications/LAN Messenger.app" 2>&1 | grep Authority
+codesign -d -r- "/Applications/LAN Messenger.app"
+```
+
+`Authority=LAN Messenger Dev` and a `certificate leaf` requirement mean the
+grants will hold. `Signature=adhoc` and a `cdhash` requirement mean they will not.
+
+Three things this is **not**:
+
+- It is not a distribution measure. The certificate is self-signed, so Gatekeeper
+  trusts the result exactly as much as it trusted the ad-hoc bundle — first launch
+  still needs an explicit open. Releases are signed with a real Developer ID.
+- It is not used by CI. CI passes `SIGNING_IDENTITY` explicitly (empty when no
+  certificate secret is configured), and the dev-certificate branch is skipped
+  outright when `CI` or `GITHUB_ACTIONS` is set.
+- It is not trusted, and does not need to be. A self-signed root that was never
+  added to your trust settings shows as `CSSMERR_TP_NOT_TRUSTED` and does **not**
+  appear in `security find-identity -v -p codesigning` — note the absent `-v` in
+  the detection inside `package.sh`. `codesign` signs with it regardless, and
+  trust has no bearing on the designated requirement, which is all TCC reads.
+
+To reset a grant while testing:
 
 ```bash
 tccutil reset ScreenCapture com.dave.lanmessenger
 tccutil reset Accessibility com.dave.lanmessenger
 ```
+
+Prefer toggling the existing row in System Settings over `tccutil reset`, which
+removes the row entirely and leaves you re-adding the app with the `+` button.
 
 ### The Windows probe
 

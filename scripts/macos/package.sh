@@ -11,9 +11,18 @@
 #   VERSION           Marketing version, e.g. "1.3.9"
 #
 # Optional environment variables:
-#   SIGNING_IDENTITY  Code-signing identity. Pass an empty string or omit for ad-hoc
-#                     signing (produces a runnable but Gatekeeper-warned bundle).
+#   SIGNING_IDENTITY  Code-signing identity. Pass an empty string or omit to fall
+#                     back to the local dev certificate, or to ad-hoc signing when
+#                     there isn't one (both produce a runnable but Gatekeeper-warned
+#                     bundle).
 #                     Example: "Developer ID Application: Dave Felzy (7FAZT3258V)"
+#   DEV_SIGNING_IDENTITY  Name of the local development certificate to prefer when
+#                     SIGNING_IDENTITY is empty and we are not in CI. Defaults to
+#                     "LAN Messenger Dev"; create it with
+#                     scripts/macos/create-dev-identity.sh. Signing local builds
+#                     with a stable certificate is what keeps the app's Screen
+#                     Recording and Accessibility grants alive across rebuilds.
+#   DEV_SIGNING       "0" to ignore the dev certificate and sign ad-hoc anyway.
 #   NOTARIZE          "1" to notarize and staple the PKG. Requires NOTARY_*.
 #   NOTARY_APPLE_ID   Apple ID e-mail for notarytool.
 #   NOTARY_TEAM_ID    Team ID for notarytool.
@@ -56,6 +65,11 @@ SIGNING_IDENTITY="${SIGNING_IDENTITY-}"
 NOTARIZE="${NOTARIZE:-0}"
 KEEP_BUILD="${KEEP_BUILD:-0}"
 
+# Local development identity. See §4 for why it exists; scripts/macos/create-dev-identity.sh
+# creates it. Set DEV_SIGNING=0 to force ad-hoc signing on a machine that has it.
+DEV_SIGNING_IDENTITY="${DEV_SIGNING_IDENTITY:-LAN Messenger Dev}"
+DEV_SIGNING="${DEV_SIGNING:-1}"
+
 # ── 1. Ensure host is macOS ───────────────────────────────────────────────────
 if [ "$(uname)" != "Darwin" ]; then
     echo "::error::package.sh must run on macOS (current uname: $(uname))"
@@ -75,7 +89,37 @@ exec > >(tee -a "$PKG_LOG") 2>&1
 
 step() { echo ""; echo "▶  $*"; }
 
-step "Pipeline starting — version $VERSION, signing=${SIGNING_IDENTITY:+yes (real)}${SIGNING_IDENTITY:-yes (ad-hoc)}, notarize=$NOTARIZE, artifacts=PKG+ZIP"
+# ── 1b. Resolve the signing mode ──────────────────────────────────────────────
+# Three modes, decided once here and acted on in §4:
+#   real   an explicit SIGNING_IDENTITY was passed  → Developer ID, the CI path
+#   dev    nothing passed, but this machine has the local dev certificate
+#   adhoc  nothing passed and no dev certificate    → codesign --sign "-"
+#
+# CI is deliberately excluded from the "dev" branch. It passes SIGNING_IDENTITY
+# explicitly — as an *empty string* when no certificate secret is configured —
+# so a hosted runner would otherwise go looking for a local identity it can
+# never have. The guard makes CI's behaviour structural rather than incidental.
+SIGN_MODE=adhoc
+if [ -n "$SIGNING_IDENTITY" ]; then
+    SIGN_MODE=real
+elif [ "$DEV_SIGNING" = "1" ] && [ -z "${CI:-}" ] && [ -z "${GITHUB_ACTIONS:-}" ]; then
+    # No -v. A self-signed root that was never added to the trust settings
+    # evaluates as CSSMERR_TP_NOT_TRUSTED, so `find-identity -v` ("valid
+    # identities only") does not list it — yet codesign signs with it happily,
+    # and trust has no bearing on the designated requirement, which is the only
+    # thing we are here for.
+    if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$DEV_SIGNING_IDENTITY\""; then
+        SIGN_MODE=dev
+    fi
+fi
+
+case "$SIGN_MODE" in
+    real)  SIGN_DESC="yes (real: $SIGNING_IDENTITY)" ;;
+    dev)   SIGN_DESC="yes (local dev: $DEV_SIGNING_IDENTITY)" ;;
+    adhoc) SIGN_DESC="yes (ad-hoc)" ;;
+esac
+
+step "Pipeline starting — version $VERSION, signing=$SIGN_DESC, notarize=$NOTARIZE, artifacts=PKG+ZIP"
 
 # ── 2. Generate Xcode project from project.yml ────────────────────────────────
 step "Generating Xcode project (xcodegen)"
@@ -129,23 +173,48 @@ echo "  Contents:"
 find "$APP_PATH/Contents" -maxdepth 2 | sort || true
 
 # ── 4. Code-sign ──────────────────────────────────────────────────────────────
-# Deep-sign with the hardened runtime. We sign every embedded framework/binary
-# bottom-up so the outer envelope is signed last (Apple's recommended order).
+# Every mode deep-signs, so embedded frameworks/binaries are signed bottom-up and
+# the outer envelope last (Apple's recommended order). The hardened runtime, the
+# secure timestamp and the entitlements belong to the Developer ID path only —
+# see the "dev" branch for why the local one deliberately leaves them off.
 step "Code-signing"
-if [ -n "$SIGNING_IDENTITY" ]; then
+case "$SIGN_MODE" in
+real)
     echo "  Identity: $SIGNING_IDENTITY"
     /usr/bin/codesign --force --options runtime --timestamp \
         --entitlements "$ENTITLEMENTS" \
         --sign "$SIGNING_IDENTITY" \
         --deep \
         "$APP_PATH"
-else
+    ;;
+dev)
+    # Local development identity — a stable *TCC* identity, not a distribution
+    # one. Ad-hoc signing makes the designated requirement out of the bundle's
+    # own cdhash, so every rebuild is a different app to TCC and both the Screen
+    # Recording and the Accessibility grant silently stop applying (the System
+    # Settings toggle still shows as on while the API returns false). Re-granting
+    # needs the user's password, and the app deliberately never calls
+    # CGRequestScreenCaptureAccess, so nothing re-prompts. Signing with a
+    # certificate instead makes the requirement
+    #     identifier "com.dave.lanmessenger" and certificate leaf = H"…"
+    # which is identical for every build. Grant once, rebuild forever.
+    #
+    # Everything else matches the ad-hoc invocation on purpose: no hardened
+    # runtime, no timestamp, no entitlements. The certificate is self-signed, so
+    # Gatekeeper is no happier than with an ad-hoc bundle and none of that would
+    # buy anything — the identity is the only thing that changes.
+    echo "  Identity: $DEV_SIGNING_IDENTITY (local dev certificate)"
+    /usr/bin/codesign --force --sign "$DEV_SIGNING_IDENTITY" --deep "$APP_PATH"
+    ;;
+*)
     # Ad-hoc signing (identity "-"). Produces a working bundle that Gatekeeper
     # will refuse on first launch unless the user explicitly opens it. This
-    # mode exists for local development and unsigned CI runs.
+    # mode exists for unsigned CI runs, and for local builds on a machine with
+    # no dev certificate — run scripts/macos/create-dev-identity.sh to get one.
     echo "  Identity: ad-hoc (-)"
     /usr/bin/codesign --force --sign "-" --deep "$APP_PATH"
-fi
+    ;;
+esac
 
 step "Verifying signature"
 if ! /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 | tail -6; then

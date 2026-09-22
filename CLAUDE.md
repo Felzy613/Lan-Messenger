@@ -318,6 +318,22 @@ Edit extension:
 - `project.yml` is the XcodeGen source. Do not edit generated Xcode project files
   as durable source.
 - `scripts/macos/package.sh` is the canonical packaging path.
+- Local builds prefer a stable self-signed certificate (`LAN Messenger Dev`,
+  created by `scripts/macos/create-dev-identity.sh`) over ad-hoc signing. This is
+  a **TCC measure, not a distribution one**: an ad-hoc signature's designated
+  requirement is the binary's own cdhash, so every rebuild is a different app to
+  TCC and both the Screen Recording and the Accessibility grant silently stop
+  applying — the System Settings toggle still reads as on while the API returns
+  false. Re-granting needs the user's password, and the app never calls
+  `CGRequestScreenCaptureAccess`, so nothing re-prompts. Signing with a
+  certificate moves the requirement onto the certificate
+  (`identifier "com.dave.lanmessenger" and certificate leaf = H"…"`), which is
+  identical for every build. CI is untouched: it passes `SIGNING_IDENTITY`
+  explicitly, and the dev branch is skipped when `CI`/`GITHUB_ACTIONS` is set.
+  Detect the identity with `security find-identity -p codesigning` and **no
+  `-v`** — an untrusted self-signed root is absent from the "valid identities"
+  list but signs perfectly well, and trust has no bearing on the designated
+  requirement.
 
 ### Windows
 

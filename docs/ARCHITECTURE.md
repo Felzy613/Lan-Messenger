@@ -948,7 +948,8 @@ It:
 
 - generates Xcode project from `src/macos/project.yml`;
 - builds Release with xcodebuild;
-- signs ad-hoc or with Developer ID;
+- signs with Developer ID, the local `LAN Messenger Dev` certificate, or
+  ad-hoc, in that order of preference;
 - optionally notarizes;
 - stages `LAN Messenger.app`;
 - produces ZIP, DMG, and PKG;

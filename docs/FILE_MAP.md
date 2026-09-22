@@ -75,6 +75,7 @@ state for the app.
 |---|---|
 | `scripts/hooks/pre-commit` | Auto-bumps platform versions based on staged platform source changes. |
 | `scripts/macos/package.sh` | Canonical macOS package pipeline for app build, signing, optional notarization, DMG, ZIP, PKG, and SHA256 sidecars. |
+| `scripts/macos/create-dev-identity.sh` | Creates the stable self-signed `LAN Messenger Dev` code-signing certificate so local builds keep their TCC grants across rebuilds. |
 | `scripts/macos/validate-bundle.sh` | Validates `.app` bundle structure, Info.plist keys, icon resources, and code signing. |
 | `scripts/macos/validate-dmg.sh` | Mounts a DMG, validates layout and embedded app, then unmounts. |
 | `scripts/macos/smoke-test.sh` | Installs `.dmg`, `.pkg`, or `.zip`, launches the app, verifies it stays alive, and collects diagnostics on failure. |
