@@ -31,8 +31,8 @@ Start here when working on the repo:
 - [docs/RELEASE_AND_OPERATIONS.md](docs/RELEASE_AND_OPERATIONS.md) - CI,
   packaging, releases, updaters, diagnostics, and incident handling.
 - [docs/FILE_MAP.md](docs/FILE_MAP.md) - file-by-file repository inventory.
-- [docs/REMOTE_DESKTOP.md](docs/REMOTE_DESKTOP.md) - remote-desktop status and
-  the plan for the remaining work. Unreleased, on a branch.
+- [docs/REMOTE_DESKTOP.md](docs/REMOTE_DESKTOP.md) - remote-desktop build
+  history, verification evidence, and accumulated gotchas. Shipped in v2.0.0.
 - [memory/](memory/) - repo-local memory for future sessions. These files are
   documentation, not application runtime state.
 
@@ -54,15 +54,11 @@ Start here when working on the repo:
 - Offline pending text and file queues that drain when a saved peer reappears.
 - Native notifications and tray/menu-bar lifecycle.
 - In-app update checks from GitHub Releases.
-
-### In development
-
-**Remote desktop** — view a contact's screen and, with a separate grant, drive
-its keyboard and mouse. H.264 at 30 fps, LAN-only, peer-to-peer, over the
-existing TCP port. It is **not in any release**: it lives on
-`feat/remote-desktop-transport`, where the transport, the session handshake and
-the macOS encoder are built and the capture, presentation and input halves are
-not. See [docs/REMOTE_DESKTOP.md](docs/REMOTE_DESKTOP.md).
+- **Remote desktop** — view a contact's screen and, with a separate grant,
+  drive its keyboard and mouse. H.264 at 30 fps, LAN-only, peer-to-peer, over
+  the existing TCP port, with a two-stage consent model, a persistent host
+  indicator, and a host-reserved kill switch. Shipped on both platforms in
+  v2.0.0. See [docs/REMOTE_DESKTOP.md](docs/REMOTE_DESKTOP.md).
 
 ## Quick Start
 
@@ -120,8 +116,8 @@ msbuild LanMessenger\LanMessenger.csproj /t:Publish /p:Configuration=Release /p:
 
 | Platform | Command | Coverage focus |
 |---|---|---|
-| macOS | `cd src/macos && swift test` | 260 test methods across framing, validation, crypto, history, config, message status, presence, interface monitoring, and threading invariants |
-| Windows | `cd src/windows-native && dotnet vstest <test dll>` | 210 MSTest methods covering the same protocol and persistence contracts |
+| macOS | `cd src/macos && swift test` | 500+ test methods across framing, validation, crypto, history, config, message status, presence, interface monitoring, threading invariants, and the remote-desktop transport/media/consent stack |
+| Windows | `cd src/windows-native && dotnet vstest <test dll>` | 400+ MSTest methods covering the same protocol, persistence, and remote-desktop contracts |
 
 Both suites carry `known_good_exchange.json`. Keep the macOS and Windows copies
 in sync whenever the protocol test vectors change — and the same goes for every

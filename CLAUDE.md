@@ -258,7 +258,7 @@ Files:
 - Temp file format is `{transfer_id}_{filename}.part`.
 - Dedup final names with `_1` through `_999`, then an 8-hex fallback.
 
-Remote desktop (unreleased, `feat/remote-desktop-transport`):
+Remote desktop (shipped in v2.0.0):
 
 - The media channel shares TCP `54232` by connection upgrade. A validated
   `media_attach` detaches the socket from the JSON read loop; the JSON frame

@@ -763,10 +763,10 @@ drive its keyboard and mouse. The wire format is specified in PROTOCOL.md →
 Remote Desktop; **status, the remaining plan, and the accumulated gotchas live
 in [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md)**.
 
-It is **not shipped**. On `feat/remote-desktop-transport` the whole macOS video
-path exists and has been run end to end in one process — capture, encode,
-transport, decode — while the Windows codec halves, input injection and the
-consent UI do not exist yet, and nothing has run between two machines.
+**Shipped on both platforms in v2.0.0.** Capture, encode, transport, decode,
+input injection and the consent UI all exist on macOS and Windows, and the
+full round trip — invite through video through control grant through
+input — has been run between two real machines in both directions.
 
 ### Transport
 
@@ -827,7 +827,7 @@ against its own output.
 `H264Encoder.swift` is a `VTCompressionSession` configured for low latency:
 High profile, no frame reordering, zero frame delay, BT.709 tags, parameter sets
 re-read on every keyframe. A stream it produced has been decoded successfully by
-Media Foundation on real Windows hardware. There is no Windows encoder yet.
+Media Foundation on real Windows hardware.
 
 `H264Decoder.swift` is the receive half, and is not a decoder in the obvious
 sense: `AVSampleBufferDisplayLayer` does the decoding, so what this owns is the
@@ -839,7 +839,86 @@ abstracts display so a session can run without a window;
 `SampleBufferVideoPresenter` is the layer implementation, and most of it is
 `requiresFlushToResumeDecoding` handling. A real Media Foundation stream decodes
 here — 60 pictures out of the committed Windows fixture — which closes codec
-conformance in both directions. There is no Windows decoder yet.
+conformance in both directions.
+
+`Core/Networking/Media/H264Encoder.cs` and `H264Decoder.cs` are the Windows
+mirror: an async Media Foundation MFT driven from its own
+`IMFMediaEventGenerator` event pump (a hardware MFT refuses `ProcessInput`
+outside that protocol with `E_UNEXPECTED`), `DesktopDuplicator.cs` for DXGI
+Desktop Duplication capture, `ColorConverter.cs` for BGRA↔NV12, and
+`CaptureTargetSelector.cs` for GPU/output/encoder selection as a pure function
+of enumerated topology, so the nine machine shapes nobody here owns (Optimus
+laptops, AMD boxes, Windows N SKUs with no H.264 MFT, headless machines) are
+covered by tests rather than hardware. `ICodecAPI` — the one interface Vortice
+does not project — is a hand-rolled COM interop in `CodecApi.cs`, acquired per
+thread because the RCW has no proxy/stub.
+
+### Input
+
+`RemoteInputRecord.{swift,cs}` is the wire shape for pointer move/button/scroll
+and key events — big-endian, fixed-width, decoded all-or-nothing, because
+injecting the prefix of a corrupted burst is worse than injecting nothing.
+`HidKeyMap.{swift,cs}` is the single source of truth mapping USB HID usage to
+each platform's native key representation; the reverse table used for capture
+is generated from it rather than hand-written a second time, which is what
+keeps the two directions from silently drifting apart.
+
+`RemoteInputInjector.{swift,cs}` turns decoded records into `CGEvent`s
+(macOS) or `SendInput` calls (Windows) — the most dangerous object in the
+feature, since everything it does was asked for by another computer. It
+re-checks the control grant on every call rather than trusting its caller,
+refuses the host's reserved kill shortcut even though the viewer is required
+never to send it, and releases every key and button it holds at session
+teardown so a session that ends mid-chord cannot leave the host's keyboard
+stuck. Injection on macOS needs the **Accessibility** TCC grant, separate from
+the Screen Recording grant capture already has; the consent prompt reads
+`RemoteInputInjector.hasAccessibilityGrant` and says so when it is missing,
+since `CGEvent.post` fails silently without it.
+
+`RemoteInputCapture.swift` (macOS) and the `RemoteViewerWindow` input handling
+(Windows) turn the viewer's own mouse and keyboard into wire records,
+normalized against the **video rectangle** rather than the window — the
+picture is aspect-fitted and letterboxed, and a click in a letterbox bar
+returns nothing rather than clamping to an edge. Both sides lift held keys on
+focus loss, so a key released outside the window is not lost, and both
+consult `RemoteKillSwitch.reserved`/`RemoteSessionStop` to make sure the
+host's own escape hatch can never ride the wire.
+
+### Consent and session lifecycle
+
+`RemoteDesktopPolicy.{swift,cs}` is the inbound gate as a pure function: a
+stranger's invite is dropped silently rather than declined, trust is checked
+before the `remoteDesktopMode` setting is consulted (so turning the feature on
+never widens *who* may reach the host), and a changed key at a known address
+is logged at `error` rather than treated as routine.
+
+`RemoteGrant.{swift,cs}` is the two-stage ladder — `none → viewing → control`,
+with no path to `control` except from `viewing`, and `end()` terminal so a
+reconnect is a new state rather than a quietly resumed old one. The consent
+prompt (`RemoteConsentView`/`RemoteConsentWindow`) always shows the peer's
+identity-key fingerprint alongside its name, since a display name alone is
+trivially spoofable, and every accidental way out of the dialog — Return,
+Escape, the close button, the countdown — lands on decline.
+
+Once a grant exists, `RemoteHostIndicator.{swift,cs}` puts a persistent,
+deliberately immovable on-top strip on the host's screen naming the viewer and
+the grant level: immovable because a draggable indicator would let a viewer
+holding control drag the host's own warning off-screen, which nothing could
+tell apart from a real drag. `RemoteSessionGuard.{swift,cs}` auto-stops the
+session on screen lock, sleep, user switch, network loss and app quit, and a
+host-reserved kill combination (`⌃⌥⌘⎋` on macOS) is registered through a route
+that needs no permission grant, so it still works when the Accessibility grant
+that gates injection has not been given. Every exit — hotkey, indicator
+button, guard, watchdog, peer disconnect — converges on one teardown path
+(`announceEnd`/`AnnounceEnd`) that closes the socket and writes `remote_end`,
+because a session ended from six different call sites is how five of them
+forget to.
+
+Every session start, stop and control grant is recorded as an audit entry in
+chat history — an ordinary message whose `text` carries a `__REMOTE__:`
+marker, so the history format needed no migration — with wording written from
+whichever side actually held that role, host or viewer, rather than always
+from the host's chair.
 
 `ScreenCaptureSource.swift` is the host's `SCStream`, built for a session that
 runs for hours rather than for one frame. It restarts on `didStopWithError` and
@@ -1008,8 +1087,7 @@ Runtime logs:
 - Windows networking: `%APPDATA%\LanMessenger\Logs\client.log`.
 - Windows updates: `%APPDATA%\LanMessenger\Logs\update.log`.
 - Windows startup crashes: `%APPDATA%\LanMessenger\crash.log`.
-- Remote desktop, both platforms: `remote.log`. The channel exists and is
-  exported; nothing writes to it yet.
+- Remote desktop, both platforms: `remote.log`.
 
 Every channel in the `LogChannel` enum is written to its own file and collected
 into the bug-report bundle. The bundle is derived from the enum, so a channel

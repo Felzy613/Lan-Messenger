@@ -1025,10 +1025,9 @@ Remote desktop lets one peer view a contact's screen and, after a separate
 grant, drive its keyboard and mouse. It is an extension: a client that does not
 implement it drops the new packet types as unknown and is unaffected.
 
-> **Implementation status.** This section is normative and complete. The
-> implementation is not: it lives on `feat/remote-desktop-transport` and no
-> release contains it. `docs/REMOTE_DESKTOP.md` tracks which parts of this spec
-> have code behind them.
+> **Implementation status.** This section is normative and complete, and so is
+> the implementation: it shipped on both platforms in v2.0.0. `docs/REMOTE_DESKTOP.md`
+> carries the build history and the accumulated gotchas.
 
 Two hard rules frame everything below.
 

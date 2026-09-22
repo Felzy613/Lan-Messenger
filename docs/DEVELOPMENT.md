@@ -137,10 +137,9 @@ scripts\windows\smoke-test.ps1 -ArtifactPath .\Output\LanMessenger-Setup-<versio
 
 ## Remote Desktop Development
 
-The feature and its remaining plan are documented in
+The feature shipped on both platforms in v2.0.0. Its build history,
+verification evidence, and accumulated gotchas are documented in
 [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md). This section is only the mechanics.
-
-It lives on `feat/remote-desktop-transport` and is **not** on `main`.
 
 ### What can be done from a Mac
 
@@ -539,11 +538,11 @@ Each channel writes its own file (`client`, `transfer`, `screenshot`,
 `discovery`, `peer`, `crypto`, `ui`, `retry`, `update`, `crash`, `remote`), and
 all of them are rotated and included in the export bundle.
 
-`remote` is the remote-desktop channel. It exists and is exported, but nothing
-writes to it yet — it was added early on purpose, because the export bundle is
-derived from the `LogChannel` enum and a channel missing from that enum silently
-never reaches a bug report. Channel-coverage tests on both platforms enumerate
-the enum rather than a hardcoded list.
+`remote` is the remote-desktop channel. It was added early, before the feature
+had anything to log, on purpose — the export bundle is derived from the
+`LogChannel` enum, so a channel missing from that enum silently never reaches
+a bug report. Channel-coverage tests on both platforms enumerate the enum
+rather than a hardcoded list.
 
 ### Discovery health summary
 

@@ -1,16 +1,25 @@
 # Remote Desktop
 
-Status and handoff document for the remote-desktop feature. It answers three
-questions: what exists, what is proven rather than merely written, and exactly
-what the next person has to do.
+Build history and handoff document for the remote-desktop feature. It answers
+three questions: what exists, what is proven rather than merely written, and
+what a future change to this area needs to know first.
 
 The wire format is specified in [PROTOCOL.md → Remote Desktop](../PROTOCOL.md#remote-desktop).
 That document is normative and this one is not — where they disagree, the
 protocol spec wins and this file is stale.
 
-- **Branch:** `feat/remote-desktop-transport`
-- **Last updated:** 2026-09-14
-- **Shipped?** No. Nothing here is on `main` and no release contains it.
+- **Shipped:** v2.0.0, both platforms, 2026-09-22. Merged to `main` via
+  [PR #39](https://github.com/Felzy613/Lan-Messenger/pull/39).
+- **Last updated:** 2026-09-22.
+
+Everything below the [status table](#status-at-a-glance) was written while the
+feature was being built, workstream by workstream, and most of it is kept in
+that form deliberately: the "Remaining work", "Landmines" and "The plan to
+finish" sections are the implementation record and the hard-won traps, not a
+punch list. Read the status table for where things stand; read the rest for
+why they ended up that way. A handful of sections that describe the feature as
+not-yet-working are flagged inline where they have since been overtaken by
+events.
 
 ---
 
@@ -951,23 +960,22 @@ None of them are latency, and two of them presented *as* latency problems.
   tested on both sides, and the Windows viewer path is covered by
   `RemoteLatencyClockTests`.
 
-### WS11 — Packaging and CI, remainder
+### WS11 — Packaging and CI — Done
 
-- **`<dpiAwareness>PerMonitorV2</dpiAwareness>` in `app.manifest`.** Verified
-  still missing. Without per-monitor awareness the virtual-screen metrics are
-  DPI-virtualised and clicks land wrong on mixed-DPI setups. Verify at runtime
-  with `GetThreadDpiAwarenessContext`. *This also means the existing
-  `ScreenshotService.cs` `GetSystemMetrics(SM_CXSCREEN)` call is probably
-  already wrong on high-DPI displays — worth a separate fix.*
-- New NuGet references for Vortice.
-- `Package.swift`'s `sources:` is an explicit allow-list. `Core/Networking/Media`
-  is covered because SPM recurses into `Core/Networking`, which is listed — but
-  **a new top-level directory such as `Core/RemoteDesktop` must be added there**
-  or it builds in Xcode and silently fails under `swift build` and CI.
-- Decide whether to move off Windows App SDK 1.5.240627000 (June 2024). If
-  presentation interop misbehaves, upgrading is the first move — but it touches
-  the self-contained story and the `IncludePriFileInPublishOutput` workaround.
-- Version bump via the pre-commit hook with `BUMP=minor`.
+- **`<dpiAwareness>PerMonitorV2</dpiAwareness>` is in `app.manifest`.** In
+  place alongside the legacy `dpiAware` element for pre-1607 fallback.
+- **Vortice package references landed**: `Vortice.MediaFoundation`,
+  `Vortice.Direct3D11` and `Vortice.DXGI`, all 3.6.2, in
+  `LanMessenger.csproj`.
+- `Package.swift`'s `sources:` allow-list needed no new top-level entry —
+  `Core/Networking/Media` and the `UI/RemoteDesktop` subfolder are both covered
+  by the existing `Core/Networking` and `UI` entries, since SPM recurses.
+- **Windows App SDK stayed at 1.5.240627000.** Presentation interop did not
+  misbehave badly enough to force the upgrade; the two-machine runs shipped
+  against it.
+- Version bumped to 2.0.0 — a deliberate major, not the pre-commit hook's
+  default minor, since remote desktop is a large enough addition to carry the
+  number on its own.
 
 ---
 
@@ -1168,6 +1176,16 @@ thing to fix.
 
 ### Phase 1 — Make it work on one Mac — **DONE 2026-09-17, confirmed in the app**
 
+> **Removed 2026-09-22.** Self view was the development and diagnostic path
+> described below — no peer, no socket, host and viewer in one process. It
+> served its purpose: proving the pipeline end to end before a second machine
+> was available, and finding the bugs listed under it. Real cross-machine
+> sessions are now proven (see
+> [Proven between the two machines, 2026-09-20](#proven-between-the-two-machines-2026-09-20)),
+> so the self-view mode, its menu entries, and the Windows Settings test button
+> have been removed from both apps. This section is kept for the record;
+> `RemoteDesktopSession.Mode` no longer has a self-view case.
+
 Self view runs in the packaged, signed build: a window showing the screen, the
 host indicator counting up, and the kill shortcut ending it. Confirmed by a human
 on 1.21.x, which is the only kind of confirmation that counts for this phase.
@@ -1339,7 +1357,10 @@ is why Phase 5 keeps WS10 deliberately small rather than attempting a real one.
 
 ---
 
-## Immediate next step
+## Status
 
-**Phase 1.** Everything it needs exists and is tested, it needs no hardware
-anybody has to find, and it ends with something you can look at.
+All five phases are done. The feature shipped in v2.0.0: consent, capture,
+encode, transport, decode, present and input all exist and are wired together
+on both platforms, and the full round trip has been run between two real
+machines in both directions. The likeliest fast-follow, if one is picked up,
+is clipboard sync — see [Out of scope, deliberately](#out-of-scope-deliberately).
