@@ -246,6 +246,12 @@ public sealed partial class ChatPage : Page
         if (_model is null) return;
         switch (e.PropertyName)
         {
+            case nameof(AppModel.RemoteSessionRunning):
+                // A session ending re-enables the button. Nothing else in the
+                // header changes at that moment, so without this it stays
+                // greyed out from the first session onward.
+                UpdateRemoteDesktopButton();
+                break;
             case nameof(AppModel.SelectedPeerIP):
                 RefreshForSelectedPeer(forceReload: true);
                 break;
@@ -329,6 +335,39 @@ public sealed partial class ChatPage : Page
         var name = peer?.Username ?? contact?.Username ?? historyName ?? ip;
         HeaderAvatar.NameText = name;
         HeaderName.Text       = name;
+        UpdateRemoteDesktopButton();
+    }
+
+    /// Greys the screen-control button and says why, using the same policy an
+    /// inbound invite is judged by — so the interface can never offer something
+    /// the gate would refuse.
+    private void UpdateRemoteDesktopButton()
+    {
+        if (_model is null || _model.SelectedPeerIP is null) return;
+        var ip = _model.SelectedPeerIP;
+        var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
+        string key = peer?.PublicKeyB64 ?? "";
+        string name = HeaderName.Text;
+
+        var availability = _model.RemoteDesktopAvailability(key);
+        RemoteDesktopBtn.IsEnabled = availability.IsAvailable;
+        ToolTipService.SetToolTip(RemoteDesktopBtn,
+                                  AppModel.RemoteDesktopHint(availability, name));
+    }
+
+    private void RemoteDesktop_Click(object sender, RoutedEventArgs e)
+    {
+        if (_model is null || _model.SelectedPeerIP is null) return;
+        var ip = _model.SelectedPeerIP;
+        var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
+        if (peer is null) return;
+        // Nothing inside a WinUI event handler may throw.
+        try { _model.RequestRemoteDesktop(peer.PublicKeyB64, ip); }
+        catch (Exception ex)
+        {
+            LanMessenger.Core.Services.LanLogger.Remote(
+                "error", peer: ip, reason: $"invite from the chat header failed: {ex.Message}");
+        }
     }
 
     private void UpdateHeaderOnlineState()
@@ -341,6 +380,7 @@ public sealed partial class ChatPage : Page
         HeaderNameDot.Fill = online ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
 
         HeaderSubtext.Text = online ? "Online" : "Offline";
+        UpdateRemoteDesktopButton();
     }
 
     /// Drives both copies of the typing indicator: the dots under the peer's

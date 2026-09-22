@@ -96,6 +96,44 @@
                 </StackPanel>
             </StackPanel>
 
+            <!-- Remote Desktop -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Remote Desktop"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <ToggleSwitch x:Name="RemoteDesktopToggle"
+                              Header="Allow remote desktop"
+                              OnContent="On"
+                              OffContent="Off"
+                              Toggled="RemoteDesktopToggle_Toggled" />
+                <TextBlock Text="When enabled, a saved contact can ask to view your screen, and separately to control it. You are asked every time — there is no unattended access, and peers who are not in your contacts are ignored without being told anything."
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           TextWrapping="Wrap" />
+                <TextBlock x:Name="RemoteDesktopStopHint"
+                           Text="Stop a session at any time from the indicator at the top of the screen, or with Ctrl+Alt+Shift+Esc, which works even while the other side is controlling your keyboard and mouse."
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           TextWrapping="Wrap" />
+                <!-- The whole pipeline against this machine's own screen: no
+                     peer, no socket. It is the only thing testable before the
+                     invite exchange exists, and it is how a support problem gets
+                     narrowed to "capture is broken" rather than "it does not
+                     work". -->
+                <StackPanel x:Name="RemoteDesktopTestPanel"
+                            Orientation="Horizontal"
+                            Spacing="10"
+                            Visibility="Collapsed">
+                    <Button x:Name="SelfViewButton"
+                            Content="Test Self View"
+                            Click="SelfView_Click" />
+                    <TextBlock x:Name="SelfViewStatus"
+                               VerticalAlignment="Center"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </StackPanel>
+
             <!-- Cloud Relay -->
             <StackPanel Spacing="6">
                 <TextBlock Text="Cloud Relay"

@@ -23,6 +23,15 @@ import XCTest
 // ticking and a buildPayload-based counter passes even against the broken code.
 // `extraTargets` is only reached from sendBeacon()/sendGoodbye(), so it isolates
 // the timer-driven path that the bug actually killed.
+//
+// The same starvation then claimed a second victim, for years and in silence:
+// the per-minute health summary timer was created with `queue: recvQueue`, the
+// very queue the receive loop never releases, so `emitHealthSummary()` was never
+// once dequeued. Production logs showed 39,304 Discovery lines and zero health
+// lines. The diagnostic built to catch beacon starvation was itself dead from
+// queue starvation, and nothing said so — which is exactly the failure mode the
+// summary exists to prevent. It now has its own `healthQueue`, and
+// testHealthSummaryFiresWhileReceiveLoopRuns is the cover.
 final class DiscoveryServiceQueueTests: XCTestCase {
 
     /// A service whose `extraTargets` closure reports each beacon. Returns
@@ -100,5 +109,57 @@ final class DiscoveryServiceQueueTests: XCTestCase {
         defer { second.stop() }
 
         wait(for: [firstBeacons, secondBeacons], timeout: 20.0)
+    }
+
+    // The health summary must keep firing while the receive loop is running.
+    //
+    // Against the pre-fix code (timer on `recvQueue`) this test times out: the
+    // receive loop's block occupies that serial queue forever, so the handler is
+    // never dequeued and `onHealthSummary` is never called. The interval is
+    // shrunk from the production 60 s purely so the test finishes — at the real
+    // interval, proving this at all would take a minute per assertion, which is
+    // why the bug survived as long as it did.
+    func testHealthSummaryFiresWhileReceiveLoopRuns() {
+        let monitor = NetworkInterfaceMonitor()
+        monitor.start()
+        defer { monitor.stop() }
+
+        let summaries = expectation(description: "health summary is emitted repeatedly")
+        summaries.expectedFulfillmentCount = 2
+        summaries.assertForOverFulfill = false
+
+        let service = makeService(monitor: monitor) { }
+        service.healthInterval = 0.25
+        service.onHealthSummary = { summaries.fulfill() }
+        service.start()
+        defer { service.stop() }
+
+        wait(for: [summaries], timeout: 20.0)
+    }
+
+    // The health timer must also stay off the beacon queue. Its whole purpose is
+    // to report "tx_beacons=0" when the beacon path dies, so sharing a queue
+    // with the thing it monitors would make it silent in the one case it exists
+    // for. Here the beacon path is left completely unblocked and we simply assert
+    // both keep ticking independently.
+    func testHealthSummaryAndBeaconsBothTick() {
+        let monitor = NetworkInterfaceMonitor()
+        monitor.start()
+        defer { monitor.stop() }
+
+        let beacons = expectation(description: "beacons keep firing")
+        beacons.expectedFulfillmentCount = 2
+        beacons.assertForOverFulfill = false
+        let summaries = expectation(description: "health summaries keep firing")
+        summaries.expectedFulfillmentCount = 2
+        summaries.assertForOverFulfill = false
+
+        let service = makeService(monitor: monitor) { beacons.fulfill() }
+        service.healthInterval = 0.25
+        service.onHealthSummary = { summaries.fulfill() }
+        service.start()
+        defer { service.stop() }
+
+        wait(for: [beacons, summaries], timeout: 20.0)
     }
 }

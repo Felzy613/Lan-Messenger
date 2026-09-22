@@ -82,7 +82,9 @@ Useful environment variables:
 | Variable | Purpose |
 |---|---|
 | `VERSION` | Required by canonical script; wrapper reads from `version/macos.json` |
-| `SIGNING_IDENTITY` | Developer ID Application identity; empty means ad-hoc signing |
+| `SIGNING_IDENTITY` | Developer ID Application identity; empty falls back to the local dev certificate, then to ad-hoc |
+| `DEV_SIGNING_IDENTITY` | Name of the local dev certificate to prefer (default `LAN Messenger Dev`) — see [TCC grants](#tcc-grants) |
+| `DEV_SIGNING=0` | Ignore the local dev certificate and sign ad-hoc |
 | `NOTARIZE=1` | Enables notarization when notary credentials exist |
 | `SKIP_PKG=1` | Skips PKG for faster local builds |
 | `KEEP_BUILD=1` | Keeps `src/macos/build/` for debugging |
@@ -104,7 +106,9 @@ Use a Windows machine or CI runner. VS MSBuild is preferred for WinUI projects.
 cd src\windows-native
 msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
 msbuild LanMessenger.Tests\LanMessenger.Tests.csproj /p:Configuration=Release /p:Platform=x64
-$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse | Select-Object -First 1
+$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+"using $($testDll.FullName) built $($testDll.LastWriteTime)"
 dotnet vstest $testDll.FullName --logger:"console;verbosity=normal"
 ```
 
@@ -131,6 +135,137 @@ Smoke-test an installer:
 scripts\windows\smoke-test.ps1 -ArtifactPath .\Output\LanMessenger-Setup-<version>.exe
 ```
 
+## Remote Desktop Development
+
+The feature and its remaining plan are documented in
+[REMOTE_DESKTOP.md](REMOTE_DESKTOP.md). This section is only the mechanics.
+
+It lives on `feat/remote-desktop-transport` and is **not** on `main`.
+
+### What can be done from a Mac
+
+Everything except Windows capture, Windows encode/decode, `SendInput`, and
+running the WinUI app. The media transport, the handshake crypto and the
+bitstream conversion are all pure logic with in-memory seams, so:
+
+```bash
+cd src/macos
+swift test --filter RemoteSessionCryptoTests
+swift test --filter MediaFrameTests
+swift test --filter H264BitstreamTests
+swift test --filter H264EncoderTests     # drives a real VTCompressionSession
+swift test --filter H264DecoderTests     # drives a real VTDecompressionSession
+swift test --filter VideoPipelineEndToEndTests   # capture-to-picture, one process
+```
+
+The Windows sources can be compiled and their tests run from a Mac through the
+shim-csproj recipe in `memory/` — see the repo memory index. That covers
+`Core/` and the tests; it cannot build the WinUI app itself.
+
+### TCC grants
+
+Remote desktop needs two separate TCC grants: **Screen Recording** to capture,
+and **Accessibility** to inject input on a machine being controlled. Neither is
+implied by the other, and the app deliberately never calls
+`CGRequestScreenCaptureAccess` — an incoming invite must not be able to raise a
+permission dialog — so nothing ever re-prompts. They have to be granted by hand,
+and granting them needs your password.
+
+That makes the *stability* of those grants worth some care. TCC does not key on
+the bundle id alone; it stores the bundle's **designated requirement** at the
+moment you grant, and re-checks the running binary against it every time. An
+ad-hoc signature's designated requirement is the binary's own cdhash:
+
+```text
+designated => cdhash H"b93e5a95…" or cdhash H"7eae17e4…"
+```
+
+Every rebuild produces a different cdhash, so **an ad-hoc build is a different
+app to TCC every time**. Both grants silently stop applying while the System
+Settings toggle still shows as on, and the API just returns false. `project.yml`
+sets `DEVELOPMENT_TEAM`, which makes builds from Xcode stable — but
+`scripts/macos/package.sh` overrides it with `CODE_SIGN_IDENTITY="-"` and
+re-signs the bundle itself, so the packaged app never inherited that stability.
+This cost a password-protected re-grant on every single deploy during the
+2026-09-20 remote-desktop testing.
+
+The fix is a stable local signing certificate. Create it once:
+
+```bash
+scripts/macos/create-dev-identity.sh
+```
+
+That generates a self-signed code-signing certificate called `LAN Messenger Dev`
+in your login keychain. Keychain Access does the same thing by hand: Certificate
+Assistant → *Create a Certificate…* → Name `LAN Messenger Dev`, Identity Type
+*Self Signed Root*, Certificate Type *Code Signing*.
+
+`package.sh` then picks it up automatically for local builds, and the designated
+requirement becomes a property of the certificate rather than of the binary:
+
+```text
+designated => identifier "com.dave.lanmessenger" and certificate leaf = H"e4e7c151…"
+```
+
+which is identical for every build signed with that certificate. Grant the two
+permissions once, and they survive from then on.
+
+To confirm a build is picking the certificate up:
+
+```bash
+codesign -dv --verbose=2 "/Applications/LAN Messenger.app" 2>&1 | grep Authority
+codesign -d -r- "/Applications/LAN Messenger.app"
+```
+
+`Authority=LAN Messenger Dev` and a `certificate leaf` requirement mean the
+grants will hold. `Signature=adhoc` and a `cdhash` requirement mean they will not.
+
+Three things this is **not**:
+
+- It is not a distribution measure. The certificate is self-signed, so Gatekeeper
+  trusts the result exactly as much as it trusted the ad-hoc bundle — first launch
+  still needs an explicit open. Releases are signed with a real Developer ID.
+- It is not used by CI. CI passes `SIGNING_IDENTITY` explicitly (empty when no
+  certificate secret is configured), and the dev-certificate branch is skipped
+  outright when `CI` or `GITHUB_ACTIONS` is set.
+- It is not trusted, and does not need to be. A self-signed root that was never
+  added to your trust settings shows as `CSSMERR_TP_NOT_TRUSTED` and does **not**
+  appear in `security find-identity -v -p codesigning` — note the absent `-v` in
+  the detection inside `package.sh`. `codesign` signs with it regardless, and
+  trust has no bearing on the designated requirement, which is all TCC reads.
+
+To reset a grant while testing:
+
+```bash
+tccutil reset ScreenCapture com.dave.lanmessenger
+tccutil reset Accessibility com.dave.lanmessenger
+```
+
+Prefer toggling the existing row in System Settings over `tccutil reset`, which
+removes the row entirely and leaves you re-adding the app with the `+` button.
+
+### The Windows probe
+
+`spikes/windows-mf-probe` answers the platform questions that cannot be answered
+from a Mac, and its encode and decode stages are working reference code.
+
+```powershell
+cd spikes\windows-mf-probe
+dotnet run -c Release
+dotnet run -c Release -- --decode=macos_sample.h264
+```
+
+It always exits 0 — it is a report, not a gate. Read the output; "all stages
+ran" is not "all stages are healthy". `spikes/README.md` records the results of
+every run so far.
+
+**Desktop Duplication and `SendInput` need an interactive console session.** An
+SSH logon has no attached desktop, so those stages must be run at the physical
+keyboard. Do not substitute Microsoft RDP: it creates a virtual session with its
+own display driver, so Desktop Duplication would describe the RDP display rather
+than the real one, and some GPU drivers disable their hardware encoder in RDP
+sessions entirely.
+
 ## Test Inventory
 
 ### macOS Tests
@@ -142,7 +277,9 @@ cd src/macos
 swift test
 ```
 
-Current suite: 52 Swift test methods.
+Current suite: **400 passing, 3 skipped**. The skip is
+`testEmitMacOSFixtureForCrossPlatformDecode`, a fixture generator rather than an
+assertion; it runs only with `LANMSG_EMIT_H264_FIXTURE` set.
 
 Coverage:
 
@@ -159,6 +296,34 @@ Coverage:
   idempotent start, observer behavior.
 - `PacketValidatorTests`: packet validation, self suppression, nonce checks, file
   size checks, filename sanitization.
+- `PresenceEvaluatorTests`: LAN presence state-machine transitions.
+- `MessageEditTests` / `RelayControlTests`: edit and delete rules, the
+  `requireIncoming` security gate, and the relay control envelope.
+- `DiscoveryServiceQueueTests`: the discovery threading invariant — the blocking
+  receive loop must not starve the beacon timer, the socket rebuild, or the
+  health summary.
+- `DockPolicyGuardTests`, `AttachmentPasteboardTests`, `NetLoggerTests`,
+  `StressTests`.
+- Remote desktop: `RemoteSessionCryptoTests` (32), `MediaFrameTests` (26),
+  `H264BitstreamTests` (15), `H264EncoderTests` (12), `H264DecoderTests` (14),
+  `SampleBufferVideoPresenterTests` (3), `ScreenCaptureSourceTests` (18),
+  `VideoPipelineEndToEndTests` (5), `ProtocolCapabilityTests` (10),
+  `PeerKeyTrustTests` (9), `RemoteDesktopPolicyTests` (23),
+  `RemoteConsentTests` (19), `RemoteHostIndicatorTests` (13),
+  `RemoteSessionStopTests` (11), `RemoteAuditTests` (13),
+  `RemoteDesktopQueueTests` (4).
+
+Two of the skips are UI renderers — `RemoteConsentRenderTests` and
+`RemoteHostIndicatorRenderTests` — which draw those views to PNGs with
+`ImageRenderer` so their layout can be looked at without a running app;
+`screencapture` is unavailable in this development environment. They cover
+wrapping, both colour schemes and the warning states, but not focus behaviour,
+window level or animation. Regenerate both with:
+
+```bash
+cd src/macos
+LANMSG_RENDER_UI=/tmp/ui swift test --filter RenderTests
+```
 
 ### Windows Tests
 
@@ -170,20 +335,43 @@ $testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -
 dotnet vstest $testDll.FullName --logger:"console;verbosity=normal"
 ```
 
-Current suite: 45 MSTest methods.
+Current suite: **210 passing**, last run on real Windows hardware 2026-09-14.
 
 Coverage mirrors the macOS areas: config, crypto, frame codec, history, message
-status, network interface monitoring, and packet validation.
+status, network interface monitoring, packet validation, presence, message
+editing, relay control, clipboard attachments, and the remote-desktop suites
+(`RemoteSessionCryptoTests` 34, `MediaFrameTests` 26, `H264BitstreamTests` 15,
+`RemoteDesktopQueueTests` 4).
+
+One known result: `PacketValidatorTests.SanitizeFilenameStripsPath` **fails on
+macOS and passes on Windows**, because `SanitizeFilename` uses
+`Path.DirectorySeparatorChar`. On Windows it should pass; if it does not, that
+is a real regression.
 
 ### Test Vectors
 
-Both platforms carry `known_good_exchange.json`:
+Four fixtures are carried in **both** test directories, and must stay
+byte-for-byte equivalent:
 
-- `src/macos/LanMessengerTests/known_good_exchange.json`
-- `src/windows-native/LanMessenger.Tests/known_good_exchange.json`
+| Fixture | Covers |
+|---|---|
+| `known_good_exchange.json` | Text encryption, file chunk encryption, history encryption |
+| `remote_handshake_vector.json` | The remote-desktop media handshake |
+| `media_frame_vector.json` | Media frame header, AAD and sealed payload |
+| `windows_h264_sample.h264` | Real Microsoft H264 Encoder MFT output — 60 frames, 126 NAL units, 129,547 bytes |
 
-Keep them byte-for-byte equivalent if updated. They cover text encryption, file
-chunk encryption, and history encryption.
+`windows_h264_sample.h264` **cannot be regenerated without the Windows machine**.
+Do not delete it. The macOS counterpart is deliberately not committed because it
+regenerates in a second on any Mac:
+
+```bash
+cd src/macos
+LANMSG_EMIT_H264_FIXTURE=/tmp/macos_sample.h264 \
+  swift test --filter testEmitMacOSFixtureForCrossPlatformDecode
+```
+
+A change to any shared fixture is a change to both copies. CLAUDE.md's
+validation checklist calls this out because updating one is the natural mistake.
 
 ## Validation By Change Type
 
@@ -195,6 +383,7 @@ chunk encryption, and history encryption.
 | C#/WinUI code | MSBuild restore/build and MSTest on Windows |
 | Windows packaging | MSBuild publish, Inno Setup, smoke test |
 | Protocol/crypto/framing | Both platform tests and protocol docs |
+| Remote desktop | Both platform tests, both copies of every shared fixture, and `docs/REMOTE_DESKTOP.md` if status changed |
 | Discovery/networking | Platform test where possible plus runtime LAN test |
 | Updates/release | Workflow review, updater docs, artifact naming/sidecar check |
 
@@ -347,8 +536,14 @@ Structured event helpers exist for the high-value paths:
   when the process is about to die.
 
 Each channel writes its own file (`client`, `transfer`, `screenshot`,
-`discovery`, `peer`, `crypto`, `ui`, `retry`, `update`, `crash`), and all of
-them are rotated and included in the export bundle.
+`discovery`, `peer`, `crypto`, `ui`, `retry`, `update`, `crash`, `remote`), and
+all of them are rotated and included in the export bundle.
+
+`remote` is the remote-desktop channel. It exists and is exported, but nothing
+writes to it yet — it was added early on purpose, because the export bundle is
+derived from the `LogChannel` enum and a channel missing from that enum silently
+never reaches a bug report. Channel-coverage tests on both platforms enumerate
+the enum rather than a hardcoded list.
 
 ### Discovery health summary
 
@@ -411,4 +606,6 @@ Docs are part of the deliverable. Update them when:
 - a packet/config/history field changes;
 - a CI or packaging workflow changes;
 - a known gotcha is discovered;
-- local memory files are stale.
+- local memory files are stale;
+- the remote-desktop status changes — [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md) is
+  the handoff document for that feature and goes stale fastest.

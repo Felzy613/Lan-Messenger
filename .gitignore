@@ -105,3 +105,8 @@ out/
 config.json
 Logs/
 *.log
+
+# Spike build output (throwaway diagnostics under spikes/)
+spikes/**/bin/
+spikes/**/obj/
+spikes/**/out.h264

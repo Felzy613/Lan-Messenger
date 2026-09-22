@@ -18,7 +18,15 @@ struct PeerInfo: Identifiable {
     // Every IP this peer has advertised (from discovery `ips`), used as probe
     // targets so a multi-homed or roaming peer can still be reconfirmed.
     var knownIPs: [String] = []
+    /// Capability tokens from the peer's last discovery packet. Empty means the
+    /// peer advertised none — which includes every client older than this field,
+    /// so absence must never be read as "probably supports it".
+    var caps: [String] = []
     var isOnline: Bool { presence == .online }
+    /// Whether remote desktop may even be offered for this peer. A peer that
+    /// does not advertise it drops `remote_invite` silently, so the menu item is
+    /// disabled rather than left to time out.
+    var supportsRemoteDesktop: Bool { caps.contains(ProtocolCapability.remoteDesktopV1) }
 }
 
 // ViewModel for one conversation row in the sidebar.
@@ -58,6 +66,180 @@ final class AppModel: ObservableObject {
     @Published var typingStates: [String: (sender: String, active: Bool)] = [:]
     @Published var activeTransfers: [String: (label: String, bytes: Int64, total: Int64)] = [:]
     @Published var showMigrationPrompt = false
+
+    // MARK: - Remote desktop
+
+    /// The live session, or nil. One at a time: this Mac has one screen, and
+    /// `RemoteSessionRegistry` already enforces one in flight per peer.
+    @Published private(set) var remoteSessionSummary: String?
+    @Published private(set) var remoteSessionRunning = false
+
+    /// Built lazily so the audit sink can close over `self`.
+    private lazy var remoteSession: RemoteDesktopSession = {
+        let session = RemoteDesktopSession(appendAudit: { [weak self] record in
+            self?.recordRemoteAudit(record)
+        })
+        session.onChange = { [weak self] in self?.refreshRemoteSessionState() }
+        session.onEnded = { [weak self] _ in
+            self?.remoteViewerWindow.close()
+            self?.refreshRemoteSessionState()
+        }
+        return session
+    }()
+
+    private let remoteViewerWindow = RemoteViewerWindowController()
+
+    /// The conversation an audit record belongs to. Self-view has no peer, so
+    /// its records are logged and not filed — a fabricated conversation with
+    /// yourself would be worse than no entry.
+    private var remoteAuditPeerIP: String?
+
+    /// Who the live session is with. The second consent prompt needs the peer's
+    /// key to show a fingerprint, and by the time control is requested the
+    /// invite that carried it is long gone.
+    private var remoteSessionPeer: (name: String, ip: String, key: String)?
+
+    /// What a host has agreed to share but not yet started sharing.
+    ///
+    /// The gap between `remote_accept` and the peer's `media_attach` is real
+    /// time — a network round trip plus a connect — and capture must not begin
+    /// until they actually arrive. A viewer that changes its mind therefore
+    /// never causes this screen to be read at all.
+    private var armedHosting: (sessionID: String, peerName: String, peerIP: String)?
+
+    /// Makes the channel closing end the session, without discarding whatever
+    /// the transport already put on `onClosed`.
+    ///
+    /// The peer ending a session reaches us two ways: `remote_end` over TCP,
+    /// which stops the MediaSession, and the socket simply closing, which is
+    /// the only one a crashing peer produces. Both funnel through here. Before
+    /// this, the Mac freed its registry entry and left the viewer window open
+    /// on a frozen picture — the session had ended everywhere except on screen.
+    ///
+    /// Composed rather than assigned: `attachInbound` and the coordinator each
+    /// install a handler that frees the registry entry, and replacing it strands
+    /// the peer as in-flight forever.
+    private func adoptChannelClose(_ media: MediaSession, reason: RemoteStopReason) {
+        let previous = media.onClosed
+        media.onClosed = { [weak self] error in
+            previous?(error)
+            Task { @MainActor [weak self] in
+                guard let self, self.remoteSession.isRunning else { return }
+                NetLogger.remote(event: "channel_closed",
+                                 sessionID: media.sessionID,
+                                 reason: error.map { "\($0)" } ?? "peer ended")
+                // A clean close is the peer pressing Stop, not a network
+                // failure. Saying `networkLost` for both wrote "the network
+                // connection was lost" into the history of every session the
+                // other side ended on purpose — one line below a log entry
+                // that already said `peer ended`.
+                self.remoteSession.stop(
+                    RemoteStopReason.forChannelClose(error: error, fallback: reason))
+            }
+        }
+    }
+
+    /// Wired once, on the session, because a session can end from six places —
+    /// the Stop button, the kill switch, the screen locking, sleep, the
+    /// watchdog, or the window being closed — and every one of them has to tell
+    /// the peer and free the session id. Doing it at each call site is how five
+    /// of the six end up forgetting.
+    /// The peer asked for the keyboard and mouse.
+    ///
+    /// A second prompt, never an escalation of the first. PROTOCOL.md makes the
+    /// two-stage grant a requirement rather than an interface nicety: viewing
+    /// and control are one step apart and wildly different in consequence, so a
+    /// single "accept" that quietly included input would be a protocol
+    /// violation, not a shortcut.
+    private func presentControlRequest(peerName: String, peerIP: String, peerKey: String) {
+        let sessionID = RemoteDesktopService.shared.registry
+            .inFlightSessionID(forPeer: peerKey) ?? ""
+        let trust = PeerKeyTrustEvaluator.evaluate(
+            peerPublicKeyB64: peerKey,
+            peerIP: peerIP,
+            contacts: ConfigStore.shared.config.contacts.map {
+                KnownContact(publicKeyB64: $0.publicKeyB64, username: $0.username,
+                             lastIP: $0.lastIP)
+            })
+
+        RemoteConsentPresenter.shared.present(
+            RemoteConsentRequest(sessionID: sessionID,
+                                 kind: .control,
+                                 peerName: peerName,
+                                 peerIP: peerIP,
+                                 peerPublicKeyB64: peerKey,
+                                 trust: trust,
+                                 expiresAt: Date().addingTimeInterval(
+                                    RemoteConsentRequest.defaultTimeout),
+                                 // Read at the moment the question is asked. A
+                                 // grant given without this permission produces
+                                 // a session where the peer's pointer does
+                                 // nothing at all, silently — indistinguishable
+                                 // from a dead network from either end.
+                                 canInject: RemoteInputInjector.hasAccessibilityGrant)
+        ) { [weak self] outcome in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard case .accepted = outcome else {
+                    NetLogger.remote(event: "control_refused", peer: peerIP)
+                    return
+                }
+                guard self.remoteSession.grantControl() else { return }
+                self.remoteSession.sendControl(.controlGrant)
+            }
+        }
+    }
+
+    private func wireSessionTeardown(_ session: RemoteDesktopSession) {
+        session.announceEnd = { [weak self] sessionID, peerIP, reason in
+            self?.inviteCoordinator.sendEnd(sessionID: sessionID, to: peerIP, reason: reason)
+            RemoteDesktopService.shared.registry.remove(sessionID: sessionID)
+            RemoteDesktopService.shared.registry.cancel(sessionID: sessionID)
+        }
+    }
+
+    lazy var inviteCoordinator: RemoteInviteCoordinator = {
+        let coordinator = RemoteInviteCoordinator(environment: .init(
+            send: { [weak self] frame, ip in
+                self?.coordinator.send(frame: frame, toIP: ip)
+            },
+            attachOutbound: { [weak self] ip, frame in
+                self?.coordinator.attachOutbound(toIP: ip, frame: frame) ?? -1
+            },
+            ownPublicKeyB64: { KeyManager.shared.publicKeyB64 },
+            ownUsername: { ConfigStore.shared.config.username },
+            privateKey: { KeyManager.shared.privateKey },
+            mode: { ConfigStore.shared.config.remoteDesktopMode },
+            // KnownContact is the policy layer's own shape, deliberately
+            // narrower than the stored one: it carries the three fields the
+            // trust decision uses and nothing a photo or a relay id could
+            // influence.
+            contacts: {
+                ConfigStore.shared.config.contacts.map {
+                    KnownContact(publicKeyB64: $0.publicKeyB64,
+                                 username: $0.username,
+                                 lastIP: $0.lastIP)
+                }
+            },
+            hasLiveSession: { [weak self] in self?.remoteSession.isRunning ?? false },
+            registry: { RemoteDesktopService.shared.registry },
+            presentConsent: { request, onOutcome in
+                RemoteConsentPresenter.shared.present(request, onOutcome: onOutcome)
+            },
+            startViewing: { [weak self] peerName, peerIP, media in
+                self?.startViewing(peerName: peerName, peerIP: peerIP, media: media)
+            },
+            armHosting: { [weak self] sessionID, peerName, peerIP in
+                self?.armedHosting = (sessionID, peerName, peerIP)
+            }))
+        coordinator.onStateChange = { [weak self] message in
+            self?.remoteInviteStatus = message.isEmpty ? nil : message
+        }
+        return coordinator
+    }()
+
+    /// What the contact strip shows while an invite is in flight.
+    @Published private(set) var remoteInviteStatus: String?
     @Published var pendingImportKeyData: Data? = nil
     @Published var availableUpdate: UpdateInfo? = nil
     @Published var updateProgress: UpdateProgress = .idle
@@ -96,6 +278,20 @@ final class AppModel: ObservableObject {
     // MARK: - Start
 
     private func start() {
+        // The transport service is reachable from the socket thread and knows
+        // nothing about consent or the interface; these two hooks are how the
+        // exchange and the session reach back into the model.
+        RemoteDesktopService.shared.invites = inviteCoordinator
+        wireSessionTeardown(remoteSession)
+
+        remoteSession.onControlRequested = { [weak self] in
+            guard let self, let peer = self.remoteSessionPeer else { return }
+            self.presentControlRequest(peerName: peer.name, peerIP: peer.ip, peerKey: peer.key)
+        }
+        RemoteDesktopService.shared.onHostAttached = { [weak self] sessionID, media in
+            self?.beginHosting(sessionID: sessionID, media: media)
+        }
+
         // First launch: replace the bare "User" default with the system's full
         // name so peers immediately see something meaningful instead of "User".
         if ConfigStore.shared.config.username == "User" {
@@ -223,9 +419,186 @@ final class AppModel: ObservableObject {
         pendingImportKeyData = nil
     }
 
+    // MARK: - Remote desktop
+
+    /// Starts a session that captures this screen and shows it back in a window.
+    ///
+    /// No peer and no socket: the transport is already proven to carry these
+    /// frames by `VideoPipelineEndToEndTests`, and what this exercises instead
+    /// is everything that test cannot — a real capture reaching a real window,
+    /// the indicator, the guard, the kill shortcut and the teardown ordering.
+    func startRemoteSelfView() {
+        guard !remoteSession.isRunning else { return }
+        remoteAuditPeerIP = nil
+
+        Task { @MainActor in
+            do {
+                try await remoteSession.startSelfView()
+                guard let layer = remoteSession.videoLayer else { return }
+                remoteViewerWindow.show(
+                    title: "This Mac — self view",
+                    layer: layer,
+                    aspect: remoteSession.dimensions,
+                    onClose: { [weak self] in self?.remoteSession.stop(.userStopped) })
+            } catch {
+                NetLogger.remote(event: "error", reason: "self view failed: \(error)")
+                presentRemoteStartFailure(error)
+            }
+        }
+    }
+
+    /// The contact-strip button. Judges the request against the same policy an
+    /// inbound invite is judged by, so the interface can never start something
+    /// the gate would refuse.
+    func requestRemoteDesktop(peerKey: String, peerIP: String) {
+        let availability = remoteDesktopAvailability(forPeerKey: peerKey)
+        guard availability.isAvailable else {
+            NetLogger.remote(event: "invite_blocked", peer: peerIP,
+                             reason: "\(availability)")
+            return
+        }
+        remoteAuditPeerIP = peerIP
+
+        let peerName = peers[peerKey]?.username ?? "This peer"
+        inviteCoordinator.invite(peerKey: peerKey, peerIP: peerIP, peerName: peerName)
+    }
+
+    /// The peer accepted and their media channel is attached. Show it.
+    private func startViewing(peerName: String, peerIP: String, media: MediaSession) {
+        remoteAuditPeerIP = peerIP
+        remoteSessionPeer = (peerName, peerIP, media.peerPublicKeyB64)
+        adoptChannelClose(media, reason: .networkLost)
+        Task { @MainActor in
+            do {
+                try await remoteSession.startViewing(peerName: peerName, peerIP: peerIP,
+                                                     media: media)
+                guard let layer = remoteSession.videoLayer else { return }
+                remoteViewerWindow.onInput = { [weak self] records in
+                    self?.remoteSession.sendInput(records)
+                }
+                remoteViewerWindow.onRequestControl = { [weak self] in
+                    // Asking is all a viewer may do. The host's second consent
+                    // prompt decides, and nothing here can pre-empt it.
+                    self?.remoteSession.sendControl(.controlRequest)
+                    NetLogger.remote(event: "control_request_sent", peer: peerIP)
+                }
+                remoteViewerWindow.show(
+                    title: "\(peerName) — screen",
+                    layer: layer,
+                    aspect: remoteSession.dimensions,
+                    onClose: { [weak self] in self?.remoteSession.stop(.userStopped) })
+            } catch {
+                NetLogger.remote(event: "error", peer: peerIP,
+                                 reason: "viewer start failed: \(error)")
+                media.stop()
+                presentRemoteStartFailure(error)
+            }
+        }
+    }
+
+    /// The viewer we agreed to has attached. Start reading this screen.
+    ///
+    /// Called from the media session's own arrival, not from the accept — which
+    /// is the point: everything before this moment is an agreement, and nothing
+    /// before it captures a pixel.
+    func beginHosting(sessionID: String, media: MediaSession) {
+        guard let armed = armedHosting, armed.sessionID == sessionID else {
+            NetLogger.remote(event: "host_ignored", sessionID: sessionID,
+                             reason: "attach with no armed accept")
+            return
+        }
+        armedHosting = nil
+        remoteAuditPeerIP = armed.peerIP
+        remoteSessionPeer = (armed.peerName, armed.peerIP, media.peerPublicKeyB64)
+        adoptChannelClose(media, reason: .networkLost)
+
+        Task { @MainActor in
+            do {
+                try await remoteSession.startHosting(peerName: armed.peerName,
+                                                     peerIP: armed.peerIP,
+                                                     media: media)
+            } catch {
+                NetLogger.remote(event: "error", peer: armed.peerIP, sessionID: sessionID,
+                                 reason: "host start failed: \(error)")
+                media.stop()
+            }
+        }
+    }
+
+    func stopRemoteSession() {
+        remoteSession.stop(.userStopped)
+    }
+
+    /// Whether the menu item should be offered for a peer, and why not when it
+    /// should not. The policy is the same one an inbound invite is judged by, so
+    /// the interface can never offer something the gate would refuse.
+    func remoteDesktopAvailability(forPeerKey key: String) -> RemoteInviteAvailability {
+        let peer = peers[key]
+        let isContact = ConfigStore.shared.config.contacts.contains { $0.publicKeyB64 == key }
+        return RemoteDesktopPolicy.availability(
+            mode: ConfigStore.shared.config.remoteDesktopMode,
+            target: RemoteInviteTarget(
+                isSavedContact: isContact,
+                isOnline: peer?.isOnline ?? false,
+                advertisesRemoteDesktop: peer?.supportsRemoteDesktop ?? false,
+                hasSessionInFlight: remoteSession.isRunning))
+    }
+
+    private func refreshRemoteSessionState() {
+        remoteSessionRunning = remoteSession.isRunning
+        // The viewer only captures once the host has said yes, and stops the
+        // moment they take it back. Driven from here rather than from the grant
+        // call sites so a revoke arriving over the wire is treated identically
+        // to one made locally.
+        remoteViewerWindow.isControlling = remoteSession.grant.grant == .control
+        if let mode = remoteSession.mode, let size = remoteSession.dimensions {
+            remoteSessionSummary = "\(mode.peerName) · \(size.width)x\(size.height)"
+        } else {
+            remoteSessionSummary = nil
+        }
+        if let size = remoteSession.dimensions, remoteViewerWindow.isOpen {
+            // Also feeds the capture view its aspect-fit rectangle.
+            remoteViewerWindow.updateAspect(size)
+        }
+    }
+
+    /// Files an audit record into the conversation it belongs to.
+    ///
+    /// A record with no peer — self-view — is logged rather than written. There
+    /// is no conversation with yourself to file it in, and inventing one would
+    /// put a system row in somebody's sidebar for a diagnostic they ran.
+    private func recordRemoteAudit(_ record: RemoteAuditEntry) {
+        NetLogger.remote(event: "audit", reason: record.summary)
+        guard let ip = remoteAuditPeerIP else { return }
+        let entry = record.historyEntry()
+        HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+        HistoryStore.shared.save()
+        messages[ip, default: []].append(entry)
+        refreshConversations()
+    }
+
+    private func presentRemoteStartFailure(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Could not start screen sharing"
+        // ScreenCaptureError says something useful; anything else is at least
+        // honest about being unexpected.
+        if let capture = error as? RemoteDesktopSession.StartFailure {
+            alert.informativeText = capture.description
+        } else {
+            alert.informativeText = "\(error)"
+        }
+        if case RemoteDesktopSession.StartFailure.capture(.permissionDenied) = error {
+            alert.informativeText = "LAN Messenger needs Screen Recording permission. "
+                + "Open System Settings → Privacy & Security → Screen Recording, "
+                + "enable LAN Messenger, then quit and reopen the app."
+        }
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
     // MARK: - Peers
 
-    private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String, relayIdHash: String? = nil, advertisedIPs: [String] = []) {
+    private func upsertPeer(ip: String, username: String, port: Int, publicKeyB64: String, relayIdHash: String? = nil, advertisedIPs: [String] = [], caps: [String] = []) {
         // Last-resort self-suppression — defends against stale `ownIPs` in
         // the discovery service when the machine's network interfaces change.
         if publicKeyB64.isEmpty || publicKeyB64 == KeyManager.shared.publicKeyB64 { return }
@@ -269,7 +642,7 @@ final class AppModel: ObservableObject {
         var knownIPs = advertisedIPs
         if !knownIPs.contains(ip) { knownIPs.insert(ip, at: 0) }
         let info = PeerInfo(ip: ip, username: username, port: port, publicKeyB64: publicKeyB64,
-                            lastSeen: Date(), presence: .online, knownIPs: knownIPs)
+                            lastSeen: Date(), presence: .online, knownIPs: knownIPs, caps: caps)
         peers[publicKeyB64] = info
         knownPeerKeys[ip] = publicKeyB64
         if let hash = relayIdHash, !hash.isEmpty {
@@ -441,6 +814,11 @@ final class AppModel: ObservableObject {
             let path = String(last.text.dropFirst("__FILE__:".count))
             return "📎 \(URL(fileURLWithPath: path).lastPathComponent)"
         }
+        // An audit record is not a message. Without this the sidebar shows the
+        // raw JSON body, which is how a privacy feature ends up looking broken.
+        if let audit = RemoteAuditEntry.decode(last.text) {
+            return audit.summary
+        }
         return Self.collapsedWhitespace(last.text)
     }
 
@@ -581,6 +959,9 @@ final class AppModel: ObservableObject {
     func editMessage(_ entry: MessageEntry, newText: String, peerIP: String) -> Bool {
         guard !entry.incoming, let messageId = entry.messageId else { return false }
         guard !entry.deleted, !entry.text.hasPrefix("__FILE__:") else { return false }
+        // An audit record has no body to replace, and rewriting the trail is
+        // the one thing it exists to prevent.
+        guard !RemoteAuditEntry.isAudit(entry.text) else { return false }
 
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -1111,10 +1492,14 @@ enum UpdateProgress: Equatable {
 extension AppModel: NetworkCoordinatorDelegate {
     func coordinator(_ c: NetworkCoordinator, didReceivePacket packet: ValidatedPacket) {
         // Refresh lastSeen for the sender so TCP activity keeps them online.
-        if let key = packet.senderPublicKeyB64 { touchPeer(publicKeyB64: key) }
-        // Cache ip → publicKeyB64 so replies work even for unsaved / offline contacts.
-        if let key = packet.senderPublicKeyB64, !key.isEmpty {
-            knownPeerKeys[packet.senderIP] = key
+        // Gated rather than unconditional: media_attach arrives on a socket that
+        // is about to stop being a JSON peer connection at all.
+        if packet.refreshesPresence {
+            if let key = packet.senderPublicKeyB64 { touchPeer(publicKeyB64: key) }
+            // Cache ip → publicKeyB64 so replies work even for unsaved / offline contacts.
+            if let key = packet.senderPublicKeyB64, !key.isEmpty {
+                knownPeerKeys[packet.senderIP] = key
+            }
         }
         switch packet {
         case .text, .typing, .receipt, .delete, .edit:
@@ -1124,6 +1509,15 @@ extension AppModel: NetworkCoordinatorDelegate {
         case .discovery(let pkt, let ip):
             upsertPeer(ip: ip, username: pkt.username, port: pkt.port,
                        publicKeyB64: pkt.publicKeyB64, advertisedIPs: pkt.ips)
+        case .remoteInvite, .remoteAccept, .remoteDecline, .remoteEnd:
+            RemoteDesktopService.shared.handleControlPacket(packet)
+        case .mediaAttach:
+            // Handled synchronously inside NetworkCoordinator.handleInbound, on
+            // the socket's own thread, because the fd has to be detached before
+            // the JSON read loop touches it again. By the time this @MainActor
+            // hop landed, that loop would already have consumed the first 22
+            // binary header bytes as a JSON length prefix.
+            break
         }
     }
 
@@ -1134,7 +1528,8 @@ extension AppModel: NetworkCoordinatorDelegate {
             port: packet.port,
             publicKeyB64: packet.publicKeyB64,
             relayIdHash: packet.relayIdHash,
-            advertisedIPs: packet.ips
+            advertisedIPs: packet.ips,
+            caps: packet.caps ?? []
         )
     }
 

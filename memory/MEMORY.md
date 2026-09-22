@@ -10,6 +10,11 @@ sessions and should stay aligned with the current native app tree.
 
 - [Relay system audit & hardening](relay-system-audit.md) — Relay bugs fixed 2026-05-29 (delivery-mode tracking, offline-only gating, synthetic IP migration) and 2026-07-02 (confirmed-store-before-badge, global message-id dedup, durable outbox retry).
 
+- [Remote desktop](remote-desktop.md) — working notes for the unreleased
+  remote-desktop feature on `feat/remote-desktop-transport`. The status document
+  is `docs/REMOTE_DESKTOP.md`; this one records decisions already settled and
+  the environment the Windows half is built against.
+
 - [LAN Messenger Native Rewrite](project_native_rewrite.md) - Current native
   project status, platform scope, tests, and next work themes.
 - [Repo file layout](project_file_layout.md) - Current root/docs/scripts/source
@@ -31,5 +36,6 @@ Current source roots:
 - macOS native app: `src/macos/`
 - Windows native app: `src/windows-native/`
 - Protocol spec: `PROTOCOL.md`
+- Remote-desktop handoff: `docs/REMOTE_DESKTOP.md`
 - High-detail docs: `docs/`
 - Canonical versions: `version/macos.json`, `version/windows.json`

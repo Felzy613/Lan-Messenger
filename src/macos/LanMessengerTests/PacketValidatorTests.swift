@@ -199,4 +199,86 @@ final class PacketValidatorTests: XCTestCase {
         let data = discoveryData(type: "goodbye", key: ownKey)
         XCTAssertNil(PacketValidator.validateDiscovery(data: data, senderIP: "1.2.3.4", ownPublicKeyB64: ownKey, ownIPs: []))
     }
+
+    // MARK: - Remote desktop
+
+    private func remoteJSON(_ type: String, sessionId: String = "9f2c4a6e8b0d1f3a5c7e9b1d3f5a7c9e",
+                            nonce: String? = nil, reason: String? = nil) -> [String: Any] {
+        var json: [String: Any] = [
+            "type": type,
+            "session_id": sessionId,
+            "sender": "Alice",
+            "sender_public_key_b64": "cGVlci1rZXk=",
+            "port": 54232,
+        ]
+        if let nonce { json["nonce"] = nonce; json["ciphertext"] = "Y2lwaGVy" }
+        if let reason { json["reason"] = reason }
+        return json
+    }
+
+    private let validNonce = Data(repeating: 7, count: 12).base64EncodedString()
+
+    func testRemoteInviteAndAcceptValidate() throws {
+        for type in ["remote_invite", "remote_accept"] {
+            let result = PacketValidator.validate(
+                json: remoteJSON(type, nonce: validNonce), senderIP: "10.0.0.5", ownPublicKeyB64: "mine")
+            guard case .success(let pkt) = result else {
+                return XCTFail("\(type) should validate")
+            }
+            XCTAssertEqual(pkt.senderIP, "10.0.0.5")
+            XCTAssertTrue(pkt.refreshesPresence)
+        }
+    }
+
+    func testRemoteControlPacketsValidate() throws {
+        for type in ["remote_decline", "remote_end", "media_attach"] {
+            let result = PacketValidator.validate(
+                json: remoteJSON(type, reason: type == "media_attach" ? nil : "declined"),
+                senderIP: "10.0.0.5", ownPublicKeyB64: "mine")
+            guard case .success = result else { return XCTFail("\(type) should validate") }
+        }
+    }
+
+    func testMediaAttachDoesNotRefreshPresence() throws {
+        // It is the last JSON frame on a socket that is about to become a binary
+        // media channel; treating it as ordinary peer traffic would have the
+        // presence path touching a connection that is no longer a JSON peer.
+        let result = PacketValidator.validate(
+            json: remoteJSON("media_attach"), senderIP: "10.0.0.5", ownPublicKeyB64: "mine")
+        guard case .success(let pkt) = result else { return XCTFail("media_attach should validate") }
+        XCTAssertFalse(pkt.refreshesPresence)
+    }
+
+    func testRemotePacketsRejectMalformedSessionID() {
+        // A session id is the lookup key for an accept window, so a malformed one
+        // must never reach the registry.
+        for bad in ["", "short", "9F2C4A6E8B0D1F3A5C7E9B1D3F5A7C9E",
+                    "9f2c4a6e-8b0d-1f3a-5c7e-9b1d3f5a7c9e"] {
+            for type in ["remote_invite", "remote_decline", "media_attach"] {
+                var json = remoteJSON(type, sessionId: bad)
+                if type == "remote_invite" { json["nonce"] = validNonce; json["ciphertext"] = "Y2lwaGVy" }
+                guard case .failure = PacketValidator.validate(
+                    json: json, senderIP: "10.0.0.5", ownPublicKeyB64: "mine") else {
+                    return XCTFail("\(type) must reject session_id '\(bad)'")
+                }
+            }
+        }
+    }
+
+    func testRemoteInviteRejectsBadNonce() {
+        let json = remoteJSON("remote_invite", nonce: Data(repeating: 1, count: 8).base64EncodedString())
+        guard case .failure = PacketValidator.validate(
+            json: json, senderIP: "10.0.0.5", ownPublicKeyB64: "mine") else {
+            return XCTFail("a nonce that is not 12 bytes must be rejected")
+        }
+    }
+
+    func testRemotePacketFromSelfIsDropped() {
+        var json = remoteJSON("remote_invite", nonce: validNonce)
+        json["sender_public_key_b64"] = "mine"
+        guard case .failure(.selfPacket) = PacketValidator.validate(
+            json: json, senderIP: "10.0.0.5", ownPublicKeyB64: "mine") else {
+            return XCTFail("self-suppression must apply to remote-desktop packets too")
+        }
+    }
 }

@@ -79,6 +79,39 @@ public static class PacketValidator
                     if (pkt is null) return null;
                     return new ValidatedFileEnd(pkt, senderIP);
                 }
+                // Remote desktop. Shape only — the policy rules (invite must
+                // come from a saved contact, one session in flight per peer,
+                // media_attach must match an open accept window) need contact
+                // state and a clock, so they live in AppModel and
+                // RemoteSessionRegistry. This validator is a pure function over
+                // one frame and has neither.
+                case "remote_invite":
+                case "remote_accept":
+                {
+                    var pkt = JsonSerializer.Deserialize<RemoteSessionPacket>(data);
+                    if (pkt is null) return null;
+                    if (!Core.Crypto.RemoteSessionCrypto.IsSessionId(pkt.SessionId)) return null;
+                    if (!ValidateNonce(pkt.Nonce)) return null;
+                    return typeStr == "remote_invite"
+                        ? new ValidatedRemoteInvite(pkt, senderIP)
+                        : new ValidatedRemoteAccept(pkt, senderIP);
+                }
+
+                case "remote_decline":
+                case "remote_end":
+                case "media_attach":
+                {
+                    var pkt = JsonSerializer.Deserialize<RemoteControlPacket>(data);
+                    if (pkt is null) return null;
+                    if (!Core.Crypto.RemoteSessionCrypto.IsSessionId(pkt.SessionId)) return null;
+                    return typeStr switch
+                    {
+                        "remote_decline" => new ValidatedRemoteDecline(pkt, senderIP),
+                        "remote_end"     => new ValidatedRemoteEnd(pkt, senderIP),
+                        _                => new ValidatedMediaAttach(pkt, senderIP),
+                    };
+                }
+
                 default:
                     return null;
             }

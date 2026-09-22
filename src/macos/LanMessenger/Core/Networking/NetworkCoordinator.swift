@@ -79,7 +79,8 @@ final class NetworkCoordinator: NSObject {
                 port: 54232,
                 publicKeyB64: self?.ownPublicKeyB64 ?? "",
                 ips: self?.network.localIPs.map { $0 } ?? [],
-                relayIdHash: RelayClient.shared.relayIdHash()
+                relayIdHash: RelayClient.shared.relayIdHash(),
+                caps: ProtocolCapability.advertised
             )
         }
         discovery.extraTargets = { [weak self] in
@@ -101,6 +102,10 @@ final class NetworkCoordinator: NSObject {
         network.stop()
         sessions.values.forEach { $0.stop() }
         sessions.removeAll()
+        // Detached media sockets are owned by RemoteDesktopService, not by
+        // `sessions`, so they need their own reach-through or they outlive the
+        // network stack that produced them.
+        RemoteDesktopService.shared.stopAll()
         if listenerSocket >= 0 { Darwin.close(listenerSocket); listenerSocket = -1 }
     }
 
@@ -117,6 +122,37 @@ final class NetworkCoordinator: NSObject {
                 }
             }
         }
+    }
+
+    /// Opens a connection, writes one JSON frame, and hands back the still-open
+    /// descriptor for the caller to adopt.
+    ///
+    /// This is the initiator's half of the media upgrade, and the reason it
+    /// cannot use `send(frame:)`: that closes the socket, which is precisely
+    /// what must not happen here. The frame is a `media_attach`, and everything
+    /// after it on this descriptor is binary media framing.
+    ///
+    /// Returns -1 on failure, with nothing left open. The caller owns the
+    /// descriptor on success and must close it if it then declines to use it.
+    func attachOutbound(toIP ip: String, port: Int = 54232, frame: Data) -> Int32 {
+        guard let socket = openSocket(ip: ip, port: port) else { return -1 }
+
+        var sent = 0
+        let ok = frame.withUnsafeBytes { ptr -> Bool in
+            guard let base = ptr.baseAddress else { return false }
+            while sent < frame.count {
+                let n = Darwin.send(socket, base.advanced(by: sent), frame.count - sent, 0)
+                if n <= 0 { return false }
+                sent += n
+            }
+            return true
+        }
+        guard ok else {
+            Darwin.close(socket)
+            NetLogger.remote(event: "error", peer: ip, reason: "media_attach write failed")
+            return -1
+        }
+        return socket
     }
 
     func send(frames: [Data], toIP: String, port: Int = 54232) {
@@ -232,9 +268,17 @@ final class NetworkCoordinator: NSObject {
 
     private func handleInbound(socket: Int32, fromIP: String) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            defer { Darwin.close(socket) }
+            // Ownership of this descriptor is single-owner but no longer
+            // unconditional: a `media_attach` hands it to the media subsystem,
+            // which then owns it for the rest of its life. Closing it here as
+            // well would pull the socket out from under a live session.
+            var detached = false
+            defer { if !detached { Darwin.close(socket) } }
 
-            // 30 s read timeout — kills stuck readers without losing fresh data
+            // 30 s read timeout — kills stuck readers without losing fresh data.
+            // SocketMediaLink CLEARS this on adoption: a media session is
+            // legitimately idle whenever the peer's screen is static, and this
+            // timeout would tear it down mid-stream.
             var tv = timeval(tv_sec: 30, tv_usec: 0)
             setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -247,6 +291,20 @@ final class NetworkCoordinator: NSObject {
                     ownPublicKeyB64: self?.ownPublicKeyB64 ?? ""
                 )
                 if case .success(let pkt) = result {
+                    // Decided HERE, synchronously, on this thread. The delegate
+                    // hop below is @MainActor and therefore async; by the time it
+                    // landed, this loop would already have read the first 22
+                    // binary header bytes of the media stream and interpreted
+                    // them as a JSON length prefix.
+                    if case .mediaAttach(let attach, _) = pkt {
+                        if RemoteDesktopService.shared.attachInbound(
+                            packet: attach, socket: socket, fromIP: fromIP) == .detached {
+                            detached = true
+                        }
+                        // `return`, never `break`: the loop must not touch this
+                        // descriptor again either way.
+                        return
+                    }
                     DispatchQueue.main.async { [weak self] in
                         guard let self else { return }
                         self.delegate?.coordinator(self, didReceivePacket: pkt)

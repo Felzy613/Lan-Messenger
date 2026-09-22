@@ -27,6 +27,9 @@ The repo does not commit `LanMessenger.xcodeproj`. macOS development uses
 - [docs/RELEASE_AND_OPERATIONS.md](docs/RELEASE_AND_OPERATIONS.md) - CI,
   packaging, update channels, smoke tests, and diagnostics.
 - [docs/FILE_MAP.md](docs/FILE_MAP.md) - detailed file inventory.
+- [docs/REMOTE_DESKTOP.md](docs/REMOTE_DESKTOP.md) - remote-desktop status,
+  handoff, and the plan for the remaining workstreams. Read this before touching
+  anything under `Core/Networking/Media` or `RemoteSessionCrypto`.
 - [memory/](memory/) - repo-local project memory for future sessions.
 
 Update the relevant docs when changing behavior, storage formats, protocol fields,
@@ -40,8 +43,19 @@ build commands, CI, packaging, or release behavior.
 cd src/macos
 swift build
 swift test
-swift run
+swift run     # unbundled: no notifications, no TCC identity of its own
 ```
+
+`swift run` produces a bare executable with no `.app` around it, and some
+frameworks refuse to work there. `UNUserNotificationCenter.current()` is the one
+that bites: it raises `NSInternalInconsistencyException` — "bundleProxyForCurrentProcess
+is nil" — from inside a `dispatch_once` during `applicationWillFinishLaunching`,
+so the app dies before its first window and the backtrace is sixty frames of
+SwiftUI with the cause buried in the middle. `NotificationService` guards on
+`Bundle.main.bundleIdentifier` for exactly this reason; anything else reaching
+for a bundle-scoped API needs the same guard. TCC grants also attach to whatever
+app is responsible for the process rather than to the binary, so permissions
+behave differently here than in the packaged app.
 
 Generate an Xcode project only when needed:
 
@@ -69,13 +83,42 @@ or from inside `src/macos`:
 Run on Windows with Visual Studio 2022, .NET 8, Windows App SDK support, and x64.
 Use VS MSBuild for WinUI packaging tasks.
 
+Restore and build must be **separate MSBuild invocations**. Combined as
+`/t:Restore,Build` the Windows App SDK targets are imported before the restore
+that supplies them, so the XAML markup compiler never runs — and the build fails
+with hundreds of `CS0103: The name 'InitializeComponent' does not exist` plus a
+`CS5001: no static 'Main' method`, which reads as a broken source tree rather
+than a restore ordering problem. Every generated partial goes missing at once;
+that symptom means the markup compiler did not run.
+
 ```powershell
 cd src\windows-native
 msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln
 msbuild LanMessenger.Tests\LanMessenger.Tests.csproj /p:Configuration=Release /p:Platform=x64
-$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse | Select-Object -First 1
+$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+"using $($testDll.FullName) built $($testDll.LastWriteTime)"
 dotnet vstest $testDll.FullName --logger:"console;verbosity=normal"
 ```
+
+`Sort-Object LastWriteTime` and the echo are not decoration. When a build fails,
+the previous binary is still sitting there, and an unsorted `Select-Object -First 1`
+runs it and reports a confident green from stale code — it reported 220/220 from a
+three-day-old DLL once. Print the timestamp and check the totals moved.
+
+When syncing this tree from a Mac, strip AppleDouble sidecars:
+
+```bash
+COPYFILE_DISABLE=1 tar czf out.tgz --exclude='bin' --exclude='obj' --exclude='._*' src/windows-native
+```
+
+macOS `tar` writes a `._Name` file for anything carrying an extended attribute.
+Extracted on Windows those are real files, and the WinUI XAML compiler globs
+`**/*.xaml`, so it parses `._SettingsPage.xaml` and dies with
+`Xaml Internal Error error WMC9999: ... hexadecimal value 0x00 ... Line 1, position 1`.
+One transfer scattered 130 of them. Note that `WMC9999` does not match an
+`error CS|error MSB` log filter, so a filtered build log looks clean while the app
+project has failed.
 
 Build the self-contained app:
 
@@ -95,6 +138,7 @@ PROTOCOL.md
 docs/
 memory/
 scripts/
+spikes/            throwaway diagnostics; not part of either app
 version/
 src/
   macos/
@@ -106,6 +150,7 @@ src/
         Protocol/
         Crypto/
         Networking/
+          Media/   remote-desktop transport and codec
         Persistence/
         Services/
       UI/
@@ -114,6 +159,8 @@ src/
     LanMessenger.sln
     LanMessenger/
       Core/
+        Networking/
+          Media/
       UI/
     LanMessenger.Tests/
     LanMessenger.iss
@@ -211,6 +258,20 @@ Files:
 - Temp file format is `{transfer_id}_{filename}.part`.
 - Dedup final names with `_1` through `_999`, then an 8-hex fallback.
 
+Remote desktop (unreleased, `feat/remote-desktop-transport`):
+
+- The media channel shares TCP `54232` by connection upgrade. A validated
+  `media_attach` detaches the socket from the JSON read loop; the JSON frame
+  format is untouched because the descriptor has left the loop before the first
+  binary byte arrives. No new port.
+- Media frame header is 22 bytes: `[4B length][1B channel][1B flags]
+  [8B sequence][8B capture_us]`, and `length == 18 + sealedPayloadCount`.
+- Media frames cap at 4 MiB, independent of the 50 MiB JSON cap.
+- Media nonces are counters — `direction_salt(4) || sequence(8)` — never random.
+- **The on-wire H.264 packaging is Annex-B with in-band SPS/PPS before every
+  IDR.** Media Foundation speaks this natively; VideoToolbox does not, so the
+  macOS side converts in both directions. See PROTOCOL.md → Video Sub-Channel.
+
 Reply extension:
 
 - Native clients may include `reply_to_message_id`, `reply_to_preview`, and
@@ -257,6 +318,22 @@ Edit extension:
 - `project.yml` is the XcodeGen source. Do not edit generated Xcode project files
   as durable source.
 - `scripts/macos/package.sh` is the canonical packaging path.
+- Local builds prefer a stable self-signed certificate (`LAN Messenger Dev`,
+  created by `scripts/macos/create-dev-identity.sh`) over ad-hoc signing. This is
+  a **TCC measure, not a distribution one**: an ad-hoc signature's designated
+  requirement is the binary's own cdhash, so every rebuild is a different app to
+  TCC and both the Screen Recording and the Accessibility grant silently stop
+  applying — the System Settings toggle still reads as on while the API returns
+  false. Re-granting needs the user's password, and the app never calls
+  `CGRequestScreenCaptureAccess`, so nothing re-prompts. Signing with a
+  certificate moves the requirement onto the certificate
+  (`identifier "com.dave.lanmessenger" and certificate leaf = H"…"`), which is
+  identical for every build. CI is untouched: it passes `SIGNING_IDENTITY`
+  explicitly, and the dev branch is skipped when `CI`/`GITHUB_ACTIONS` is set.
+  Detect the identity with `security find-identity -p codesigning` and **no
+  `-v`** — an untrusted self-signed root is absent from the "valid identities"
+  list but signs perfectly well, and trust has no bearing on the designated
+  requirement.
 
 ### Windows
 
@@ -315,6 +392,9 @@ Use the smallest sufficient set for the change:
 - Docs-only: `git diff --check` and grep for stale paths/claims.
 - Protocol/crypto/framing: macOS `swift test`, Windows test suite when on Windows
   or CI, and check both `known_good_exchange.json` copies.
+- Remote desktop: both platform suites, plus **both** copies of
+  `remote_handshake_vector.json` and `media_frame_vector.json`. Update
+  `docs/REMOTE_DESKTOP.md` if the status of a workstream changed.
 - macOS source: `cd src/macos && swift build && swift test`.
 - Windows source: restore/build/tests through MSBuild on Windows.
 - Packaging: platform workflow scripts or the relevant smoke test.
@@ -348,7 +428,374 @@ Use the smallest sufficient set for the change:
 - Do not remove the per-minute discovery health summary, or drop a log channel
   from the `LogChannel` enum — `archivedLogURLs`/`ArchivedLogPaths` derive the
   export bundle from that enum, so an unlisted channel silently never reaches a
-  bug report.
+  bug report. Adding a channel without a writer is caught by the channel-coverage
+  tests on both platforms, which enumerate the enum rather than a hardcoded list.
+- Do not schedule the discovery health timer on `recvQueue`. It was created there
+  for years and therefore never fired once — `recvQueue` is serial and the
+  receive loop's block never returns, so the handler was never dequeued.
+  Production logs showed 39,304 Discovery lines and zero health lines: the
+  diagnostic built to catch queue starvation was itself dead from queue
+  starvation. It must not go on `queue` either, since it has to survive a wedged
+  beacon queue in order to report `tx_beacons=0`. It owns `healthQueue` for
+  exactly that reason. Covered by `DiscoveryServiceQueueTests`.
+- Do not give a media session's timers the same queue or thread as its read
+  loop. `MediaSession` owns three contexts — read, write, timers — and the read
+  loop never returns while running, so a keepalive or watchdog scheduled onto it
+  is never dequeued. That is the same failure the discovery receive loop caused
+  twice. A starved watchdog is the worst case here: a crashed viewer would leave
+  the host's screen captured indefinitely with nothing saying so. Covered by
+  `RemoteDesktopQueueTests` on both platforms, which count seams reachable only
+  from the timer path.
+- Do not rebuild a media frame header to use as AEAD associated data. The AAD is
+  the 22 header bytes exactly as received; reserved flag bits 3-7 must be ignored
+  for interpretation but preserved byte-for-byte, so a normalised re-encode
+  differs by one byte against any peer that sets one and fails every tag check.
+  Both `MediaFrameHeader` types keep `rawFlags` beside the masked view for this.
+- Do not compute a media frame's `length` from the plaintext. It is
+  `18 + sealedPayloadCount`, tag included, and the length lives inside the AAD —
+  getting it wrong is off by exactly 16 and every frame fails on the peer with no
+  other symptom. `encodeFrame`/`EncodeFrame` is the only sanctioned constructor.
+- Do not advance a single byte after matching an H.264 start code. A 4-byte
+  start code *contains* a 3-byte one at offset+1, so a scanner that does not
+  consume the whole code finds a phantom unit inside every 4-byte code and
+  reports exactly twice as many NAL units as exist. The tell is suspiciously
+  equal 3-byte and 4-byte counts in the same stream. Both `H264Bitstream`
+  scanners consume the full code; `H264BitstreamTests` asserts the count against
+  a real encoder artefact.
+- Do not split an H.264 stream into access units on access unit delimiters or
+  parameter sets. VideoToolbox emits no AUDs at all and parameter sets only at
+  IDRs, so an AUD/SPS split collapsed a 60-frame stream into 2 units and the
+  Windows decoder emitted almost nothing. **A slice (NAL type 1 or 5) is the
+  access unit boundary**; any SPS/PPS/SEI ahead of it belongs to it.
+- Do not add a `remote_decline` reason on one platform only. The token set is
+  fixed by PROTOCOL.md — `declined`, `busy`, `unsupported`, `disabled`,
+  `no_encoder`, `timeout` — and the Windows enum carried only two of the six for
+  a while, which meant that side had no way to say `declined` or `timeout`: the
+  two a consent prompt actually produces. The tokens are spelled out in
+  `ToToken`/`Parse` rather than derived from the enum names, because
+  `no_encoder` is not `NoEncoder` lowercased and the two platforms have to agree
+  byte for byte. Covered by `EveryDeclineReasonRoundTripsThroughItsWireToken`.
+- Do not end a remote-desktop session by dropping the `MediaSession` reference.
+  Forgetting it leaves the socket open, so the peer never learns: their
+  indicator stays up, their capture keeps running, and the registry keeps the
+  session id in flight so the next invite is refused as `busy` — which presents
+  as "it worked once and now it will not start again". Call `stop()`/`Stop()`,
+  which closes the socket (the one signal that always arrives, because a
+  crashing peer sends nothing else), and send `remote_end` alongside it for the
+  reason. Both platforms route every exit through one place — `announceEnd` on
+  macOS, `AnnounceEnd` on Windows — because a session can end from six
+  directions and doing it per call site is how five of them forget.
+- Do not replace a `MediaSession`'s `OnClosed`/`onClosed` handler. `AttachInbound`
+  already installs one that frees the registry entry, so overwriting it strands
+  the peer as in-flight forever. Compose: call the previous handler, then your
+  own. Covered by `AClosedSessionFreesThePeerForANewInvite`.
+- Do not leave `hidesOnDeactivate` at its default on a remote-desktop viewer
+  panel. `NSPanel` hides itself when its app deactivates, which is right for a
+  utility palette and wrong for a window showing another machine's screen —
+  clicking any other app makes the thing you are watching vanish, and somebody
+  driving a remote machine is by definition not activating this app.
+- Do not open a remote-desktop accept window after sending `remote_accept`. The
+  peer may attach the instant it reads the answer, and a `media_attach` with no
+  matching window is dropped and the connection closed — so the wrong order
+  fails only when the network is fast enough to win the race, which is the worst
+  kind of intermittent. `RemoteInviteCoordinator` opens the window first on both
+  platforms, and both suites assert it by snapshotting the registry at the
+  moment the accept frame is written.
+- Do not start capturing when an invite is accepted. Capture begins when the
+  viewer's `media_attach` actually arrives, so a peer that changes its mind
+  never causes the host's screen to be read at all — the accept window simply
+  expires. Agreeing is not sharing, and the gap between the two is a real
+  network round trip.
+- Do not let a malformed optional discovery field drop the datagram. A peer
+  with a broken `caps` is still a peer, and rejecting its beacon removes it from
+  the network entirely over a field that is optional by definition. Swift's
+  decoder is tolerant by construction; `System.Text.Json` throws, which
+  `ValidateDiscovery` catches as "drop it" — hence `TolerantStringListConverter`.
+  The two must agree, because the peer that vanishes is always the one on the
+  *other* platform. Covered by `ProtocolCapabilityTests` on both sides.
+- Do not add a message-text marker prefix without updating every call site that
+  inspects `text`. There are three — the sidebar's last-message preview, the
+  editability guard in `AppModel`, and the chat row builder in `ChatView` — and
+  one that forgets renders the raw JSON body at the user. `__FILE__:` marks an
+  attachment and `__REMOTE__:` marks a remote-desktop audit record; both keep
+  the stored history format unchanged, which is the whole reason for the trick.
+  Covered by `RemoteAuditTests`.
+- Do not hand an empty control frame to the JSON decoder. The keepalive **is**
+  an empty frame on the control sub-channel — `MediaSession` sends one every 5
+  seconds, and it exists precisely because a still screen sends no video to prove
+  the link with. Decoding it produced one "undecodable control message" every
+  five seconds for the life of every session, on both sides. Check for an empty
+  payload before decoding.
+- Do not forget to arm `MediaFrameReader.inputArmed`/`InputArmed` when control is
+  granted. It is a second, transport-level gate on the receiving side, deliberately
+  independent of the grant the session tracks — and it defaults to closed. Left
+  unconnected, both apps agree control has been granted while every input frame is
+  dropped at the socket with `input before control_grant`, which is exactly what
+  the first real control session did. Arm it in `grantControl`/`GrantControl`,
+  disarm it in the revoke path and at teardown.
+- Do not decide whether to wire a `MediaSession`'s inbound callback from the
+  session's role. `onFrame`/`OnFrame` lived inside macOS `start()`'s
+  `presentsLocally` block, so a **host never set it at all** and silently
+  ignored everything its viewer ever said: `control_request`, every input
+  record, every keyframe request. Nothing logged it, because a host has nothing
+  to say about frames it was never handed; video is one-way and `MediaSession`
+  consumes the keepalives itself, so both ends looked healthy at 29fps for the
+  whole session. It presented as "Request Control does nothing, anywhere". The
+  transport and its routing are adopted together — macOS `adopt(_:)`, called by
+  both entry points before `start` — so there is no role that can miss it.
+  Covered by `testAHostWiresRoutingEvenWhenItsCaptureNeverStarts`.
+- Do not subtract a peer's `capture_us` from your own clock and call it latency.
+  The stamp is on the HOST's `Stopwatch`/mach timebase, so across two machines
+  the difference is dominated by the gap between their two origins: the first
+  real cross-machine session reported `latency_ms_avg=2813817527` — about 32.5
+  days — in a window visibly keeping up at 29fps. A figure that wrong is worse
+  than none, because it is still a number and somebody will act on it.
+  `RemoteLatencyClock` keeps the session's smallest difference as the zero and
+  reports delay above it, and `viewer_stats` prints `clock=shared` or
+  `clock=rel` so the reading always says which it is. Self-view keeps its true
+  capture-to-glass figure because there the clocks really are the same one.
+- Do not write the remote-desktop audit trail from the host's chair regardless
+  of role. A Mac that had spent ten minutes *watching* the Dell ended the
+  session and recorded "You stopped sharing your screen." in its own history —
+  not a wording slip but a false entry, in the one record a user consults to
+  find out whether their screen was ever shared. `RemoteAuditRecord` carries an
+  optional `viewing` flag (absent means host, so stored history needed no
+  migration) and every sentence has both forms. Derived text is `[JsonIgnore]`
+  on Windows and computed on read on both platforms: System.Text.Json serializes
+  get-only properties, so the record used to store its own rendered `Summary`,
+  which both diverged from the Swift bytes and froze wording into storage.
+- Do not let a macOS control grant be given without saying whether this Mac can
+  act on it. Input injection needs the **Accessibility** grant, a different TCC
+  permission from the Screen Recording one the session already has — being given
+  one says nothing about the other — and `CGEvent.post` fails silently without
+  it. The user grants control, the peer's pointer does nothing, and neither end
+  can tell that from a dead network. The control consent prompt reads
+  `RemoteInputInjector.hasAccessibilityGrant` and says so, in plain chrome
+  rather than the orange trust treatment, because a permissions note dressed as
+  a security warning teaches people to dismiss security warnings. Note also that
+  every rebuild of an ad-hoc-signed bundle is a new code identity, so both TCC
+  grants drop and have to be given again.
+- Do not route every inbound media frame to the video pipeline. Frames carry a
+  channel — video, control, input, cursor, stats — and sending them all to the
+  decoder worked only while nothing else was being sent: a control message handed
+  to a decoder is not an error anywhere, it simply produces no picture. Both
+  platforms dispatch on `frame.channel`/`frame.Channel` now, and input is gated
+  twice over — a viewer has no injector at all, and the injector re-checks the
+  grant at every call rather than trusting its caller.
+- Do not scale `MOUSEEVENTF_ABSOLUTE` coordinates against the shared display.
+  With `MOUSEEVENTF_VIRTUALDESK` the 0..65535 range spans the **whole virtual
+  desktop**, so scaling against a 1920-wide shared display on a 3840-wide desktop
+  puts a centre click at the left edge of the *second* monitor — exactly a factor
+  of two, and completely invisible on any single-monitor machine. Resolve the
+  normalized coordinate to a virtual-desktop pixel using the shared display's
+  real origin (`DesktopDuplicator.OriginX/OriginY`, never an assumed zero), then
+  scale that against `SM_XVIRTUALSCREEN`/`SM_CXVIRTUALSCREEN`. Covered by
+  `AbsoluteCoordinatesSpanTheVirtualDesktopNotTheSharedDisplay`.
+- Do not carry a `RemoteGrantState` from one session into the next. It is
+  deliberately one-way — "a session that has ended stays ended" — and the macOS
+  `RemoteDesktopSession` is a long-lived singleton, so reusing the value left
+  `ended` true and made `accept()` refuse. The first session after launch worked
+  and every one after it silently had no grant at all: the host granted control,
+  the viewer logged that it had, and the capture view stayed switched off because
+  the ladder had quietly refused to climb. `start(mode:)` builds a fresh one.
+  Covered by `testASecondSessionGetsAFreshGrantLadder`.
+- Do not discard the Bool from `grantControl()`. Logging "control_granted"
+  unconditionally is how the viewer came to insist in its own log that it had
+  control while the ladder had refused it — the one record that could have
+  explained the silence said the opposite.
+- Do not normalize remote-desktop input against the viewer's window. The picture
+  is aspect-fitted, so there are letterbox bars whenever the window's shape does
+  not match the remote screen's, and a click in a bar is not a click on the
+  remote machine. Normalize against the video rectangle, and return nothing for
+  a point in the bars rather than clamping it to an edge — clamping puts the
+  pointer where the user did not aim. Both capture paths compute the fitted
+  rectangle the same way their presenter does.
+- Do not write a second key table for the reverse direction. `HidKeyMap` is the
+  single source of truth on each platform and the capture side inverts it:
+  macOS's `RemoteHidUsage` and Windows's `HidKeyMap.UsageForScanCode` are both
+  built from the forward table at startup, because a second hand-written table
+  is a second place for the same typo. On Windows the extended flag is part of
+  the inverse key — keypad 7 and Home share scan code 0x47, and inverting on the
+  code alone makes the arrow keys type digits. Covered by the round-trip tests
+  in both suites.
+- Do not leave a remote-desktop session holding keys. A session that ends
+  mid-chord leaves the host with whatever was down, and a machine with Alt or
+  Command stuck behaves as if possessed — the user's first instinct is to blame
+  their keyboard. Both injectors expose `releaseEverything`/`ReleaseEverything`
+  and every teardown path calls it first, before capture stops. The viewer side
+  lifts held keys too, when focus leaves and when capture stops: releasing a key
+  outside the window means the key-up is never seen and so never sent.
+- Do not register the remote-desktop kill shortcut through an `NSEvent` global
+  monitor. That route needs the Accessibility grant, and the shortcut exists to
+  work when things have gone wrong — including a grant that was never given or
+  has been revoked. Carbon's `RegisterEventHotKey` needs no permission and fires
+  whatever app is frontmost, which is the requirement: a host being actively
+  controlled is by definition not looking at our window. The combination is
+  `⌃⌥⌘⎋`, it lives in `RemoteKillSwitch`, and WS7's viewer-side capture must
+  consult `RemoteKillSwitch.reserved` and never put it on the wire.
+- Do not subtract a peer's `capture_us` from your own clock and call it latency,
+  and do not stop at calling the result useless. Both clocks are
+  monotonic-since-boot with unrelated origins, so the difference is mostly the
+  gap between two boot times — measured, on the two machines here, at **32.57
+  days**. `ping`/`pong` have been in PROTOCOL.md since WS1 for exactly this and
+  went unimplemented for eleven workstreams; they now carry each side's own
+  clock (**a `pong` must never echo the ping's timestamp** — that yields an
+  offset of zero, which looks like two perfectly synchronised machines).
+  `RemoteClockSync` keeps the lowest-RTT sample, because a sample's error is
+  bounded by half its round trip and averaging drags the best one back towards
+  the queued ones. With it, the same link reads 26–31ms glass to glass.
+- Do not enforce the protocol's two-frame rule inside a codec. "Never buffer
+  more than two video frames anywhere" is about queues, and **a hardware
+  encoder's pipeline is not a queue** — it is fixed latency. An async MFT issues
+  one `METransformNeedInput` per slot and holds several frames by design; the
+  Quick Sync encoder here measures a steady-state depth of 2 and refuses nothing
+  at 8, so a cap of 2 would sit exactly on the limit and refuse on any jitter.
+  The encoder gets a *runaway* guard (`VideoFrameBudget.pipelineCapacity`) and
+  reports `peak=`, which is the only view anything has of the codec's own
+  contribution to latency; the places that genuinely queue keep
+  `protocolCapacity`. The five places and what bounds each are tabulated in
+  PROTOCOL.md.
+- Do not root a Win32 window procedure for a shorter lifetime than the window
+  class. A class registered by a process stays registered until the process
+  exits, so the second session's `RegisterClassExW` answers
+  `ERROR_CLASS_ALREADY_EXISTS` and its window runs on the class the **first**
+  guard registered — still pointing at that guard's delegate, long since
+  collected. `RemoteSessionGuard`'s `WndProcDelegate` was an instance field for
+  exactly one session too few, and the CLR ends the process with "a callback was
+  made on a garbage collected delegate" through `Environment.FailFast`: no
+  exception, no handler, nothing in the crash log. It fired inside
+  `CreateWindowExW`, because the procedure runs for `WM_NCCREATE` before that
+  call returns, so it presented as "the second remote-desktop session of a run
+  kills the app about a second after it starts" — and, because the process died
+  before the two-second stats timer, as a host that produced no video and no
+  `encoder_stats` line to explain it. **That second symptom is a trap: it reads
+  exactly like an encoder that is not producing frames, and was misdiagnosed as
+  one.** A silent death with no log line is a dead process until proven
+  otherwise — check `Get-WinEvent -ProviderName ".NET Runtime"` before blaming
+  the pipeline. The delegate is now `static readonly` and the per-session state
+  is found from the HWND.
+- Do not enumerate `ThreadLocal<T>.Values`. It threw
+  `ArrayTypeMismatchException` out of `List<T>.AddWithResize` the moment a user
+  pressed Stop Sharing on a second session: slots belonging to the previous
+  session's capture thread, which has since exited, are recycled between
+  `ThreadLocal` instances of different `T`, and enumerating walks into one typed
+  as something else. It is a crash in the runtime's bookkeeping, not in ours, and
+  there is no way to ask it to be careful. `H264Encoder` keeps its own
+  lock-protected list of the `ICodecAPI` RCWs it handed out and releases from
+  that, which also removes the race against a thread still creating a value while
+  teardown enumerates.
+- Do not record a clean channel close as a fault. A peer pressing Stop closes the
+  socket with no error; a network that went away closes it with one. Passing the
+  same reason for both wrote "the session ended because the network connection
+  was lost" into the history of every session the *other side* ended
+  deliberately — one line below a log entry that already said `peer ended`.
+  `RemoteStopReason.forChannelClose`/`ForChannelClose` takes the fault and the
+  caller's fallback, on both platforms.
+- Do not treat an absence of captured frames as a fault. `SCStream` and DXGI
+  Desktop Duplication are both change-driven: a screen with nothing moving on it
+  delivers no frames at all, indefinitely, and that is correct. A watchdog,
+  viewer or reconnect timer that reads silence as failure tears down a perfectly
+  healthy session the moment the user stops typing. The keepalive and stats
+  sub-channels exist precisely so liveness is never inferred from video.
+- Do not let a capture source's restart path share a queue with its frame
+  delivery. `ScreenCaptureSource` keeps `frameQueue` for SCK and `controlQueue`
+  for start/stop/restart, and blocks on stream teardown on the latter — the
+  restart has to run while delivery is wedged, which is exactly when it is
+  needed, and teardown must never block the queue SCK is delivering to. Same
+  family as the `DiscoveryService` and `MediaSession` rules above.
+- Do not drive an asynchronous MFT synchronously. `MF_TRANSFORM_ASYNC_UNLOCK`
+  grants permission to drive a hardware encoder the async way; it does not make
+  it behave like a synchronous one. An async MFT tells you when to act:
+  `METransformNeedInput` means you may call `ProcessInput` exactly once,
+  `METransformHaveOutput` means you may call `ProcessOutput` exactly once, and
+  both arrive on the MFT's `IMFMediaEventGenerator`. Calling either at any other
+  moment returns `E_UNEXPECTED` (0x8000FFFF) forever. On the test machine's
+  `IntelAr Quick Sync Video H.264 Encoder MFT` that produced 34,731 identical
+  error lines in fifty seconds and not one frame, while the viewer sat on
+  "waiting for first frame". `EncoderKind` already distinguishes `HardwareAsync`
+  from `HardwareSync`/`SoftwareSync`, and `H264Encoder` keeps both drive loops —
+  the synchronous one is still what a machine with no Quick Sync uses.
+- Do not log a repeating unrecoverable error and carry on. A fault that recurs
+  every frame without recovering is not a log line; it is the end of the
+  session. Left to spin it pegs a core, evicts everything else from the log, and
+  presents to the user as a window that never does anything. `H264Encoder`
+  counts consecutive failures, logs the first, and raises `OnFatalError` at
+  `MaxConsecutiveFailures` so the session stops with a reason attached.
+- Do not call Media Foundation's `ProcessOutput` before setting an output media
+  type on the decoder. Without one it answers every call with
+  `MF_E_TRANSFORM_TYPE_NOT_SET` (0xC00D6D60) and emits nothing, forever —
+  including the `MF_E_TRANSFORM_STREAM_CHANGE` you were hoping to discover the
+  real format from. Set a placeholder NV12 type up front and let the stream
+  change correct it. In the same path, `MF_E_NOTACCEPTING` (0xC00D36B5) is
+  normal flow control, not an error, and input samples without timestamps are
+  buffered forever. All four are recorded in `spikes/README.md`.
+- Do not compute an NV12 chroma offset from the height you are displaying. The
+  planes are laid out with the *surface* height, and H.264 codes in 16-pixel
+  macroblocks, so a 1080-line picture lives in a 1088-line surface and chroma
+  begins after all 1088 rows. `MF_MT_FRAME_SIZE` reports the surface;
+  `MF_MT_MINIMUM_DISPLAY_APERTURE` reports the rectangle worth showing, and
+  cropping to it without carrying the surface height along moves the chroma read
+  eight rows out of place. The picture stays perfectly sharp — luma is untouched
+  — and every colour in it is wrong, which reads as a broken decoder rather than
+  as arithmetic in the presenter. `DecodedVideoFrame` carries `SurfaceHeight`
+  beside `Height` for this, and `Nv12Converter.ToBgra` takes both. Covered by
+  `ChromaIsReadFromTheSurfaceHeightNotTheDisplayHeight`.
+- Do not pass `MFCreateMemoryBuffer` straight into `AddBuffer`. The create
+  returns a reference **the caller owns**, and `AddBuffer` takes its own rather
+  than adopting yours, so `sample.AddBuffer(MFCreateMemoryBuffer(size))` leaks
+  one native buffer every time it runs. Per frame at 1080p that was 208MB a
+  second and 15GB in ninety seconds, in the decoder and the encoder alike. It is
+  invisible from the C#: the code reads correctly, the managed heap stays flat,
+  and only the process total moves — which is why `viewer_stats` reports `gc_mb`
+  beside `ws_mb`. A flat managed heap under a climbing process means the leak is
+  native and reading the C# will not find it.
+- Do not allocate a frame-sized buffer per frame. At 1080p that is a few
+  megabytes, which lands on the Large Object Heap — not compacted, and swept
+  only on a gen2 collection. The capture converter and the decoder were each
+  allocating one per frame, about 80MB a second between them; ten minutes of
+  self-view took the process to **32GB of private commit** and the machine to
+  668MB free. The visible symptom was not the app at all: `csc.exe` began
+  exiting with code -1 during the WinUI build, and MSBuild reported the inline
+  task it had failed to compile as `MSB4036: task not found`, which names
+  neither memory nor LAN Messenger. Both paths now grow one buffer on demand and
+  reuse it, which is safe because `CapturedFrame.Nv12` is consumed inside the
+  capture-loop iteration that produced it and `DecodedVideoFrame` is documented
+  as valid only until the next decode.
+- Do not pace a capture loop with `Thread.Sleep`. It rounds up to the system
+  timer granularity, 15.6ms by default, so a requested 21ms becomes about 31ms
+  and a loop with 12ms of work in it settles at 21fps while believing it is
+  asking for 30. `AcquireNextFrame` is already the correct wait: it blocks until
+  the desktop actually changes, costs nothing while waiting, and does not round.
+  Duplication has to be drained regardless — an unreleased frame blocks the next
+  acquire — so pace by declining the colour conversion, not by declining to
+  acquire. Frames then arrive as fresh as the compositor can make them, which
+  the `age_ms` figure in `capture_stats` reports.
+- Do not hard-code an H.264 NAL length prefix size. Read it from the format
+  description. VideoToolbox emits 4 in practice, which is exactly why
+  hard-coding it survives testing and fails later against another encoder. The
+  sole exception is `H264Decoder.nalLengthSize`, where the same value is written
+  into the format description and the length prefixes we author ourselves.
+- Do not put H.264 parameter sets in the `CMVideoFormatDescription` *and* the
+  sample data. VideoToolbox treats the duplicate as a decode error rather than
+  as redundancy, and the error surfaces as a picture that never appears.
+  `H264Bitstream.annexBToAVCC` drops SPS/PPS/AUD by default for this reason;
+  passing a narrower `dropping:` set re-introduces the bug.
+- Do not enqueue to an `AVSampleBufferDisplayLayer` without clearing
+  `requiresFlushToResumeDecoding`, and do not clear it from only one place. The
+  layer silently discards everything enqueued while the flag is set, and it is
+  set by occlusion and focus loss — this is the "video froze after I switched
+  apps" bug. `SampleBufferVideoPresenter` checks it before every enqueue *and*
+  hooks `NSApplication.didBecomeActiveNotification`, because screen capture is
+  change-driven on both platforms and a still screen sends no frames for the
+  enqueue check to run on. Every flush must be followed by a keyframe request.
+- Do not delete `windows_h264_sample.h264` from either test directory. It is
+  real Microsoft H264 Encoder MFT output and cannot be regenerated without the
+  Windows machine; it is the only thing that tests the Annex-B converter against
+  something other than our own output.
+- Do not drop the in-progress video frame when the two-frame budget is full. Once
+  its first fragment is on the wire the peer is reassembling it, and abandoning it
+  leaves a dangling `fragmented`-without-`final` that desyncs their reassembler
+  permanently. Drop the queued frame, which is also the staler one.
 - Do not remove SHA256 sidecar support from updaters; combined releases may only
   expose installer assets while sidecars live on per-platform releases.
 - Do not make the only capture of SwiftUI's `openWindow` action live in

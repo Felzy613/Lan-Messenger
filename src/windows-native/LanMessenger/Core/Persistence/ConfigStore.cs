@@ -1,3 +1,4 @@
+using LanMessenger.Core.Networking.Media;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -62,6 +63,21 @@ public sealed class AppConfig
     [JsonPropertyName("relay_worker_url")]      public string RelayWorkerUrl     { get; set; } = "";
     // User-chosen folder for screenshots. Empty means default (Downloads\LAN Messenger Screenshots).
     [JsonPropertyName("screenshot_dir")]        public string ScreenshotDir      { get; set; } = "";
+    // Remote desktop, off by default and deliberately one switch for the whole
+    // feature in both directions. Stored as a string so a later mode is a new
+    // case rather than a config migration, and so an unrecognised value can fail
+    // closed — see RemoteDesktopModeParser.Parse. Serialized through the raw
+    // string for exactly that reason: System.Text.Json would throw on a value
+    // this build does not know, taking the rest of the config with it.
+    [JsonPropertyName("remote_desktop_mode")]   public string RemoteDesktopModeRaw { get; set; } =
+        RemoteDesktopModeParser.OffToken;
+
+    [JsonIgnore]
+    public RemoteDesktopMode RemoteDesktopMode
+    {
+        get => RemoteDesktopModeParser.Parse(RemoteDesktopModeRaw);
+        set => RemoteDesktopModeRaw = value.ToToken();
+    }
 }
 
 // Manages reading/writing config.json in %APPDATA%\LanMessenger\.

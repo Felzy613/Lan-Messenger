@@ -433,6 +433,7 @@ public sealed class DiscoveryService : IDisposable
                 PublicKeyB64 = src.PublicKeyB64,
                 Ips          = src.Ips,
                 RelayIdHash  = src.RelayIdHash,
+                Caps         = src.Caps,
             };
             data = JsonSerializer.SerializeToUtf8Bytes(payload);
         }
@@ -705,6 +706,7 @@ public sealed class DiscoveryService : IDisposable
                         PublicKeyB64 = src.PublicKeyB64,
                         Ips          = src.Ips,
                         RelayIdHash  = src.RelayIdHash,
+                        Caps         = src.Caps,
                     };
                     SendUdp(JsonSerializer.SerializeToUtf8Bytes(reply), fromIP, DiscoveryPort);
                 }

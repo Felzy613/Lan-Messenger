@@ -71,6 +71,7 @@ enum NetLogger {
         case retry      = "retry"       // retries/recovery  → retry.log
         case update     = "update"      // update checks     → update.log
         case crash      = "crash"       // fatal diagnostics → crash.log
+        case remote     = "remote"      // remote desktop    → remote.log
 
         var logName: String    { "\(rawValue).log" }
         var archivePrefix: String { rawValue }
@@ -249,6 +250,44 @@ enum NetLogger {
         if let r = reason    { kv.append(("reason",     quote(r))) }
         let level = ["error", "failed", "socket_error"].contains(event) ? "ERROR" : "INFO"
         write(level, "Discovery", format(kv), channel: .discovery)
+    }
+
+    /// Records a remote-desktop session event (→ remote.log).
+    ///
+    /// `event` examples: "invite_sent", "invite_received", "accepted",
+    /// "declined", "attach", "handshake_ok", "handshake_failed",
+    /// "control_granted", "control_revoked", "session_end", "frame_dropped",
+    /// "sequence_violation", "watchdog_fired".
+    ///
+    /// A remote-desktop session can see the peer's screen and drive their
+    /// machine, so every state transition is logged as an audit trail, not just
+    /// as a debugging aid. `channel`/`sequence` are for transport faults;
+    /// `reason` carries the decline/end token straight from the wire.
+    static func remote(
+        event: String,
+        peer: String?       = nil,
+        sessionID: String?  = nil,
+        role: String?       = nil,
+        channel: Int?       = nil,
+        sequence: UInt64?   = nil,
+        bytes: Int?         = nil,
+        fps: Int?           = nil,
+        latencyMs: Int?     = nil,
+        reason: String?     = nil
+    ) {
+        var kv: [(String, String)] = [("event", event)]
+        if let p = peer       { kv.append(("peer",     p)) }
+        if let s = sessionID  { kv.append(("session",  String(s.prefix(8)))) }
+        if let r = role       { kv.append(("role",     r)) }
+        if let c = channel    { kv.append(("chan",     String(c))) }
+        if let q = sequence   { kv.append(("seq",      String(q))) }
+        if let b = bytes      { kv.append(("bytes",    String(b))) }
+        if let f = fps        { kv.append(("fps",      String(f))) }
+        if let ms = latencyMs { kv.append(("latency_ms", String(ms))) }
+        if let r = reason     { kv.append(("reason",   quote(r))) }
+        let level = ["handshake_failed", "sequence_violation", "error", "failed"].contains(event)
+            ? "ERROR" : "INFO"
+        write(level, "Remote", format(kv), channel: .remote)
     }
 
     /// Records a crypto / key-derivation / handshake event (→ crypto.log).

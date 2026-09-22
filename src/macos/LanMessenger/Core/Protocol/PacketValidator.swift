@@ -113,6 +113,36 @@ enum PacketValidator {
                 return .failure(.missingRequiredField("file_end fields"))
             }
             return .success(.fileEnd(pkt, senderIP: senderIP))
+
+        // Remote desktop. Shape only — the policy rules (invite must come from a
+        // saved contact, only one session in flight per peer, media_attach must
+        // match an open accept window) need contact state and a clock, so they
+        // live in AppModel and RemoteSessionRegistry rather than here. This
+        // validator is a pure function over one frame and has neither.
+        case .remoteInvite, .remoteAccept:
+            guard let d = data, let pkt = try? JSONDecoder().decode(RemoteSessionPacket.self, from: d) else {
+                return .failure(.missingRequiredField("\(typeStr) fields"))
+            }
+            guard RemoteSessionCrypto.isSessionID(pkt.sessionId) else {
+                return .failure(.missingRequiredField("\(typeStr) session_id"))
+            }
+            guard validateNonce(pkt.nonce) else { return .failure(.invalidNonce) }
+            return .success(packetType == .remoteInvite
+                            ? .remoteInvite(pkt, senderIP: senderIP)
+                            : .remoteAccept(pkt, senderIP: senderIP))
+
+        case .remoteDecline, .remoteEnd, .mediaAttach:
+            guard let d = data, let pkt = try? JSONDecoder().decode(RemoteControlPacket.self, from: d) else {
+                return .failure(.missingRequiredField("\(typeStr) fields"))
+            }
+            guard RemoteSessionCrypto.isSessionID(pkt.sessionId) else {
+                return .failure(.missingRequiredField("\(typeStr) session_id"))
+            }
+            switch packetType {
+            case .remoteDecline: return .success(.remoteDecline(pkt, senderIP: senderIP))
+            case .remoteEnd:     return .success(.remoteEnd(pkt, senderIP: senderIP))
+            default:             return .success(.mediaAttach(pkt, senderIP: senderIP))
+            }
         }
     }
 

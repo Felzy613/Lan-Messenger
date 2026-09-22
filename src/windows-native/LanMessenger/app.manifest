@@ -8,6 +8,22 @@
       </requestedPrivileges>
     </security>
   </trustInfo>
+  <!-- Per-monitor DPI awareness. Without it the virtual-screen metrics that
+       remote-desktop input mapping depends on are DPI-virtualised, and an
+       injected click lands in the wrong place on any mixed-DPI setup. It also
+       makes GetSystemMetrics(SM_CXSCREEN) report true physical pixels, so the
+       existing screenshot path captures at full resolution instead of a
+       scaled-down bitmap.
+
+       Both elements on purpose: dpiAwareness is the Windows 10 1607+ form and
+       the one that actually applies here; dpiAware is the older fallback, and
+       costs nothing. Verify at runtime with DpiAwareness.LogEffectiveContext. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>

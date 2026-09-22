@@ -1,0 +1,18 @@
+{
+  "_comment": "Shared control-channel vector. Both platforms must encode each case to exactly this JSON, and decode it back to the same message.",
+  "cases": [
+  {"name": "hello", "json": "{\"t\":\"hello\",\"transcript_b64\":\"dHJhbnNjcmlwdA==\"}"},
+  {"name": "hello_ack", "json": "{\"t\":\"hello_ack\"}"},
+  {"name": "video_config", "json": "{\"config\":{\"codec\":\"h264\",\"display_id\":69732928,\"height\":1080,\"scale\":2,\"width\":1920},\"t\":\"video_config\"}"},
+  {"name": "keyframe_request", "json": "{\"reason\":\"presenter_flush\",\"t\":\"keyframe_request\"}"},
+  {"name": "control_request", "json": "{\"t\":\"control_request\"}"},
+  {"name": "control_grant", "json": "{\"t\":\"control_grant\"}"},
+  {"name": "control_revoke", "json": "{\"t\":\"control_revoke\"}"},
+  {"name": "display_list", "json": "{\"displays\":[{\"display_id\":1,\"height\":1080,\"is_primary\":true,\"name\":\"Built-in Display\",\"width\":1920},{\"display_id\":2,\"height\":1440,\"is_primary\":false,\"name\":\"Dell U2718Q\",\"width\":2560}],\"t\":\"display_list\"}"},
+  {"name": "display_select", "json": "{\"display_id\":2,\"t\":\"display_select\"}"},
+  {"name": "host_state", "json": "{\"state\":{\"elevated_focus\":false,\"locked\":false,\"secure_desktop\":true},\"t\":\"host_state\"}"},
+  {"name": "ping", "json": "{\"id\":42,\"sent_us\":1700000000123456,\"t\":\"ping\"}"},
+  {"name": "pong", "json": "{\"id\":42,\"sent_us\":1700000000123456,\"t\":\"pong\"}"},
+  {"name": "stats", "json": "{\"stats\":{\"decode_queue\":1,\"decoded_fps\":30,\"dropped_frames\":3,\"latency_ms\":48,\"rtt_ms\":12},\"t\":\"stats\"}"}
+  ]
+}

@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WS0 spike. Throwaway diagnostic, NOT part of the shipping app.
+
+    Answers the questions the remote-desktop plan flagged as unknown and that
+    cannot be answered from a Mac:
+
+      1. Which H.264 encoder MFTs exist on this machine (hardware / software)?
+      2. Does ICodecAPI QueryInterface succeed on them, so the low-latency and
+         rate-control settings are reachable?
+      3. Does DXGI Desktop Duplication acquire on this display adapter?
+      4. Can we actually encode D3D11 frames to a playable Annex-B .h264 file?
+
+    AnyCPU on purpose: it then runs natively on whatever the host is, so the
+    output describes the OS's real capability rather than an emulated one. The
+    shipping app is x64-only; to probe the emulated path instead, publish with
+    `-r win-x64`.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>WindowsMediaProbe</RootNamespace>
+    <AssemblyName>WindowsMediaProbe</AssemblyName>
+    <Platforms>AnyCPU;x64;ARM64</Platforms>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Version-pinned to match what the plan evaluated from the Mac. -->
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
+    <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
+  </ItemGroup>
+
+</Project>

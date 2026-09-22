@@ -297,19 +297,22 @@ public sealed class LanLoggerTests
         LanLogger.Retry("retry", subsystem: "Transfer", attempt: 1);
         LanLogger.Update("check", currentVersion: "1.0.0");
         LanLogger.Crash("unhandled_exception", name: "InvalidOperationException");
+        LanLogger.Remote("invite_sent", peer: "10.0.0.3");
 
         var paths = LanLogger.ArchivedLogPaths();
         var names = paths.Select(Path.GetFileName).ToHashSet();
 
-        foreach (var expected in new[]
+        // Derived from the enum rather than a hardcoded list on purpose. The
+        // export bundle is built from LogChannel, so a channel added without a
+        // writer here would otherwise never reach a bug report and no test
+        // would say so - exactly the trap CLAUDE.md calls out. Deriving the
+        // expectation means adding an enum case breaks this test until the
+        // channel is actually wired up.
+        foreach (LanLogger.LogChannel channel in Enum.GetValues<LanLogger.LogChannel>())
         {
-            "client.log", "transfer.log", "screenshot.log",
-            "peer.log", "discovery.log", "crypto.log", "ui.log", "retry.log",
-            "update.log", "crash.log"
-        })
-        {
+            string expected = Path.GetFileName(LanLogger.LogPathFor(channel));
             Assert.IsTrue(names.Contains(expected),
-                $"{expected} should be in ArchivedLogPaths()");
+                $"{expected} should be in ArchivedLogPaths() - is LogChannel.{channel} wired to a writer?");
         }
     }
 

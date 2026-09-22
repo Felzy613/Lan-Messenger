@@ -121,6 +121,11 @@ struct AppConfig: Codable {
     var relayWorkerURL: String = ""
     // User-chosen folder for screenshots. Empty means default (Downloads/LAN Messenger Screenshots).
     var screenshotDir: String = ""
+    // Remote desktop, off by default and deliberately one switch for the whole
+    // feature in both directions. Stored as a string so a later mode is a new
+    // case rather than a config migration, and so an unrecognised value can fail
+    // closed — see RemoteDesktopMode.parse.
+    var remoteDesktopMode: RemoteDesktopMode = .off
 
     enum CodingKeys: String, CodingKey {
         case username, contacts
@@ -137,6 +142,7 @@ struct AppConfig: Codable {
         case relayEnabled = "relay_enabled"
         case relayWorkerURL = "relay_worker_url"
         case screenshotDir = "screenshot_dir"
+        case remoteDesktopMode = "remote_desktop_mode"
     }
 
     init() {}
@@ -159,6 +165,11 @@ struct AppConfig: Codable {
         relayEnabled = (try c.decodeIfPresent(Bool.self, forKey: .relayEnabled)) ?? false
         relayWorkerURL = (try c.decodeIfPresent(String.self, forKey: .relayWorkerURL)) ?? ""
         screenshotDir = (try c.decodeIfPresent(String.self, forKey: .screenshotDir)) ?? ""
+        // Decoded through parse rather than as the enum directly: a value this
+        // build does not recognise must land on `off`, not throw and take the
+        // rest of the config with it.
+        remoteDesktopMode = RemoteDesktopMode.parse(
+            try? c.decodeIfPresent(String.self, forKey: .remoteDesktopMode))
     }
 }
 

@@ -184,10 +184,60 @@ struct ChatView: View {
             }
             .animation(.easeInOut(duration: 0.2), value: peerIsTyping)
             Spacer()
+            remoteDesktopButton
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    // MARK: - Remote desktop
+
+    /// The entry point, on the contact strip where somebody would reach for it.
+    ///
+    /// Always present, never hidden. A button that disappears reads as a missing
+    /// feature and sends people to the release notes; one that is greyed out
+    /// with the reason in its tooltip answers the question where it was asked.
+    /// The reasons come from `RemoteDesktopPolicy`, the same gate an inbound
+    /// invite is judged by, so the interface can never offer what the policy
+    /// would refuse.
+    @ViewBuilder
+    private var remoteDesktopButton: some View {
+        let key = conv?.peerPublicKeyB64 ?? ""
+        let availability = model.remoteDesktopAvailability(forPeerKey: key)
+        Button {
+            model.requestRemoteDesktop(peerKey: key, peerIP: peerIP)
+        } label: {
+            Image(systemName: "macwindow.on.rectangle")
+                .font(.system(size: 15))
+        }
+        .buttonStyle(.borderless)
+        .disabled(!availability.isAvailable)
+        .help(Self.remoteDesktopHint(availability, peerName: conv?.peerName ?? peerIP))
+        .accessibilityLabel(Text("Request remote desktop"))
+    }
+
+    private static func remoteDesktopHint(_ availability: RemoteInviteAvailability,
+                                          peerName: String) -> String {
+        switch availability {
+        case .available:
+            return "Ask \(peerName) to share their screen"
+        case .unavailable(let reason):
+            switch reason {
+            case .localFeatureOff:
+                return "Turn this on in LAN Messenger Settings (the gear icon), under Remote Desktop"
+            case .peerNotAContact:
+                return "\(peerName) is not a saved contact"
+            case .peerOffline:
+                return "\(peerName) is offline"
+            case .peerLacksCapability:
+                // The whole reason the `caps` discovery field exists: without it
+                // this would be an invite that vanishes and a spinner forever.
+                return "\(peerName)'s version does not support remote desktop"
+            case .sessionInFlight:
+                return "A remote desktop session is already running"
+            }
+        }
     }
 
     // MARK: - Message list
@@ -221,29 +271,39 @@ struct ChatView: View {
                     // when many MediaBubbleView tasks complete concurrently.
                     VStack(spacing: 2) {
                         ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
-                            let prevIncoming = idx > 0 ? entries[idx - 1].incoming : !entry.incoming
-                            MessageBubbleView(
-                                entry: entry,
-                                isFirstInRun: entry.incoming != prevIncoming,
-                                onReply: { withAnimation { editTarget = nil; replyTarget = entry } },
-                                onTapReplyTarget: {
-                                    guard let targetId = entry.replyToMessageId,
-                                          let match = entries.first(where: { $0.messageId == targetId }) else { return }
-                                    withAnimation { proxy.scrollTo(match.id, anchor: .center) }
-                                    scrollHighlightID = match.id
-                                },
-                                replyFilePath: resolvedReplyFilePath(for: entry),
-                                onDelete: { forEveryone in
-                                    model.deleteMessage(entry, peerIP: peerIP, forEveryone: forEveryone)
-                                },
-                                onEdit: { withAnimation { replyTarget = nil; editTarget = entry } }
-                            )
-                            .id(entry.id)
-                            .background(
-                                scrollHighlightID == entry.id
-                                ? Theme.accent.opacity(0.10)
-                                : Color.clear
-                            )
+                            if let audit = RemoteAuditEntry.decode(entry.text) {
+                                // A fact about the conversation rather than part
+                                // of it: centred, no bubble, and no reply or edit
+                                // affordance.
+                                RemoteAuditRowView(
+                                    entry: audit,
+                                    timestamp: Date(timeIntervalSince1970: entry.timestamp))
+                                    .id(entry.id)
+                            } else {
+                                let prevIncoming = idx > 0 ? entries[idx - 1].incoming : !entry.incoming
+                                MessageBubbleView(
+                                    entry: entry,
+                                    isFirstInRun: entry.incoming != prevIncoming,
+                                    onReply: { withAnimation { editTarget = nil; replyTarget = entry } },
+                                    onTapReplyTarget: {
+                                        guard let targetId = entry.replyToMessageId,
+                                              let match = entries.first(where: { $0.messageId == targetId }) else { return }
+                                        withAnimation { proxy.scrollTo(match.id, anchor: .center) }
+                                        scrollHighlightID = match.id
+                                    },
+                                    replyFilePath: resolvedReplyFilePath(for: entry),
+                                    onDelete: { forEveryone in
+                                        model.deleteMessage(entry, peerIP: peerIP, forEveryone: forEveryone)
+                                    },
+                                    onEdit: { withAnimation { replyTarget = nil; editTarget = entry } }
+                                )
+                                .id(entry.id)
+                                .background(
+                                    scrollHighlightID == entry.id
+                                    ? Theme.accent.opacity(0.10)
+                                    : Color.clear
+                                )
+                            }
                         }
 
                         // The typing bubble is the last row of the thread, where

@@ -13,6 +13,7 @@ requiring a fresh source-code pass.
 | `PROTOCOL.md` | Authoritative wire protocol, crypto, history, config, validation, and compatibility spec. |
 | `.gitignore` | Ignores OS clutter, IDE files, Swift build output, generated Xcode project, release artifacts, local config, and logs. |
 | `Images/Logo.png` | Master logo used to generate macOS and Windows icons. |
+| `spikes/` | Throwaway diagnostics that answer a single question about a platform API. Not part of either app and not referenced by `LanMessenger.sln`. See `spikes/README.md`. |
 
 ## Documentation
 
@@ -21,6 +22,7 @@ requiring a fresh source-code pass.
 | `docs/ARCHITECTURE.md` | End-to-end architecture and data-flow guide. |
 | `docs/DEVELOPMENT.md` | Local setup, build/test commands, validation, and change workflow. |
 | `docs/RELEASE_AND_OPERATIONS.md` | CI, packaging, releases, updater behavior, diagnostics, and incident triage. |
+| `docs/REMOTE_DESKTOP.md` | Remote-desktop status, handoff, and the plan for the remaining workstreams. |
 | `docs/FILE_MAP.md` | This file inventory. |
 
 ## Repo-Local Memory
@@ -36,6 +38,10 @@ state for the app.
 | `memory/project_protocol_gotchas.md` | Protocol compatibility gotchas that should be rechecked before wire changes. |
 | `memory/project_swift_build_notes.md` | Swift/macOS build and compiler notes discovered during native work. |
 | `memory/feedback_document_all_work.md` | Reminder that the user wants comprehensive memory/docs maintained after work. |
+| `memory/windows-reliability-audit.md` | 2026-07-01 Windows audit: TCP retry, heartbeat-driven pending redelivery, presence fix, timer crash shields, atomic saves. |
+| `memory/macos-reliability-fixes.md` | The macOS half of that audit, plus a local Keychain test hang that is a dev-machine quirk rather than a code bug. |
+| `memory/relay-system-audit.md` | Relay bugs found and fixed in 2026-05 and 2026-07: delivery-mode tracking, offline-only gating, confirmed-store-before-badge, durable outbox retry. |
+| `memory/remote-desktop.md` | Remote-desktop working notes: where the feature stands and the traps that are not obvious from the code. |
 
 ## Version Files
 
@@ -69,6 +75,7 @@ state for the app.
 |---|---|
 | `scripts/hooks/pre-commit` | Auto-bumps platform versions based on staged platform source changes. |
 | `scripts/macos/package.sh` | Canonical macOS package pipeline for app build, signing, optional notarization, DMG, ZIP, PKG, and SHA256 sidecars. |
+| `scripts/macos/create-dev-identity.sh` | Creates the stable self-signed `LAN Messenger Dev` code-signing certificate so local builds keep their TCC grants across rebuilds. |
 | `scripts/macos/validate-bundle.sh` | Validates `.app` bundle structure, Info.plist keys, icon resources, and code signing. |
 | `scripts/macos/validate-dmg.sh` | Mounts a DMG, validates layout and embedded app, then unmounts. |
 | `scripts/macos/smoke-test.sh` | Installs `.dmg`, `.pkg`, or `.zip`, launches the app, verifies it stays alive, and collects diagnostics on failure. |
@@ -125,6 +132,7 @@ state for the app.
 | `src/macos/LanMessenger/Core/Crypto/KeyManager.swift` | Loads, creates, saves, and imports the X25519 private key in Keychain. |
 | `src/macos/LanMessenger/Core/Crypto/SessionCrypto.swift` | X25519/HKDF/AES-GCM message and file chunk encryption/decryption. |
 | `src/macos/LanMessenger/Core/Crypto/HistoryCrypto.swift` | Local encrypted history key derivation, encryption, and decryption. |
+| `src/macos/LanMessenger/Core/Crypto/RemoteSessionCrypto.swift` | Remote-desktop media handshake: Noise-KK-shaped triple DH over the pinned identity keys, transcript binding, role-selected directional keys, counter nonces, and key confirmation. Separate from `SessionCrypto` because media crypto is long-lived, directional and forward-secret where message crypto is one-shot. Carries hand-rolled canonical JSON — Foundation escapes `/`, which would diverge from the C# transcript by a byte. |
 
 ## macOS Networking Layer
 
@@ -135,6 +143,46 @@ state for the app.
 | `src/macos/LanMessenger/Core/Networking/NetworkCoordinator.swift` | Owns network lifecycle, discovery, TCP listener, inbound frame validation, peer sessions, and callbacks. |
 | `src/macos/LanMessenger/Core/Networking/PeerSession.swift` | Persistent TCP peer connection with reconnect backoff and serial outgoing queue. |
 | `src/macos/LanMessenger/Core/Networking/PresenceEvaluator.swift` | Pure LAN presence state machine (Online/Probing/Offline) from `last_seen`; the testable core driving online/offline status. |
+
+## macOS Media Layer
+
+Remote-desktop transport and codec. Layered so that only `SocketMediaLink` is
+untestable; everything above it runs against in-memory doubles. See
+[REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
+
+| Path | Purpose |
+|---|---|
+| `src/macos/LanMessenger/Core/Networking/Media/MediaFrame.swift` | `MediaChannel`, `MediaFlags`, `MediaFrameHeader`, `MediaProtocolError`. The header keeps **both** `rawFlags` and the masked `flags` view, because the AEAD associated data is the 22 header bytes exactly as received — a normalised re-encode differs by one byte from any peer that sets a reserved bit. |
+| `src/macos/LanMessenger/Core/Networking/Media/MediaFrameCodec.swift` | Seal/open for media frames. `encodeFrame` is the only sanctioned constructor, because `length` is `18 + sealedPayloadCount` and lives inside the AAD. 4 MiB cap, deliberately independent of `FrameCodec`'s 50 MiB JSON cap. |
+| `src/macos/LanMessenger/Core/Networking/Media/MediaWriteScheduler.swift` | 16 KiB fragmentation and channel priority (control → input → cursor → stats → video) so a large keyframe cannot park a mouse move. Drops the **queued** video frame, never the in-progress one, whose abandonment would desync the peer's reassembler permanently. |
+| `src/macos/LanMessenger/Core/Networking/Media/MediaReassembler.swift` | Per-channel fragment reassembly with dual byte and fragment caps, plus `MediaSequenceGate`, which enforces strictly increasing sequence numbers. `lastAccepted` starts nil so sequence 0 is accepted. |
+| `src/macos/LanMessenger/Core/Networking/Media/MediaLink.swift` | The `MediaLink` seam — three methods, the entire socket surface — and `SocketMediaLink`, which adopts a detached descriptor, clears the inherited read timeout, sets `TCP_NODELAY`, and caps `SO_SNDBUF` at 128 KiB. Sends through `poll(POLLOUT)` rather than `SO_SNDTIMEO`, which Darwin silently ignores under a zero window. |
+| `src/macos/LanMessenger/Core/Networking/Media/MediaFrameReader.swift` | `MediaFrameReader`, the blocking frame read loop over a `MediaLink`, and `MediaFrameWriter`, its single-caller counterpart. Both live here because they are the two halves of one seam. |
+| `src/macos/LanMessenger/Core/Networking/Media/MediaSession.swift` | Owns a live media session's three execution contexts — read, write, timers — which **never share**. The read loop never returns, so a timer scheduled onto it would never fire; a starved watchdog would leave a host's screen captured after a viewer crash. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteSessionRegistry.swift` | The ~10 s accept window, one in-flight session per peer, and single-shot `session_id` lookup, with an injected clock so the window is testable without sleeping. |
+| `src/macos/LanMessenger/Core/Networking/Media/H264Bitstream.swift` | AVCC ↔ Annex-B conversion, the biggest cross-platform risk in the feature. Pure byte manipulation with no CoreMedia types, so it can be tested against a real Windows encoder artefact instead of its own output. |
+| `src/macos/LanMessenger/Core/Networking/Media/H264Encoder.swift` | `VTCompressionSession` wrapper: High profile, no frame reordering, zero frame delay, BT.709 tags, low-latency rate control set as a creation-time *encoder specification* (not a property), parameter sets re-read on every keyframe, and `kVTPropertyNotSupportedErr` tolerated on every property. |
+| `src/macos/LanMessenger/Core/Networking/Media/H264Decoder.swift` | The receive half: Annex-B → `CMSampleBuffer`. Splits access units on **slices**, rebuilds the `CMVideoFormatDescription` only when the in-band parameter sets change, strips them from the sample data (a duplicate is a decode error, not a no-op), attaches `DisplayImmediately` and an accurate `NotSync`, and emits nothing until an IDR has arrived. No `VTDecompressionSession` — `AVSampleBufferDisplayLayer` is the decoder. |
+| `src/macos/LanMessenger/Core/Networking/Media/VideoPresenter.swift` | The `VideoPresenter` protocol and `SampleBufferVideoPresenter`, its `AVSampleBufferDisplayLayer` implementation. Exists almost entirely for `requiresFlushToResumeDecoding`, which is cleared from two directions — before every enqueue, and on `didBecomeActive`, because a silent stream never reaches the first. Vends a layer; knows nothing about windows. |
+| `src/macos/LanMessenger/Core/Networking/Media/ScreenCaptureSource.swift` | Continuous `SCStream` capture for the host path — not the screenshot path, and different from it in nearly every decision. Restarts with backoff on `didStopWithError` and on screen-parameter changes, gates out idle/blank frames, resolves Retina points to even pixel dimensions, and keeps its control queue strictly apart from SCK's delivery queue. |
+| `src/macos/LanMessenger/Core/Networking/Media/VideoSendPipeline.swift` | Host video path: owns the encoder, converts AVCC to Annex-B with parameter sets in-band at every IDR, and latches a viewer's keyframe request onto the next captured frame — VideoToolbox has no "send an IDR now" call, and a still screen may not produce a frame for some time. |
+| `src/macos/LanMessenger/Core/Networking/Media/VideoReceivePipeline.swift` | Viewer video path: reassembled frame → decoder → sample buffer, handed on rather than presented, because `VideoPresenter` is main-actor work and this runs on the session read queue. `reset(reason:)` is the other half of a presenter flush. |
+| `src/macos/LanMessenger/Core/Crypto/PeerKeyTrust.swift` | Classifies the identity key behind an invite as `pinned`, `changedAtKnownAddress` or `unknown` — the distinction PROTOCOL.md's consent rules require the prompt to draw. Contacts are keyed *by* public key, so a changed key looks like a new contact; the signal is positional, a saved contact having last lived at that address under a different key. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteDesktopPolicy.swift` | The consent gate as one pure function, plus `RemoteDesktopMode` (off/on, stored as a string so an unrecognised value fails closed). A stranger is ignored, a contact is declined or prompted; trust is settled before the mode is consulted, so turning the feature on never widens who may reach the host. |
+| `src/macos/LanMessenger/Core/Networking/Media/MediaClock.swift` | The one clock that stamps and reads media timestamps — the same one `capture_us` comes from, or nothing built on it means anything. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteClockSync.swift` | Turns `ping`/`pong` round trips into the offset between the two machines' clocks, keeping the lowest-RTT sample. Without it a cross-machine latency is the gap between two boot times: 32.57 days, measured. |
+| `src/macos/LanMessenger/Core/Networking/Media/VideoFrameBudget.swift` | The protocol's two-frame rule as an object. Two capacities, because a codec's pipeline is fixed latency rather than a queue and starving it produces no video at all. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteInputRecord.swift` | The input sub-channel's wire records — pointer move/button/scroll, key, text — big-endian, fixed-width, and byte-identical to the C# mirror. Decoding is all-or-nothing: a short record means the stream position is no longer trustworthy, and injecting the prefix of a corrupted burst is worse than injecting nothing. |
+| `src/macos/LanMessenger/Core/Networking/Media/HidKeyMap.swift` | USB HID usage → macOS virtual key, by keyboard *position* rather than by counting. The single source of truth for which keys exist; `RemoteHidUsage` inverts it for capture rather than repeating it. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteInputInjector.swift` | Turns decoded records into `CGEvent`s. The most dangerous object in the feature — everything it does was asked for by another computer — so it re-checks the grant at every call, refuses the kill shortcut even though the viewer is required never to send it, clamps every coordinate, and lifts everything it holds at teardown. Needs the **Accessibility** grant, which is separate from Screen Recording and fails silently when absent. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteInviteCoordinator.swift` | The invite exchange: invite, decline, accept, attach, end. Opens the accept window **before** writing `remote_accept`, because a fast peer can attach the instant it reads the answer. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteGrant.swift` | The two-stage grant ladder (`none → viewing → control`, no path to control except from viewing, `end()` terminal) and `RemoteConsentRequest` — everything the prompt displays, including the fingerprint and the trust warning, built once from the invite so what a user agreed to is exactly what the gate decided to ask about. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteDesktopSession.swift` | The object that ties capture, encode, transport, decode, presentation, consent, the indicator, the guard and the audit trail into one session. Owns the teardown ordering — capture released first, always — because smeared across notification handlers it would be subtly different every time. Self-view runs host and viewer in one process. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteHostIndicator.swift` | What the host indicator says, and `IndicatorPlacement` — the pure top-centre placement it re-derives rather than remembers. Immovable by design: a viewer with the mouse could otherwise drag the host's own warning off-screen. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteSessionStop.swift` | `RemoteStopReason` — every way a session ends, which ones can still put a `remote_end` on the wire, and the audit sentence for each — plus `RemoteKillSwitch`, the reserved `⌃⌥⌘⎋` combination and the list WS7 must never forward. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteAuditEntry.swift` | The audit record, stored as a `__REMOTE__:` marker prefix on an ordinary history entry so the history format is unchanged. Decodes tolerantly: a record from a newer build yields nil rather than taking the conversation down. |
+| `src/macos/LanMessenger/Core/Networking/Media/MediaControlMessage.swift` | The control sub-channel codec: every `t` in PROTOCOL.md's table, sorted-key canonical JSON, a 64 KiB cap separate from the media frame cap, and an unknown `t` that decodes rather than faults. Also `VideoConfig`, `RemoteHostState` and `RemoteSessionStats`. |
+| `src/macos/LanMessenger/Core/Networking/Media/RemoteInputGeometry.swift` | Normalized [0,1] pointer positions to `CGEvent`'s global top-left point space, with clamping treated as the trust boundary it is. |
 
 ## macOS Persistence Layer
 
@@ -154,7 +202,10 @@ state for the app.
 | `src/macos/LanMessenger/Core/Services/NotificationService.swift` | UserNotifications wrapper for message and file notifications. |
 | `src/macos/LanMessenger/Core/Services/UpdateService.swift` | GitHub release checks, ZIP download, SHA256 verification, extraction, helper script install, and relaunch. Also builds the in-app changelog (`stripReleasePageSections` + `mergedReleaseNotes`), which merges every release between the installed build and the offered one. |
 | `src/macos/LanMessenger/Core/Services/LoginItemService.swift` | macOS 13+ launch-at-login management through `SMAppService.mainApp`. |
-| `src/macos/LanMessenger/Core/Services/NetLogger.swift` | Structured network logger to app-data log file and `os_log`. |
+| `src/macos/LanMessenger/Core/Services/NetLogger.swift` | Structured network logger to app-data log file and `os_log`. Owns the `LogChannel` enum, from which the bug-report export bundle is derived. |
+| `src/macos/LanMessenger/Core/Services/CrashReporter.swift` | Uncaught-exception and fatal-signal handlers; abnormal-termination marker. |
+| `src/macos/LanMessenger/Core/Services/RelayClient.swift` | HTTP client for the cloud relay mailbox: store, fetch, and delete offline records. |
+| `src/macos/LanMessenger/Core/Services/RemoteDesktopService.swift` | App-facing surface for remote desktop: inbound `media_attach` adoption and control-packet handling. Deliberately not main-thread affine — `attachInbound` runs synchronously on the inbound socket's own thread, because the descriptor must leave the JSON read loop before that loop reads again. |
 | `src/macos/LanMessenger/Core/Services/DockPolicyGuard.swift` | Keeps Dock presence in sync with `hide_from_dock`. AppKit promotes an `.accessory` process back to `.regular` on its own and emits no notification for it, so the guard re-asserts the preference on activation/window-key notifications plus a 3 s tick. Single owner of the activation policy; reads/writes `NSApp` through injected closures so the correction logic is testable. |
 | `src/macos/LanMessenger/Core/Services/RelayControl.swift` | Control envelope that carries an edit or delete through the relay mailbox when the peer is off-LAN: `__CTRL__:` marker, encode/decode, target validation, and fresh-record-id generation. |
 | `src/macos/LanMessenger/Core/Services/AttachmentStore.swift` | Durable on-disk home for attachments the app generates itself (screen captures, pasted bitmaps): directory resolution honouring `screenshot_dir`, filename timestamps, and collision-free naming. Not the system temp directory — history stores absolute paths. |
@@ -168,6 +219,14 @@ state for the app.
 | `src/macos/LanMessenger/UI/AppModel.swift` | Root observable state, service wiring, peer/contact/history migration, conversations, pending queues, updates, and actions. |
 | `src/macos/LanMessenger/UI/Theme.swift` | Shared color palette, bubble colors, accent, and formatting helpers. |
 | `src/macos/LanMessenger/UI/AvatarView.swift` | Avatar view supporting initials and base64 contact photos. |
+| `src/macos/LanMessenger/UI/RemoteDesktop/RemoteConsentView.swift` | The consent prompt. Names the peer in the headline, always shows the fingerprint monospaced, shows no badge on the safe path, and makes Decline the default button. |
+| `src/macos/LanMessenger/UI/RemoteDesktop/RemoteInputCapture.swift` | The viewer's mouse and keyboard, turned into wire records. Normalizes against the **video rectangle**, not the view, and returns nothing for a point in a letterbox bar rather than clamping it to an edge. Never forwards the kill shortcut. |
+| `src/macos/LanMessenger/UI/RemoteDesktop/RemoteConsentPresenter.swift` | `NSPanel` + `NSHostingView` presentation (not `openWindow`, which cannot carry a session payload and needs a materialised window scene), with the countdown and the `timeout` auto-decline. The ticker runs in `.common` run-loop mode so it does not pause during menu tracking. |
+| `src/macos/LanMessenger/UI/RemoteDesktop/RemoteHostIndicatorView.swift` | The always-on-top strip: amber for viewing, red for control, a slowly pulsing dot, elapsed time, and Stop Control / Stop Sharing. |
+| `src/macos/LanMessenger/UI/RemoteDesktop/RemoteHostIndicatorPresenter.swift` | Borderless non-activating `NSPanel` at `.statusBar` level, on all spaces, stationary, full-screen auxiliary, not movable, repositioned on every screen change. Every flag is load-bearing — the comment says which failure each one prevents. |
+| `src/macos/LanMessenger/UI/RemoteDesktop/RemoteViewerWindow.swift` | The viewer's window: an `NSPanel` hosting the presenter's `AVSampleBufferDisplayLayer` directly, with no SwiftUI layer in between — a layout pass per frame is not worth paying on the one path where per-frame cost matters. Closing it ends the session. |
+| `src/macos/LanMessenger/UI/RemoteDesktop/RemoteSessionGuard.swift` | The exits that are not a race: the Carbon global hotkey, and the system events (sleep, user switch, `com.apple.screenIsLocked`, app quit, network loss) that mean nobody is present to press Stop. Disarms as it fires, so a closing lid stops the session once rather than twice. |
+| `src/macos/LanMessenger/UI/RemoteDesktop/RemoteAuditRowView.swift` | An audit record in the thread: centred, small, grey, no bubble — a fact about the conversation rather than part of it. |
 | `src/macos/LanMessenger/UI/TypingIndicatorView.swift` | `TypingDotsView` (three dots pulsing in a staggered wave, Reduce Motion aware) and `TypingBubbleView`, the incoming-style bubble that carries them at the end of the thread. Shared by the chat header, the thread, and the sidebar row. |
 | `src/macos/LanMessenger/UI/Sidebar/SidebarView.swift` | Conversation list, toolbar buttons, empty state, new-message picker, archive sheet. |
 | `src/macos/LanMessenger/UI/Sidebar/ConversationRowView.swift` | Sidebar row rendering: avatar, preview, timestamp, unread count, online state, and the accent capsule of typing dots that covers the preview while the peer types. |
@@ -189,7 +248,6 @@ state for the app.
 | `src/macos/LanMessengerTests/DockPolicyGuardTests.swift` | Guards the Dock-presence invariant: an AppKit promotion back to `.regular` must be corrected, and a policy that already matches must be left alone. |
 | `src/macos/LanMessengerTests/CryptoTests.swift` | Session/history crypto round trips and known vector tests. |
 | `src/macos/LanMessengerTests/DiscoveryServiceQueueTests.swift` | Guards the discovery threading invariant: the blocking receive loop must not starve the beacon timer or socket rebuild. |
-| `src/macos/LanMessenger/Core/Services/CrashReporter.swift` | Uncaught-exception and fatal-signal handlers; abnormal-termination marker. |
 | `src/macos/LanMessengerTests/FrameCodecTests.swift` | Frame codec and known frame tests. |
 | `src/macos/LanMessengerTests/RelayControlTests.swift` | Relay control envelope round-trip and rejection rules, plus the inbound-delete security gate. |
 | `src/macos/LanMessengerTests/MessageEditTests.swift` | Message-edit rules: the requireIncoming security gate, attachments/deleted messages being uneditable, history back-compat, and `edit_message` packet validation. |
@@ -199,7 +257,37 @@ state for the app.
 | `src/macos/LanMessengerTests/NetworkInterfaceMonitorTests.swift` | Adapter filtering, broadcast, lifecycle, and observer tests. |
 | `src/macos/LanMessengerTests/PacketValidatorTests.swift` | Packet validation and sanitization tests, including discovery/goodbye types. |
 | `src/macos/LanMessengerTests/PresenceEvaluatorTests.swift` | LAN presence state-machine transitions (online/probing/offline). |
+| `src/macos/LanMessengerTests/RemoteSessionCryptoTests.swift` | Remote-desktop handshake: triple DH, transcript binding, role assignment, directional keys, counter nonces, key confirmation, and the shared handshake vector. Every test maps to a failure that is silent, catastrophic, or both. |
+| `src/macos/LanMessengerTests/MediaFrameTests.swift` | Media framing, mux and demux: header/AAD byte fidelity, sealed-payload length, fragmentation and drop policy, reassembly caps, sequence enforcement, and the shared frame vector. |
+| `src/macos/LanMessengerTests/RemoteDesktopQueueTests.swift` | Guards the media threading invariant: a session's timers must never share a context with its blocking read loop. Direct descendant of `DiscoveryServiceQueueTests`; counts seams reachable only from the timer path. |
+| `src/macos/LanMessengerTests/H264BitstreamTests.swift` | AVCC ↔ Annex-B conversion, asserted against `windows_h264_sample.h264` — real Microsoft encoder output, not our own. |
+| `src/macos/LanMessengerTests/H264EncoderTests.swift` | Drives a real `VTCompressionSession` and asserts on the bitstream it emits, not on a mock: parameter-set shape, reported NAL length size, keyframe flag agreeing with the actual IDR, forced keyframes, and Annex-B convertibility. Includes the skipped fixture generator (`LANMSG_EMIT_H264_FIXTURE`). |
+| `src/macos/LanMessengerTests/H264DecoderTests.swift` | The Windows → macOS conformance direction, plus the presenter. Decodes `windows_h264_sample.h264` to **60 pictures at 1280×720** through a real `VTDecompressionSession` used as an oracle — nothing of ours is on its answering side. Also covers access-unit splitting, mid-GOP join, flush recovery and keyframe-request debouncing. |
+| `src/macos/LanMessengerTests/ScreenCaptureSourceTests.swift` | Everything about capture that is assertable without a Screen Recording grant: geometry, the `SCStreamConfiguration` mapping, frame-status gating, the capture clock, restart backoff, and that `start()` refuses rather than prompting. That `SCStream` delivers a frame is **not** covered and cannot be. |
+| `src/macos/LanMessengerTests/VideoPipelineEndToEndTests.swift` | The whole video path in one process: encoder → Annex-B → scheduler → framing → AES-GCM → paired link → unseal → sequence gate → reassembly → decoder → a real `VTDecompressionSession`. Two `MediaSession`s with independently derived directional keys, so a swapped role fails here rather than on a live call. |
+| `src/macos/LanMessengerTests/ProtocolCapabilityTests.swift` | The optional discovery `caps` field, mostly from the compatibility direction: an older client that omits it, a newer one advertising unknown tokens, and a malformed field that must be tolerated rather than drop the peer. Asserts the wire key and token string literally, because a rename on one platform is invisible to the other. |
+| `src/macos/LanMessengerTests/PeerKeyTrustTests.swift` | Key-trust classification, leaning on the direction that matters: a stranger's key must never read as pinned. |
+| `src/macos/LanMessengerTests/RemoteDesktopPolicyTests.swift` | The consent rules, tested like protocol rules rather than interface behaviour — exhaustively, and from the direction of the mistake that would be worst to ship. Includes the invariant that no prompt is ever raised for an unpinned key. |
+| `src/macos/LanMessengerTests/RemoteInviteCoordinatorTests.swift` | The invite exchange, including the accept-window-before-accept ordering asserted by snapshotting the registry at the moment the frame is written. |
+| `src/macos/LanMessengerTests/RemoteInputRecordTests.swift` | The input records, against byte expectations hand-computed from PROTOCOL.md rather than captured from this implementation. |
+| `src/macos/LanMessengerTests/RemoteClockSyncTests.swift` | Mirror of the Windows clock-sync suite. |
+| `src/macos/LanMessengerTests/VideoFrameBudgetTests.swift` | Mirror of the Windows frame-budget suite. |
+| `src/macos/LanMessengerTests/HidKeyMapTests.swift` | The HID table and its inverse — a wrong entry is one key typing the wrong character on somebody else's machine, which cannot be found by using it. |
+| `src/macos/LanMessengerTests/ScreenCaptureLiveTests.swift` | Hardware-gated: skipped without `LANMSG_LIVE_CAPTURE=1` and the Screen Recording grant. |
+| `src/macos/LanMessengerTests/MediaControlVectorGen.swift` | Generator, skipped by default. Emits the shared control-message vector both suites assert against. |
+| `src/macos/LanMessengerTests/RemoteConsentTests.swift` | The grant ladder, the decline wire tokens, and what the prompt says. Includes `RemoteConsentRenderTests`, a skipped generator that renders the dialog to PNGs for visual review. |
+| `src/macos/LanMessengerTests/RemoteDesktopSessionTests.swift` | Session shape and teardown, plus the live self-view check that carries a real screen from SCStream to a display layer. Grant-gated like the capture tests. |
+| `src/macos/LanMessengerTests/RemoteHostIndicatorTests.swift` | What the indicator says, elapsed-time formatting including a clock that went backwards, and placement across the visible frame, a second display and a screen narrower than the strip. Includes the skipped render generator. |
+| `src/macos/LanMessengerTests/RemoteSessionStopTests.swift` | The kill shortcut's identity and its separation from Force Quit, which stop reasons can still notify the peer, and that the guard disarms as it fires. |
+| `src/macos/LanMessengerTests/RemoteAuditTests.swift` | Audit storage round-trips, tolerance of malformed and future records, the prose each event produces, and that the marker prefixes cannot collide. Includes a skipped render generator. |
+| `src/macos/LanMessengerTests/MediaControlMessageTests.swift` | The control codec against `media_control_vector.json`, plus forward compatibility and hostile input. |
+| `src/macos/LanMessengerTests/RemoteInputGeometryTests.swift` | Coordinate mapping and the clamping that stops a peer putting the cursor on a display it was never shown. |
+| `src/macos/LanMessengerTests/media_control_vector.json` | Shared control-channel vector: thirteen messages, the exact bytes both platforms must produce. Present in both test directories. |
+| `src/macos/LanMessengerTests/TestMediaLinks.swift` | In-memory `MediaLink` doubles. Not tests — the seam that makes everything above the socket exercisable without binding a port. |
 | `src/macos/LanMessengerTests/known_good_exchange.json` | Cross-platform crypto/framing/history test vectors. |
+| `src/macos/LanMessengerTests/remote_handshake_vector.json` | Shared remote-desktop handshake vector. Must stay byte-identical to the Windows copy. |
+| `src/macos/LanMessengerTests/media_frame_vector.json` | Shared media-frame vector. Must stay byte-identical to the Windows copy. |
+| `src/macos/LanMessengerTests/windows_h264_sample.h264` | 60 frames / 126 NAL units of real Microsoft H264 Encoder MFT output (129,547 bytes). **Cannot be regenerated without the Dell** — do not delete. |
 
 ## Windows Project Root
 
@@ -241,6 +329,7 @@ state for the app.
 | `src/windows-native/LanMessenger/Core/Crypto/KeyManager.cs` | Loads, creates, saves, and imports X25519 private key protected by DPAPI. |
 | `src/windows-native/LanMessenger/Core/Crypto/SessionCrypto.cs` | NSec X25519/HKDF/AES-GCM message and file chunk encryption/decryption. |
 | `src/windows-native/LanMessenger/Core/Crypto/HistoryCrypto.cs` | Local encrypted history key derivation, encryption, and decryption. |
+| `src/windows-native/LanMessenger/Core/Crypto/RemoteSessionCrypto.cs` | Mirror of the macOS remote-desktop handshake. NSec for X25519 only; BCL `HKDF.DeriveKey` for derivation. Hand-rolled canonical JSON — `System.Text.Json` escapes `/` and non-ASCII, which would diverge from the Swift transcript. |
 
 ## Windows Networking Layer
 
@@ -251,6 +340,54 @@ state for the app.
 | `src/windows-native/LanMessenger/Core/Networking/NetworkCoordinator.cs` | Network lifecycle, TCP listener, inbound validation, session management, and UI-dispatched callbacks. |
 | `src/windows-native/LanMessenger/Core/Networking/PeerSession.cs` | Persistent TCP peer connection with reconnect backoff and concurrent send/receive loops. |
 | `src/windows-native/LanMessenger/Core/Networking/PresenceEvaluator.cs` | Pure LAN presence state machine (Online/Probing/Offline) from `LastSeen`; mirror of the macOS evaluator. |
+
+## Windows Media Layer
+
+Byte-for-byte mirror of the macOS media layer; the shared vectors are what keep
+them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
+
+| Path | Purpose |
+|---|---|
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaFrame.cs` | `MediaChannel`, `MediaFlags`, `MediaFrameHeader` (keeps `RawFlags` beside the masked view for AAD fidelity), and the frame codec. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaWriteScheduler.cs` | 16 KiB fragmentation, channel priority, and the queued-frame drop policy. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaReassembler.cs` | Per-channel reassembly with dual caps, plus the sequence gate. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaLink.cs` | The `IMediaLink` seam and the socket implementation. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaFrameReader.cs` | `MediaFrameReader` and `MediaFrameWriter`; mirror of the Swift file. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaSession.cs` | Read, write and timer contexts that never share. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteSessionRegistry.cs` | Accept window, one in-flight session per peer, injected clock. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/H264Bitstream.cs` | AVCC ↔ Annex-B conversion; mirror of the Swift implementation. |
+| `src/windows-native/LanMessenger/Core/Crypto/PeerKeyTrust.cs` | Mirror of the Swift key-trust classifier. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteDesktopPolicy.cs` | Mirror of the Swift consent gate, including `RemoteDesktopMode`. `AppConfig` serializes the raw string rather than the enum: `System.Text.Json` throws on an unknown enum value, which would take the rest of the config with it. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaControlMessage.cs` | Mirror of the Swift control codec. Every object is written by hand with `Utf8JsonWriter` in sorted key order and `UnsafeRelaxedJsonEscaping`, because `System.Text.Json` sorts nothing and escapes `/` and non-ASCII where Foundation does not. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/CaptureTargetSelector.cs` | Which GPU to capture from and which encoder to use, as pure functions of enumerated topology — so the decisions are tested against Optimus laptops, AMD boxes, Windows N SKUs and headless machines nobody here owns. Real hardware only proves the plumbing. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteInputGeometry.cs` | Mirror of the Swift geometry, plus the SendInput absolute conversion: divisor is `width - 1`, and the virtual screen origin is subtracted. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/DesktopDuplicator.cs` | DXGI Desktop Duplication. Paces by declining the colour conversion rather than by declining to acquire — `AcquireNextFrame` is already the correct wait, and `Thread.Sleep` rounds up to the 15.6ms timer granularity. Carries the shared display's origin, which the absolute-coordinate conversion needs. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/ColorConverter.cs` | BGRA → NV12 and back, reusing one grown-on-demand buffer: a frame-sized allocation per frame lands on the Large Object Heap and took the process to 32GB of private commit in ten minutes. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/H264Encoder.cs` | The Media Foundation encoder, with **both** drive loops. A hardware MFT is asynchronous and must be driven from its `IMFMediaEventGenerator`; calling `ProcessInput`/`ProcessOutput` at any other moment returns `E_UNEXPECTED` forever. Counts consecutive failures and raises `OnFatalError` rather than logging the same line 34,731 times. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/H264Decoder.cs` | The decoder half. Sets a placeholder NV12 output type up front, because without one `ProcessOutput` answers `MF_E_TRANSFORM_TYPE_NOT_SET` forever — including the stream change you were hoping to learn the real format from. Reports `SurfaceHeight` beside `Height`, so chroma is read from the surface. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaFoundationTuning.cs` | `MF_LOW_LATENCY` and the codec properties, applied to both halves. Without it the encoder buffers and the session ran two seconds behind. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/CodecApi.cs` | The `ICodecAPI` interop Vortice does not cover. Acquired per thread: the RCW has no proxy/stub, so a cross-thread call answers `E_NOINTERFACE` and forced keyframes silently stop working. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/VideoPresenter.cs` | The `IVideoPresenter` seam the viewer window implements, so the session has no reference to XAML. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteLatencyClock.cs` | Makes `now - capture_us` mean milliseconds whichever clock stamped the frame. Across two machines the raw subtraction is the gap between their Stopwatch origins — it once reported 32.5 days — so the session's best frame becomes the zero and `viewer_stats` says `clock=rel`. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteDesktopSession.cs` | Mirror of the Swift session: the one object that owns capture, encode, decode, presentation, the grant ladder, the guard, the indicator and the audit trail. Disposes what the capture loop reads only **after** the thread has joined. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteGrant.cs` | Mirror of the Swift grant ladder and consent request. One-way: a session that has ended stays ended. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteSessionStop.cs` | Stop reasons, their wire tokens, and the audit sentence for each — in both the host's and the viewer's voice. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteSessionGuard.cs` | Lock, sleep, session-switch and the kill shortcut, as the reasons a session ends without anyone clicking Stop. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteAuditEntry.cs` | Mirror of the Swift audit record. Derived members are `[JsonIgnore]`: `System.Text.Json` serializes get-only properties, so the record used to store its own rendered sentence. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/MediaClock.cs` | QPC in microseconds — the same counter Desktop Duplication's `LastPresentTime` uses, which is what makes a frame's stamp comparable with a reading taken here. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteClockSync.cs` | Mirror of the Swift clock-offset estimator. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/VideoFrameBudget.cs` | Mirror of the Swift frame budget, including the pipeline capacity the Quick Sync encoder needs. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteInputRecord.cs` | Mirror of the Swift input records, byte for byte. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/HidKeyMap.cs` | USB HID usage → PS/2 Set 1 scan code, and the inverse for capture. F1–F10 are contiguous and **F11/F12 are not**; the extended flag is part of the inverse key, because keypad 7 and Home share scan code 0x47. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteInputInjector.cs` | `SendInput`, with the grant re-checked per injection, the kill shortcut refused, and everything held released at teardown. Absolute coordinates span the **virtual desktop**, not the shared display. |
+| `src/windows-native/LanMessenger/Core/Networking/Media/RemoteInviteCoordinator.cs` | Mirror of the Swift invite exchange, including the accept-window-before-accept ordering. |
+
+| Path | Purpose |
+|---|---|
+| `src/windows-native/LanMessenger/UI/RemoteDesktop/RemoteDesktopController.cs` | The one place a session is started, routed and stopped. Composes `OnClosed` rather than replacing it, and skips empty control frames — the keepalive is one. |
+| `src/windows-native/LanMessenger/UI/RemoteDesktop/RemoteViewerWindow.xaml.cs` | The viewer window and its `WriteableBitmap` presenter. Input is captured on a `Grid` over the `Image`, because an `Image` is not focusable and reports pointer coordinates in its own space. |
+| `src/windows-native/LanMessenger/UI/RemoteDesktop/RemoteConsentWindow.xaml.cs` | The consent prompt: peer name, fingerprint, countdown, Decline as the default. |
+| `src/windows-native/LanMessenger/UI/RemoteDesktop/RemoteHostIndicatorWindow.xaml.cs` | The persistent host indicator, naming the viewer and the grant level, with a stop control. |
 
 ## Windows Persistence Layer
 
@@ -269,7 +406,9 @@ state for the app.
 | `src/windows-native/LanMessenger/Core/Services/FileTransferService.cs` | File send/receive, encrypted chunks, per-transfer channels, queued retry, and progress callbacks. |
 | `src/windows-native/LanMessenger/Core/Services/NotificationService.cs` | Windows toast notification wrapper. |
 | `src/windows-native/LanMessenger/Core/Services/UpdateService.cs` | GitHub release checks, EXE download, SHA256 verification, elevated silent installer handoff, and exit. Also builds the in-app changelog (`StripReleasePageSections` + `MergedReleaseNotes`), which merges every release between the installed build and the offered one. |
-| `src/windows-native/LanMessenger/Core/Services/LanLogger.cs` | Structured log writer under `%APPDATA%\LanMessenger\Logs`. |
+| `src/windows-native/LanMessenger/Core/Services/LanLogger.cs` | Structured log writer under `%APPDATA%\LanMessenger\Logs`. Owns the `LogChannel` enum, from which the bug-report export bundle is derived. |
+| `src/windows-native/LanMessenger/Core/Services/RelayClient.cs` | HTTP client for the cloud relay mailbox: store, fetch, and delete offline records. |
+| `src/windows-native/LanMessenger/Core/Services/RemoteDesktopService.cs` | App-facing surface for remote desktop: inbound `media_attach` adoption and control-packet handling. Mirror of the macOS service. |
 | `src/windows-native/LanMessenger/Core/Services/CryptoRuntimeDiagnostics.cs` | One-time diagnostics for libsodium and VC++ runtime DLL availability. |
 | `src/windows-native/LanMessenger/Core/Services/RelayControl.cs` | Control envelope that carries an edit or delete through the relay mailbox when the peer is off-LAN: `__CTRL__:` marker, encode/decode, target validation, and fresh-record-id generation. |
 | `src/windows-native/LanMessenger/Core/Services/ClipboardAttachments.cs` | Decides what Ctrl+V in the composer means (files beat a bitmap; a bitmap only wins with no text alongside) and names pasted-image files. WinRT-free so the precedence rules compile and test off Windows. |
@@ -298,6 +437,7 @@ state for the app.
 | `src/windows-native/LanMessenger/UI/Sidebar/ContactEditorDialog.cs` | Contact editor, peer picker, naming dialog, and new-message dialog implementations. |
 | `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml` | Chat page XAML. |
 | `src/windows-native/LanMessenger/UI/Chat/ChatPage.xaml.cs` | Chat binding, selected peer handling, read receipts, messages, reply behavior, transfers, per-conversation draft save/restore (`AppModel.Drafts`), message deletion (`RequestDeleteMessage`), the thread-wide file drop target (`WireDropTargets` + `AcceptFileDrag`/`Page_Drop` + `DropOverlay`; handlers registered on `MessagesList`/`Composer` with `handledEventsToo` as well as on the page root, and strictly synchronous in `DragEnter`/`DragOver`), the jump-to-latest button, the latched `_pinnedToBottom` scroll rule with its settle timer (`ScrollToBottomSettled`) and `OnWindowShown` re-pin, the typing indicator (`UpdateTypingIndicator` drives the header dots and the `ListView` footer bubble), and the screenshot capture flow including drag-to-select-region. |
+| `src/windows-native/LanMessenger/UI/Chat/MediaPreviewWindow.xaml.cs` | The full-size image and video preview an attachment bubble opens. |
 | `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml` | Composer XAML with text entry, send, attachment, and screenshot UI. File drops belong to `ChatPage`, which covers the whole thread; `InputBox` pins `AllowDrop="False"` so the TextBox can't claim one. |
 | `src/windows-native/LanMessenger/UI/Chat/ComposerControl.xaml.cs` | Composer key handling, typing callbacks, send callbacks, file picker request, Ctrl+V paste-to-attach (`FilesPasted`), screenshot-request event, and a `Text` property used to save/restore per-conversation drafts. |
 | `src/windows-native/LanMessenger/UI/Chat/MessageBubbleControl.xaml` | Message/file bubble XAML including the inline image tile, video poster tile, document action row, and the "Delete for Me" / "Delete for Everyone" context-menu items. |
@@ -328,7 +468,38 @@ state for the app.
 | `src/windows-native/LanMessenger.Tests/NetworkInterfaceMonitorTests.cs` | Adapter filtering and broadcast tests. |
 | `src/windows-native/LanMessenger.Tests/PacketValidatorTests.cs` | Packet validation and sanitization tests, including discovery/goodbye types. |
 | `src/windows-native/LanMessenger.Tests/PresenceEvaluatorTests.cs` | LAN presence state-machine transitions (online/probing/offline). |
+| `src/windows-native/LanMessenger.Tests/RemoteSessionCryptoTests.cs` | Remote-desktop handshake, mirror of the macOS suite plus the shared vector. |
+| `src/windows-native/LanMessenger.Tests/MediaFrameTests.cs` | Media framing, mux and demux, plus the shared frame vector. |
+| `src/windows-native/LanMessenger.Tests/RemoteDesktopQueueTests.cs` | Media threading invariant; mirror of the macOS queue tests. |
+| `src/windows-native/LanMessenger.Tests/H264BitstreamTests.cs` | AVCC ↔ Annex-B conversion against the real encoder artefact. |
+| `src/windows-native/LanMessenger.Tests/ProtocolCapabilityTests.cs` | Mirror of the Swift `caps` suite; asserts the same wire key and token string. |
+| `src/windows-native/LanMessenger.Tests/RemoteDesktopPolicyTests.cs` | Mirror of the Swift consent-gate suite, with the key-trust cases folded in. |
+| `src/windows-native/LanMessenger.Tests/RemoteSessionShapeTests.cs` | The grant ladder, the stop reasons and the audit trail, mirroring three Swift suites — including the stored record's exact key set, because the two platforms write into the same history. |
+| `src/windows-native/LanMessenger.Tests/RemoteInviteCoordinatorTests.cs` | Mirror of the Swift invite-exchange suite, including the registry snapshot at the moment `remote_accept` is written. |
+| `src/windows-native/LanMessenger.Tests/RemoteInputRecordTests.cs` | Mirror of the Swift record suite. The byte expectations are hand-computed from PROTOCOL.md, not captured from this implementation. |
+| `src/windows-native/LanMessenger.Tests/RemoteInputGeometryTests.cs` | Mirror of the Swift geometry suite, plus the virtual-desktop absolute conversion. |
+| `src/windows-native/LanMessenger.Tests/HidKeyMapTests.cs` | The scan-code table and its inverse: no two usages sharing a code, and the extended flag carried through the round trip. |
+| `src/windows-native/LanMessenger.Tests/CaptureTargetSelectorTests.cs` | Nine machine topologies, only one of which we own. |
+| `src/windows-native/LanMessenger.Tests/MediaControlMessageTests.cs` | Mirror of the Swift control-codec suite, against the shared vector. |
+| `src/windows-native/LanMessenger.Tests/RemoteLatencyClockTests.cs` | The one piece of stats arithmetic whose correctness depends on which machine stamped the frame. |
+| `src/windows-native/LanMessenger.Tests/RemoteClockSyncTests.cs` | The clock-offset arithmetic, built from a known ground truth — a wrong offset produces a plausible number, which is how the 32.5-day reading survived a whole evening. |
+| `src/windows-native/LanMessenger.Tests/VideoFrameBudgetTests.cs` | The two-frame rule, and why a codec pipeline gets a different number. |
 | `src/windows-native/LanMessenger.Tests/known_good_exchange.json` | Cross-platform crypto/framing/history test vectors. |
+| `src/windows-native/LanMessenger.Tests/remote_handshake_vector.json` | Shared handshake vector. Must stay byte-identical to the macOS copy. |
+| `src/windows-native/LanMessenger.Tests/media_frame_vector.json` | Shared media-frame vector. Must stay byte-identical to the macOS copy. |
+| `src/windows-native/LanMessenger.Tests/windows_h264_sample.h264` | The same real-encoder artefact the macOS suite uses. |
+
+## Spikes
+
+Throwaway diagnostics. Not part of the shipping app, not referenced by
+`LanMessenger.sln`, not built by CI. A spike is deleted once its question is
+settled and the answer is written down in `docs/`.
+
+| Path | Purpose |
+|---|---|
+| `spikes/README.md` | What each spike answers, where it must be run, and the results of every run so far. |
+| `spikes/windows-mf-probe/Program.cs` | WS0 of the remote-desktop work: enumerates H.264 encoder MFTs, checks `ICodecAPI` reachability, tries Desktop Duplication, encodes NV12 to Annex-B, and (`--decode=`) feeds an Annex-B file to the Media Foundation decoder. The encode and decode stages are working reference code for the Windows half of WS4b and WS5. |
+| `spikes/windows-mf-probe/WindowsMediaProbe.csproj` | Vortice-based project file for the probe. AnyCPU, so it reports the OS's own capability rather than the emulated one. |
 
 ## Generated Or Ignored Runtime Areas
 
@@ -359,5 +530,7 @@ These directories may exist locally but are not source:
 | Windows UI shell | `MainWindow.xaml(.cs)`, `UI/*` XAML/C# files |
 | macOS packaging | `scripts/macos/package.sh`, `src/macos/project.yml`, macOS workflow |
 | Windows packaging | `LanMessenger.csproj`, `LanMessenger.iss`, Windows workflow |
+| Remote desktop | `docs/REMOTE_DESKTOP.md` first, then `PROTOCOL.md` → Remote Desktop, then both `Core/Networking/Media` trees |
+| Media framing or the media handshake | both `Core/Networking/Media` and `RemoteSessionCrypto` trees, **and both copies of `remote_handshake_vector.json` / `media_frame_vector.json`** |
 | Updates | platform `UpdateService` files and release workflows |
 | CI failure reporting | `.github/actions/report-failure`, platform workflows |

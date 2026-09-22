@@ -69,6 +69,7 @@ public static class LanLogger
         Retry,      // retries/recovery  → retry.log
         Update,     // update checks     → update.log
         Crash,      // fatal diagnostics → crash.log
+        Remote,     // remote desktop    → remote.log
     }
 
     private static string ChannelPrefix(LogChannel ch) => ch switch
@@ -83,6 +84,7 @@ public static class LanLogger
         LogChannel.Retry      => "retry",
         LogChannel.Update     => "update",
         LogChannel.Crash      => "crash",
+        LogChannel.Remote     => "remote",
         _                     => "client",
     };
 
@@ -256,6 +258,45 @@ public static class LanLogger
         if (reason is not null)      kv.Add(("reason",     Quote(reason)));
         var level = event_ is "error" or "failed" or "socket_error" ? "ERROR" : "INFO";
         Write(level, "Discovery", Format(kv), LogChannel.Discovery);
+    }
+
+    /// <summary>Records a remote-desktop session event (→ remote.log).</summary>
+    /// <remarks>
+    /// `event_` examples: "invite_sent", "invite_received", "accepted",
+    /// "declined", "attach", "handshake_ok", "handshake_failed",
+    /// "control_granted", "control_revoked", "session_end", "frame_dropped",
+    /// "sequence_violation", "watchdog_fired".
+    ///
+    /// A remote-desktop session can see the peer's screen and drive their
+    /// machine, so every state transition is logged as an audit trail, not just
+    /// as a debugging aid. `channel`/`sequence` are for transport faults;
+    /// `reason` carries the decline/end token straight from the wire.
+    /// </remarks>
+    public static void Remote(
+        string  event_,
+        string? peer      = null,
+        string? sessionId = null,
+        string? role      = null,
+        int?    channel   = null,
+        ulong?  sequence  = null,
+        int?    bytes     = null,
+        int?    fps       = null,
+        int?    latencyMs = null,
+        string? reason    = null)
+    {
+        var kv = new List<(string, string)> { ("event", event_) };
+        if (peer is not null)      kv.Add(("peer",    peer));
+        if (sessionId is not null) kv.Add(("session", sessionId.Length > 8 ? sessionId[..8] : sessionId));
+        if (role is not null)      kv.Add(("role",    role));
+        if (channel.HasValue)      kv.Add(("chan",    channel.Value.ToString(CultureInfo.InvariantCulture)));
+        if (sequence.HasValue)     kv.Add(("seq",     sequence.Value.ToString(CultureInfo.InvariantCulture)));
+        if (bytes.HasValue)        kv.Add(("bytes",   bytes.Value.ToString(CultureInfo.InvariantCulture)));
+        if (fps.HasValue)          kv.Add(("fps",     fps.Value.ToString(CultureInfo.InvariantCulture)));
+        if (latencyMs.HasValue)    kv.Add(("latency_ms", latencyMs.Value.ToString(CultureInfo.InvariantCulture)));
+        if (reason is not null)    kv.Add(("reason",  Quote(reason)));
+        var level = event_ is "handshake_failed" or "sequence_violation" or "error" or "failed"
+            ? "ERROR" : "INFO";
+        Write(level, "Remote", Format(kv), LogChannel.Remote);
     }
 
     /// <summary>Records a crypto / key-derivation / handshake event (→ crypto.log).</summary>

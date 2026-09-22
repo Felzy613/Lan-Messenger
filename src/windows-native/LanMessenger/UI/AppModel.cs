@@ -1,9 +1,11 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using LanMessenger.Core.Crypto;
 using LanMessenger.Core.Networking;
+using LanMessenger.Core.Networking.Media;
 using LanMessenger.Core.Persistence;
 using LanMessenger.Core.Protocol;
 using LanMessenger.Core.Services;
+using LanMessenger.UI.RemoteDesktop;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 
@@ -25,7 +27,15 @@ public sealed class PeerInfo
     // Every IP this peer has advertised (from discovery `ips`), used as probe
     // targets so a multi-homed or roaming peer can still be reconfirmed.
     public List<string> KnownIPs { get; set; } = [];
+    // Capability tokens from the peer's last discovery packet. Empty means the
+    // peer advertised none — which includes every client older than this field,
+    // so absence must never be read as "probably supports it".
+    public List<string> Caps { get; set; } = [];
     public bool     IsOnline     => Presence == PeerPresence.Online;
+    // Whether remote desktop may even be offered for this peer. A peer that does
+    // not advertise it drops remote_invite silently, so the menu item is
+    // disabled rather than left to time out.
+    public bool SupportsRemoteDesktop => Caps.Contains(ProtocolCapability.RemoteDesktopV1);
 }
 
 // View model for one conversation row in the sidebar.
@@ -138,9 +148,132 @@ public sealed partial class AppModel : ObservableObject
 
     // MARK: - Start
 
+    /// <summary>The invite exchange, built from this model's own dependencies.</summary>
+    /// <remarks>
+    /// Lives here rather than on RemoteDesktopService because it needs the
+    /// consent prompt, the peer list and the session; the service stays free of
+    /// all three so AttachInbound can keep running on the socket thread.
+    /// </remarks>
+    public RemoteInviteCoordinator InviteCoordinator => _inviteCoordinator ??= BuildInviteCoordinator();
+    private RemoteInviteCoordinator? _inviteCoordinator;
+
+    [ObservableProperty] private string? _remoteInviteStatus;
+
+    /// <summary>Changes whenever a remote-desktop session starts or ends.</summary>
+    /// <remarks>
+    /// The contact-strip button's enabled state depends on it, and nothing else
+    /// in the chat header changes when a session ends — so without this the
+    /// button was computed once while a session was running and stayed greyed
+    /// out for the rest of the app's life.
+    /// </remarks>
+    [ObservableProperty] private bool _remoteSessionRunning;
+
+    /// <summary>The contact-strip button.</summary>
+    /// <remarks>
+    /// Judged against the same policy an inbound invite is, so the interface can
+    /// never start something the gate would refuse.
+    /// </remarks>
+    public void RequestRemoteDesktop(string peerKey, string peerIP)
+    {
+        var availability = RemoteDesktopAvailability(peerKey);
+        if (!availability.IsAvailable)
+        {
+            LanLogger.Remote("invite_blocked", peer: peerIP, reason: availability.Reason.ToString());
+            return;
+        }
+        var peer = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == peerKey);
+        InviteCoordinator.Invite(peerKey, peerIP, peer?.Username ?? peerIP);
+    }
+
+    /// <summary>Whether the button should be offered, and why not when it should not.</summary>
+    public RemoteInviteAvailability RemoteDesktopAvailability(string peerKey)
+    {
+        var peer = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == peerKey);
+        bool isContact = ConfigStore.Shared.Config.Contacts.Any(c => c.PublicKeyB64 == peerKey);
+        return RemoteDesktopPolicy.Availability(
+            ConfigStore.Shared.Config.RemoteDesktopMode,
+            new RemoteInviteTarget
+            {
+                IsSavedContact = isContact,
+                IsOnline = peer?.IsOnline ?? false,
+                AdvertisesRemoteDesktop = peer?.SupportsRemoteDesktop ?? false,
+                HasSessionInFlight = RemoteDesktopController.Shared.IsRunning
+                                     || InviteCoordinator.HasInviteInFlight,
+            });
+    }
+
+    /// <summary>The tooltip. Same wording as the macOS build.</summary>
+    public static string RemoteDesktopHint(RemoteInviteAvailability availability, string peerName)
+    {
+        if (availability.IsAvailable) return $"Ask {peerName} to share their screen";
+        return availability.Reason switch
+        {
+            RemoteUnavailableReason.LocalFeatureOff =>
+                "Turn this on in LAN Messenger Settings (the gear icon), under Remote Desktop",
+            RemoteUnavailableReason.PeerNotAContact => $"{peerName} is not a saved contact",
+            RemoteUnavailableReason.PeerOffline => $"{peerName} is offline",
+            // The whole reason the `caps` discovery field exists: without it
+            // this would be an invite that vanishes and a spinner forever.
+            RemoteUnavailableReason.PeerLacksCapability =>
+                $"{peerName}'s version does not support remote desktop",
+            RemoteUnavailableReason.SessionInFlight => "A remote desktop session is already running",
+            _ => "Screen sharing is not available with this contact",
+        };
+    }
+
+    private RemoteInviteCoordinator BuildInviteCoordinator()
+    {
+        var coordinator = new RemoteInviteCoordinator(new RemoteInviteEnvironment
+        {
+            Send = (frame, ip) => Coordinator.Send(frame, ip),
+            AttachOutbound = (ip, frame) => Coordinator.AttachOutbound(ip, frame),
+            OwnPublicKeyB64 = () => KeyManager.Shared.PublicKeyB64,
+            OwnUsername = () => ConfigStore.Shared.Config.Username,
+            PrivateKey = () => KeyManager.Shared.PrivateKey,
+            Mode = () => ConfigStore.Shared.Config.RemoteDesktopMode,
+            // KnownContact is the policy layer's own shape, deliberately
+            // narrower than the stored one: it carries the three fields the
+            // trust decision uses and nothing a photo or a relay id could
+            // influence.
+            Contacts = () => ConfigStore.Shared.Config.Contacts
+                .Select(c => new KnownContact(c.PublicKeyB64, c.Username, c.LastIP))
+                .ToList(),
+            HasLiveSession = () => RemoteDesktopController.Shared.IsRunning,
+            Registry = () => RemoteDesktopService.Shared.Registry,
+            PresentConsent = (request, onOutcome) =>
+                RemoteDesktopController.Shared.PresentConsent(_dq, request, onOutcome),
+            StartViewing = (peerName, peerIP, channel) =>
+                RemoteDesktopController.Shared.StartViewing(
+                    _dq, peerName, peerIP, (RemoteAttachedChannel)channel),
+            ArmHosting = (sessionId, peerName, peerIP) =>
+                RemoteDesktopController.Shared.ArmHosting(sessionId, peerName, peerIP),
+        });
+        coordinator.OnStateChange = message =>
+            _dq.TryEnqueue(() => RemoteInviteStatus = string.IsNullOrEmpty(message) ? null : message);
+        return coordinator;
+    }
+
     private void Start()
     {
         CryptoRuntimeDiagnostics.LogOnce();
+
+        // The transport service is reachable from the socket thread and knows
+        // nothing about consent or the interface; these two hooks are how the
+        // exchange and the session reach back into the model.
+        RemoteDesktopService.Shared.Invites = InviteCoordinator;
+        RemoteDesktopService.Shared.OnHostAttached = (sessionId, media) =>
+            RemoteDesktopController.Shared.BeginHosting(_dq, sessionId, media);
+
+        // Wired once, on the controller, because a session can end from six
+        // places — the Stop button, the kill switch, the workstation locking,
+        // sleep, the watchdog, or the viewer window closing — and every one of
+        // them has to tell the peer. Doing it at each call site is how five of
+        // the six end up forgetting.
+        RemoteDesktopController.Shared.AnnounceEnd = (sessionId, peerIP, reason) =>
+            InviteCoordinator.SendEnd(sessionId, peerIP, reason);
+
+        RemoteDesktopController.Shared.OnChanged = () =>
+            _dq.TryEnqueue(() => RemoteSessionRunning = RemoteDesktopController.Shared.IsRunning);
 
         // First launch: replace the bare "User" default with the OS account
         // name so peers immediately see something meaningful instead of "User".
@@ -266,7 +399,8 @@ public sealed partial class AppModel : ObservableObject
     // MARK: - Peers
 
     private void UpsertPeer(string ip, string username, int port, string publicKeyB64,
-                            string? relayIdHash = null, List<string>? advertisedIPs = null)
+                            string? relayIdHash = null, List<string>? advertisedIPs = null,
+                            List<string>? caps = null)
     {
         // Last-resort self-suppression — defends against stale OwnIPs in the
         // discovery service when the machine's network interfaces change.
@@ -357,6 +491,7 @@ public sealed partial class AppModel : ObservableObject
             IP = ip, Username = username, Port = port,
             PublicKeyB64 = publicKeyB64, LastSeen = DateTime.UtcNow,
             Presence = PeerPresence.Online, KnownIPs = knownIPs,
+            Caps = caps ?? [],
         };
         Peers = updated;
         if (!string.IsNullOrEmpty(relayIdHash))
@@ -1151,10 +1286,12 @@ public sealed partial class AppModel : ObservableObject
         {
             // Refresh LastSeen for the sender so TCP activity (text, typing,
             // receipts, file chunks) keeps them marked online — mirrors macOS touchPeer.
-            TouchPeer(pkt.SenderPublicKeyB64);
+            // Gated rather than unconditional: media_attach arrives on a socket
+            // that is about to stop being a JSON peer connection at all.
+            if (pkt.RefreshesPresence) TouchPeer(pkt.SenderPublicKeyB64);
             // Cache ip -> publicKeyB64 so replies work even for unsaved / offline
             // contacts, or when this machine's own discovery reception is broken.
-            if (!string.IsNullOrEmpty(pkt.SenderPublicKeyB64))
+            if (pkt.RefreshesPresence && !string.IsNullOrEmpty(pkt.SenderPublicKeyB64))
             {
                 _knownPeerKeys[pkt.SenderIP] = pkt.SenderPublicKeyB64;
                 // Flush any file sends that arrived before we knew this peer's key.
@@ -1167,15 +1304,26 @@ public sealed partial class AppModel : ObservableObject
                     MessagingService.Shared.HandlePacket(pkt); break;
                 case ValidatedFileStart or ValidatedFileChunk or ValidatedFileEnd:
                     FileTransferService.Shared.HandlePacket(pkt); break;
+                case ValidatedRemoteInvite or ValidatedRemoteAccept
+                     or ValidatedRemoteDecline or ValidatedRemoteEnd:
+                    Core.Services.RemoteDesktopService.Shared.HandleControlPacket(pkt);
+                    break;
+                case ValidatedMediaAttach:
+                    // Handled synchronously inside NetworkCoordinator.HandleInbound,
+                    // on the connection's own task, because the socket has to be
+                    // detached before the JSON read loop touches it again.
+                    break;
                 case ValidatedDiscovery vd:
                     UpsertPeer(vd.SenderIP, vd.Packet.Username, vd.Packet.Port,
-                               vd.Packet.PublicKeyB64, vd.Packet.RelayIdHash, vd.Packet.Ips);
+                               vd.Packet.PublicKeyB64, vd.Packet.RelayIdHash, vd.Packet.Ips,
+                               ProtocolCapability.Sanitize(vd.Packet.Caps));
                     break;
             }
         };
 
         Coordinator.PeerDiscovered += (pkt, ip) =>
-            UpsertPeer(ip, pkt.Username, pkt.Port, pkt.PublicKeyB64, pkt.RelayIdHash, pkt.Ips);
+            UpsertPeer(ip, pkt.Username, pkt.Port, pkt.PublicKeyB64, pkt.RelayIdHash, pkt.Ips,
+                       ProtocolCapability.Sanitize(pkt.Caps));
 
         Coordinator.PeerDeparted += HandleGoodbye;
 

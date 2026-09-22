@@ -45,6 +45,11 @@ let package = Package(
             path: "LanMessengerTests",
             resources: [
                 .copy("known_good_exchange.json"),
+                .copy("remote_handshake_vector.json"),
+                .copy("media_frame_vector.json"),
+                .copy("windows_h264_sample.h264"),
+                .copy("macos_h264_sample.h264"),
+                .copy("media_control_vector.json"),
             ]
         ),
     ]

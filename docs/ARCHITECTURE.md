@@ -72,6 +72,7 @@ src/macos/
       Protocol/
       Crypto/
       Networking/
+        Media/            remote-desktop media transport and codec
       Persistence/
       Services/
     UI/
@@ -81,9 +82,13 @@ src/windows-native/
   LanMessenger.sln
   LanMessenger/
     Core/
+      Networking/
+        Media/            mirror of the macOS media transport
     UI/
   LanMessenger.Tests/
   LanMessenger.iss
+
+spikes/                   throwaway diagnostics, not part of either app
 ```
 
 Use [FILE_MAP.md](FILE_MAP.md) for the detailed inventory.
@@ -751,6 +756,105 @@ Deliberately not the system temp directory: history stores absolute paths, and
 temp is swept between reboots, which turns the bubble into "File no longer
 available" a day later.
 
+## Remote Desktop
+
+Remote desktop lets a peer view a contact's screen and, after a separate grant,
+drive its keyboard and mouse. The wire format is specified in PROTOCOL.md →
+Remote Desktop; **status, the remaining plan, and the accumulated gotchas live
+in [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md)**.
+
+It is **not shipped**. On `feat/remote-desktop-transport` the whole macOS video
+path exists and has been run end to end in one process — capture, encode,
+transport, decode — while the Windows codec halves, input injection and the
+consent UI do not exist yet, and nothing has run between two machines.
+
+### Transport
+
+`src/{macos,windows-native}/.../Core/Networking/Media/` implements the media
+channel. Layering, chosen so that only the socket adapter is untestable:
+
+- **Pure logic.** `MediaFrame`/`MediaFrameCodec` (22-byte header, seal/open),
+  `MediaWriteScheduler` (fragmentation, interleaving, drop policy),
+  `MediaReassembler` and `MediaSequenceGate`. No sockets, no clock, no threads.
+  Both platforms assert the shared `media_frame_vector.json`.
+- **Loops.** `MediaFrameReader`/`MediaFrameWriter` do all I/O through
+  `MediaLink`/`IMediaLink` — three methods, the entire socket surface.
+- **Socket.** `SocketMediaLink` adopts a detached descriptor, clears the
+  inherited read timeout, sets `TCP_NODELAY`, and caps the send buffer at 128 KiB
+  so the kernel cannot re-absorb what fragmentation just split up.
+
+`MediaSession` owns three execution contexts — read, write, timers — that never
+share. `RemoteSessionRegistry` holds the ~10 s accept window, one in-flight
+session per peer, and single-shot `session_id` lookup, with an injected clock.
+`RemoteDesktopService` is the app-facing surface and is deliberately not
+main-thread affine: `attachInbound` runs synchronously on the inbound socket's
+own thread, because the descriptor must leave the JSON loop before that loop
+reads again.
+
+The upgrade happens inside each platform's existing `handleInbound`: a validated
+`media_attach` hands the socket to the media subsystem and returns, and socket
+ownership becomes conditional rather than unconditional so nothing double-closes.
+No new port, no firewall rule, no installer change.
+
+### Session crypto
+
+`Core/Crypto/RemoteSessionCrypto.{swift,cs}` derives per-session media keys with
+a Noise-KK-shaped triple DH over the long-term X25519 identity keys the app
+already pins per contact — there is no signing key in this system to work with.
+It is separate from `SessionCrypto` because the properties differ: message
+crypto is one-shot and stateless, media crypto is long-lived, directional, and
+forward-secret.
+
+The initiator is always the peer that sent `remote_invite`, and the role is
+bound into the transcript. Nonces are counters, never random. A dropped socket
+ends the crypto session; reconnect performs a fresh handshake with new
+ephemerals, because reusing keys with a reset counter is catastrophic GCM nonce
+reuse.
+
+Both platforms assert the shared `remote_handshake_vector.json`.
+
+### Video
+
+`H264Bitstream.{swift,cs}` converts between the two H.264 packagings — AVCC
+(VideoToolbox: length-prefixed NAL units, parameter sets out-of-band in the
+format description) and Annex-B (Media Foundation: start codes, parameter sets
+in-band before every IDR). Neither decoder accepts the other's packaging, and
+the failure is not a clean error but a picture that never appears. It is pure
+byte manipulation with no platform media types, so it is tested against
+`windows_h264_sample.h264`, a real Microsoft encoder artefact, rather than
+against its own output.
+
+`H264Encoder.swift` is a `VTCompressionSession` configured for low latency:
+High profile, no frame reordering, zero frame delay, BT.709 tags, parameter sets
+re-read on every keyframe. A stream it produced has been decoded successfully by
+Media Foundation on real Windows hardware. There is no Windows encoder yet.
+
+`H264Decoder.swift` is the receive half, and is not a decoder in the obvious
+sense: `AVSampleBufferDisplayLayer` does the decoding, so what this owns is the
+part the layer cannot do for itself — splitting access units on slices, and
+rebuilding the `CMVideoFormatDescription` from the parameter sets that arrive
+in-band ahead of every IDR. It emits nothing until it has seen one, because a
+P-frame handed to a cold decoder is not a recoverable glitch. `VideoPresenter`
+abstracts display so a session can run without a window;
+`SampleBufferVideoPresenter` is the layer implementation, and most of it is
+`requiresFlushToResumeDecoding` handling. A real Media Foundation stream decodes
+here — 60 pictures out of the committed Windows fixture — which closes codec
+conformance in both directions. There is no Windows decoder yet.
+
+`ScreenCaptureSource.swift` is the host's `SCStream`, built for a session that
+runs for hours rather than for one frame. It restarts on `didStopWithError` and
+on screen-parameter changes, because SCK stops silently and sometimes keeps
+running at a stale size; it drops the idle and blank frames SCK delivers
+alongside real ones; and it treats silence as normal, because capture is
+change-driven and a still screen produces nothing at all.
+
+`VideoSendPipeline` and `VideoReceivePipeline` are the seams that join capture,
+codec and transport. They are thin on purpose: the send side owns an encoder and
+the rule about when to convert to Annex-B, the receive side owns a decoder and
+hands sample buffers on without presenting them. `VideoPipelineEndToEndTests`
+runs both against two real `MediaSession`s over a paired in-memory link, which is
+the first thing in this feature to prove a pipeline rather than a component.
+
 ## Update Architecture
 
 Both platforms check GitHub Releases using `update_repo` from config, defaulting
@@ -844,7 +948,8 @@ It:
 
 - generates Xcode project from `src/macos/project.yml`;
 - builds Release with xcodebuild;
-- signs ad-hoc or with Developer ID;
+- signs with Developer ID, the local `LAN Messenger Dev` certificate, or
+  ad-hoc, in that order of preference;
 - optionally notarizes;
 - stages `LAN Messenger.app`;
 - produces ZIP, DMG, and PKG;
@@ -903,6 +1008,12 @@ Runtime logs:
 - Windows networking: `%APPDATA%\LanMessenger\Logs\client.log`.
 - Windows updates: `%APPDATA%\LanMessenger\Logs\update.log`.
 - Windows startup crashes: `%APPDATA%\LanMessenger\crash.log`.
+- Remote desktop, both platforms: `remote.log`. The channel exists and is
+  exported; nothing writes to it yet.
+
+Every channel in the `LogChannel` enum is written to its own file and collected
+into the bug-report bundle. The bundle is derived from the enum, so a channel
+that is missing from it silently never reaches a bug report.
 
 CI diagnostics:
 
