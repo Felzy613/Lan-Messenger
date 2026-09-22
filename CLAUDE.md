@@ -647,13 +647,50 @@ Use the smallest sufficient set for the change:
 - Do not enforce the protocol's two-frame rule inside a codec. "Never buffer
   more than two video frames anywhere" is about queues, and **a hardware
   encoder's pipeline is not a queue** — it is fixed latency. An async MFT issues
-  one `METransformNeedInput` per pipeline slot and emits nothing until enough of
-  them are filled, so a cap of two starved it before its first output: no video,
-  and not one `encoder_stats` line to say why. Its steady-state depth is 2 and
-  it never refuses at 8, which is why the encoder gets a *runaway* guard
-  (`VideoFrameBudget.pipelineCapacity`) and reports `peak=`, while the places
-  that genuinely queue keep `protocolCapacity`. The five places and what bounds
-  each are tabulated in PROTOCOL.md.
+  one `METransformNeedInput` per slot and holds several frames by design; the
+  Quick Sync encoder here measures a steady-state depth of 2 and refuses nothing
+  at 8, so a cap of 2 would sit exactly on the limit and refuse on any jitter.
+  The encoder gets a *runaway* guard (`VideoFrameBudget.pipelineCapacity`) and
+  reports `peak=`, which is the only view anything has of the codec's own
+  contribution to latency; the places that genuinely queue keep
+  `protocolCapacity`. The five places and what bounds each are tabulated in
+  PROTOCOL.md.
+- Do not root a Win32 window procedure for a shorter lifetime than the window
+  class. A class registered by a process stays registered until the process
+  exits, so the second session's `RegisterClassExW` answers
+  `ERROR_CLASS_ALREADY_EXISTS` and its window runs on the class the **first**
+  guard registered — still pointing at that guard's delegate, long since
+  collected. `RemoteSessionGuard`'s `WndProcDelegate` was an instance field for
+  exactly one session too few, and the CLR ends the process with "a callback was
+  made on a garbage collected delegate" through `Environment.FailFast`: no
+  exception, no handler, nothing in the crash log. It fired inside
+  `CreateWindowExW`, because the procedure runs for `WM_NCCREATE` before that
+  call returns, so it presented as "the second remote-desktop session of a run
+  kills the app about a second after it starts" — and, because the process died
+  before the two-second stats timer, as a host that produced no video and no
+  `encoder_stats` line to explain it. **That second symptom is a trap: it reads
+  exactly like an encoder that is not producing frames, and was misdiagnosed as
+  one.** A silent death with no log line is a dead process until proven
+  otherwise — check `Get-WinEvent -ProviderName ".NET Runtime"` before blaming
+  the pipeline. The delegate is now `static readonly` and the per-session state
+  is found from the HWND.
+- Do not enumerate `ThreadLocal<T>.Values`. It threw
+  `ArrayTypeMismatchException` out of `List<T>.AddWithResize` the moment a user
+  pressed Stop Sharing on a second session: slots belonging to the previous
+  session's capture thread, which has since exited, are recycled between
+  `ThreadLocal` instances of different `T`, and enumerating walks into one typed
+  as something else. It is a crash in the runtime's bookkeeping, not in ours, and
+  there is no way to ask it to be careful. `H264Encoder` keeps its own
+  lock-protected list of the `ICodecAPI` RCWs it handed out and releases from
+  that, which also removes the race against a thread still creating a value while
+  teardown enumerates.
+- Do not record a clean channel close as a fault. A peer pressing Stop closes the
+  socket with no error; a network that went away closes it with one. Passing the
+  same reason for both wrote "the session ended because the network connection
+  was lost" into the history of every session the *other side* ended
+  deliberately — one line below a log entry that already said `peer ended`.
+  `RemoteStopReason.forChannelClose`/`ForChannelClose` takes the fault and the
+  caller's fallback, on both platforms.
 - Do not treat an absence of captured frames as a fault. `SCStream` and DXGI
   Desktop Duplication are both change-driven: a screen with nothing moving on it
   delivers no frames at all, indefinitely, and that is correct. A watchdog,

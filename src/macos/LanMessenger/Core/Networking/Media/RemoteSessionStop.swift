@@ -57,6 +57,22 @@ enum RemoteStopReason: String, Equatable, CaseIterable {
         }
     }
 
+    /// Why a media channel closing ended the session.
+    ///
+    /// A channel closes two ways and they are not the same event. The peer
+    /// pressing Stop closes the socket cleanly, with no error; a network that
+    /// went away closes it with one. Recording both as `networkLost` put "the
+    /// session ended because the network connection was lost" in the history of
+    /// every session the *other side* ended deliberately — which is a false
+    /// entry in the one record a user consults to find out what happened, and
+    /// it was there while the log one line above said `peer ended`.
+    ///
+    /// `fallback` is what an errored close means, which differs by role and by
+    /// platform, so the caller keeps saying it.
+    static func forChannelClose(error: Error?, fallback: RemoteStopReason) -> RemoteStopReason {
+        error == nil ? .peerEnded : fallback
+    }
+
     /// One line for the conversation's audit trail, in the past tense, naming
     /// the cause rather than the mechanism.
     ///

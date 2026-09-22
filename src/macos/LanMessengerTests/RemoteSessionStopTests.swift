@@ -109,6 +109,32 @@ final class RemoteSessionStopTests: XCTestCase {
         }
     }
 
+    func testACleanChannelCloseIsThePeerEndingNotTheNetworkFailing() {
+        // The bug: both call sites passed `.networkLost` unconditionally, so a
+        // session the OTHER side ended on purpose was recorded as "the session
+        // ended because the network connection was lost" — one line below a log
+        // entry that already said `peer ended`. The handler had the answer the
+        // whole time: a clean close carries no error.
+        XCTAssertEqual(RemoteStopReason.forChannelClose(error: nil, fallback: .networkLost),
+                       .peerEnded)
+
+        struct Broken: Error {}
+        XCTAssertEqual(RemoteStopReason.forChannelClose(error: Broken(), fallback: .networkLost),
+                       .networkLost)
+        // The fallback is the caller's, because what an errored close means
+        // differs by role and by platform.
+        XCTAssertEqual(RemoteStopReason.forChannelClose(error: Broken(), fallback: .error),
+                       .error)
+    }
+
+    func testTheTwoClosesReadDifferentlyInTheTrail() {
+        // The point of the distinction, at the only place a user sees it.
+        XCTAssertEqual(RemoteStopReason.peerEnded.auditDescription(viewing: true),
+                       "The other side ended the session.")
+        XCTAssertNotEqual(RemoteStopReason.peerEnded.auditDescription(viewing: true),
+                          RemoteStopReason.networkLost.auditDescription(viewing: true))
+    }
+
     func testAViewerNeverClaimsItsOwnScreenWasShared() {
         // The bug: every one of these sentences was written from the host's
         // chair, so a Mac that had spent ten minutes WATCHING somebody else's

@@ -1,4 +1,6 @@
 using LanMessenger.Core.Services;
+using System;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 
 namespace LanMessenger.Core.Networking.Media;
@@ -49,7 +51,43 @@ public sealed class RemoteSessionGuard : IDisposable
     private Action<RemoteStopReason>? _onStop;
     private Thread? _thread;
     private IntPtr _hwnd;
-    private WndProcDelegate? _wndProc;      // held so the GC cannot collect it
+    /// <summary>
+    /// The window procedure, rooted for the life of the PROCESS — not the
+    /// guard.
+    /// </summary>
+    /// <remarks>
+    /// This was an instance field, which is a delegate lifetime one session
+    /// shorter than the thing that holds the pointer. A window class registered
+    /// by a process stays registered until the process exits, so the second
+    /// session's <c>RegisterClassExW</c> answers
+    /// <c>ERROR_CLASS_ALREADY_EXISTS</c> and its window uses the class the
+    /// FIRST guard registered — still pointing at that guard's delegate, which
+    /// has since been collected. Windows then calls a freed thunk and the CLR
+    /// ends the process with
+    /// <c>"A callback was made on a garbage collected delegate"</c>, through
+    /// <c>Environment.FailFast</c> — so no exception is thrown, no handler
+    /// runs, and nothing is written to the crash log. It landed inside
+    /// <c>CreateWindowExW</c>, because the procedure is called for
+    /// <c>WM_NCCREATE</c> before the call returns.
+    ///
+    /// It presented as "the second remote-desktop session of a run kills the
+    /// app a second after it starts" — and, because the process died before the
+    /// two-second stats timer, as a host that produced no video and no
+    /// `encoder_stats` line to say why.
+    ///
+    /// The delegate now lives exactly as long as the registration does, and the
+    /// per-session state is found from the window handle instead.
+    /// </remarks>
+    private static readonly WndProcDelegate SharedWndProc = StaticWndProc;
+
+    /// <summary>Which guard owns which message window.</summary>
+    /// <remarks>
+    /// The class is shared, so the procedure cannot close over one guard. A
+    /// window is added the moment it is created and removed when it is
+    /// destroyed; a message for a window nobody owns falls through to
+    /// <c>DefWindowProcW</c> rather than reaching a disposed session.
+    /// </remarks>
+    private static readonly ConcurrentDictionary<IntPtr, RemoteSessionGuard> Guards = new();
     private readonly ManualResetEventSlim _ready = new(false);
     private readonly object _gate = new();
 
@@ -89,6 +127,12 @@ public sealed class RemoteSessionGuard : IDisposable
             _onStop = null;
             if (_hwnd != IntPtr.Zero)
             {
+                // Out of the table first. WM_DESTROY removes it too, but that
+                // depends on the message loop still draining — and a disarmed
+                // guard must not be reached by a late message either way. An
+                // unowned window falls through to DefWindowProcW, which is the
+                // right answer for one nobody is listening to any more.
+                Guards.TryRemove(_hwnd, out _);
                 PostMessageW(_hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
                 _hwnd = IntPtr.Zero;
             }
@@ -127,12 +171,10 @@ public sealed class RemoteSessionGuard : IDisposable
     {
         try
         {
-            _wndProc = WndProc;
-
             var wc = new WNDCLASSEXW
             {
                 cbSize = Marshal.SizeOf<WNDCLASSEXW>(),
-                lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProc),
+                lpfnWndProc = Marshal.GetFunctionPointerForDelegate(SharedWndProc),
                 hInstance = GetModuleHandleW(null),
                 lpszClassName = "LanMessengerRemoteGuard",
             };
@@ -168,6 +210,7 @@ public sealed class RemoteSessionGuard : IDisposable
                 return;
             }
 
+            Guards[hwnd] = this;
             lock (_gate) { _hwnd = hwnd; }
 
             var shortcut = RemoteKillSwitch.Shortcut;
@@ -200,6 +243,24 @@ public sealed class RemoteSessionGuard : IDisposable
         }
     }
 
+    /// <summary>
+    /// The shared entry point. Finds the guard that owns this window, if any.
+    /// </summary>
+    /// <remarks>
+    /// Messages arrive here before the window is in the table — the procedure
+    /// runs for <c>WM_NCCREATE</c> and <c>WM_CREATE</c> inside
+    /// <c>CreateWindowExW</c> — and after it leaves, at <c>WM_NCDESTROY</c>.
+    /// Both must fall through to the default handling rather than fault.
+    /// </remarks>
+    private static IntPtr StaticWndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        if (Guards.TryGetValue(hwnd, out var guard))
+        {
+            return guard.WndProc(hwnd, msg, wParam, lParam);
+        }
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
     private IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
         switch (msg)
@@ -230,6 +291,7 @@ public sealed class RemoteSessionGuard : IDisposable
             case WM_DESTROY:
                 UnregisterHotKey(hwnd, HOTKEY_ID);
                 WTSUnRegisterSessionNotification(hwnd);
+                Guards.TryRemove(hwnd, out _);
                 PostQuitMessage(0);
                 return IntPtr.Zero;
         }

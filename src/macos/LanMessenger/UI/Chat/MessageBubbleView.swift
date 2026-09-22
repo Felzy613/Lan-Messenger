@@ -243,14 +243,13 @@ struct MessageBubbleView: View {
 
     // MARK: - Incoming text bubble
 
+    // No sender name above the bubble. Every conversation here is one-to-one,
+    // the header already names the peer, and every incoming bubble in the
+    // thread is from that one person — so the label repeated their name down
+    // the whole thread and told the reader nothing. `isFirstInRun` still
+    // decides the tail corner, which is what actually groups a run visually.
     private var incomingBubble: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if isFirstInRun {
-                Text(entry.sender)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                    .padding(.leading, 4)
-            }
             VStack(alignment: .leading, spacing: 4) {
                 replyChip
                 Text(entry.text)

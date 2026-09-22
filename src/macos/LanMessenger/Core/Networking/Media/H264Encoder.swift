@@ -171,11 +171,11 @@ final class H264Encoder {
     }
 
     /// A runaway guard on the encoder, and the only place the codec's own depth
-    /// is visible. Deliberately NOT the protocol's two: see `VideoFrameBudget`
-    /// — a capped-at-two encoder produced no output at all on the Windows
-    /// hardware transform, because a pipeline's depth is fixed latency rather
-    /// than growth. VideoToolbox in `RealTime` mode is shallow, so this almost
-    /// never refuses; the peak it reports is what says so.
+    /// is visible. Deliberately NOT the protocol's two — see `VideoFrameBudget`:
+    /// a codec pipeline's depth is fixed latency rather than growth, and a cap
+    /// sitting on it refuses on any jitter. VideoToolbox in `RealTime` mode is
+    /// shallow, so this should almost never refuse; the peak it reports is what
+    /// says whether that is true.
     let budget = VideoFrameBudget(capacity: VideoFrameBudget.pipelineCapacity)
 
     // MARK: - Encode

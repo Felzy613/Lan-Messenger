@@ -88,11 +88,11 @@ public class VideoFrameBudgetTests
     [TestMethod]
     public void ACodecPipelineGetsARunawayGuardRatherThanTheQueueRule()
     {
-        // The mistake this encodes: two is right for a queue and wrong for a
-        // hardware transform. Quick Sync issues one METransformNeedInput per
-        // pipeline slot and emits nothing until enough are filled — capped at
-        // two it produced no video at all, and not one encoder_stats line to
-        // say why. A pipeline's depth is fixed latency, not growth.
+        // Two is right for a queue and wrong for a codec pipeline. A hardware
+        // transform issues one METransformNeedInput per slot and holds several
+        // frames by design; measured here its steady-state depth is 2, so a cap
+        // of 2 would sit exactly on the limit and refuse on any jitter. A
+        // pipeline's depth is fixed latency, not growth.
         Assert.IsTrue(VideoFrameBudget.PipelineCapacity > VideoFrameBudget.ProtocolCapacity);
 
         var pipeline = new VideoFrameBudget(VideoFrameBudget.PipelineCapacity);

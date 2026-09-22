@@ -1,6 +1,7 @@
 using LanMessenger.Core.Services;
 using SharpGen.Runtime;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Vortice.MediaFoundation;
 
@@ -125,6 +126,28 @@ public sealed class H264Encoder : IDisposable
     /// Each thread queries the MFT itself, so each gets an RCW born in its own
     /// apartment and nothing is ever marshalled across one.
     private ThreadLocal<ICodecAPI?>? _codecApi;
+
+    /// <summary>
+    /// Every <see cref="ICodecAPI"/> RCW the thread-local factory has handed
+    /// out, so teardown can release them all.
+    /// </summary>
+    /// <remarks>
+    /// This exists because <c>ThreadLocal&lt;T&gt;.Values</c> cannot be used
+    /// here. It threw <c>ArrayTypeMismatchException</c> out of
+    /// <c>List&lt;T&gt;.AddWithResize</c> the moment a user pressed Stop
+    /// Sharing on a second session — the slots belonging to the *previous*
+    /// session's capture thread, which has since exited, are recycled between
+    /// `ThreadLocal` instances of different T, and enumerating them walks into
+    /// one typed as something else. It is a crash in the runtime's bookkeeping,
+    /// not in ours, and there is no way to ask it to be careful.
+    ///
+    /// Tracking what we created ourselves costs one list and removes both that
+    /// failure and the race against a thread still creating a value while
+    /// teardown enumerates.
+    /// </remarks>
+    private readonly List<ICodecAPI> _codecApis = new();
+    private readonly object _codecApiGate = new();
+    private bool _codecApiClosed;
     private IntPtr _mftUnknown;
     private long _sampleIndex;
     private ulong _firstCaptureUs;
@@ -158,11 +181,11 @@ public sealed class H264Encoder : IDisposable
     /// <remarks>
     /// Deliberately <b>not</b> the protocol's two. An asynchronous hardware MFT
     /// issues a <c>METransformNeedInput</c> for every slot in its pipeline and
-    /// emits nothing until enough of them are filled — capped at two, the Quick
-    /// Sync encoder here produced no output whatsoever, and no
-    /// <c>encoder_stats</c> line to explain it. A pipeline's depth is fixed
-    /// latency rather than growth, so what this catches is a runaway, and what
-    /// it reports (<c>peak=</c>) is the depth itself, which nothing else can see.
+    /// holds several frames by design; that depth is fixed latency rather than
+    /// growth, and a cap sitting on it would refuse on any jitter. Measured
+    /// here, the Quick Sync encoder's steady-state depth is 2 and it refuses
+    /// nothing at 8 — so what this catches is a runaway, and what it reports
+    /// (<c>peak=</c>) is the depth itself, which nothing else can see.
     /// </remarks>
     private readonly VideoFrameBudget _budget = new(VideoFrameBudget.PipelineCapacity);
 
@@ -359,8 +382,7 @@ public sealed class H264Encoder : IDisposable
         // thread can query it later.
         _mftUnknown = encoder.NativePointer;
         Marshal.AddRef(_mftUnknown);
-        _codecApi = new ThreadLocal<ICodecAPI?>(
-            () => CodecApiExtensions.TryGetCodecApi(_mftUnknown), trackAllValues: true);
+        _codecApi = new ThreadLocal<ICodecAPI?>(AcquireCodecApi);
 
         if (_codecApi.Value is null)
         {
@@ -913,6 +935,41 @@ public sealed class H264Encoder : IDisposable
         finally { buffer.Unlock(); }
     }
 
+    /// <summary>
+    /// One <see cref="ICodecAPI"/> per thread that asks, recorded so teardown
+    /// can release it.
+    /// </summary>
+    /// <remarks>
+    /// Per thread because the RCW has no proxy/stub: a cross-thread call on one
+    /// answers <c>E_NOINTERFACE</c>, and forced keyframes silently stop working.
+    /// Nothing new is handed out once teardown has begun — a keyframe request
+    /// arriving from the viewer at that moment would otherwise create an RCW
+    /// after the list it belongs in has already been drained, and leak it.
+    /// </remarks>
+    private ICodecAPI? AcquireCodecApi()
+    {
+        lock (_codecApiGate)
+        {
+            if (_codecApiClosed) return null;
+        }
+
+        var api = CodecApiExtensions.TryGetCodecApi(_mftUnknown);
+        if (api is null) return null;
+
+        lock (_codecApiGate)
+        {
+            if (_codecApiClosed)
+            {
+                // Teardown won the race. Release it here rather than handing
+                // back something nothing will ever free.
+                try { Marshal.ReleaseComObject(api); } catch { }
+                return null;
+            }
+            _codecApis.Add(api);
+        }
+        return api;
+    }
+
     public void Dispose()
     {
         var encoder = _encoder;
@@ -940,19 +997,22 @@ public sealed class H264Encoder : IDisposable
 
         bool pumpStopped = StopEventPump();
 
-        if (_codecApi is not null)
+        // One RCW per thread that touched it, so all of them are released —
+        // from OUR list, never `ThreadLocal.Values`. See `_codecApis`.
+        ICodecAPI[] apis;
+        lock (_codecApiGate)
         {
-            // One RCW per thread that touched it, so all of them are released.
-            foreach (var api in _codecApi.Values)
-            {
-                if (api is not null)
-                {
-                    try { Marshal.ReleaseComObject(api); } catch { /* already gone */ }
-                }
-            }
-            _codecApi.Dispose();
-            _codecApi = null;
+            _codecApiClosed = true;
+            apis = _codecApis.ToArray();
+            _codecApis.Clear();
         }
+        foreach (var api in apis)
+        {
+            try { Marshal.ReleaseComObject(api); } catch { /* already gone */ }
+        }
+
+        _codecApi?.Dispose();
+        _codecApi = null;
         if (_mftUnknown != IntPtr.Zero)
         {
             Marshal.Release(_mftUnknown);

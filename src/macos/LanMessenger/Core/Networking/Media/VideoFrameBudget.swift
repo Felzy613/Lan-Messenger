@@ -18,15 +18,15 @@ import Foundation
 /// refusal is counted: a budget that is constantly full is a real signal about
 /// the encoder, and silently dropping would hide it.
 ///
-/// **A codec's own pipeline is not a queue.** This was very nearly shipped with
-/// the encoder capped at two, which is correct for a queue and wrong for a
-/// hardware transform: Quick Sync issues a `METransformNeedInput` for every slot
-/// in its pipeline and does not emit its first frame until enough of them are
-/// filled. Capped at two it produced **no output at all** — no video, and not
-/// one `encoder_stats` line to say why. A pipeline's depth is fixed latency, not
-/// growth, so the encoder gets a *runaway* guard at `pipelineCapacity` and
-/// reports its high-water mark; the places that really do queue keep the
-/// protocol's two.
+/// **A codec's own pipeline is not a queue**, which is why the encoder's budget
+/// is `pipelineCapacity` rather than the protocol's two. A hardware transform
+/// issues a `METransformNeedInput` for every slot it has and holds several
+/// frames by design; that depth is fixed latency, not growth, and a cap sitting
+/// exactly on it would start refusing on any jitter. Measured on the Quick Sync
+/// encoder here, the steady-state depth is **2** and it refuses nothing at 8 —
+/// so what the budget provides at the encoder is a runaway guard, and, more
+/// usefully, the only view anything has of the codec's own contribution to
+/// latency. The places that really do queue keep the protocol's two.
 ///
 /// Mirror of `VideoFrameBudget.cs`.
 final class VideoFrameBudget {

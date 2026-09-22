@@ -3,18 +3,12 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid x:Name="RootGrid" Padding="0,2">
-        <!-- Sender name sits above the bubble (not inside its colored
-             background) for the first message of an incoming run — matches
-             macOS's MessageBubbleView.incomingBubble. HorizontalAlignment is
-             set on this column, not the Border, so the label lines up with
-             whichever side the bubble is on. -->
+        <!-- No sender name above the bubble. Every conversation here is
+             one-to-one, the header already names the peer, and every incoming
+             bubble is from that one person — the label just repeated their
+             name down the whole thread. HorizontalAlignment is set on this
+             column, not the Border, so the bubble sits on the right side. -->
         <StackPanel x:Name="BubbleColumn" Spacing="2" HorizontalAlignment="Left">
-            <TextBlock x:Name="SenderNameText"
-                       FontSize="11"
-                       FontWeight="SemiBold"
-                       Foreground="{StaticResource AppAccentBrush}"
-                       Margin="4,0,0,0"
-                       Visibility="Collapsed" />
         <!-- CanDrag is switched on in Refresh() for file bubbles whose file is
              still on disk, so an attachment can be dragged straight out to
              Explorer, Outlook, or anything else that takes a file. -->

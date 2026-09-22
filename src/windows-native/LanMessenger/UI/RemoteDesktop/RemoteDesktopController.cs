@@ -209,7 +209,9 @@ public sealed class RemoteDesktopController
                 {
                     previous?.Invoke(error);
                     RemoteDesktopService.Shared.Registry.Remove(channel.SessionId);
-                    Stop(RemoteStopReason.Error);
+                    // A clean close is the host pressing Stop, not a fault.
+                    Stop(RemoteStopReasonExtensions.ForChannelClose(
+                        error, RemoteStopReason.Error));
                 };
 
                 RemoteDesktopService.Shared.Registry.Register(media);
@@ -389,7 +391,10 @@ public sealed class RemoteDesktopController
                 media.OnClosed = error =>
                 {
                     previous?.Invoke(error);       // frees the registry entry
-                    Stop(RemoteStopReason.Error);
+                    // A clean close is the viewer closing its window, not a
+                    // fault, and the audit trail should not call it one.
+                    Stop(RemoteStopReasonExtensions.ForChannelClose(
+                        error, RemoteStopReason.Error));
                 };
 
                 // The peer asked for the keyboard and mouse. A second prompt,

@@ -50,6 +50,23 @@ public static class RemoteStopReasonExtensions
         _ => false,
     };
 
+    /// <summary>Why a media channel closing ended the session.</summary>
+    /// <remarks>
+    /// A channel closes two ways and they are not the same event. The peer
+    /// pressing Stop closes the socket cleanly, with no error; a network that
+    /// went away closes it with one. Recording both the same way put a wrong
+    /// cause in the history of every session the <i>other side</i> ended
+    /// deliberately — a false entry in the one record a user consults to find
+    /// out what happened, while the log one line above already said
+    /// <c>peer ended</c>.
+    ///
+    /// <paramref name="fallback"/> is what an errored close means, which differs
+    /// by role and by platform, so the caller keeps saying it.
+    /// </remarks>
+    public static RemoteStopReason ForChannelClose(MediaFaultKind? fault,
+                                                   RemoteStopReason fallback) =>
+        fault is null ? RemoteStopReason.PeerEnded : fallback;
+
     /// <summary>
     /// One line for the conversation's audit trail, in the past tense, naming
     /// the cause rather than the mechanism.

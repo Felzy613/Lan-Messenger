@@ -82,13 +82,6 @@ public sealed partial class MessageBubbleControl : UserControl
         MessageText.Foreground = Theme.BubbleTextBrush;
         ImagePreview.Source = null;
 
-        // Sender name floats above the bubble for the first message of an
-        // incoming run — matches macOS's incomingBubble label. Never shown
-        // for our own outgoing messages or for a deleted placeholder.
-        SenderNameText.Visibility = (Row.Incoming && Row.IsFirstInRun && !Row.Deleted)
-            ? Visibility.Visible : Visibility.Collapsed;
-        SenderNameText.Text = Row.Sender;
-
         // Tail corner: 4px on the side that touches the next bubble in the
         // same run, 16px everywhere else. Set once here rather than per
         // content-type branch below, since every branch shares one Border.

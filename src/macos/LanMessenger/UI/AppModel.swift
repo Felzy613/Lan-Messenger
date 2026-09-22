@@ -128,7 +128,13 @@ final class AppModel: ObservableObject {
                 NetLogger.remote(event: "channel_closed",
                                  sessionID: media.sessionID,
                                  reason: error.map { "\($0)" } ?? "peer ended")
-                self.remoteSession.stop(reason)
+                // A clean close is the peer pressing Stop, not a network
+                // failure. Saying `networkLost` for both wrote "the network
+                // connection was lost" into the history of every session the
+                // other side ended on purpose — one line below a log entry
+                // that already said `peer ended`.
+                self.remoteSession.stop(
+                    RemoteStopReason.forChannelClose(error: error, fallback: reason))
             }
         }
     }

@@ -901,14 +901,47 @@ one that had none — the encoder — turned out to need a different number:
 | TCP | `TCP_NODELAY`, and `SO_SNDBUF` capped at 128 KiB |
 | decode / display | drop rather than queue, and request a keyframe when dropping |
 
-**The encoder is the interesting one.** Capping it at two produced no video at
-all and not one `encoder_stats` line: an asynchronous hardware MFT issues a
-`METransformNeedInput` for every slot in its pipeline and emits nothing until
-enough of them are filled, so the cap bit before the first frame ever came out.
-A pipeline's depth is fixed latency, not growth. At a capacity of 8 the Quick
-Sync encoder's measured depth is **2**, and it refuses nothing — so what the
-budget provides there is a runaway guard and, more usefully, the only view
-anything has of the codec's own contribution to latency.
+**The encoder is the interesting one.** A codec pipeline is not a queue: an
+asynchronous hardware MFT issues a `METransformNeedInput` for every slot it has
+and holds several frames by design, and that depth is fixed latency rather than
+growth. At a capacity of 8 the Quick Sync encoder's measured depth is **2** and
+it refuses nothing, so a cap of 2 would sit exactly on the limit and start
+refusing on any jitter. What the budget provides there is a runaway guard and,
+more usefully, the only view anything has of the codec's own contribution to
+latency.
+
+> A first pass capped it at two and the session produced no video and no
+> `encoder_stats` line, which was written up here as starvation. It was not —
+> the process was dying about a second in, before the two-second stats timer,
+> from an unrelated GC'd window procedure (see below). **"No frames and no
+> stats" reads exactly like a stalled encoder and is equally well explained by a
+> dead process**; the `.NET Runtime` event log said so in one line.
+
+### Three crashes the two-machine runs found, after WS10's own work
+
+None of them are latency, and two of them presented *as* latency problems.
+
+- **A window procedure rooted for one session too few.** A Win32 window class
+  registered by a process stays registered until it exits, so the second
+  session's window ran on the class the first `RemoteSessionGuard` registered —
+  still pointing at that guard's instance delegate, by then collected. The CLR
+  ends the process through `Environment.FailFast`, so there is no exception, no
+  handler and nothing in the crash log; it fired inside `CreateWindowExW`,
+  because the procedure runs for `WM_NCCREATE` before that call returns. It
+  looked like an encoder producing nothing, because the process died before the
+  stats timer. The delegate is now `static readonly`, and the owning guard is
+  found from the HWND.
+- **`ThreadLocal<T>.Values` at teardown.** Pressing Stop Sharing on a second
+  session threw `ArrayTypeMismatchException` from inside
+  `List<T>.AddWithResize`: slots from the previous session's exited capture
+  thread are recycled between `ThreadLocal` instances of different `T`.
+  `H264Encoder` now tracks the `ICodecAPI` RCWs it hands out in its own
+  lock-protected list.
+- **A clean close recorded as a fault.** The peer pressing Stop closes the
+  socket without an error; a network that went away closes it with one. Both
+  were reported the same way, so a session the *other side* ended deliberately
+  went into the history as "the network connection was lost" — one line below a
+  log entry that already said `peer ended`.
 
 ### Still open
 

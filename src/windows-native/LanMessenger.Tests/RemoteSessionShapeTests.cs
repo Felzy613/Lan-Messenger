@@ -91,6 +91,38 @@ public class RemoteSessionShapeTests
     }
 
     [TestMethod]
+    public void ACleanChannelCloseIsThePeerEndingNotAFault()
+    {
+        // The bug: both call sites passed RemoteStopReason.Error
+        // unconditionally, so a session the OTHER side ended on purpose was
+        // recorded as "stopped because of an error" — while the log one line
+        // above already said `peer ended`. The handler had the answer the whole
+        // time: a clean close carries no fault.
+        Assert.AreEqual(RemoteStopReason.PeerEnded,
+            RemoteStopReasonExtensions.ForChannelClose(null, RemoteStopReason.Error));
+
+        Assert.AreEqual(RemoteStopReason.Error,
+            RemoteStopReasonExtensions.ForChannelClose(
+                MediaFaultKind.LinkFailed, RemoteStopReason.Error));
+
+        // The fallback is the caller's, because what an errored close means
+        // differs by role and by platform.
+        Assert.AreEqual(RemoteStopReason.NetworkLost,
+            RemoteStopReasonExtensions.ForChannelClose(
+                MediaFaultKind.LinkFailed, RemoteStopReason.NetworkLost));
+    }
+
+    [TestMethod]
+    public void TheTwoClosesReadDifferentlyInTheTrail()
+    {
+        // The point of the distinction, at the only place a user sees it.
+        Assert.AreEqual("The other side ended the session.",
+            RemoteStopReason.PeerEnded.AuditDescription(viewing: true));
+        Assert.AreNotEqual(RemoteStopReason.PeerEnded.AuditDescription(viewing: true),
+                           RemoteStopReason.NetworkLost.AuditDescription(viewing: true));
+    }
+
+    [TestMethod]
     public void AViewerNeverClaimsItsOwnScreenWasShared()
     {
         // The bug: every one of these sentences was written from the host's

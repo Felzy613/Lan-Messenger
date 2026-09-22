@@ -25,15 +25,16 @@ namespace LanMessenger.Core.Networking.Media;
 /// the encoder, and silently dropping would hide it.
 /// </para>
 /// <para>
-/// <b>A codec's own pipeline is not a queue.</b> This was very nearly shipped
-/// with the encoder capped at two, which is correct for a queue and wrong for a
-/// hardware transform: Quick Sync issues a <c>METransformNeedInput</c> for every
-/// slot in its pipeline and does not emit its first frame until enough of them
-/// are filled. Capped at two it produced <b>no output at all</b> — no video, and
-/// not one <c>encoder_stats</c> line to say why. A pipeline's depth is fixed
-/// latency, not growth, so the encoder gets a <i>runaway</i> guard at
-/// <see cref="PipelineCapacity"/> and reports its high-water mark; the places
-/// that really do queue keep the protocol's two.
+/// <b>A codec's own pipeline is not a queue</b>, which is why the encoder's
+/// budget is <see cref="PipelineCapacity"/> rather than the protocol's two. An
+/// asynchronous hardware transform issues a <c>METransformNeedInput</c> for
+/// every slot it has and holds several frames by design; that depth is fixed
+/// latency, not growth, and a cap sitting exactly on it would start refusing on
+/// any jitter. Measured on the Quick Sync encoder here, the steady-state depth
+/// is <b>2</b> and it refuses nothing at 8 — so what the budget provides at the
+/// encoder is a runaway guard, and, more usefully, the only view anything has of
+/// the codec's own contribution to latency. The places that really do queue keep
+/// the protocol's two.
 /// </para>
 /// </remarks>
 public sealed class VideoFrameBudget
