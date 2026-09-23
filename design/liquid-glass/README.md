@@ -1,4 +1,4 @@
-LAN Messenger Glass keeps WhatsApp's conversation grammar: the green, the beige and night wallpaper, tailed bubbles, double ticks, avatars with a presence dot. It builds all of it from one material, liquid glass. Chrome floats over the thread as clear or frosted glass, messages sit in tinted-glass bubbles, and security signals stay solid.
+LAN Messenger Glass keeps WhatsApp's conversation grammar: the green, the beige and night wallpaper, tailed bubbles, double ticks, avatars with a presence dot. It builds all of it from one material, liquid glass. Chrome floats over the thread as clear or frosted glass, messages sit in tinted-glass bubbles, and security signals stay solid and quiet.
 
 macOS 26 draws system materials as Liquid Glass already, so the Mac app is the reference and needs only the touch-ups listed under *Implementation*. The Windows app gets the same result from Mica, in-app `AcrylicBrush`, a rim border and `ThemeShadow`, and most of the work is there.
 
@@ -8,7 +8,7 @@ macOS 26 draws system materials as Liquid Glass already, so the Mac app is the r
 2. **One material, three thicknesses.** Pick by what sits on it. Use `glass-clear` for icons only, `glass-regular` for chrome that carries a line of text, and `glass-thick` for anything read at length (sheets, menus, settings).
 3. **Glass is four layers, always all four:** a tint fill (`glass-*`), a backdrop blur plus `saturate-glass`, a sheen (`glass-sheen` fading to transparent by 55% of the height), and a rim (`shadow-rim` plus a 1px `glass-edge`). Without the rim it reads as fog. Without the blur it reads as tinted plastic.
 4. **Green is a fill, not a font.** `brand` (#25d366) fills the send orb, the unread badge, the progress bar and switched-on toggles, with `on-brand` on top. Green text and icons use `accent-ink` (`accent-ink-out` inside an outgoing bubble). White on `brand` is 2:1, so never use it.
-5. **Signals don't go translucent.** The screen-sharing indicator and destructive fills are solid tint with a glass rim. Something that says "your screen is being watched" must never let the desktop show through and wash it out.
+5. **Signals stay solid, and quiet.** The screen-sharing indicator is an opaque, always-dark HUD. Something that says "your screen is being watched" must never let the desktop show through and wash it out, but it must not shout either. Its colour goes into a small status dot and the Stop Sharing button, never a full-bleed amber or red bar.
 6. **Transparency is optional, legibility isn't.** Every glass and bubble token has a `-fallback` sibling for Reduce Transparency, battery saver and remote sessions. Text contrast is measured against the worst case: glass composited over `wallpaper-glow`.
 
 ## Content
@@ -17,7 +17,7 @@ Write short, literal sentences, second person, naming the peer by their display 
 
 - "This message was deleted"
 - "Drop to send to Priya Raman"
-- "Priya is viewing your screen" / "Priya is controlling your Mac" with **Stop Control** and **Stop Sharing**
+- "Priya is viewing your screen" / "Priya is controlling your screen" with **Stop Control** and **Stop Sharing**
 - "Declines automatically in 24s"
 - "Tap “New message” to chat with one of your saved contacts, or add a new contact."
 - Context menus: **Reply**, **Copy**, **Edit**, **Delete for Me**, **Delete for Everyone**, **Show in Finder**
@@ -34,7 +34,9 @@ Timestamps come from the system formatter: the time for today, then "Yesterday",
 
 **Ink.** `ink` for names and bodies. `ink-secondary` for previews, statuses, captions and placeholders. Inside an outgoing bubble, time, ticks and "edited" use `meta-out`, because `ink-secondary` fails on the green. `ink-inverse` is for avatar initials and `danger` fills.
 
-**Signals.** `tick-read` is the blue double tick. `presence-online` and `presence-offline` are the dots, ringed in `presence-ring` wherever they overlap an avatar. `danger` means being controlled, destructive or failed (`danger-ink` for its text and icons). `warning` means being viewed or needing caution, with `on-warning` text (dark, not white) and `warning-ink` or `warning-wash` for notes.
+**Signals.** `tick-read` is the blue double tick. `presence-online` and `presence-offline` are the dots, ringed in `presence-ring` wherever they overlap an avatar. `danger` means destructive or failed (`danger-ink` for its text and icons). `warning` means caution, with `on-warning` text (dark, not white) and `warning-ink` or `warning-wash` for notes.
+
+**The screen-sharing HUD** has its own small set, the same in both themes: `hud-surface`, `hud-rim`, `hud-ink`, `hud-ink-secondary`, `hud-button` and `hud-button-hover`, plus two status colours that appear only as a dot or a 1px outline: `hud-signal-view` (amber) and `hud-signal-control` (coral).
 
 **Avatars.** There are eight fills, from `avatar-blue` to `avatar-slate`. Pick one by FNV-1a of the display name modulo 8, identically on both platforms:
 
@@ -138,8 +140,7 @@ The two apps had drifted apart. These values are now one:
 | Jump button | 30 | 34 | `size-icon-button` 32 |
 | Send | 28pt symbol | 38 disc | `size-send` 36 orb |
 | Reply chip radius | 6 | 4 | `radius-chip` 6 |
-| Controlled indicator | #d93030 | #d93025 | `danger` #d93030 |
-| Viewed-indicator text | white on orange (2.4:1) | n/a | `on-warning` (7:1) |
+| Screen-sharing indicator | solid orange or red capsule, white text (2.4:1 on orange) | solid #e58c1a or #d93025 strip, white text | neutral `hud-surface` HUD, a status dot, a red Stop Sharing button |
 | Read tick | #4f9ef7 (2.6:1 on light out) | #4f9ef7 | `tick-read` per theme |
 | Avatar palette | 7 colours, `String.hashValue` (reseeded every launch) | 8 colours, FNV-1a | 8 `avatar-*`, FNV-1a on both |
 | Unread badge text | white on green (2:1) | white on green | `on-brand` (9.4:1) |

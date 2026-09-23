@@ -98,9 +98,10 @@ to prove it.
 
   | Tokens | HighContrast resource |
   | --- | --- |
-  | wallpaper, sidebar-ground, glass-*, bubble-*, *-fallback, inset-fill, scrim | `SystemColorWindowColor` |
-  | ink, ink-secondary, meta-out, glass-edge, divider, glass-rim | `SystemColorWindowTextColor` |
-  | brand*, accent-*, focus-ring, tick-read, presence-online, warning*, danger* | `SystemColorHighlightColor` |
+  | wallpaper, sidebar-ground, glass-*, bubble-*, *-fallback, inset-fill, scrim, hud-surface | `SystemColorWindowColor` |
+  | ink, ink-secondary, meta-out, glass-edge, divider, glass-rim, hud-ink, hud-ink-secondary, hud-rim | `SystemColorWindowTextColor` |
+| hud-button, hud-button-hover | `SystemColorButtonFaceColor` |
+  | brand*, accent-*, focus-ring, tick-read, presence-online, warning*, danger*, hud-signal-* | `SystemColorHighlightColor` |
   | on-brand, on-warning, ink-inverse | `SystemColorHighlightTextColor` |
   | presence-offline, glass-hover, glass-pressed, glass-sheen, avatar-* | `SystemColorGrayTextColor` |
   | wallpaper-glow* | `Transparent` |
@@ -124,6 +125,9 @@ to prove it.
     | accent-ink-out | bubble-out | 4.5 |
     | on-brand | brand | 4.5 |
     | on-warning | warning | 4.5 |
+    | hud-ink | hud-surface, hud-button over hud-surface | 7.0 |
+    | hud-ink-secondary | hud-surface | 4.5 |
+    | hud-signal-view, hud-signal-control | hud-surface | 3.0 |
     | ink-inverse | danger, every avatar-* | 4.5 |
     | tick-read | bubble-out | 3.0 |
     | focus-ring | wallpaper, sidebar-ground | 3.0 |
@@ -298,16 +302,23 @@ Files: `UI/RemoteDesktop/RemoteConsentWindow.xaml(.cs)`, `UI/RemoteDesktop/Remot
   - The address and key rows move into an `inset-fill` card (`CornerRadius="8"`, `Padding="10"`), with the key still in a monospaced font (`Cascadia Mono, Consolas`), selectable and never trimmed.
   - `WarningPanel` becomes `TokenWarningWashBrush` with its icon in `TokenWarningInkBrush`, **still shown only when `WarningFor(trust)` returns text**.
   - **`DeclineButton` keeps the accent (now `GlassPrimaryButtonStyle`) and default behaviour. `AcceptButton` takes `GlassButtonStyle` and gets no keyboard accelerator.** The countdown text is unchanged.
-- [ ] Indicator:
-  - `Strip` fills the window with `CornerRadius="0"`. After the window is created, and again after every `Reposition()`, call `DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE = 33, ref DWMWCP_ROUND = 2, sizeof(int))`. Declare it as `[DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);`, where `DwmSetWindowAttribute` is the real export name. Wrap the call in try/catch and log it: nothing here may throw.
-  - The colours become `GlassTokens.Danger` when controlled and `GlassTokens.Warning` when viewed, replacing `0xE58C1A`. Text, dot and button foregrounds become `on-warning` #1F1300 when viewed and `ink-inverse` when controlled, switched in `ApplyGrant`.
-  - Add a 1px top highlight: a 1px `Border` along the top edge in #80FFFFFF, `IsHitTestVisible="False"`.
-  - The buttons keep their `#38FFFFFF` capsule style. **No acrylic here.**
+- [ ] Indicator: the **neutral HUD** from `components/RemoteHostIndicator`. The amber and red full-bleed strips are gone. Colour lives only in the status dot, the controlled outline and the Stop Sharing button.
+  - `Strip`: `Background="{ThemeResource TokenHudSurfaceBrush}"` (the same colour in both themes), `CornerRadius="0"`, `BorderThickness="0"`, `Padding="16,0,6,0"`. The window height in `Reposition()` goes from 52 to 44.
+  - One row: `PulseDot` (8px; fill set in `ApplyGrant`), `HeadlineText` (12, SemiBold, `TokenHudInkBrush`), `ElapsedText` (12, `TokenHudInkSecondaryBrush`, moved onto the same line, with a `*` column after it), a 1×20 `Rectangle` in `TokenHudRimBrush`, then the buttons.
+  - `StopControlButton`: `TokenHudButtonBrush` fill, `TokenHudInkBrush` text, height 32, `CornerRadius="16"`, `Padding="14,0"`. Hover goes through per-instance `Button.Resources` (`ButtonBackgroundPointerOver` → `TokenHudButtonHoverBrush`).
+  - `StopSharingButton`: `GlassDangerButtonStyle`, height 32, `CornerRadius="16"`. This is the only solid colour on the indicator.
+  - Delete every hard-coded colour in the XAML and in `ApplyGrant` (`#D93025`, `#E58C1A`, `White`, `#38FFFFFF`, `#D9FFFFFF`).
+  - `ApplyGrant(peerName, grant)`: `PulseDot.Fill` becomes `TokenHudSignalViewBrush` while viewing and `TokenHudSignalControlBrush` while controlling. The headline strings are unchanged.
+  - Window corners and the controlled outline both go through DWM, because a XAML border inside a clipped borderless window cannot follow its rounded corners. Declare `[DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);` (`DwmSetWindowAttribute` is the real export name).
+    - After creation, and again after every `Reposition()`, set `DWMWA_WINDOW_CORNER_PREFERENCE` (33) to `DWMWCP_ROUND` (2).
+    - In `ApplyGrant`, set `DWMWA_BORDER_COLOR` (34) to `0x005961FF` (the COLORREF of `hud-signal-control` #FF6159, stored as `0x00BBGGRR`) when controlled, and to `DWMWA_COLOR_DEFAULT` (`unchecked((int)0xFFFFFFFF)`) when viewing.
+    - Both attributes need Windows 11. On Windows 10 the call returns an error HRESULT: log it once and carry on. Wrap each call in try/catch: nothing here may throw.
+  - Keep the 1.1s opacity pulse in `Pulse()`. It already reads as a breath rather than a blink. **No acrylic here: the HUD is solid.**
 
 **Done when:**
 - a pinned-key invite shows no warning and an unknown device shows it
 - Enter declines, and Escape and closing decline
-- the indicator reads amber with dark text when viewing and red with white text when controlled, with rounded corners, top-centre, on every monitor layout
+- the indicator is the dark HUD in both themes: an amber dot when viewing, and a coral dot plus a coral system border when controlled. The red Stop Sharing button is the only filled colour. It has rounded corners and sits top-centre on every monitor layout
 
 ### W10. Windows verification pass
 - [ ] Full Dell build (separate restore and build) and MSTest, with the DLL timestamp printed and the test totals up by the G2 tests.
@@ -396,11 +407,18 @@ Files: `RemoteDesktop/RemoteConsentView.swift`, `RemoteDesktop/RemoteConsentPres
   - Before 26, `.thickMaterial`.
   - Key card: `insetFill`, radius 8. Warning row: `warningWash` with a `warningInk` icon, shown only when `request.warning != nil` (unchanged). The permissions `systemNotice` stays plain `insetFill`.
   - **Decline keeps `.keyboardShortcut(.defaultAction)` and the allow button gets none.**
-- [ ] Indicator: stays solid (signal glass). When viewing, `.foregroundStyle` becomes `GlassTokens.onWarning` instead of `.white`; controlled keeps white. Tint colours become `GlassTokens.danger` / `GlassTokens.warning`. Replace the `strokeBorder(.white.opacity(0.22))` overlay with a top-weighted rim gradient (`#FFFFFF` at 50% at the top to transparent at mid-height).
+- [ ] Indicator: the **neutral HUD** from `components/RemoteHostIndicator`, replacing the orange and red capsules. In `RemoteHostIndicatorView`:
+  - Delete `tint`.
+  - Background: `Capsule().fill(GlassTokens.hudSurface)`. Overlay: `Capsule().strokeBorder(model.severity == .controlled ? GlassTokens.hudSignalControl : GlassTokens.hudRim, lineWidth: 1)`.
+  - `PulsingDot(color:)` takes `hudSignalView` or `hudSignalControl`.
+  - The headline (12 semibold, `hudInk`) and the elapsed time (12, `hudInkSecondary`, `.monospacedDigit()`) go onto **one line** in an `HStack`, followed by a 1×20 `hudRim` rule.
+  - Stop Control: a `hudButton` capsule with `hudInk` text. Stop Sharing: a `GlassTokens.danger` capsule with `inkInverse` text, the only solid colour.
+  - Height 44, padding 16 leading and 6 trailing. Add `.environment(\.colorScheme, .dark)`, so the HUD looks the same whatever the system theme.
+  - The panel is already borderless, clear and non-opaque (`RemoteHostIndicatorPresenter`), so the capsule shape is real. Keep `.shadow` and `.fixedSize()`. No `glassEffect`: the HUD stays solid.
 - [ ] `ContentView.emptyState`: the EmptyState recipe, with a 64pt `.glassSurface(.clear, in: Circle())` disc. **Keep its copy.**
 - [ ] Settings, Contacts, New Message and Archived are system sheets and forms, already glass on 26. No change.
 
-**Done when** the consent panel shows glass edge to edge on macOS 26 and a thick material on 13–15 with no opaque slab, and the indicator's viewing text is dark and legible.
+**Done when** the consent panel shows glass edge to edge on macOS 26 and a thick material on 13–15 with no opaque slab, and the indicator is the dark HUD (amber dot when viewing; coral dot and outline when controlled; red Stop Sharing as the only filled colour) in both light and dark mode.
 
 ### M5. Optional: the thread runs under the chrome on macOS
 Do this last, and only if M3 shipped cleanly. It is the riskiest change in the plan, because `ChatView`'s scroll geometry assumes the viewport is the visible area.
@@ -422,6 +440,7 @@ Do this last, and only if M3 shipped cleanly. It is the riskiest change in the p
 
 - [ ] `CLAUDE.md` → *Do not accidentally regress*, add:
   - "Do not put an `AcrylicBrush` on message bubbles. Acrylic is only for chrome that has app content moving under it (header, composer, transfer banner, jump button). Bubbles and the sidebar panel use translucent solid brushes."
+  - "Do not paint the screen-sharing indicator in its state colour. It is a neutral, solid `hud-surface` HUD, identical in both themes. The state shows as the status dot (plus a coral outline for control), and the only filled colour is the Stop Sharing button. A full amber or red bar reads as an alarm, and an alarm that stays up for a whole session stops being seen."
   - "Do not make the remote-desktop Allow button primary or give it a shortcut. Decline stays the default on both platforms, and the warning colour appears only for an unexpected key."
   - "Do not add a colour, radius or size literal to UI code. Add a token to `design/liquid-glass/tokens.json` and run `scripts/design/gen_tokens.py`. CI's `--check` fails on a stale generated file."
   - (After W3) "Do not give `MessagesList` a background brush. The wallpaper and its glows are painted by `ThreadBackground` behind it, and the list padding, not a margin, keeps the first and last messages clear of the floating chrome."
