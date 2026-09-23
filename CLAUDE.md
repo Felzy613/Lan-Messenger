@@ -930,3 +930,9 @@ Use the smallest sufficient set for the change:
   rather than emit "no user-facing changes", which is indistinguishable from a
   genuinely empty release. That bug shipped empty notes for every pre-release.
 - Do not treat generated Xcode project files as source.
+- Do not add a colour, radius or size literal to UI code. Add a token to
+  `design/liquid-glass/tokens.json` and run `scripts/design/gen_tokens.py`,
+  which writes `GlassTokens.swift`, `GlassTokens.cs` and
+  `Styles/GlassTokens.xaml`. Never edit those three by hand: CI's `--check`
+  fails on a stale generated file, and `GlassTokensTests` fails a colour tuned
+  below its contrast floor.

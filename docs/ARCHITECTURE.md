@@ -601,6 +601,29 @@ merge path. The storyboard animates `Opacity` and a `ScaleTransform` — both
 independent targets — and is stopped whenever the control is hidden or unloaded
 rather than left ticking behind a collapsed element.
 
+### Design Tokens
+
+Both apps take their colours, radii, sizes and type ramp from one file,
+`design/liquid-glass/tokens.json`, the source of the LAN Messenger Glass design
+system. `scripts/design/gen_tokens.py` turns it into:
+
+- `src/macos/LanMessenger/UI/GlassTokens.swift`: `Color`s that follow the view's
+  appearance (a dynamic `NSColor` per token), plus `GlassTokens.Raw` pairs of
+  ARGB values for code holding an explicit `ColorScheme`.
+- `src/windows-native/LanMessenger/UI/GlassTokens.cs`: `<Name>Light` and
+  `<Name>Dark` `Color`s and constants, for code-behind (`Theme.cs`).
+- `src/windows-native/LanMessenger/Styles/GlassTokens.xaml`: theme dictionaries
+  for XAML `ThemeResource` lookups, including the acrylic brushes. High
+  Contrast has no acrylic or gradients and maps every token to a system colour
+  by role.
+
+The generated files are committed, and PR checks run `gen_tokens.py --check` on
+both jobs, so a token edited without regenerating, or a generated file edited
+by hand, fails CI. `GlassTokensTests` on both platforms asserts WCAG contrast
+floors for every text-on-surface pairing the design uses, compositing each
+translucent surface over the wallpaper and over its glow and taking the worse,
+so a colour tuned below legibility fails a test.
+
 ### macOS UI
 
 Important files:
