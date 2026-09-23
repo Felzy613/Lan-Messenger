@@ -1,0 +1,16 @@
+{
+  "_comment": "Shared avatar-colour vector. Both platforms must hold this palette in this order, and give every name exactly this fnv1a and index: fnv1a is 32-bit FNV-1a over the name's UTF-16 code units, and index = (fnv1a mod 2147483647) mod 8. Computed from the FNV-1a definition, not from either implementation; \"foobar\" is FNV's published check value 0xbf9cf968. The cases reach every slot. Most hash above 2147483647, where skipping the mod step moves the index; the accented and CJK names hash differently as UTF-8, and the rocket, a surrogate pair, hashes differently as Unicode scalars.",
+  "palette": ["#2b6cd4", "#1b7f45", "#b55700", "#8e44c9", "#d0352b", "#0b7f99", "#9a6500", "#5e6770"],
+  "cases": [
+  {"name": "", "fnv1a": 2166136261, "index": 6},
+  {"name": "foobar", "fnv1a": 3214735720, "index": 1},
+  {"name": "Alice", "fnv1a": 752715143, "index": 7},
+  {"name": "Bob", "fnv1a": 3955990900, "index": 5},
+  {"name": "Carol", "fnv1a": 255748530, "index": 2},
+  {"name": "Frank", "fnv1a": 2155689315, "index": 4},
+  {"name": "Peggy", "fnv1a": 4201080535, "index": 0},
+  {"name": "Jos\u00e9", "fnv1a": 3569425666, "index": 3},
+  {"name": "\u674e\u96f7", "fnv1a": 2974422482, "index": 3},
+  {"name": "Sam \ud83d\ude80", "fnv1a": 1319562513, "index": 1}
+  ]
+}

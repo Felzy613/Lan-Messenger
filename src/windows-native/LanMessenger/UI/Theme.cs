@@ -97,40 +97,19 @@ public static class Theme
     }
 
     public static SolidColorBrush AvatarBrush(string name)
-        => AvatarBrushes[StableHash(name) % AvatarColors.Length];
+        => AvatarBrushes[AvatarPalette.Index(name)];
 
-    // Avatar palette — same 8 colors as macOS version ----------------------------
+    // Avatar palette — the same eight avatar-* tokens as macOS -------------------
+    //
+    // AvatarPalette holds the values and picks one per name; its macOS twin does
+    // exactly the same, so a contact looks the same on either machine.
 
-    public static readonly Color[] AvatarColors =
-    [
-        Color.FromArgb(255,  74, 144, 226),  // blue
-        Color.FromArgb(255,  80, 200, 120),  // green
-        Color.FromArgb(255, 255, 149,   0),  // orange
-        Color.FromArgb(255, 175,  82, 222),  // purple
-        Color.FromArgb(255, 255,  59,  48),  // red
-        Color.FromArgb(255,  90, 200, 250),  // teal
-        Color.FromArgb(255, 255, 204,   0),  // yellow
-        Color.FromArgb(255, 142, 142, 147),  // gray
-    ];
+    public static readonly Color[] AvatarColors = Array.ConvertAll(AvatarPalette.Rgb,
+        rgb => Color.FromArgb(255,
+            (byte)((rgb >> 16) & 0xFF), (byte)((rgb >> 8) & 0xFF), (byte)(rgb & 0xFF)));
 
     public static Color AvatarColor(string name)
-        => AvatarColors[StableHash(name) % AvatarColors.Length];
-
-    // FNV-1a. string.GetHashCode() is randomized per process on .NET, which
-    // made every contact's avatar colour reshuffle on each launch.
-    private static int StableHash(string name)
-    {
-        unchecked
-        {
-            uint hash = 2166136261;
-            foreach (var c in name)
-            {
-                hash ^= c;
-                hash *= 16777619;
-            }
-            return (int)(hash % int.MaxValue);
-        }
-    }
+        => AvatarColors[AvatarPalette.Index(name)];
 
     public static string Initials(string name)
     {

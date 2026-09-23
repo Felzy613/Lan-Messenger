@@ -349,7 +349,7 @@ is a real regression.
 
 ### Test Vectors
 
-Four fixtures are carried in **both** test directories, and must stay
+These fixtures are carried in **both** test directories, and must stay
 byte-for-byte equivalent:
 
 | Fixture | Covers |
@@ -357,6 +357,7 @@ byte-for-byte equivalent:
 | `known_good_exchange.json` | Text encryption, file chunk encryption, history encryption |
 | `remote_handshake_vector.json` | The remote-desktop media handshake |
 | `media_frame_vector.json` | Media frame header, AAD and sealed payload |
+| `avatar_palette_vector.json` | The eight avatar colours, and the FNV-1a hash and palette slot each name maps to |
 | `windows_h264_sample.h264` | Real Microsoft H264 Encoder MFT output — 60 frames, 126 NAL units, 129,547 bytes |
 
 `windows_h264_sample.h264` **cannot be regenerated without the Windows machine**.

@@ -27,18 +27,14 @@ enum Theme {
             : .white
     }
 
-    private static let avatarPalette: [Color] = [
-        Color(red: 0.20, green: 0.50, blue: 0.90),
-        Color(red: 0.80, green: 0.20, blue: 0.40),
-        Color(red: 0.20, green: 0.65, blue: 0.45),
-        Color(red: 0.90, green: 0.48, blue: 0.10),
-        Color(red: 0.60, green: 0.20, blue: 0.80),
-        Color(red: 0.10, green: 0.60, blue: 0.80),
-        Color(red: 0.75, green: 0.30, blue: 0.30),
-    ]
+    private static let avatarPalette: [Color] = AvatarPalette.rgb.map { rgb in
+        Color(red: Double((rgb >> 16) & 0xFF) / 255,
+              green: Double((rgb >> 8) & 0xFF) / 255,
+              blue: Double(rgb & 0xFF) / 255)
+    }
 
     static func avatarColor(for name: String) -> Color {
-        avatarPalette[abs(name.hashValue) % avatarPalette.count]
+        avatarPalette[AvatarPalette.index(for: name)]
     }
 
     static func initials(for name: String) -> String {

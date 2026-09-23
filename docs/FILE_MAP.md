@@ -219,6 +219,7 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/macos/LanMessenger/UI/AppModel.swift` | Root observable state, service wiring, peer/contact/history migration, conversations, pending queues, updates, and actions. |
 | `src/macos/LanMessenger/UI/Theme.swift` | Shared color palette, bubble colors, accent, and formatting helpers. |
 | `src/macos/LanMessenger/UI/AvatarView.swift` | Avatar view supporting initials and base64 contact photos. |
+| `src/macos/LanMessenger/UI/AvatarPalette.swift` | The eight `avatar-*` colours and which one a name gets: FNV-1a over UTF-16 code units, reduced exactly as Windows `AvatarPalette.cs` does it, so a contact looks the same on both platforms and every launch. |
 | `src/macos/LanMessenger/UI/RemoteDesktop/RemoteConsentView.swift` | The consent prompt. Names the peer in the headline, always shows the fingerprint monospaced, shows no badge on the safe path, and makes Decline the default button. |
 | `src/macos/LanMessenger/UI/RemoteDesktop/RemoteInputCapture.swift` | The viewer's mouse and keyboard, turned into wire records. Normalizes against the **video rectangle**, not the view, and returns nothing for a point in a letterbox bar rather than clamping it to an edge. Never forwards the kill shortcut. |
 | `src/macos/LanMessenger/UI/RemoteDesktop/RemoteConsentPresenter.swift` | `NSPanel` + `NSHostingView` presentation (not `openWindow`, which cannot carry a session payload and needs a materialised window scene), with the countdown and the `timeout` auto-decline. The ticker runs in `.common` run-loop mode so it does not pause during menu tracking. |
@@ -244,6 +245,7 @@ untestable; everything above it runs against in-memory doubles. See
 | Path | Purpose |
 |---|---|
 | `src/macos/LanMessengerTests/AttachmentPasteboardTests.swift` | Paste precedence (files vs bitmap vs text), pasted-bitmap flavour/extension choice, drag item-provider decoding, and `AttachmentStore` naming/placement. |
+| `src/macos/LanMessengerTests/AvatarPaletteTests.swift` | The avatar palette, and each name's hash and slot, against `avatar_palette_vector.json`. Mirrors `AvatarPaletteTests.cs`. |
 | `src/macos/LanMessengerTests/ConfigStoreTests.swift` | Config and filename sanitization tests. |
 | `src/macos/LanMessengerTests/DockPolicyGuardTests.swift` | Guards the Dock-presence invariant: an AppKit promotion back to `.regular` must be corrected, and a policy that already matches must be left alone. |
 | `src/macos/LanMessengerTests/CryptoTests.swift` | Session/history crypto round trips and known vector tests. |
@@ -287,6 +289,7 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/macos/LanMessengerTests/known_good_exchange.json` | Cross-platform crypto/framing/history test vectors. |
 | `src/macos/LanMessengerTests/remote_handshake_vector.json` | Shared remote-desktop handshake vector. Must stay byte-identical to the Windows copy. |
 | `src/macos/LanMessengerTests/media_frame_vector.json` | Shared media-frame vector. Must stay byte-identical to the Windows copy. |
+| `src/macos/LanMessengerTests/avatar_palette_vector.json` | Shared avatar vector: the eight palette colours, and ten names with their FNV-1a hash and slot, computed from the FNV definition rather than from either implementation. Must stay byte-identical to the Windows copy. |
 | `src/macos/LanMessengerTests/windows_h264_sample.h264` | 60 frames / 126 NAL units of real Microsoft H264 Encoder MFT output (129,547 bytes). **Cannot be regenerated without the Dell** — do not delete. |
 
 ## Windows Project Root
@@ -427,6 +430,7 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 | `src/windows-native/LanMessenger/UI/Theme.cs` | Shared brushes, colors, and formatting helpers. |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml` | Avatar control XAML. |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml.cs` | Avatar image/initial rendering logic. |
+| `src/windows-native/LanMessenger/UI/AvatarPalette.cs` | The eight `avatar-*` colours and which one a name gets (FNV-1a over UTF-16 code units, identical to macOS). WinRT-free so it compiles and tests off a UI host; `Theme` turns it into brushes. |
 | `src/windows-native/LanMessenger/UI/TypingIndicatorControl.xaml` | Three dots plus the `Border` that becomes an incoming bubble for the thread copy. |
 | `src/windows-native/LanMessenger/UI/TypingIndicatorControl.xaml.cs` | Staggered pulse storyboard built in code (targets the dot objects directly, so it works inside a `ListView` footer and a `DataTemplate`), `IsActive` start/stop, and the dot size/spacing/brush knobs the header and sidebar use. |
 | `src/windows-native/LanMessenger/UI/Sidebar/SidebarControl.xaml` | Sidebar list UI. |
@@ -460,6 +464,7 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 
 | Path | Purpose |
 |---|---|
+| `src/windows-native/LanMessenger.Tests/AvatarPaletteTests.cs` | Mirror of the Swift avatar suite, against the shared vector. |
 | `src/windows-native/LanMessenger.Tests/ClipboardAttachmentsTests.cs` | Ctrl+V paste precedence and pasted-image filename safety. |
 | `src/windows-native/LanMessenger.Tests/ConfigStoreTests.cs` | Config and filename sanitization tests. |
 | `src/windows-native/LanMessenger.Tests/CryptoTests.cs` | Session/history crypto round trips and known vector tests. |
@@ -491,6 +496,7 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 | `src/windows-native/LanMessenger.Tests/known_good_exchange.json` | Cross-platform crypto/framing/history test vectors. |
 | `src/windows-native/LanMessenger.Tests/remote_handshake_vector.json` | Shared handshake vector. Must stay byte-identical to the macOS copy. |
 | `src/windows-native/LanMessenger.Tests/media_frame_vector.json` | Shared media-frame vector. Must stay byte-identical to the macOS copy. |
+| `src/windows-native/LanMessenger.Tests/avatar_palette_vector.json` | Shared avatar vector. Must stay byte-identical to the macOS copy. |
 | `src/windows-native/LanMessenger.Tests/windows_h264_sample.h264` | The same real-encoder artefact the macOS suite uses. |
 
 ## Spikes

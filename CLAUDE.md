@@ -831,6 +831,17 @@ Use the smallest sufficient set for the change:
   at that moment); fixed app assets such as the tray `.ico` may keep the cache.
   On macOS the cache is ours — `ThumbnailCache` keys on path plus the file's
   modification date and size, and must keep doing so.
+- Do not choose an avatar colour with a per-process hash. Swift's
+  `String.hashValue` and .NET's `string.GetHashCode()` are both reseeded on
+  every launch, so each contact changes colour at every restart and the two
+  platforms never agree. Windows had this and moved to FNV-1a; macOS kept
+  `abs(name.hashValue)`, which can also trap on `Int.min`, over a different
+  seven-colour palette. Both now go through `AvatarPalette`: 32-bit FNV-1a over
+  UTF-16 code units, `% 2147483647`, then `% 8` into the eight `avatar-*`
+  tokens. macOS must walk `name.utf16`, because that is what C#'s
+  `foreach (char c in name)` walks: `utf8` disagrees on every non-ASCII name and
+  `unicodeScalars` on most emoji. Both suites assert the shared
+  `avatar_palette_vector.json`.
 - Do not add a `DllImport` whose managed method name isn't the real exported
   entry point (or set `EntryPoint` explicitly). The failure is
   `EntryPointNotFoundException` at the first call, not at load, so it looks fine
