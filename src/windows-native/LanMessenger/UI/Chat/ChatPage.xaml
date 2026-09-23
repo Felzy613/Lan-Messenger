@@ -146,12 +146,13 @@
                          question where it was asked. The reasons come from
                          RemoteDesktopPolicy, the same gate an inbound invite is judged
                          by, so the interface can never offer what the policy refuses.
-                         Its x:Name is its UI Automation id: keep it. -->
+                         Its x:Name is its UI Automation id: keep it. It has no
+                         AutomationProperties.Name on purpose: its accessible name
+                         comes from that tooltip, reason included. -->
                     <Button x:Name="RemoteDesktopBtn"
                             Grid.Column="2"
                             Style="{StaticResource GlassIconButtonStyle}"
                             VerticalAlignment="Center"
-                            AutomationProperties.Name="Share screen"
                             Click="RemoteDesktop_Click">
                         <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                   Glyph="&#xE7F4;"

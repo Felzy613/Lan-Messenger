@@ -34,6 +34,7 @@ public sealed class NewMessageDialog : ContentDialog
         PrimaryButtonText = "Add Contact";
         CloseButtonText   = "Cancel";
         DefaultButton     = ContentDialogButton.Close;
+        GlassDialog.Apply(this);
 
         _page = new NewMessagePage { Model = model };
         _page.ContactSelected += publicKeyB64 =>

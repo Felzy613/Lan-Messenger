@@ -244,41 +244,43 @@ Files: `UI/Chat/ComposerControl.xaml(.cs)`, `ChatPage.xaml(.cs)`. Read `Composer
 
 ### W6. Bubbles and thread content
 Files: `UI/Chat/MessageBubbleControl.xaml(.cs)`, `UI/TypingIndicatorControl.xaml.cs`. Read `MessageBubble`, `StatusTicks`, `FileBubble`, `MediaBubble` and `ReplyChip`.
-- [ ] `Bubble`: `MaxWidth="420"`, `Padding="10,7,10,7"`, `BorderThickness="1"`, `BorderBrush="{ThemeResource GlassRimBrush}"`. The corner radii stay as they are (the tail logic is already right). **No `AcrylicBrush` per bubble.**
-- [ ] Keep 60px clear on the far side: `BubbleColumn.Margin` becomes `0,0,60,0` when incoming and `60,0,0,0` when outgoing, set in `Refresh()`.
-- [ ] Meta row: replace every `Opacity` dimming (`EditedText` 0.45, `TimestampText` 0.55, `RelayBadge` 0.6) with brushes: `Theme.MetaInBrush` when incoming, `Theme.MetaOutBrush` when outgoing. Opacity on text is what took these below 4.5:1.
-- [ ] Status ticks: keep the text glyphs and change only their brushes. Sent and delivered use the meta colour for the bubble; read uses `Theme.CheckBlueBrush` (now `tick-read`); failed uses `Theme.DangerInkBrush`.
-- [ ] Reply chip: background `TokenInsetFillBrush`, `CornerRadius="6"`. `ReplySender` uses `AccentInk` or `AccentInkOut` by side. `ReplyPreview` loses `Opacity="0.75"` and takes the meta brush.
-- [ ] File actions: `OpenFileBtn` takes `GlassPillButtonStyle` (accent) and `ShowInExplorerBtn` takes `GlassPillButtonStyle`. Labels are unchanged ("Open", "Show in folder").
-- [ ] Media: `ImageTile` and `VideoTile` get `CornerRadius="12"`. `VideoTile`'s `#22000000` becomes `TokenInsetFillBrush` and its play square becomes the `scrim` token. `FileMissingText` loses its opacity and takes the meta brush.
-- [ ] Deleted: italic 13 in the meta brush. `Theme.MutedTextBrush` becomes ink-secondary.
-- [ ] `TypingIndicatorControl.UseBubbleShell()`: incoming bubble brush, `CornerRadius(16,16,16,4)` (the tail: it is always the newest incoming row), and the rim border. The dots use `TokenInkSecondaryBrush`. The row variant (see W7) uses `AccentInk`.
+- [x] `Bubble`: `MaxWidth="420"`, `Padding="10,7,10,7"`, `BorderThickness="1"`, `BorderBrush="{ThemeResource GlassRimBrush}"`. The corner radii stay as they are (the tail logic is already right). **No `AcrylicBrush` per bubble.**
+- [x] Keep 60px clear on the far side: `BubbleColumn.Margin` becomes `0,0,60,0` when incoming and `60,0,0,0` when outgoing, set in `Refresh()`.
+- [x] Meta row: replace every `Opacity` dimming (`EditedText` 0.45, `TimestampText` 0.55, `RelayBadge` 0.6) with brushes: `Theme.MetaInBrush` when incoming, `Theme.MetaOutBrush` when outgoing. Opacity on text is what took these below 4.5:1.
+- [x] Status ticks: keep the text glyphs and change only their brushes. Sent and delivered use the meta colour for the bubble; read uses `Theme.CheckBlueBrush` (now `tick-read`); failed uses `Theme.DangerInkBrush`.
+- [x] Reply chip: background `TokenInsetFillBrush`, `CornerRadius="6"`. `ReplySender` uses `AccentInk` or `AccentInkOut` by side. `ReplyPreview` loses `Opacity="0.75"` and takes the meta brush.
+- [x] File actions: `OpenFileBtn` takes `GlassPillButtonStyle` (accent) and `ShowInExplorerBtn` takes `GlassPillButtonStyle`. Labels are unchanged ("Open", "Show in folder").
+- [x] Media: `ImageTile` and `VideoTile` get `CornerRadius="12"`. `VideoTile`'s `#22000000` becomes `TokenInsetFillBrush` and its play square becomes the `scrim` token. `FileMissingText` loses its opacity and takes the meta brush.
+- [x] Deleted: italic 13 in the meta brush. `Theme.MutedTextBrush` becomes ink-secondary.
+- [x] `TypingIndicatorControl.UseBubbleShell()`: incoming bubble brush, `CornerRadius(16,16,16,4)` (the tail: it is always the newest incoming row), and the rim border. The dots use `TokenInkSecondaryBrush`. The row variant (see W7) uses `AccentInk`.
+
+*As built:* bubbles and rows subscribe to `Theme.Changed` while loaded and repaint, so a theme or transparency switch reaches bubbles already on screen. The type ramp comes from the generated `TokenType*Style`s.
 
 **Done when** `components/MessageBubble`, `StatusTicks`, `FileBubble`, `MediaBubble` and `ReplyChip` match in both themes, and with transparency off the bubbles fall back to opaque WhatsApp colours.
 
 ### W7. Conversation rows
 Files: `UI/Sidebar/ConversationRowControl.xaml(.cs)`, `UI/Sidebar/SidebarControl.xaml`. Read `ConversationRow`, `Avatar` and `Sidebar`.
-- [ ] `ConversationList.Resources` (per instance, **not** a style setter):
+- [x] `ConversationList.Resources` (per instance, **not** a style setter):
   - `ListViewItemSelectionIndicatorVisualEnabled` = False
   - `ListViewItemBackgroundSelected`, `…SelectedPointerOver` and `…SelectedPressed` → `TokenGlassThickBrush`
   - `ListViewItemBackgroundPointerOver` → `TokenGlassHoverBrush`
   - `ListViewItemCornerRadius` = 12
   - Item container `Padding` stays `8,4`.
-- [ ] Row: `Height="72"`.
+- [x] Row: `Height="72"`.
   - `OnlineDot` fill from `Theme.OnlineDotBrush` / `OfflineDotBrush`, stroke `TokenPresenceRingBrush`.
   - `TimestampText` in ink-secondary. When unread, accent-ink and semibold (set in code-behind where `UnreadBadge` is toggled).
   - `PreviewText` at 13/18 ink-secondary, two lines.
   - `UnreadBadge`: `brand`, `CornerRadius="10"`, `MinWidth="20"`, `Padding="6,0"`. `UnreadCount` uses **`Foreground` `TokenOnBrandBrush`** and **Bold**, not white.
-- [ ] `TypingDots` in a row: wrap it in an `accent-wash` capsule (`CornerRadius="10"`, `Padding="8,5"`), with 6px dots at 4px spacing in accent-ink.
-- [ ] `OptionsBtn`: `GlassIconButtonStyle`. The glyph draws at 14 and the hit area is 32.
-- [ ] `ArchivedSection` stays **last**. Restyle it as a 52px row: a 32px `accent-wash` disc holding E7B8 in accent-ink, "Archived" at 14/19 semibold, the subtitle at 11/14 ink-secondary, and the chevron in ink-secondary.
+- [x] `TypingDots` in a row: wrap it in an `accent-wash` capsule (`CornerRadius="10"`, `Padding="8,5"`), with 6px dots at 4px spacing in accent-ink.
+- [x] `OptionsBtn`: `GlassIconButtonStyle`. The glyph draws at 14 and the hit area is 32.
+- [x] `ArchivedSection` stays **last**. Restyle it as a 52px row: a 32px `accent-wash` disc holding E7B8 in accent-ink, "Archived" at 14/19 semibold, the subtitle at 11/14 ink-secondary, and the chevron in ink-secondary.
 
 **Done when** `components/ConversationRow` and `Sidebar` match: selected, unread, typing, offline, archived.
 
 ### W8. Dialogs and Settings
 Files: `MainWindow.xaml.cs`, `UI/Sidebar/ContactsDialog.cs`, `UI/Sidebar/ContactEditorDialog.cs` (holds `NewMessageDialog`), `UI/Chat/ScreenshotDialogs.cs`, `UI/Chat/ChatPage.xaml.cs`, `UI/Chat/MessageBubbleControl.xaml.cs`, `UI/Sidebar/ConversationRowControl.xaml.cs`, `UI/Settings/SettingsPage.xaml`, new `UI/GlassDialog.cs`. Read `SettingsGroup`, `Button`, `Toggle` and `TextField`.
-- [ ] Add one helper, `GlassDialog.Apply(ContentDialog d)`, in `UI/GlassDialog.cs`. It sets `d.Background` to the `GlassThickAcrylicBrush` resource and `d.CornerRadius = new CornerRadius(26)`. The template's `BackgroundElement` template-binds both. It also sets `d.Resources["OverlayCornerRadius"] = new CornerRadius(26)`, because the inner `DialogSpace` grid reads that resource. The signature is `Apply(ContentDialog d, bool destructive = false)`: it sets `d.PrimaryButtonStyle` to `GlassPrimaryButtonStyle`, or to `GlassDangerButtonStyle` when `destructive` is true. Pass `destructive: true` for "Delete conversation?" and leave its `DefaultButton = Close` alone.
-- [ ] Call it from **every** construction site. There are nine on `main`:
+- [x] Add one helper, `GlassDialog.Apply(ContentDialog d)`, in `UI/GlassDialog.cs`. It sets `d.Background` to the `GlassThickAcrylicBrush` resource and `d.CornerRadius = new CornerRadius(26)`. The template's `BackgroundElement` template-binds both. It also sets `d.Resources["OverlayCornerRadius"] = new CornerRadius(26)`, because the inner `DialogSpace` grid reads that resource. The signature is `Apply(ContentDialog d, bool destructive = false)`: it sets `d.PrimaryButtonStyle` to `GlassPrimaryButtonStyle`, or to `GlassDangerButtonStyle` when `destructive` is true. Pass `destructive: true` for "Delete conversation?" and leave its `DefaultButton = Close` alone.
+- [x] Call it from **every** construction site. There are nine on `main`:
 
   | Site | Dialog |
   | --- | --- |
@@ -292,8 +294,8 @@ Files: `MainWindow.xaml.cs`, `UI/Sidebar/ContactsDialog.cs`, `UI/Sidebar/Contact
   | `ScreenshotWindowPickerDialog`, `ScreenshotPreviewDialog` in `ScreenshotDialogs.cs` (classes) | Screenshot picker and preview |
 
   For the subclassed dialogs, call it in the constructor. Re-run `git grep -n "new ContentDialog\|new Microsoft.UI.Xaml.Controls.ContentDialog\|: ContentDialog" -- src/windows-native` and confirm every hit is covered.
-- [ ] The template's `CommandSpace` template-binds the same `Background`, so the button strip draws acrylic over acrylic. If it reads denser than the body on the Dell, switch the helper to the opaque `TokenGlassThickFallbackBrush`: a dialog sits over a smoke layer anyway, and re-templating `ContentDialog` is out of scope.
-- [ ] `SettingsPage.xaml`: each section (`Display name`, `Received files folder`, `Screenshots folder`, `Background`, `Logging`, `Remote Desktop`, `Cloud Relay`, `Updates`, `About`) becomes:
+- [x] The template's `CommandSpace` template-binds the same `Background`, so the button strip draws acrylic over acrylic. If it reads denser than the body on the Dell, switch the helper to the opaque `TokenGlassThickFallbackBrush`: a dialog sits over a smoke layer anyway, and re-templating `ContentDialog` is out of scope.
+- [x] `SettingsPage.xaml`: each section (`Display name`, `Received files folder`, `Screenshots folder`, `Background`, `Logging`, `Remote Desktop`, `Cloud Relay`, `Updates`, `About`) becomes:
   - a header `TextBlock` at 12/16 semibold ink-secondary, **outside** the panel
   - a `ContentControl Style="{StaticResource GlassSurfaceStyle}"` with `Background` = `TokenGlassThickBrush` (translucent solid: it sits in a dialog that is already acrylic), `CornerRadius="20"`, `Padding="14,8"`
   - rows at least 44 tall, separated by 1px `TokenDividerBrush` lines
@@ -301,17 +303,19 @@ Files: `MainWindow.xaml.cs`, `UI/Sidebar/ContactsDialog.cs`, `UI/Sidebar/Contact
 
   Keep every control, name, handler and string. `InstallNowBtn` takes `GlassPrimaryButtonStyle`. `UpdatePanel`'s `CornerRadius="6"` becomes 20. The two `ToggleSwitch.Resources` blocks now reference the brand brushes by key, with the same per-instance technique.
 
+*As built:* `GlassDialog.Apply` applies a `GlassDialogStyle` (thick acrylic, `radius-sheet`) rather than setting `Background` directly, so the brush stays a `ThemeResource`. It also sets **per-dialog** Fluent resources: `TextControlBorderBrushFocused` to `focus-ring`, and the `AccentButton*` brushes to brand (or to glass for a destructive dialog, whose default is its safe button). Those keys cannot be overridden from App.xaml: a `ThemeResource` inside a generic.xaml template's visual-state storyboard resolves from the control's own tree and then the style's defining dictionary, before the app's — tried, and a focused field kept the Windows accent underline. `ContactsDialog` re-applies per state, destructive only in its "Remove contact?" state. The Contacts and New Message pages lost their last colour literals (white on brand, hard-coded green dots). Buttons in settings rows are the design's *plain* kind (`GlassPlainButtonStyle`: accent-ink text, no fill).
+
 **Done when** all nine dialogs open as thick-glass sheets with 26px corners in both themes, every setting still saves, and the destructive confirmations still default to their safe button.
 
 ### W9. Remote-desktop windows
 Files: `UI/RemoteDesktop/RemoteConsentWindow.xaml(.cs)`, `UI/RemoteDesktop/RemoteHostIndicatorWindow.xaml(.cs)`. Read `RemoteConsentSheet` and `RemoteHostIndicator`.
-- [ ] Consent:
+- [x] Consent:
   - Root `Grid` `Background="Transparent"`, and in the constructor `SystemBackdrop = new DesktopAcrylicBackdrop();`.
   - Title at 15/20 semibold, explanation at 12/16 ink-secondary.
   - The address and key rows move into an `inset-fill` card (`CornerRadius="8"`, `Padding="10"`), with the key still in a monospaced font (`Cascadia Mono, Consolas`), selectable and never trimmed.
   - `WarningPanel` becomes `TokenWarningWashBrush` with its icon in `TokenWarningInkBrush`, **still shown only when `WarningFor(trust)` returns text**.
   - **`DeclineButton` keeps the accent (now `GlassPrimaryButtonStyle`) and default behaviour. `AcceptButton` takes `GlassButtonStyle` and gets no keyboard accelerator.** The countdown text is unchanged.
-- [ ] Indicator: the **neutral HUD** from `components/RemoteHostIndicator`. The amber and red full-bleed strips are gone. Colour lives only in the status dot, the controlled outline and the Stop Sharing button.
+- [x] Indicator: the **neutral HUD** from `components/RemoteHostIndicator`. The amber and red full-bleed strips are gone. Colour lives only in the status dot, the controlled outline and the Stop Sharing button.
   - `Strip`: `Background="{ThemeResource TokenHudSurfaceBrush}"` (the same colour in both themes), `CornerRadius="0"`, `BorderThickness="0"`, `Padding="16,0,6,0"`. The window height in `Reposition()` goes from 52 to 44.
   - One row: `PulseDot` (8px; fill set in `ApplyGrant`), `HeadlineText` (12, SemiBold, `TokenHudInkBrush`), `ElapsedText` (12, `TokenHudInkSecondaryBrush`, moved onto the same line, with a `*` column after it), a 1×20 `Rectangle` in `TokenHudRimBrush`, then the buttons.
   - `StopControlButton`: `TokenHudButtonBrush` fill, `TokenHudInkBrush` text, height 32, `CornerRadius="16"`, `Padding="14,0"`. Hover goes through per-instance `Button.Resources` (`ButtonBackgroundPointerOver` → `TokenHudButtonHoverBrush`).
@@ -323,6 +327,8 @@ Files: `UI/RemoteDesktop/RemoteConsentWindow.xaml(.cs)`, `UI/RemoteDesktop/Remot
     - In `ApplyGrant`, set `DWMWA_BORDER_COLOR` (34) to `0x005961FF` (the COLORREF of `hud-signal-control` #FF6159, stored as `0x00BBGGRR`) when controlled, and to `DWMWA_COLOR_DEFAULT` (`unchecked((int)0xFFFFFFFF)`) when viewing.
     - Both attributes need Windows 11. On Windows 10 the call returns an error HRESULT: log it once and carry on. Wrap each call in try/catch: nothing here may throw.
   - Keep the 1.1s opacity pulse in `Pulse()`. It already reads as a breath rather than a blink. **No acrylic here: the HUD is solid.**
+
+*As built:* the consent window also gets an Escape accelerator on Decline and puts focus on Decline at first activation, so "Enter declines, Escape declines" (which its comments already claimed) holds by construction. It is 460×360 so the warning and a wrapped key fit. The indicator's headline takes the star column and trims, with the elapsed time after it, so a long name cannot push the Stop buttons out of a narrow window.
 
 **Done when:**
 - a pinned-key invite shows no warning and an unknown device shows it

@@ -1085,6 +1085,7 @@ public sealed partial class ChatPage : Page
                 CloseButtonText = "OK",
                 XamlRoot = this.XamlRoot,
             };
+            GlassDialog.Apply(dialog);
             _ = await dialog.ShowAsync();
         }
         catch (Exception ex)

@@ -88,17 +88,9 @@
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <Button x:Name="AddContactBtn"
                     Content="Add a contact"
-                    Background="{ThemeResource TokenBrandBrush}"
-                    Foreground="White"
+                    Style="{StaticResource GlassPrimaryButtonStyle}"
                     HorizontalAlignment="Center"
-                    Click="AddContact_Click">
-                <Button.Resources>
-                    <StaticResource x:Key="ButtonBackgroundPointerOver" ResourceKey="TokenBrandHoverBrush"/>
-                    <StaticResource x:Key="ButtonBackgroundPressed"     ResourceKey="TokenBrandPressedBrush"/>
-                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White"/>
-                    <SolidColorBrush x:Key="ButtonForegroundPressed"     Color="White"/>
-                </Button.Resources>
-            </Button>
+                    Click="AddContact_Click" />
         </StackPanel>
     </Grid>
 </Page>

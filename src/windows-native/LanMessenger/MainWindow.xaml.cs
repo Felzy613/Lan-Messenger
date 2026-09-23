@@ -171,6 +171,7 @@ public sealed partial class MainWindow : Window
             Content         = new SettingsPage { Model = Model },
             XamlRoot        = Content.XamlRoot,
         };
+        GlassDialog.Apply(dialog);
         _activeDialog = dialog;
         try { await dialog.ShowAsync(); }
         finally { _activeDialog = null; }
@@ -208,6 +209,7 @@ public sealed partial class MainWindow : Window
             },
             XamlRoot = Content.XamlRoot
         };
+        GlassDialog.Apply(dialog);
         var result = await dialog.ShowAsync();
         if (result == Microsoft.UI.Xaml.Controls.ContentDialogResult.Primary)
             Model.AcceptMigrationWithExistingKey();

@@ -25,12 +25,16 @@ public sealed partial class ConversationRowControl : UserControl
     public ConversationRowControl()
     {
         InitializeComponent();
-        // Smaller than the thread's dots and tinted with the brand accent,
-        // which is what the word "typing..." used to be.
+        // Smaller than the thread's dots and in accent-ink, which is what the
+        // word "typing..." used to be; the colour is set in Refresh so a theme
+        // switch reaches it.
         TypingDots.DotDiameter = 6;
         TypingDots.DotSpacing  = 4;
-        TypingDots.DotBrush    = Theme.BrandAccentBrush;
+        Loaded   += (_, _) => { if (!_themeHooked) { Theme.Changed += Refresh; _themeHooked = true; } };
+        Unloaded += (_, _) => { Theme.Changed -= Refresh; _themeHooked = false; };
     }
+
+    private bool _themeHooked;
 
     private static void OnRowChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -50,9 +54,17 @@ public sealed partial class ConversationRowControl : UserControl
         Avatar.PhotoB64        = Row.PhotoB64;
         NameText.Text          = Row.PeerName;
         PreviewText.Text       = Row.LastMessage;
-        PreviewText.Visibility = Row.IsTyping ? Visibility.Collapsed : Visibility.Visible;
-        TypingDots.IsActive    = Row.IsTyping;
-        TimestampText.Text     = Row.Timestamp;
+        PreviewText.Visibility   = Row.IsTyping ? Visibility.Collapsed : Visibility.Visible;
+        TypingCapsule.Visibility = Row.IsTyping ? Visibility.Visible : Visibility.Collapsed;
+        TypingDots.DotBrush      = Theme.AccentInkBrush;
+        TypingDots.IsActive      = Row.IsTyping;
+        TimestampText.Text       = Row.Timestamp;
+        // With unread messages the time turns semibold accent-ink, the way
+        // WhatsApp marks a conversation that has something new.
+        var unread = Row.UnreadCount > 0;
+        TimestampText.Foreground = unread ? Theme.AccentInkBrush : Theme.InkSecondaryBrush;
+        TimestampText.FontWeight = unread ? Microsoft.UI.Text.FontWeights.SemiBold
+                                          : Microsoft.UI.Text.FontWeights.Normal;
         // Always show the dot; green when online, muted gray when offline — matches
         // macOS sidebar. (The previous 45%-alpha black was invisible in dark mode.)
         OnlineDot.Fill = Row.IsOnline ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
@@ -102,6 +114,7 @@ public sealed partial class ConversationRowControl : UserControl
             DefaultButton = ContentDialogButton.Close,
             XamlRoot = this.XamlRoot,
         };
+        GlassDialog.Apply(dialog, destructive: true);
         var result = await dialog.ShowAsync();
         if (result == ContentDialogResult.Primary)
             Model.DeleteConversation(Row.PeerIP);

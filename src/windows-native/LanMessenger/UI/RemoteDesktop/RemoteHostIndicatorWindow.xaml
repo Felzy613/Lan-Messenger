@@ -3,16 +3,28 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
+    <!-- A neutral dark HUD, identical in light and dark themes, like the
+         system's own screen-recording indicators. Colour is spent in two places
+         only: the status dot and the Stop Sharing button. A full amber or red
+         bar reads as an alarm, and an alarm that stays up for a whole session
+         stops being seen. Solid, never acrylic: the desktop behind must not
+         wash out a security signal.
+
+         The strip fills the borderless window square-cornered; the rounding,
+         and the coral outline while controlled, come from DWM (see
+         ApplyWindowShape), because a XAML border inside a clipped window cannot
+         follow the window's own rounded corners. -->
     <Border x:Name="Strip"
-            Background="#D93025"
-            CornerRadius="18"
-            BorderThickness="1"
-            BorderBrush="#38FFFFFF"
-            Padding="12,8">
+            Background="{ThemeResource TokenHudSurfaceBrush}"
+            CornerRadius="0"
+            BorderThickness="0"
+            Padding="16,0,6,0">
         <Grid ColumnSpacing="10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
@@ -20,51 +32,75 @@
             <!-- The one moving thing. A static dot becomes furniture within a
                  minute; a slow pulse keeps catching the eye, which is the job.
                  Slow on purpose — a fast blink reads as an error the user is
-                 expected to fix, and this is a normal state to notice. -->
+                 expected to fix, and this is a normal state to notice. Its fill
+                 is the state colour, set in ApplyGrant. -->
             <Ellipse x:Name="PulseDot"
                      Grid.Column="0"
                      Width="8" Height="8"
-                     Fill="White"
                      VerticalAlignment="Center">
                 <Ellipse.OpacityTransition>
                     <ScalarTransition Duration="0:0:1.1" />
                 </Ellipse.OpacityTransition>
             </Ellipse>
 
-            <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                <TextBlock x:Name="HeadlineText"
-                           FontSize="12"
-                           FontWeight="SemiBold"
-                           Foreground="White" />
-                <TextBlock x:Name="ElapsedText"
-                           FontSize="10"
-                           Foreground="#D9FFFFFF" />
-            </StackPanel>
+            <!-- One line: the headline, then the elapsed time. The headline
+                 takes the slack and trims, so a long name can never push the
+                 Stop buttons out of the window. -->
+            <TextBlock x:Name="HeadlineText"
+                       Grid.Column="1"
+                       VerticalAlignment="Center"
+                       Style="{StaticResource TokenTypeLabelStrongStyle}"
+                       Foreground="{ThemeResource TokenHudInkBrush}"
+                       TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="ElapsedText"
+                       Grid.Column="2"
+                       VerticalAlignment="Center"
+                       Style="{StaticResource TokenTypeLabelStyle}"
+                       Foreground="{ThemeResource TokenHudInkSecondaryBrush}" />
+
+            <Rectangle Grid.Column="3"
+                       Width="1" Height="20"
+                       VerticalAlignment="Center"
+                       Fill="{ThemeResource TokenHudRimBrush}" />
 
             <!-- Offered only when there is control to take back. Leaves the
                  session running, which is usually what a host actually wants:
-                 "stop touching things", not "get out". -->
+                 "stop touching things", not "get out". Neutral: hud-button. -->
             <Button x:Name="StopControlButton"
-                    Grid.Column="2"
+                    Grid.Column="4"
                     Content="Stop Control"
-                    FontSize="11"
-                    Background="#38FFFFFF"
-                    Foreground="White"
+                    FontSize="12"
+                    FontWeight="SemiBold"
+                    Height="32"
+                    CornerRadius="16"
+                    Padding="14,0"
+                    VerticalAlignment="Center"
+                    Background="{ThemeResource TokenHudButtonBrush}"
+                    Foreground="{ThemeResource TokenHudInkBrush}"
                     BorderThickness="0"
-                    CornerRadius="12"
-                    Padding="10,4"
                     Visibility="Collapsed"
-                    Click="StopControl_Click" />
+                    Click="StopControl_Click">
+                <Button.Resources>
+                    <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="TokenHudButtonHoverBrush"/>
+                    <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="TokenHudButtonHoverBrush"/>
+                    <StaticResource x:Key="ButtonForegroundPointerOver"   ResourceKey="TokenHudInkBrush"/>
+                    <StaticResource x:Key="ButtonForegroundPressed"       ResourceKey="TokenHudInkBrush"/>
+                    <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
+                    <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                    <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
+                </Button.Resources>
+            </Button>
 
+            <!-- The only solid colour on the indicator. -->
             <Button x:Name="StopSharingButton"
-                    Grid.Column="3"
+                    Grid.Column="5"
                     Content="Stop Sharing"
-                    FontSize="11"
-                    Background="#38FFFFFF"
-                    Foreground="White"
-                    BorderThickness="0"
-                    CornerRadius="12"
-                    Padding="10,4"
+                    Style="{StaticResource GlassDangerButtonStyle}"
+                    FontSize="12"
+                    Height="32"
+                    MinHeight="32"
+                    Padding="14,0"
+                    VerticalAlignment="Center"
                     Click="StopSharing_Click" />
         </Grid>
     </Border>

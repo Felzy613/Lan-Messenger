@@ -12,7 +12,7 @@
 
                  There is no hand-written palette here any more. Every colour
                  comes from design/liquid-glass/tokens.json through
-                 scripts/design/gen_tokens.py, and the brand green is fixed
+                 scripts/design/gen_tokens.py. The brand green is fixed
                  (TokenBrandBrush) rather than the user's OS accent: overriding
                  SystemAccentColor app-wide is unreliable in WinAppSDK
                  (microsoft-ui-xaml#6394), so every spot that would read

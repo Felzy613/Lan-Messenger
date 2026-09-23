@@ -84,7 +84,7 @@ public sealed partial class TypingIndicatorControl : UserControl
         set => DotRow.Spacing = value;
     }
 
-    /// <summary>Dot colour. Defaults to the secondary text brush from XAML.</summary>
+    /// <summary>Dot colour. Defaults to ink-secondary from XAML; a sidebar row sets accent-ink.</summary>
     public Brush DotBrush
     {
         get => Dot1.Fill;
@@ -93,18 +93,21 @@ public sealed partial class TypingIndicatorControl : UserControl
 
     /// <summary>
     /// Wraps the dots in an incoming message bubble, for the copy that sits at
-    /// the end of the thread. Uses the same uniform 16 px corner and incoming
-    /// fill as <c>MessageBubbleControl</c>, so it reads as the message that is
-    /// about to arrive. Re-applied on each activation, which is also how the
-    /// bubble picks up a light/dark switch (Theme re-points its brushes and
-    /// already-rendered controls keep the old one until their next refresh).
+    /// the end of the thread: the same translucent incoming fill, rim and tail
+    /// corner as <c>MessageBubbleControl</c> (it is always the newest incoming
+    /// row, so it always has the tail), so it reads as the message that is
+    /// about to arrive. The fill is re-applied on each activation and on
+    /// Theme.Changed, which is how it picks up a light/dark switch.
     /// </summary>
     public void UseBubbleShell()
     {
-        _useBubble         = true;
-        Shell.Background   = Theme.IncomingBubbleBrush;
-        Shell.CornerRadius = new CornerRadius(16);
-        Shell.Padding      = new Thickness(12, 10, 12, 10);
+        _useBubble            = true;
+        Shell.Background      = Theme.IncomingBubbleBrush;
+        Shell.BorderThickness = new Thickness(1);
+        const double r = GlassTokens.Radius.Bubble;
+        Shell.CornerRadius    = new CornerRadius(r, r, r, GlassTokens.Radius.Tail);
+        Shell.Padding         = new Thickness(12, 10, 12, 10);
+        Theme.Changed        += () => { if (_useBubble) Shell.Background = Theme.IncomingBubbleBrush; };
     }
 
     private void Apply()

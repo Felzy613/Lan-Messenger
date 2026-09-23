@@ -72,11 +72,11 @@
                 ToolTipService.ToolTip="Find peers on your network and add them as contacts">
             <StackPanel Orientation="Horizontal" Spacing="14">
                 <Grid Width="44" Height="44">
-                    <Ellipse Fill="#25D366" />
+                    <Ellipse Fill="{ThemeResource TokenBrandBrush}" />
                     <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                               Glyph="&#xE8FA;"
                               FontSize="18"
-                              Foreground="White"
+                              Foreground="{ThemeResource TokenOnBrandBrush}"
                               HorizontalAlignment="Center"
                               VerticalAlignment="Center" />
                 </Grid>

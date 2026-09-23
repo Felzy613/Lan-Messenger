@@ -64,9 +64,7 @@ public sealed class ContactRowViewModel : INotifyPropertyChanged
     // Derived display properties — used when building rows in code.
     public string StatusText => _isOnline ? "Online" : "Offline";
 
-    public SolidColorBrush StatusBrush => _isOnline
-        ? new SolidColorBrush(Color.FromArgb(255, 37, 211, 102))
-        : new SolidColorBrush(Color.FromArgb(255, 134, 134, 134));
+    public SolidColorBrush StatusBrush => _isOnline ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Notify(string name) => PropertyChanged?.Invoke(this, new(name));
@@ -183,8 +181,8 @@ public sealed partial class ContactsPage : Page
         {
             Width               = 11,
             Height              = 11,
-            Fill                = new SolidColorBrush(Color.FromArgb(255, 37, 211, 102)),
-            Stroke              = new SolidColorBrush(Microsoft.UI.Colors.White),
+            Fill                = Theme.OnlineDotBrush,
+            Stroke              = new SolidColorBrush(GlassTokens.Pick(GlassTokens.PresenceRingLight, GlassTokens.PresenceRingDark)),
             StrokeThickness     = 2,
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment   = VerticalAlignment.Bottom,

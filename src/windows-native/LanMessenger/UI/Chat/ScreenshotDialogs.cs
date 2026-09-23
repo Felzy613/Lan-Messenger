@@ -32,6 +32,7 @@ internal sealed class ScreenshotWindowPickerDialog : ContentDialog
         PrimaryButtonText = "Capture";
         CloseButtonText   = "Cancel";
         DefaultButton     = ContentDialogButton.Primary;
+        GlassDialog.Apply(this);
 
         _list = new ListView
         {
@@ -85,10 +86,7 @@ internal sealed class ScreenshotWindowPickerDialog : ContentDialog
             Glyph               = icon,
             FontSize            = 18,
             VerticalAlignment   = VerticalAlignment.Center,
-            Foreground          = Application.Current.Resources.TryGetValue(
-                                      "TextFillColorSecondaryBrush", out var br)
-                                      ? (Brush)br
-                                      : new SolidColorBrush(Microsoft.UI.Colors.Gray),
+            Foreground          = Theme.InkSecondaryBrush,
         };
 
         var titleBlock = new TextBlock
@@ -142,6 +140,7 @@ internal sealed class ScreenshotPreviewDialog : ContentDialog
         PrimaryButtonText = "Send";
         CloseButtonText   = "Cancel";
         DefaultButton     = ContentDialogButton.Primary;
+        GlassDialog.Apply(this);
 
         // BitmapImage accepts file:/// URIs built from local absolute paths.
         Image image;

@@ -506,7 +506,7 @@ def main() -> int:
     stale = 0
     for path, text in outputs.items():
         rel = path.relative_to(ROOT).as_posix()
-        current = path.read_text(encoding="utf-8") if path.exists() else ""
+        current = path.read_text(encoding="utf-8").replace("\r\n", "\n") if path.exists() else ""
         if current == text:
             continue
         if args.check:

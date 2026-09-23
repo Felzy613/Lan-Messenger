@@ -15,10 +15,42 @@
                   Grid.Row="0"
                   SelectionMode="Single"
                   SelectionChanged="ConversationList_SelectionChanged">
+            <!-- Selected is a glass-thick lozenge, not Fluent's accent pill at
+                 the leading edge; hover is glass-hover. Per-instance resources,
+                 because a Style cannot set Resources (WMC0095). Theme
+                 dictionaries, because glass-thick differs between themes and a
+                 plain StaticResource alias would freeze whichever was current
+                 at load. High Contrast is left to the system's own resources. -->
+            <ListView.Resources>
+                <ResourceDictionary>
+                    <ResourceDictionary.ThemeDictionaries>
+                        <ResourceDictionary x:Key="Light">
+                            <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">False</x:Boolean>
+                            <SolidColorBrush x:Key="ListViewItemBackgroundSelected"            Color="{ThemeResource TokenGlassThickColor}" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="{ThemeResource TokenGlassThickColor}" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed"     Color="{ThemeResource TokenGlassThickColor}" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver"         Color="{ThemeResource TokenGlassHoverColor}" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundPressed"             Color="{ThemeResource TokenGlassPressedColor}" />
+                        </ResourceDictionary>
+                        <ResourceDictionary x:Key="Dark">
+                            <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">False</x:Boolean>
+                            <SolidColorBrush x:Key="ListViewItemBackgroundSelected"            Color="{ThemeResource TokenGlassThickColor}" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="{ThemeResource TokenGlassThickColor}" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed"     Color="{ThemeResource TokenGlassThickColor}" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver"         Color="{ThemeResource TokenGlassHoverColor}" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundPressed"             Color="{ThemeResource TokenGlassPressedColor}" />
+                        </ResourceDictionary>
+                    </ResourceDictionary.ThemeDictionaries>
+                </ResourceDictionary>
+            </ListView.Resources>
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                     <Setter Property="Padding" Value="8,4" />
+                    <Setter Property="CornerRadius" Value="{StaticResource TokenRadiusRow}" />
+                    <Setter Property="FocusVisualPrimaryBrush" Value="{ThemeResource TokenFocusRingBrush}" />
+                    <Setter Property="FocusVisualPrimaryThickness" Value="2" />
+                    <Setter Property="FocusVisualSecondaryThickness" Value="0" />
                 </Style>
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
@@ -59,38 +91,41 @@
             </StackPanel>
         </StackPanel>
 
-        <!-- Archived footer -->
+        <!-- Archived: always the LAST row, only while something is archived. -->
         <Button x:Name="ArchivedSection"
                 Grid.Row="1"
-                Background="Transparent"
-                BorderBrush="Transparent"
-                HorizontalAlignment="Stretch"
-                HorizontalContentAlignment="Stretch"
+                Style="{StaticResource GlassRowButtonStyle}"
+                Height="52"
+                Margin="0,2,0,0"
                 Click="ArchivedSection_Click"
-                Visibility="Collapsed"
-                Padding="12,10">
+                Visibility="Collapsed">
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <FontIcon Grid.Column="0"
-                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                          Glyph="&#xE7B8;"
-                          Foreground="{ThemeResource TokenAccentInkBrush}" />
-                <StackPanel Grid.Column="1" Spacing="2">
+                <Grid Grid.Column="0" Width="32" Height="32" VerticalAlignment="Center">
+                    <Ellipse Fill="{ThemeResource TokenAccentWashBrush}" />
+                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                              Glyph="&#xE7B8;"
+                              FontSize="14"
+                              Foreground="{ThemeResource TokenAccentInkBrush}" />
+                </Grid>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock Text="Archived"
-                               Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                               Style="{StaticResource TokenTypeNameStyle}"
+                               Foreground="{ThemeResource TokenInkBrush}" />
                     <TextBlock x:Name="ArchivedSubtitle"
-                               Style="{ThemeResource CaptionTextBlockStyle}"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                               Style="{StaticResource TokenTypeCaptionStyle}"
+                               Foreground="{ThemeResource TokenInkSecondaryBrush}" />
                 </StackPanel>
                 <FontIcon Grid.Column="2"
                           FontFamily="{ThemeResource SymbolThemeFontFamily}"
                           Glyph="&#xE76C;"
                           FontSize="12"
-                          Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                          VerticalAlignment="Center"
+                          Foreground="{ThemeResource TokenInkSecondaryBrush}" />
             </Grid>
         </Button>
     </Grid>
