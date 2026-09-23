@@ -5,98 +5,67 @@
     xmlns:local="using:LanMessenger.UI.Chat"
     xmlns:ui="using:LanMessenger.UI">
 
+    <Page.Resources>
+        <!-- One shadow for the floating chrome. Outside a popup a ThemeShadow
+             casts only onto its Receivers, so the constructor adds
+             ThreadBackground; without that the chrome casts nothing. -->
+        <ThemeShadow x:Name="ChromeShadow" />
+    </Page.Resources>
+
     <!-- The whole thread is the drop target, not just the composer strip:
          aiming at a 48 px bar at the bottom of the window is the kind of thing
-         you only get right on the second try. -->
-    <Grid Background="{ThemeResource TokenWallpaperBrush}"
+         you only get right on the second try.
+
+         One cell. The thread runs edge to edge under glass chrome, which is
+         what makes the header and composer read as glass at all: in the old
+         five-row grid every row was opaque and nothing ever passed under
+         anything. Z-order, back to front: wallpaper, thread, top chrome, jump
+         button, composer, drop overlay. The list's Padding — not a margin —
+         keeps the first and last messages clear of the chrome at rest, and is
+         kept in step with the chrome's size in UpdateThreadInsets. -->
+    <Grid Background="Transparent"
           AllowDrop="True"
           DragEnter="Page_DragEnter"
           DragOver="Page_DragOver"
           DragLeave="Page_DragLeave"
           Drop="Page_Drop">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
 
-        <!-- Header: avatar + name + online dot + typing -->
-        <Grid Grid.Row="0"
-              Padding="16,12"
-              ColumnSpacing="12"
-              Background="{ThemeResource LayerFillColorDefaultBrush}"
-              BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
-              BorderThickness="0,0,0,1">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-
-            <Grid Grid.Column="0">
-                <ui:AvatarControl x:Name="HeaderAvatar" Width="40" Height="40" />
-                <Ellipse x:Name="HeaderOnlineDot"
-                         Width="11" Height="11"
-                         Fill="#25D366"
-                         Stroke="White" StrokeThickness="2"
-                         HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                         Visibility="Collapsed" />
-                <!-- HeaderOnlineDot kept for layout; online state is shown inline after the name -->
-            </Grid>
-
-            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
-                <!-- Name row: name + inline online dot, matching macOS header layout -->
-                <StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
-                    <TextBlock x:Name="HeaderName"
-                               Style="{ThemeResource BodyStrongTextBlockStyle}" />
-                    <Ellipse x:Name="HeaderNameDot"
-                             Width="8" Height="8"
-                             VerticalAlignment="Center" />
-                </StackPanel>
-                <TextBlock x:Name="HeaderSubtext"
-                           Style="{ThemeResource CaptionTextBlockStyle}"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <!-- Swapped in for the Online/Offline caption while the peer is
-                     typing, so the header keeps its height and the state is
-                     still legible when the thread is scrolled up and the
-                     in-thread typing bubble is off screen. Dot size is set in
-                     the code-behind. -->
-                <ui:TypingIndicatorControl x:Name="HeaderTyping"
-                                           HorizontalAlignment="Left"
-                                           Margin="0,3,0,2" />
-            </StackPanel>
-            <!-- Ask this contact to share their screen.
-                 Always present, never hidden. A button that disappears reads as
-                 a missing feature and sends people to the release notes; one
-                 that is greyed out with the reason in its tooltip answers the
-                 question where it was asked. The reasons come from
-                 RemoteDesktopPolicy, the same gate an inbound invite is judged
-                 by, so the interface can never offer what the policy refuses. -->
-            <Button x:Name="RemoteDesktopBtn"
-                    Grid.Column="2"
-                    Background="Transparent"
-                    BorderThickness="0"
-                    Padding="8"
-                    VerticalAlignment="Center"
-                    Click="RemoteDesktop_Click">
-                <FontIcon Glyph="&#xE7F4;" FontSize="16" />
-            </Button>
+        <!-- The wallpaper and its two glows. MessagesList must stay transparent,
+             or it hides them. -->
+        <Grid x:Name="ThreadBackground"
+              Background="{ThemeResource TokenWallpaperBrush}"
+              IsHitTestVisible="False">
+            <Rectangle>
+                <Rectangle.Fill>
+                    <RadialGradientBrush Center="0.10,0.06" GradientOrigin="0.10,0.06"
+                                         RadiusX="0.60" RadiusY="0.55">
+                        <GradientStop Color="{ThemeResource TokenWallpaperGlowColor}" Offset="0" />
+                        <GradientStop Color="{ThemeResource TokenWallpaperGlowFadeColor}" Offset="0.7" />
+                    </RadialGradientBrush>
+                </Rectangle.Fill>
+            </Rectangle>
+            <Rectangle>
+                <Rectangle.Fill>
+                    <RadialGradientBrush Center="0.94,0.98" GradientOrigin="0.94,0.98"
+                                         RadiusX="0.55" RadiusY="0.50">
+                        <GradientStop Color="{ThemeResource TokenWallpaperGlowAltColor}" Offset="0" />
+                        <GradientStop Color="{ThemeResource TokenWallpaperGlowAltFadeColor}" Offset="0.7" />
+                    </RadialGradientBrush>
+                </Rectangle.Fill>
+            </Rectangle>
         </Grid>
 
-        <!-- File transfer banner -->
-        <local:FileTransferBannerControl x:Name="TransferBanner"
-                                          Grid.Row="1"
-                                          Visibility="Collapsed" />
-
-        <!-- Messages list — ListView provides built-in virtualization for smooth scrolling -->
+        <!-- Messages list — ListView provides built-in virtualization for smooth
+             scrolling. Its Padding is set from code (UpdateThreadInsets): the
+             ListView template puts it on the ItemsPresenter INSIDE the
+             ScrollViewer, so it scrolls with the content, ScrollableHeight
+             includes it, and ScrollToBottom lands with the last bubble clear of
+             the composer without knowing the composer exists. -->
         <ListView x:Name="MessagesList"
-                  Grid.Row="2"
                   SelectionMode="None"
                   IsItemClickEnabled="False"
-                  Padding="12,8"
-                  Background="{ThemeResource TokenWallpaperBrush}">
+                  Padding="12,80,12,72"
+                  Background="Transparent">
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="local:MessageRowViewModel">
                     <local:MessageBubbleControl Row="{Binding}" />
@@ -119,91 +88,145 @@
             </ListView.Footer>
         </ListView>
 
-        <!-- Jump to latest. Floats over the bottom-right of the thread and is
-             only shown once the view is scrolled away from the newest message —
-             new messages no longer yank a reader back down, so there has to be
-             a way back. -->
+        <!-- Top chrome: the header capsule, then the transfer banner under it. -->
+        <StackPanel x:Name="TopChrome"
+                    VerticalAlignment="Top"
+                    Margin="8"
+                    Spacing="6">
+            <!-- Header: acrylic, because the thread moves under it. -->
+            <ContentControl x:Name="HeaderCapsule"
+                            Style="{StaticResource GlassSurfaceStyle}"
+                            Height="{StaticResource TokenSizeHeader}"
+                            CornerRadius="28"
+                            Padding="10,0"
+                            Shadow="{StaticResource ChromeShadow}"
+                            Translation="0,0,16">
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <ui:AvatarControl x:Name="HeaderAvatar"
+                                      Grid.Column="0"
+                                      Width="{StaticResource TokenSizeAvatarHeader}"
+                                      Height="{StaticResource TokenSizeAvatarHeader}"
+                                      VerticalAlignment="Center" />
+
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                        <!-- Name row: name + inline presence dot, matching macOS header layout -->
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock x:Name="HeaderName"
+                                       Style="{StaticResource TokenTypeNameStyle}"
+                                       Foreground="{ThemeResource TokenInkBrush}"
+                                       TextTrimming="CharacterEllipsis" />
+                            <Ellipse x:Name="HeaderNameDot"
+                                     Width="{StaticResource TokenSizePresenceInline}"
+                                     Height="{StaticResource TokenSizePresenceInline}"
+                                     VerticalAlignment="Center" />
+                        </StackPanel>
+                        <TextBlock x:Name="HeaderSubtext"
+                                   Style="{StaticResource TokenTypeCaptionStyle}"
+                                   Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+                        <!-- Swapped in for the Online/Offline caption while the peer is
+                             typing, so the header keeps its height and the state is
+                             still legible when the thread is scrolled up and the
+                             in-thread typing bubble is off screen. Dot size is set in
+                             the code-behind. -->
+                        <ui:TypingIndicatorControl x:Name="HeaderTyping"
+                                                   HorizontalAlignment="Left"
+                                                   Margin="0,3,0,2" />
+                    </StackPanel>
+
+                    <!-- Ask this contact to share their screen.
+                         Always present, never hidden. A button that disappears reads as
+                         a missing feature and sends people to the release notes; one
+                         that is greyed out with the reason in its tooltip answers the
+                         question where it was asked. The reasons come from
+                         RemoteDesktopPolicy, the same gate an inbound invite is judged
+                         by, so the interface can never offer what the policy refuses.
+                         Its x:Name is its UI Automation id: keep it. -->
+                    <Button x:Name="RemoteDesktopBtn"
+                            Grid.Column="2"
+                            Style="{StaticResource GlassIconButtonStyle}"
+                            VerticalAlignment="Center"
+                            AutomationProperties.Name="Share screen"
+                            Click="RemoteDesktop_Click">
+                        <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                  Glyph="&#xE7F4;"
+                                  FontSize="16" />
+                    </Button>
+                </Grid>
+            </ContentControl>
+
+            <!-- File transfer banner: a glass capsule under the header. -->
+            <local:FileTransferBannerControl x:Name="TransferBanner"
+                                              Visibility="Collapsed" />
+        </StackPanel>
+
+        <!-- Jump to latest. Floats over the bottom-right of the thread, 12px
+             above the composer (its bottom margin follows the composer's height
+             in UpdateThreadInsets), and is only shown once the view is scrolled
+             away from the newest message — new messages no longer yank a reader
+             back down, so there has to be a way back. -->
         <Button x:Name="JumpToLatestBtn"
-                Grid.Row="2"
+                Style="{StaticResource GlassIconButtonStyle}"
+                Background="{ThemeResource GlassClearAcrylicBrush}"
+                BorderBrush="{ThemeResource GlassRimBrush}"
+                BorderThickness="1"
                 HorizontalAlignment="Right"
                 VerticalAlignment="Bottom"
-                Margin="0,0,20,10"
-                Width="34" Height="34"
-                Padding="0"
-                CornerRadius="17"
+                Margin="0,0,20,72"
                 Visibility="Collapsed"
+                Shadow="{StaticResource ChromeShadow}"
+                Translation="0,0,16"
                 ToolTipService.ToolTip="Jump to latest"
+                AutomationProperties.Name="Jump to latest"
                 Click="JumpToLatestBtn_Click">
             <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                       Glyph="&#xE70D;"
-                      FontSize="13" />
+                      FontSize="12" />
         </Button>
 
-        <!-- Reply banner (shown when replying, or when editing a sent message) -->
-        <Border x:Name="ReplyBanner"
-                Grid.Row="3"
-                Background="{ThemeResource LayerFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
-                BorderThickness="0,1,0,0"
-                Padding="14,8"
-                Visibility="Collapsed">
-            <Grid ColumnSpacing="10">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="3" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <Rectangle Grid.Column="0" Fill="{ThemeResource TokenBrandBrush}" />
-                <StackPanel Grid.Column="1" Spacing="1">
-                    <TextBlock x:Name="ReplyBannerWho"
-                               FontSize="11" FontWeight="SemiBold"
-                               Foreground="{ThemeResource TokenAccentInkBrush}" />
-                    <TextBlock x:Name="ReplyBannerPreview"
-                               FontSize="12"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               TextTrimming="CharacterEllipsis"
-                               MaxLines="1" />
-                </StackPanel>
-                <Button Grid.Column="2"
-                        x:Name="CancelReplyBtn"
-                        Content="✕"
-                        Padding="6,2"
-                        Background="Transparent"
-                        BorderThickness="0"
-                        Click="CancelReplyBtn_Click" />
-            </Grid>
-        </Border>
-
-        <!-- Composer -->
+        <!-- Composer: floats over the bottom of the thread. The reply and edit
+             banner lives inside its pill (ComposerControl.ShowBanner). -->
         <local:ComposerControl x:Name="Composer"
-                               Grid.Row="4"
-                               BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
-                               BorderThickness="0,1,0,0" />
+                               VerticalAlignment="Bottom"
+                               Margin="8" />
 
-        <!-- Drop affordance. Spans every row and ignores hit-testing so it
-             never intercepts the drop it is advertising. -->
-        <Border x:Name="DropOverlay"
-                Grid.Row="0" Grid.RowSpan="5"
-                Background="#1425D366"
-                BorderBrush="#25D366"
-                BorderThickness="2"
-                CornerRadius="12"
-                Margin="8"
-                IsHitTestVisible="False"
-                Visibility="Collapsed">
-            <StackPanel HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Spacing="8">
-                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                          Glyph="&#xE723;"
-                          FontSize="34"
-                          Foreground="#25D366" />
-                <TextBlock x:Name="DropOverlayText"
-                           FontSize="13"
-                           FontWeight="SemiBold"
-                           HorizontalAlignment="Center"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            </StackPanel>
-        </Border>
+        <!-- Drop affordance. Spans the pane and ignores hit-testing so it never
+             intercepts the drop it is advertising. -->
+        <Grid x:Name="DropOverlay"
+              Margin="10"
+              IsHitTestVisible="False"
+              Visibility="Collapsed">
+            <Border Background="{ThemeResource TokenAccentWashBrush}"
+                    CornerRadius="{StaticResource TokenRadiusBubble}" />
+            <Rectangle Stroke="{ThemeResource TokenAccentInkBrush}"
+                       StrokeThickness="2"
+                       StrokeDashArray="4,3"
+                       RadiusX="{StaticResource TokenRadiusBubbleValue}"
+                       RadiusY="{StaticResource TokenRadiusBubbleValue}" />
+            <ContentControl Style="{StaticResource GlassSurfaceStyle}"
+                            Background="{ThemeResource GlassThickAcrylicBrush}"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            CornerRadius="20"
+                            Padding="12,10,18,10">
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                              Glyph="&#xE723;"
+                              FontSize="16"
+                              VerticalAlignment="Center"
+                              Foreground="{ThemeResource TokenAccentInkBrush}" />
+                    <TextBlock x:Name="DropOverlayText"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center"
+                               Foreground="{ThemeResource TokenInkBrush}" />
+                </StackPanel>
+            </ContentControl>
+        </Grid>
     </Grid>
 </Page>

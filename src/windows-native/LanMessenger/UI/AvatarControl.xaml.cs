@@ -29,7 +29,17 @@ public sealed partial class AvatarControl : UserControl
         set => SetValue(PhotoB64Property, value);
     }
 
-    public AvatarControl() => InitializeComponent();
+    public AvatarControl()
+    {
+        InitializeComponent();
+        // Initials at about a third of the diameter: 14 on the 40px disc this
+        // used to be fixed at, 16 in a sidebar row, 13 in the header.
+        SizeChanged += (_, e) =>
+        {
+            var d = Math.Min(e.NewSize.Width, e.NewSize.Height);
+            if (d > 0) InitialsText.FontSize = Math.Round(d * 0.36);
+        };
+    }
 
     private static void OnVisualChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {

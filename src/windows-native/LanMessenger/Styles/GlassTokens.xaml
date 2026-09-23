@@ -65,6 +65,8 @@
             <Color x:Key="TokenAvatarTealColor">#FF0B7F99</Color>
             <Color x:Key="TokenAvatarAmberColor">#FF9A6500</Color>
             <Color x:Key="TokenAvatarSlateColor">#FF5E6770</Color>
+            <Color x:Key="TokenWallpaperGlowFadeColor">#0025D366</Color>
+            <Color x:Key="TokenWallpaperGlowAltFadeColor">#00008069</Color>
 
             <SolidColorBrush x:Key="TokenBrandBrush" Color="#FF25D366" />
             <SolidColorBrush x:Key="TokenBrandHoverBrush" Color="#FF1EBE5D" />
@@ -214,6 +216,8 @@
             <Color x:Key="TokenAvatarTealColor">#FF0B7F99</Color>
             <Color x:Key="TokenAvatarAmberColor">#FF9A6500</Color>
             <Color x:Key="TokenAvatarSlateColor">#FF5E6770</Color>
+            <Color x:Key="TokenWallpaperGlowFadeColor">#0025D366</Color>
+            <Color x:Key="TokenWallpaperGlowAltFadeColor">#0000A884</Color>
 
             <SolidColorBrush x:Key="TokenBrandBrush" Color="#FF25D366" />
             <SolidColorBrush x:Key="TokenBrandHoverBrush" Color="#FF1EBE5D" />
@@ -363,6 +367,8 @@
             <StaticResource x:Key="TokenAvatarTealColor" ResourceKey="SystemColorGrayTextColor" />
             <StaticResource x:Key="TokenAvatarAmberColor" ResourceKey="SystemColorGrayTextColor" />
             <StaticResource x:Key="TokenAvatarSlateColor" ResourceKey="SystemColorGrayTextColor" />
+            <Color x:Key="TokenWallpaperGlowFadeColor">Transparent</Color>
+            <Color x:Key="TokenWallpaperGlowAltFadeColor">Transparent</Color>
 
             <SolidColorBrush x:Key="TokenBrandBrush" Color="{ThemeResource SystemColorHighlightColor}" />
             <SolidColorBrush x:Key="TokenBrandHoverBrush" Color="{ThemeResource SystemColorHighlightColor}" />

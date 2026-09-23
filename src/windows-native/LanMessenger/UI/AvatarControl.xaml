@@ -3,9 +3,13 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <Grid x:Name="RootGrid" Width="40" Height="40" CornerRadius="20">
-        <Ellipse x:Name="BackgroundEllipse" Width="40" Height="40" />
-        <Ellipse x:Name="PhotoEllipse" Width="40" Height="40" Visibility="Collapsed">
+    <!-- Fills whatever size the host gives it (size-avatar-row 44 in the
+         sidebar, size-avatar-header 36 in the chat header); the initials scale
+         with it in SizeChanged. It used to draw a fixed 40px disc whatever it
+         was asked for. -->
+    <Grid x:Name="RootGrid">
+        <Ellipse x:Name="BackgroundEllipse" />
+        <Ellipse x:Name="PhotoEllipse" Visibility="Collapsed">
             <Ellipse.Fill>
                 <ImageBrush x:Name="PhotoBrush" Stretch="UniformToFill" />
             </Ellipse.Fill>
@@ -15,6 +19,6 @@
                    VerticalAlignment="Center"
                    FontSize="14"
                    FontWeight="SemiBold"
-                   Foreground="White" />
+                   Foreground="{ThemeResource TokenInkInverseBrush}" />
     </Grid>
 </UserControl>

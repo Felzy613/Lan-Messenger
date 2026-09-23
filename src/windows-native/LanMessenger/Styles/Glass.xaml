@@ -108,6 +108,12 @@
                                           HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
                                           VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
                                           AutomationProperties.AccessibilityView="Raw" />
+                        <!-- No rim on a bare button (BorderThickness 0); the floating
+                             jump-to-latest sets 1 and GlassRimBrush. -->
+                        <Border BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                IsHitTestVisible="False" />
                     </Grid>
                 </ControlTemplate>
             </Setter.Value>

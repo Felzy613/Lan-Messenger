@@ -18,6 +18,9 @@ public sealed partial class ComposerControl : UserControl
     public event Action?                         ScreenshotRequested;
     /// Raised on Escape — ChatPage uses it to back out of edit/reply mode.
     public event Action?                         CancelRequested;
+    /// Raised by the banner's ✕. ChatPage decides what it cancels, exactly as
+    /// it does for Escape.
+    public event Action?                         BannerCancelRequested;
 
     private DateTime         _lastTypingSent = DateTime.MinValue;
     private bool             _typingActive;
@@ -57,8 +60,33 @@ public sealed partial class ComposerControl : UserControl
             _isEditing = value;
             SendIcon.Glyph = value ? "\uE73E" : "\uE74A";   // Checkmark : Send
             ToolTipService.SetToolTip(SendBtn, value ? "Save edit" : "Send");
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(SendBtn, value ? "Save edit" : "Send");
         }
     }
+
+    /// Shows the reply or edit banner inside the pill, above the field. The
+    /// pill grows upward, and ChatPage's thread padding follows it.
+    public void ShowBanner(string title, string preview)
+    {
+        BannerTitle.Text      = title;
+        BannerPreview.Text    = preview;
+        BannerHost.Visibility = Visibility.Visible;
+    }
+
+    public void HideBanner() => BannerHost.Visibility = Visibility.Collapsed;
+
+    /// Casts the page's chrome shadow from the pill and the orb. On this
+    /// control's own root — transparent, and as wide as the pane — it would be
+    /// one flat rectangle under both.
+    public void UseShadow(Microsoft.UI.Xaml.Media.ThemeShadow shadow)
+    {
+        Pill.Shadow         = shadow;
+        Pill.Translation    = new System.Numerics.Vector3(0, 0, 16);
+        SendBtn.Shadow      = shadow;
+        SendBtn.Translation = new System.Numerics.Vector3(0, 0, 16);
+    }
+
+    private void BannerCancelBtn_Click(object sender, RoutedEventArgs e) => BannerCancelRequested?.Invoke();
 
     public ComposerControl()
     {

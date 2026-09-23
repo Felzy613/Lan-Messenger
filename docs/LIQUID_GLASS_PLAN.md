@@ -186,17 +186,17 @@ Files: `MainWindow.xaml(.cs)`, `UI/Sidebar/SidebarControl.xaml`.
 
 ### W3. ChatPage: the thread runs under the chrome
 Files: `UI/Chat/ChatPage.xaml(.cs)`. This is the structural change. Do it before any restyling so the scroll behaviour is proven on its own.
-- [ ] Replace the five-row `Grid` with a single cell holding these children, in z-order:
+- [x] Replace the five-row `Grid` with a single cell holding these children, in z-order:
   1. `ThreadBackground` (`Grid`): `Background="{ThemeResource TokenWallpaperBrush}"` plus two `Ellipse`s with a `RadialGradientBrush` each. The first uses `wallpaper-glow` to transparent, 60%×55% of the pane, anchored top-left. The second uses `wallpaper-glow-alt`, anchored bottom-right. Both `IsHitTestVisible="False"`.
   2. `MessagesList`: fills the cell, with `Background="Transparent"` (not the wallpaper brush, or it hides the glows).
   3. `TopChrome` (`StackPanel`, `VerticalAlignment="Top"`, `Margin="8"`, `Spacing="6"`): the header, then `TransferBanner`.
   4. `JumpToLatestBtn`: bottom-right, `Margin="0,0,20,0"`, positioned 12px above the composer (set its bottom margin from the composer height, see below).
   5. `Composer`: `VerticalAlignment="Bottom"`, `Margin="8"`.
   6. `DropOverlay`: spans the cell, unchanged apart from W4's styling.
-- [ ] **Padding sync.** `MessagesList.Padding = new Thickness(12, TopChrome.ActualHeight + 16, 12, Composer.ActualHeight + 16)`. Run it from `TopChrome.SizeChanged` and `Composer.SizeChanged`. ListView padding lives on the `ItemsPresenter` **inside** the `ScrollViewer` (verified in the WinAppSDK 1.5 template), so it scrolls with the content and `ScrollableHeight` already includes it. `ScrollToBottom()` therefore still lands with the last bubble clear of the composer, and needs no change.
-- [ ] Growing the bottom padding raises the scroll content's `SizeChanged`, and `OnScrollContentSizeChanged` then re-pins if the reader was pinned. That is the wanted behaviour when the composer grows (a reply banner opens, or the draft wraps). Do **not** add a second path that scrolls on composer resize.
-- [ ] `WireDropTargets()` still registers `MessagesList` and `Composer`. The composer now overlays the list, so dragging over it must still show the overlay and deliver the drop. Test this explicitly.
-- [ ] Shadows (optional within this milestone): the header, composer and jump button get `Translation="0,0,16"` and a `ThemeShadow`. In the constructor, `shadow.Receivers.Add(ThreadBackground)`. Without a receiver, a non-popup `ThemeShadow` draws nothing.
+- [x] **Padding sync.** `MessagesList.Padding = new Thickness(12, TopChrome.ActualHeight + 16, 12, Composer.ActualHeight + 16)`. Run it from `TopChrome.SizeChanged` and `Composer.SizeChanged`. ListView padding lives on the `ItemsPresenter` **inside** the `ScrollViewer` (verified in the WinAppSDK 1.5 template), so it scrolls with the content and `ScrollableHeight` already includes it. `ScrollToBottom()` therefore still lands with the last bubble clear of the composer, and needs no change.
+- [x] Growing the bottom padding raises the scroll content's `SizeChanged`, and `OnScrollContentSizeChanged` then re-pins if the reader was pinned. That is the wanted behaviour when the composer grows (a reply banner opens, or the draft wraps). Do **not** add a second path that scrolls on composer resize.
+- [x] `WireDropTargets()` still registers `MessagesList` and `Composer`. The composer now overlays the list, so dragging over it must still show the overlay and deliver the drop. Test this explicitly.
+- [x] Shadows (optional within this milestone): the header, composer and jump button get `Translation="0,0,16"` and a `ThemeShadow`. In the constructor, `shadow.Receivers.Add(ThreadBackground)`. Without a receiver, a non-popup `ThemeShadow` draws nothing.
 
 **Done when**, verified on the Dell in both themes:
 - (a) Opening a conversation lands on the newest message, fully visible above the composer.
@@ -206,34 +206,36 @@ Files: `UI/Chat/ChatPage.xaml(.cs)`. This is the structural change. Do it before
 - (e) Scrolling up shows message content passing under the header and composer.
 - (f) File drag and drop works over the thread and over the composer.
 
+*As built:* the glows are two full-pane `Rectangle`s with a `RadialGradientBrush` each (`Center` and `RadiusX`/`RadiusY` straight from the CSS `radial-gradient(60% 55% at 10% 6%, …)`), fading to a generated `Token<Name>FadeColor` — the glow's own RGB at alpha 0 — so the fade does not pass through grey. When the top chrome grows while the reader is scrolled up (a transfer banner appears), the offset is moved by the same amount after the next layout pass, so the page does not jump under them. The composer casts its shadow from the pill and the orb (`ComposerControl.UseShadow`), not from its transparent full-width root. `AvatarControl` now fills the size it is given; it drew a fixed 40px disc whatever it was asked for, so the header's 36 and the rows' 44 had never applied.
+
 ### W4. Header, transfer banner, jump button, drop overlay
 Files: `ChatPage.xaml(.cs)`, `UI/Chat/FileTransferBannerControl.xaml`. Read `ChatHeader`, `FileTransferBanner`, `IconButton` and `DropOverlay` in the design system.
-- [ ] Header: a `GlassSurfaceStyle` control with `Background` = `GlassRegularAcrylicBrush` (**acrylic**: content moves under it), `Height="56"`, `CornerRadius="28"`, `Padding="10,0"`.
+- [x] Header: a `GlassSurfaceStyle` control with `Background` = `GlassRegularAcrylicBrush` (**acrylic**: content moves under it), `Height="56"`, `CornerRadius="28"`, `Padding="10,0"`.
   - `HeaderAvatar` 36×36.
   - The name at 14/19 semibold, then the 8px presence dot (`Theme.OnlineDotBrush` / `OfflineDotBrush`).
   - `HeaderSubtext` at 11/14 `TokenInkSecondaryBrush`.
   - `RemoteDesktopBtn` uses `GlassIconButtonStyle`, keeps its `x:Name` (UIA automation uses it), and stays disabled with its reason when unavailable. Never hide it.
   - Delete the unused `HeaderOnlineDot` ellipse and the header `BorderThickness`.
-- [ ] `FileTransferBannerControl`: a glass capsule (acrylic regular, `CornerRadius="24"`, `Padding="10,8,16,8"`).
+- [x] `FileTransferBannerControl`: a glass capsule (acrylic regular, `CornerRadius="24"`, `Padding="10,8,16,8"`).
   - A 32px `accent-wash` disc with the transfer glyph in accent-ink.
   - The label at 12/16 semibold.
   - The `ProgressBar` re-templated or resourced to a 4px `brand` fill on an `inset-fill` track (`ProgressBarForeground`, `ProgressBarBackground` and `ProgressBarTrackHeight` as per-instance resources).
   - The byte count in Cascadia Mono 11, ink-secondary.
-- [ ] `JumpToLatestBtn`: `GlassIconButtonStyle` plus a clear-acrylic background, 32×32, `CornerRadius="16"`, the E70D glyph at 12. Its visibility logic stays as it is.
-- [ ] `DropOverlay`: an `accent-wash` fill and a 2px dashed `accent-ink` border (`BorderBrush` plus a `Rectangle` with `StrokeDashArray="4,3"`), `CornerRadius="16"`, `Margin="10"`. The caption sits in a thick-glass capsule with the E723 glyph: "Drop to send to {name}" (unchanged copy).
+- [x] `JumpToLatestBtn`: `GlassIconButtonStyle` plus a clear-acrylic background, 32×32, `CornerRadius="16"`, the E70D glyph at 12. Its visibility logic stays as it is.
+- [x] `DropOverlay`: an `accent-wash` fill and a 2px dashed `accent-ink` border (`BorderBrush` plus a `Rectangle` with `StrokeDashArray="4,3"`), `CornerRadius="16"`, `Margin="10"`. The caption sits in a thick-glass capsule with the E723 glyph: "Drop to send to {name}" (unchanged copy).
 
 **Done when** these match `components/ChatHeader`, `FileTransferBanner` and `IconButton` in both themes, and UIA can still invoke `RemoteDesktopBtn`.
 
 ### W5. Composer
 Files: `UI/Chat/ComposerControl.xaml(.cs)`, `ChatPage.xaml(.cs)`. Read `Composer` in the design system.
-- [ ] Root: `Grid` with `ColumnSpacing="8"` and `Background="Transparent"`. Column 0 is the **pill** (`GlassSurfaceStyle`, `GlassRegularAcrylicBrush`, `CornerRadius="22"`, `Padding="4"`). Column 1 is the send orb.
-- [ ] Inside the pill, a `StackPanel`:
+- [x] Root: `Grid` with `ColumnSpacing="8"` and `Background="Transparent"`. Column 0 is the **pill** (`GlassSurfaceStyle`, `GlassRegularAcrylicBrush`, `CornerRadius="22"`, `Padding="4"`). Column 1 is the send orb.
+- [x] Inside the pill, a `StackPanel`:
   1. `BannerHost` (`Border`, collapsed by default, `inset-fill`, `CornerRadius="18"`, `Margin="2,2,2,4"`, `Padding="10,6,8,6"`): a 3px `brand` bar; `BannerTitle` at 11/14 semibold accent-ink; `BannerPreview` at 12/16 ink-secondary, one line with ellipsis; `BannerCancelBtn` (`GlassIconButtonStyle` at 24×24, glyph E711).
   2. A row holding `AttachBtn`, `ScreenshotBtn` (both `GlassIconButtonStyle`, keeping their names, handlers, tooltips and the screenshot `ProgressRing`) and `InputBox`.
-- [ ] `InputBox`: remove the old field `Border`. The TextBox sits directly in the pill with `Background="Transparent"` and `BorderThickness="0"`, keeps its existing `TextBox.Resources` overrides and every event handler, `MinHeight="32"`, `MaxHeight="138"`, 14/20, placeholder "Message".
-- [ ] `SendBtn`: 36×36, `CornerRadius="18"`, `Style="{StaticResource GlassPrimaryButtonStyle}"`, `Margin="0,0,0,4"`, `VerticalAlignment="Bottom"`. **Set `SendIcon.Foreground` to `TokenOnBrandBrush`.** It is hard-coded `White` today, which is why the `ButtonForeground*` resources never applied. Remove those resources. Disabled: glass-regular fill with an ink-secondary glyph. `IsEditing` keeps swapping E74A and E73E and the tooltip.
-- [ ] New API on `ComposerControl`: `public void ShowBanner(string title, string preview)`, `public void HideBanner()`, and `public event Action? BannerCancelRequested`.
-- [ ] `ChatPage`: delete the `ReplyBanner` element and its named children (`ReplyBanner`, `ReplyBannerWho`, `ReplyBannerPreview`, `CancelReplyBtn`). `SetReplyTarget` and `SetEditTarget` call `Composer.ShowBanner(...)` and `Composer.HideBanner()` with **exactly the same strings and conditions** as today. `CancelReplyBtn_Click`'s logic moves to a `Composer.BannerCancelRequested` handler.
+- [x] `InputBox`: remove the old field `Border`. The TextBox sits directly in the pill with `Background="Transparent"` and `BorderThickness="0"`, keeps its existing `TextBox.Resources` overrides and every event handler, `MinHeight="32"`, `MaxHeight="138"`, 14/20, placeholder "Message".
+- [x] `SendBtn`: 36×36, `CornerRadius="18"`, `Style="{StaticResource GlassPrimaryButtonStyle}"`, `Margin="0,0,0,4"`, `VerticalAlignment="Bottom"`. **Set `SendIcon.Foreground` to `TokenOnBrandBrush`.** It is hard-coded `White` today, which is why the `ButtonForeground*` resources never applied. Remove those resources. Disabled: glass-regular fill with an ink-secondary glyph. `IsEditing` keeps swapping E74A and E73E and the tooltip.
+- [x] New API on `ComposerControl`: `public void ShowBanner(string title, string preview)`, `public void HideBanner()`, and `public event Action? BannerCancelRequested`.
+- [x] `ChatPage`: delete the `ReplyBanner` element and its named children (`ReplyBanner`, `ReplyBannerWho`, `ReplyBannerPreview`, `CancelReplyBtn`). `SetReplyTarget` and `SetEditTarget` call `Composer.ShowBanner(...)` and `Composer.HideBanner()` with **exactly the same strings and conditions** as today. `CancelReplyBtn_Click`'s logic moves to a `Composer.BannerCancelRequested` handler.
 
 **Done when:**
 - reply, edit, cancel with ✕, cancel with Escape, send, save edit and multi-line growth all behave as before

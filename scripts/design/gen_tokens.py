@@ -376,6 +376,11 @@ def xaml_color_attr(role: str) -> str:
 
 XAML_WEIGHTS = {400: "Normal", 500: "Medium", 600: "SemiBold", 700: "Bold"}
 
+# Colours drawn as a gradient that fades to nothing. Each gets a
+# Token<Name>FadeColor: the same RGB at alpha 0, so the gradient fades in its
+# own hue instead of through the grey a stop at "Transparent" (#00FFFFFF) drags in.
+FADE_TOKENS = ["wallpaper-glow", "wallpaper-glow-alt"]
+
 
 def gen_xaml(m: Model) -> str:
     def c(name: str, theme: str) -> str:
@@ -399,6 +404,8 @@ def gen_xaml(m: Model) -> str:
         out.append(f'        <ResourceDictionary x:Key="{key}">')
         for name in m.color_order:
             out.append(f'            <Color x:Key="Token{pascal(name)}Color">{c(name, theme)}</Color>')
+        for name in FADE_TOKENS:
+            out.append(f'            <Color x:Key="Token{pascal(name)}FadeColor">{transparent_twin(name, theme)}</Color>')
         out.append("")
         for name in m.color_order:
             out.append(f'            <SolidColorBrush x:Key="Token{pascal(name)}Brush" Color="{c(name, theme)}" />')
@@ -433,6 +440,8 @@ def gen_xaml(m: Model) -> str:
             out.append(f'            <Color x:Key="Token{pascal(name)}Color">Transparent</Color>')
         else:
             out.append(f'            <StaticResource x:Key="Token{pascal(name)}Color" ResourceKey="{role}" />')
+    for name in FADE_TOKENS:
+        out.append(f'            <Color x:Key="Token{pascal(name)}FadeColor">Transparent</Color>')
     out.append("")
     for name in m.color_order:
         out.append(f'            <SolidColorBrush x:Key="Token{pascal(name)}Brush" '
