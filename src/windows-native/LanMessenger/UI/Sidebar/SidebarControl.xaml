@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:LanMessenger.UI.Sidebar">
 
-    <Grid Background="{ThemeResource LayerFillColorDefaultBrush}">
+    <Grid Background="Transparent">
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
@@ -28,23 +28,35 @@
             </ListView.ItemTemplate>
         </ListView>
 
-        <!-- Empty state overlay -->
+        <!-- Empty state overlay: the EmptyState recipe, with its own copy. -->
         <StackPanel x:Name="EmptyState"
                     Grid.Row="0"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
-                    Spacing="8"
+                    Spacing="12"
                     Visibility="Collapsed">
-            <TextBlock Text="No conversations"
-                       HorizontalAlignment="Center"
-                       Style="{ThemeResource SubtitleTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            <TextBlock Text="Click the pencil icon above to start a chat with a saved contact."
-                       HorizontalAlignment="Center"
-                       TextAlignment="Center"
-                       MaxWidth="220"
-                       TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+            <Grid Width="64" Height="64" HorizontalAlignment="Center">
+                <Ellipse Fill="{ThemeResource TokenGlassClearBrush}"
+                         Stroke="{ThemeResource GlassRimBrush}"
+                         StrokeThickness="1" />
+                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                          Glyph="&#xE8BD;"
+                          FontSize="26"
+                          Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+            </Grid>
+            <StackPanel Spacing="4">
+                <TextBlock Text="No conversations"
+                           HorizontalAlignment="Center"
+                           Style="{StaticResource TokenTypeTitlePaneStyle}"
+                           Foreground="{ThemeResource TokenInkBrush}" />
+                <TextBlock Text="Click the pencil icon above to start a chat with a saved contact."
+                           HorizontalAlignment="Center"
+                           TextAlignment="Center"
+                           MaxWidth="240"
+                           TextWrapping="Wrap"
+                           Style="{StaticResource TokenTypeLabelStyle}"
+                           Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+            </StackPanel>
         </StackPanel>
 
         <!-- Archived footer -->
@@ -66,7 +78,7 @@
                 <FontIcon Grid.Column="0"
                           FontFamily="{ThemeResource SymbolThemeFontFamily}"
                           Glyph="&#xE7B8;"
-                          Foreground="{StaticResource AppAccentBrush}" />
+                          Foreground="{ThemeResource TokenAccentInkBrush}" />
                 <StackPanel Grid.Column="1" Spacing="2">
                     <TextBlock Text="Archived"
                                Style="{ThemeResource BodyStrongTextBlockStyle}" />

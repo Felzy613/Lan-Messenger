@@ -26,8 +26,8 @@
                 Click="AttachBtn_Click">
             <Button.Resources>
                 <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
-                <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
+                <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="TokenGlassHoverBrush"/>
+                <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="TokenGlassPressedBrush"/>
                 <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>
@@ -53,8 +53,8 @@
                 Click="ScreenshotBtn_Click">
             <Button.Resources>
                 <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
-                <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
+                <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="TokenGlassHoverBrush"/>
+                <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="TokenGlassPressedBrush"/>
                 <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
                 <SolidColorBrush x:Key="ButtonBorderBrushPressed"     Color="Transparent"/>

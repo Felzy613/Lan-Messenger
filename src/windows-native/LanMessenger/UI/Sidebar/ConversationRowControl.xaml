@@ -18,7 +18,7 @@
             <Ellipse x:Name="OnlineDot"
                      Width="11" Height="11"
                      Fill="#25D366"
-                     Stroke="{ThemeResource AppOnlineDotStrokeBrush}" StrokeThickness="2"
+                     Stroke="{ThemeResource TokenPresenceRingBrush}" StrokeThickness="2"
                      HorizontalAlignment="Right" VerticalAlignment="Bottom" />
         </Grid>
 
@@ -49,7 +49,7 @@
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                        HorizontalAlignment="Right" />
             <Border x:Name="UnreadBadge"
-                    Background="{StaticResource AppAccentBrush}"
+                    Background="{ThemeResource TokenBrandBrush}"
                     CornerRadius="10"
                     MinWidth="20" Height="20"
                     Padding="4,0"

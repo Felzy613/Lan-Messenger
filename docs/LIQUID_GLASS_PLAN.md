@@ -149,15 +149,15 @@ Inner loop after every step: the shim compile from `windows-build-check-on-macos
 
 ### W1. Resources and Theme.cs
 Files: `App.xaml`, new `Styles/Glass.xaml`, `Styles/GlassTokens.xaml` (generated), `UI/Theme.cs`.
-- [ ] `App.xaml`: merge, in this order, `XamlControlsResources`, `ms-appx:///Styles/GlassTokens.xaml`, then `ms-appx:///Styles/Glass.xaml`. Point the existing keys at tokens so current call sites keep working until they are migrated: `AppChatBackgroundBrush` → wallpaper, `AppReplyAccentBrush` → brand, `AppReplyAccentTextBrush` → accent-ink, `AppOnlineDotStrokeBrush` → presence-ring, `AppAccentBrush*` → brand, brand-hover and brand-pressed, `AppIconHoverBrush` → glass-hover, `AppIconPressedBrush` → glass-pressed.
-- [ ] `Styles/Glass.xaml` (hand-written) holds:
+- [x] `App.xaml`: merge, in this order, `XamlControlsResources`, `ms-appx:///Styles/GlassTokens.xaml`, then `ms-appx:///Styles/Glass.xaml`. Point the existing keys at tokens so current call sites keep working until they are migrated: `AppChatBackgroundBrush` → wallpaper, `AppReplyAccentBrush` → brand, `AppReplyAccentTextBrush` → accent-ink, `AppOnlineDotStrokeBrush` → presence-ring, `AppAccentBrush*` → brand, brand-hover and brand-pressed, `AppIconHoverBrush` → glass-hover, `AppIconPressedBrush` → glass-pressed.
+- [x] `Styles/Glass.xaml` (hand-written) holds:
   - **`GlassSurfaceStyle`** (`TargetType="ContentControl"`). A template of four layers in a `Grid`: a fill `Border` (`Background="{TemplateBinding Background}"`, `CornerRadius="{TemplateBinding CornerRadius}"`); a sheen `Border` (`GlassSheenBrush`, same radius, `IsHitTestVisible="False"`); a `ContentPresenter` with `Margin="{TemplateBinding Padding}"`; and a rim `Border` (`BorderBrush="{ThemeResource GlassRimBrush}"`, `BorderThickness="1"`, same radius, `IsHitTestVisible="False"`). The setters default `Background` to `GlassRegularAcrylicBrush`, `HorizontalContentAlignment` to Stretch, and `IsTabStop` to False.
   - **`GlassIconButtonStyle`** (`TargetType="Button"`, full `ControlTemplate`): 32×32, `CornerRadius="16"`, a transparent `Border` whose background the `VisualStateManager` sets to `TokenGlassHoverBrush` in `PointerOver` and `TokenGlassPressedBrush` in `Pressed`. In `Disabled` the foreground is `TokenInkSecondaryBrush`. The focus visual is `TokenFocusRingBrush`, 2px. Doing this in a template replaces the six-line `Button.Resources` block repeated on every icon button today.
   - **`GlassPrimaryButtonStyle`**: `brand` fill with a sheen, `on-brand` text, 32 tall, `CornerRadius="16"`, `brand-hover` and `brand-pressed` states, 50% opacity when disabled.
   - **`GlassButtonStyle`**: a glass-regular fill with rim, `ink` text, the same metrics.
   - **`GlassDangerButtonStyle`**: `danger` fill with a sheen, `ink-inverse` text, the same metrics. Only for actions that remove data, and always behind a confirmation.
   - **`GlassPillButtonStyle`**: the in-bubble Open and Show pills. `inset-fill` fill, `caption-strong` text, padding 8,4, fully rounded. An `Accent` variant uses `accent-wash` fill with `accent-ink` text.
-- [ ] `UI/Theme.cs`: keep the public surface and re-source every colour from `GlassTokens`.
+- [x] `UI/Theme.cs`: keep the public surface and re-source every colour from `GlassTokens`.
   - `IncomingBubbleBrush` and `OutgoingBubbleBrush` become the translucent bubble tokens.
   - `CheckBlueBrush` becomes `tick-read`, now theme-dependent.
   - `CheckGreyBrush` stays for incoming bubbles, and a new `MetaOutBrush` is used inside outgoing ones.
@@ -166,19 +166,21 @@ Files: `App.xaml`, new `Styles/Glass.xaml`, `Styles/GlassTokens.xaml` (generated
   - `Initialize(isDark)` recreates **every** theme-dependent brush. Today it skips the ticks and the dots.
   - When `UISettings.AdvancedEffectsEnabled` is false, the bubble brushes use the `-fallback` tokens. Subscribe to `UISettings.AdvancedEffectsEnabledChanged` and re-run `Initialize`, marshalled to the UI thread.
 
+*As built:* App.xaml merges `XamlControlsResources` then `Styles/Glass.xaml`, and `Glass.xaml` merges the generated `GlassTokens.xaml` itself, so its styles can `StaticResource` the token sizes while it is parsed. Rather than aliasing the old `App*Brush` keys, every call site moved straight to the tokens and the old keys are gone. Brand used as *text* became `TokenAccentInkBrush`. `GlassSendButtonStyle` (the send orb, whose disabled state is glass rather than 50% brand) and `GlassPillAccentButtonStyle` were added beside the planned styles. `Theme.Changed` is raised after `Initialize`, for controls on screen to repaint.
+
 **Done when:** the app builds and looks unchanged apart from colours now coming from tokens, and every brand-coloured control still shows the brand green.
 
 ### W2. Window shell and sidebar panel
 Files: `MainWindow.xaml(.cs)`, `UI/Sidebar/SidebarControl.xaml`.
-- [ ] `ApplyBackdrop()`: `new MicaBackdrop { Kind = MicaKind.BaseAlt }`, with `using Microsoft.UI.Composition.SystemBackdrops`. Keep the `DesktopAcrylicBackdrop` fallback.
-- [ ] Sidebar column: the existing column-0 `Grid` becomes a `ContentControl Style="{StaticResource GlassSurfaceStyle}"`:
+- [x] `ApplyBackdrop()`: `new MicaBackdrop { Kind = MicaKind.BaseAlt }`, with `using Microsoft.UI.Composition.SystemBackdrops`. Keep the `DesktopAcrylicBackdrop` fallback.
+- [x] Sidebar column: the existing column-0 `Grid` becomes a `ContentControl Style="{StaticResource GlassSurfaceStyle}"`:
   - `Margin="8,8,0,8"`, `CornerRadius="20"`, `Padding="8"`
   - `Background="{ThemeResource TokenGlassRegularBrush}"`, the translucent **solid** brush, not acrylic: it sits on Mica, which is already the blur.
   - Remove its `BorderBrush` / `BorderThickness`, and widen the column to `296` so the list keeps its width.
   - The title row: `Text="Chats"` in 20/26 semibold, and the three buttons use `GlassIconButtonStyle` inside a flat glass capsule (`CornerRadius="20"`, `Padding="3"`, `Background` = `TokenGlassClearBrush`, rim only).
-- [ ] `SidebarControl.xaml` root `Grid`: `Background="Transparent"`.
-- [ ] `NoConversationState`: the EmptyState recipe. A 64px `glass-clear` disc holding the E8BD glyph in ink-secondary, "LAN Messenger" in 20/26 semibold, and the sentence in 12/16 ink-secondary, at most 240 wide. Keep the existing copy.
-- [ ] The sidebar empty state gets the same recipe, with its existing copy.
+- [x] `SidebarControl.xaml` root `Grid`: `Background="Transparent"`.
+- [x] `NoConversationState`: the EmptyState recipe. A 64px `glass-clear` disc holding the E8BD glyph in ink-secondary, "LAN Messenger" in 20/26 semibold, and the sentence in 12/16 ink-secondary, at most 240 wide. Keep the existing copy.
+- [x] The sidebar empty state gets the same recipe, with its existing copy.
 
 **Done when:** in light, dark and transparency-off, the sidebar reads as a rounded glass panel floating on Mica with an 8px gap all round, and nothing is clipped at 960×700 (the startup size).
 

@@ -88,13 +88,13 @@
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <Button x:Name="AddContactBtn"
                     Content="Add a contact"
-                    Background="{StaticResource AppAccentBrush}"
+                    Background="{ThemeResource TokenBrandBrush}"
                     Foreground="White"
                     HorizontalAlignment="Center"
                     Click="AddContact_Click">
                 <Button.Resources>
-                    <StaticResource x:Key="ButtonBackgroundPointerOver" ResourceKey="AppAccentBrushPointerOver"/>
-                    <StaticResource x:Key="ButtonBackgroundPressed"     ResourceKey="AppAccentBrushPressed"/>
+                    <StaticResource x:Key="ButtonBackgroundPointerOver" ResourceKey="TokenBrandHoverBrush"/>
+                    <StaticResource x:Key="ButtonBackgroundPressed"     ResourceKey="TokenBrandPressedBrush"/>
                     <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White"/>
                     <SolidColorBrush x:Key="ButtonForegroundPressed"     Color="White"/>
                 </Button.Resources>

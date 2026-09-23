@@ -8,7 +8,7 @@
     <!-- The whole thread is the drop target, not just the composer strip:
          aiming at a 48 px bar at the bottom of the window is the kind of thing
          you only get right on the second try. -->
-    <Grid Background="{ThemeResource AppChatBackgroundBrush}"
+    <Grid Background="{ThemeResource TokenWallpaperBrush}"
           AllowDrop="True"
           DragEnter="Page_DragEnter"
           DragOver="Page_DragOver"
@@ -96,7 +96,7 @@
                   SelectionMode="None"
                   IsItemClickEnabled="False"
                   Padding="12,8"
-                  Background="{ThemeResource AppChatBackgroundBrush}">
+                  Background="{ThemeResource TokenWallpaperBrush}">
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="local:MessageRowViewModel">
                     <local:MessageBubbleControl Row="{Binding}" />
@@ -153,11 +153,11 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <Rectangle Grid.Column="0" Fill="{ThemeResource AppReplyAccentBrush}" />
+                <Rectangle Grid.Column="0" Fill="{ThemeResource TokenBrandBrush}" />
                 <StackPanel Grid.Column="1" Spacing="1">
                     <TextBlock x:Name="ReplyBannerWho"
                                FontSize="11" FontWeight="SemiBold"
-                               Foreground="{ThemeResource AppReplyAccentTextBrush}" />
+                               Foreground="{ThemeResource TokenAccentInkBrush}" />
                     <TextBlock x:Name="ReplyBannerPreview"
                                FontSize="12"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"

@@ -55,7 +55,7 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <Rectangle Grid.Column="0" Fill="{ThemeResource AppReplyAccentBrush}" />
+                        <Rectangle Grid.Column="0" Fill="{ThemeResource TokenBrandBrush}" />
                         <!-- Optional thumbnail / icon for media and file replies -->
                         <Border x:Name="ReplyChipThumbnailBorder"
                                 Grid.Column="1"
@@ -79,7 +79,7 @@
                         <StackPanel Grid.Column="2" Spacing="0" VerticalAlignment="Center">
                             <TextBlock x:Name="ReplySender"
                                        FontSize="11" FontWeight="SemiBold"
-                                       Foreground="{ThemeResource AppReplyAccentTextBrush}" />
+                                       Foreground="{ThemeResource TokenAccentInkBrush}" />
                             <TextBlock x:Name="ReplyPreview"
                                        FontSize="11"
                                        Opacity="0.75"
