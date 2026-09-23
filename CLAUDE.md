@@ -35,6 +35,8 @@ The repo does not commit `LanMessenger.xcodeproj`. macOS development uses
   system: tokens for both themes, component guidelines with reference previews,
   and the WinUI/SwiftUI mapping in `implementation.md`. Read it before changing
   colours, materials, radii or any chat chrome on either platform.
+- [docs/LIQUID_GLASS_PLAN.md](docs/LIQUID_GLASS_PLAN.md) - the milestone-by-milestone
+  plan for implementing that design system on Windows and macOS, with status.
 
 Update the relevant docs when changing behavior, storage formats, protocol fields,
 build commands, CI, packaging, or release behavior.

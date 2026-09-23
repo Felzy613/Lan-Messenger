@@ -18,3 +18,6 @@ The logo files named in `liquid-glass/assets/Logos/README.md` are the repository
 
 When a token changes, update `tokens.json` here, then the artifact, then both
 platforms' theme code.
+
+The plan for implementing the system in both apps, milestone by milestone, is
+[`docs/LIQUID_GLASS_PLAN.md`](../docs/LIQUID_GLASS_PLAN.md).

@@ -1,15 +1,25 @@
-<!-- @dsCard group="Remote desktop" height=470 subtitle="Thick glass sheet with a countdown" -->
+<!-- @dsCard group="Remote desktop" height=440 subtitle="Decline is the default; colour only when the key is unexpected" -->
 <!doctype html>
 <html>
 <head><meta charset="utf-8"><title>RemoteConsentSheet — preview</title></head>
 <body style="margin:0">
-<div class="lm-stage" style="display:grid;place-items:center"><div class="lm-sheet lm-glass lm-glass--thick" role="dialog" aria-labelledby="cs-title">
-  <div class="lm-sheet__section"><span class="lm-sheet__title" id="cs-title">Priya Raman wants to see your screen</span><span class="lm-sheet__text">They will see everything on your main display until you stop sharing. They cannot control it unless you allow that separately.</span></div>
+<div class="lm-stage lm-inline" style="justify-content:center;align-items:flex-start;gap:20px">
+<div class="lm-sheet lm-glass lm-glass--thick" role="dialog" aria-labelledby="cs-pinned" style="width:400px">
+  <div class="lm-sheet__section"><span class="lm-sheet__title" id="cs-pinned">Priya Raman wants to view your screen</span><span class="lm-sheet__text">They will see everything on your display, including notifications and anything you open, until you stop sharing.</span></div>
   <div class="lm-sheet__section">
+
     <dl class="lm-kv" style="margin:0"><dt>Address</dt><dd>192.168.1.42</dd><dt>Key</dt><dd>3F:9A:C1:07:5E:22:B8:41</dd></dl>
-    <div class="lm-note lm-note--warning"><svg class="lm-icon " viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l9.5 17h-19z"/><path d="M12 10v4.5M12 17.5h.01"/></svg><span>Only accept if you were expecting this. Compare the key with the one shown on Priya’s machine.</span></div>
   </div>
-  <div class="lm-sheet__section"><div class="lm-sheet__footer"><span class="lm-sheet__countdown">Declines automatically in 24s</span><button class="lm-button lm-button--glass lm-glass lm-glass--flat">Decline</button><button class="lm-button lm-button--primary">Share Screen</button></div></div>
-</div></div>
+  <div class="lm-sheet__section"><div class="lm-sheet__footer"><span class="lm-sheet__countdown">Declines automatically in 24s</span><button class="lm-button lm-button--primary">Decline</button><button class="lm-button lm-button--glass lm-glass lm-glass--flat">Allow Viewing</button></div></div>
+</div>
+<div class="lm-sheet lm-glass lm-glass--thick" role="dialog" aria-labelledby="cs-changed" style="width:400px">
+  <div class="lm-sheet__section"><span class="lm-sheet__title" id="cs-changed">Priya Raman wants to control your screen</span><span class="lm-sheet__text">They will be able to use your keyboard and mouse as if they were sitting at this Mac. You can take back control at any time.</span></div>
+  <div class="lm-sheet__section">
+    <div class="lm-note lm-note--warning"><svg class="lm-icon " viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l9.5 17h-19z"/><path d="M12 10v4.5M12 17.5h.01"/></svg><span>This is not the key you have saved for Priya Raman. They may have reinstalled — or this may not be them.</span></div>
+    <dl class="lm-kv" style="margin:0"><dt>Address</dt><dd>192.168.1.42</dd><dt>Key</dt><dd>3F:9A:C1:07:5E:22:B8:41</dd></dl>
+  </div>
+  <div class="lm-sheet__section"><div class="lm-sheet__footer"><span class="lm-sheet__countdown">Declines automatically in 24s</span><button class="lm-button lm-button--primary">Decline</button><button class="lm-button lm-button--glass lm-glass lm-glass--flat">Allow Control</button></div></div>
+</div>
+</div>
 </body>
 </html>
