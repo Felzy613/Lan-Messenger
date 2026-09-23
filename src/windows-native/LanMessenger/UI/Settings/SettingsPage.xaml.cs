@@ -44,9 +44,6 @@ public sealed partial class SettingsPage : Page
         RemoteDesktopToggle.IsOn = cfg.RemoteDesktopMode.IsEnabled();
         RemoteDesktopStopHint.Visibility = cfg.RemoteDesktopMode.IsEnabled()
             ? Visibility.Visible : Visibility.Collapsed;
-        RemoteDesktopTestPanel.Visibility = cfg.RemoteDesktopMode.IsEnabled()
-            ? Visibility.Visible : Visibility.Collapsed;
-        RefreshSelfViewButton();
         RelayEnabledToggle.IsOn = cfg.RelayEnabled;
         RelayUrlBox.Text = cfg.RelayWorkerUrl;
         RelayUrlBox.IsEnabled = cfg.RelayEnabled;
@@ -248,45 +245,6 @@ public sealed partial class SettingsPage : Page
         ConfigStore.Shared.Save();
         RemoteDesktopStopHint.Visibility =
             RemoteDesktopToggle.IsOn ? Visibility.Visible : Visibility.Collapsed;
-        RemoteDesktopTestPanel.Visibility =
-            RemoteDesktopToggle.IsOn ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    /// Runs the whole capture, encode, decode and present chain against this
-    /// machine's own screen. No peer and no socket — the only part of remote
-    /// desktop that can be exercised before the invite exchange exists.
-    private void SelfView_Click(object sender, RoutedEventArgs e)
-    {
-        var controller = LanMessenger.UI.RemoteDesktop.RemoteDesktopController.Shared;
-        if (controller.IsRunning)
-        {
-            controller.Stop(RemoteStopReason.UserStopped);
-            RefreshSelfViewButton();
-            return;
-        }
-
-        try
-        {
-            SelfViewStatus.Text = "Starting…";
-            controller.OnChanged = () => DispatcherQueue.TryEnqueue(RefreshSelfViewButton);
-            controller.StartSelfView(DispatcherQueue);
-        }
-        catch (Exception ex)
-        {
-            // Nothing inside a WinUI click handler may throw. The message is the
-            // useful part: "no H.264 encoder" and "nothing to capture" are very
-            // different problems and a generic failure hides which.
-            SelfViewStatus.Text = ex.Message;
-            LanLogger.Remote("error", reason: $"self view: {ex.Message}");
-        }
-        RefreshSelfViewButton();
-    }
-
-    private void RefreshSelfViewButton()
-    {
-        var controller = LanMessenger.UI.RemoteDesktop.RemoteDesktopController.Shared;
-        SelfViewButton.Content = controller.IsRunning ? "Stop Self View" : "Test Self View";
-        if (controller.IsRunning) SelfViewStatus.Text = controller.Summary;
     }
 
     private void RelayEnabledToggle_Toggled(object sender, RoutedEventArgs e)

@@ -7,12 +7,12 @@ namespace LanMessenger.Core.Networking.Media;
 /// <remarks>
 /// <para>
 /// <c>capture_us</c> is stamped on the HOST's clock and subtracted from ours,
-/// which is a latency only when both are the same clock — true in self-view and
-/// false across a network. Between two machines the difference is dominated by
-/// the gap between their two <c>Stopwatch</c> origins: the first real
-/// cross-machine session reported <c>latency_ms_avg=2813817527</c>, about 32.5
-/// days, in a window that was visibly keeping up at 29fps. A figure that wrong
-/// is worse than none, because it is still a number and someone will act on it.
+/// which is a latency only when both are the same clock. Between two machines
+/// with independent clocks the difference is dominated by the gap between their
+/// two <c>Stopwatch</c> origins: the first real cross-machine session reported
+/// <c>latency_ms_avg=2813817527</c>, about 32.5 days, in a window that was
+/// visibly keeping up at 29fps. A figure that wrong is worse than none, because
+/// it is still a number and someone will act on it.
 /// </para>
 /// <para>
 /// So the smallest difference of the session is taken as the zero, and what is
@@ -22,8 +22,8 @@ namespace LanMessenger.Core.Networking.Media;
 /// does not have, and inventing one would be guessing.
 /// </para>
 /// <para>
-/// On a shared clock the raw value already is the answer and is returned
-/// untouched, so self-view keeps reporting true capture-to-glass latency.
+/// When the two clocks turn out to be the same one, the raw value already is
+/// the answer and is returned untouched.
 /// </para>
 /// </remarks>
 public sealed class RemoteLatencyClock
@@ -75,11 +75,11 @@ public sealed class RemoteLatencyClock
     /// <summary>The word for the stats line: what these milliseconds measure.</summary>
     /// <remarks>
     /// <c>synced</c> is a real capture-to-glass figure against a measured clock
-    /// offset. <c>shared</c> is the same thing in self-view, where there is only
-    /// one clock. <c>rel</c> is delay above the best frame of the session, which
-    /// is all that is knowable before the ping exchange has produced an
-    /// estimate. The reading always says which it is, because the three are not
-    /// comparable and somebody will otherwise compare them.
+    /// offset. <c>shared</c> is the same thing when the two clocks turn out to
+    /// be one and the same. <c>rel</c> is delay above the best frame of the
+    /// session, which is all that is knowable before the ping exchange has
+    /// produced an estimate. The reading always says which it is, because the
+    /// three are not comparable and somebody will otherwise compare them.
     /// </remarks>
     public string Label => _offsetUs is not null ? "synced"
                          : ClocksAreShared ? "shared"

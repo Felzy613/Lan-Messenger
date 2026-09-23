@@ -24,7 +24,7 @@ namespace LanMessenger.Core.Networking.Media;
 
 public sealed class RemoteDesktopSession : IDisposable
 {
-    public enum Mode { SelfView, Host, Viewer }
+    public enum Mode { Host, Viewer }
 
     private readonly Action<RemoteAuditRecord> _appendAudit;
     private readonly object _gate = new();
@@ -47,8 +47,8 @@ public sealed class RemoteDesktopSession : IDisposable
     public int Width => _capture?.Width ?? _decoder?.Width ?? 0;
     public int Height => _capture?.Height ?? _decoder?.Height ?? 0;
 
-    /// Frames ready for the wire. Null in self-view, where they short-circuit
-    /// straight into the decoder.
+    /// Frames ready for the wire. Set by the controller for a host; a viewer
+    /// has no encoder, so this never fires for one.
     public Action<EncodedVideoFrame>? OnEncodedFrame { get; set; }
     /// Control messages this session wants sent — keyframe requests,
     /// video_config, host_state.
@@ -79,12 +79,6 @@ public sealed class RemoteDesktopSession : IDisposable
 
     // ---- Start -------------------------------------------------------------
 
-    /// Captures this screen and shows it back locally. No peer, no socket —
-    /// the diagnostic path, and the fastest way to prove the whole chain works
-    /// on one machine.
-    public void StartSelfView(IVideoPresenter presenter, string? display = null)
-        => Start(Mode.SelfView, "This PC", presenter, display);
-
     /// Shares this screen with a peer.
     public void StartHosting(string peerName, string? display = null)
         => Start(Mode.Host, peerName, presenter: null, display);
@@ -112,7 +106,7 @@ public sealed class RemoteDesktopSession : IDisposable
 
             // Presentation first. A viewer that starts capturing before it has
             // anywhere to put frames spends its first second discarding them.
-            if (mode is Mode.SelfView or Mode.Viewer)
+            if (mode == Mode.Viewer)
             {
                 _presenter = presenter
                     ?? throw new ArgumentNullException(nameof(presenter),
@@ -126,22 +120,20 @@ public sealed class RemoteDesktopSession : IDisposable
                 _presenter.OnKeyframeNeeded = reason => RequestKeyframe(reason);
             }
 
-            if (mode is Mode.SelfView or Mode.Host)
+            if (mode == Mode.Host)
             {
                 _capture = new DesktopDuplicator(display);
-                // Host only. Built here rather than at grant time so the
-                // surface it resolves coordinates against is the one actually
-                // being captured.
-                if (mode == Mode.Host)
-                {
-                    // The display's real position, not an assumed (0,0): on a
-                    // multi-monitor host the shared display may start anywhere,
-                    // including at a negative coordinate.
-                    int width = _capture.Width, height = _capture.Height;
-                    int originX = _capture.OriginX, originY = _capture.OriginY;
-                    _injector = new RemoteInputInjector(
-                        () => _grant.Grant, () => (originX, originY, width, height));
-                }
+                // Built here rather than at grant time so the surface it
+                // resolves coordinates against is the one actually being
+                // captured.
+                //
+                // The display's real position, not an assumed (0,0): on a
+                // multi-monitor host the shared display may start anywhere,
+                // including at a negative coordinate.
+                int capturedWidth = _capture.Width, capturedHeight = _capture.Height;
+                int originX = _capture.OriginX, originY = _capture.OriginY;
+                _injector = new RemoteInputInjector(
+                    () => _grant.Grant, () => (originX, originY, capturedWidth, capturedHeight));
 
                 _encoder = new H264Encoder(_capture.Width, _capture.Height);
                 _encoder.OnEncodedFrame = HandleEncodedFrame;
@@ -278,17 +270,7 @@ public sealed class RemoteDesktopSession : IDisposable
         }
     }
 
-    private void HandleEncodedFrame(EncodedVideoFrame frame)
-    {
-        if (CurrentMode == Mode.SelfView)
-        {
-            // Short-circuits the socket. The transport is already proven to
-            // carry these frames; what self-view exercises is everything else.
-            DecodeAndPresent(frame.AnnexB, frame.CaptureUs);
-            return;
-        }
-        OnEncodedFrame?.Invoke(frame);
-    }
+    private void HandleEncodedFrame(EncodedVideoFrame frame) => OnEncodedFrame?.Invoke(frame);
 
     /// A video frame arriving from the wire.
     /// <summary>Host side only. A viewer has none, which is the first of the two

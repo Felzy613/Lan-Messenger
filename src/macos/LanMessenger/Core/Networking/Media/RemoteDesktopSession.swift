@@ -21,21 +21,11 @@ import CoreVideo
 // entries. The ordering of teardown lives here and only here — release capture,
 // take the indicator down, disarm the guard, write the audit line — because
 // smeared across notification handlers it would be subtly different every time.
-//
-// **Self-view** is the first mode to work, and it is not a toy. It runs the real
-// capture source, the real encoder and the real decoder in one process and puts
-// the result in a real window, so the whole pipeline becomes runnable and
-// visible on a single machine with no peer. What it deliberately skips is the
-// socket, because `VideoPipelineEndToEndTests` already proves two real
-// `MediaSession`s carry these exact frames — re-proving that was not what was
-// missing.
 
 @MainActor
 final class RemoteDesktopSession {
 
     enum Mode: Equatable {
-        /// Host and viewer in one process. The development and diagnostic path.
-        case selfView
         /// We are sharing our screen with `peerName`.
         case host(peerName: String, peerIP: String)
         /// We are watching `peerName`'s screen.
@@ -43,21 +33,20 @@ final class RemoteDesktopSession {
 
         var peerName: String {
             switch self {
-            case .selfView: return "This Mac"
             case .host(let name, _), .viewer(let name, _): return name
             }
         }
 
         var capturesLocally: Bool {
             switch self {
-            case .selfView, .host: return true
+            case .host: return true
             case .viewer: return false
             }
         }
 
         var presentsLocally: Bool {
             switch self {
-            case .selfView, .viewer: return true
+            case .viewer: return true
             case .host: return false
             }
         }
@@ -101,9 +90,8 @@ final class RemoteDesktopSession {
     private var sendPipeline: VideoSendPipeline?
     private var receivePipeline: VideoReceivePipeline?
 
-    /// The transport, for the two modes that have a peer. Nil for self-view,
-    /// which is the whole difference between them: everything else in this
-    /// object behaves identically whether the frames cross a socket or not.
+    /// The transport. Set by `adopt(_:)` before `start` is ever called, so it
+    /// is present for the whole life of a running session.
     private var media: MediaSession?
 
     /// Host side only. A viewer has none, which is the first of the two gates on
@@ -142,20 +130,12 @@ final class RemoteDesktopSession {
 
     /// - Parameter appendAudit: writes a record into the conversation. Injected
     ///   rather than reached for, so a session can be exercised without a
-    ///   history store — and so self-view, which has no conversation, simply
-    ///   passes a sink that drops them.
+    ///   history store.
     init(appendAudit: @escaping (RemoteAuditEntry) -> Void = { _ in }) {
         self.appendAudit = appendAudit
     }
 
     // MARK: - Start
-
-    /// Starts a session that captures this screen and shows it back in a local
-    /// window. No peer, no socket.
-    func startSelfView(configuration: ScreenCaptureConfiguration = ScreenCaptureConfiguration())
-    async throws {
-        try await start(mode: .selfView, configuration: configuration)
-    }
 
     /// Shares this screen with a peer. The media channel is already attached and
     /// reading by the time this is called — the invite exchange owns that, and
@@ -231,9 +211,7 @@ final class RemoteDesktopSession {
         guard !isRunning else { throw StartFailure.alreadyRunning }
 
         // Presentation first. A viewer that starts capturing before it has
-        // anywhere to put the frames spends the first second discarding them,
-        // and on a self-view that is the second where the window should have
-        // appeared.
+        // anywhere to put the frames spends the first second discarding them.
         if mode.presentsLocally {
             let presenter = SampleBufferVideoPresenter()
             presenter.onNeedsKeyframe = { [weak self] reason in
@@ -288,14 +266,8 @@ final class RemoteDesktopSession {
                     submit: { [weak self] frame in
                         // A session torn down mid-frame: report the drop
                         // honestly rather than claiming it was queued.
-                        guard let self else { return .droppedStaleVideo(wasKeyframe: false) }
-                        // Self-view short-circuits the socket. The transport is
-                        // already proven to carry these exact frames by
-                        // VideoPipelineEndToEndTests; what was never proven is
-                        // that a real capture reaches a real window.
-                        guard let media = self.media else {
-                            self.deliverLocally(frame)
-                            return .queued
+                        guard let self, let media = self.media else {
+                            return .droppedStaleVideo(wasKeyframe: false)
                         }
                         return media.submit(frame)
                     })
@@ -322,15 +294,13 @@ final class RemoteDesktopSession {
             self.sendPipeline = send
             self.dimensions = size
 
-            // Host only. Built here rather than at grant time so the surface it
-            // resolves coordinates against is the one actually being captured.
-            if case .host = mode {
-                let captured = size
-                self.injector = RemoteInputInjector(
-                    grant: { [weak self] in self?.grant.grant ?? .none },
-                    surface: { CGRect(x: 0, y: 0, width: CGFloat(captured.width),
-                                      height: CGFloat(captured.height)) })
-            }
+            // Built here rather than at grant time so the surface it resolves
+            // coordinates against is the one actually being captured.
+            let captured = size
+            self.injector = RemoteInputInjector(
+                grant: { [weak self] in self?.grant.grant ?? .none },
+                surface: { CGRect(x: 0, y: 0, width: CGFloat(captured.width),
+                                  height: CGFloat(captured.height)) })
         }
 
         self.mode = mode
@@ -363,23 +333,6 @@ final class RemoteDesktopSession {
         NetLogger.remote(event: "session_started",
                          reason: "\(describe(mode)) \(dimensions.map { "\($0.width)x\($0.height)" } ?? "?")")
         onChange?()
-    }
-
-    /// Host → viewer inside one process. Converts to the wire format on the way
-    /// through rather than handing the decoder AVCC directly, so self-view
-    /// exercises the Annex-B conversion that a real peer depends on instead of
-    /// quietly bypassing it.
-    private nonisolated func deliverLocally(_ frame: MediaOutboundFrame) {
-        Task { @MainActor [weak self] in
-            guard let receive = self?.receivePipeline else { return }
-            receive.accept(MediaInboundFrame(
-                channel: frame.channel,
-                flags: frame.keyframe ? .keyframe : [],
-                sequence: 0,
-                captureUs: frame.captureUs,
-                payload: frame.payload,
-                fragmentCount: 1))
-        }
     }
 
     /// Sends every inbound frame to the sub-channel that owns it.
@@ -654,7 +607,6 @@ final class RemoteDesktopSession {
 
     private func describe(_ mode: Mode) -> String {
         switch mode {
-        case .selfView:            return "self_view"
         case .host(_, let ip):     return "host peer=\(ip)"
         case .viewer(_, let ip):   return "viewer peer=\(ip)"
         }

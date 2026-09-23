@@ -16,7 +16,7 @@ public class RemoteLatencyClockTests
     [TestMethod]
     public void ASharedClockIsReportedUntouched()
     {
-        // Self-view: host and viewer are the same process, so the subtraction
+        // When the host and viewer clocks are the same clock, the subtraction
         // already is capture-to-glass and must not be adjusted away. This is
         // the measurement the whole WS10 performance pass was run against.
         var clock = new RemoteLatencyClock();
@@ -121,9 +121,9 @@ public class RemoteLatencyClockTests
         unsynced.Adjust(2_813_817_000L * Ms);
         Assert.AreEqual("rel", unsynced.Label);
 
-        var selfView = new RemoteLatencyClock();
-        selfView.Adjust(40 * Ms);
-        Assert.AreEqual("shared", selfView.Label);
+        var sameClock = new RemoteLatencyClock();
+        sameClock.Adjust(40 * Ms);
+        Assert.AreEqual("shared", sameClock.Label);
 
         var synced = new RemoteLatencyClock();
         synced.Adjust(2_813_817_000L * Ms);

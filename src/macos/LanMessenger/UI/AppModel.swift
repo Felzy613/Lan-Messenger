@@ -89,9 +89,7 @@ final class AppModel: ObservableObject {
 
     private let remoteViewerWindow = RemoteViewerWindowController()
 
-    /// The conversation an audit record belongs to. Self-view has no peer, so
-    /// its records are logged and not filed — a fabricated conversation with
-    /// yourself would be worse than no entry.
+    /// The conversation an audit record belongs to.
     private var remoteAuditPeerIP: String?
 
     /// Who the live session is with. The second consent prompt needs the peer's
@@ -421,32 +419,6 @@ final class AppModel: ObservableObject {
 
     // MARK: - Remote desktop
 
-    /// Starts a session that captures this screen and shows it back in a window.
-    ///
-    /// No peer and no socket: the transport is already proven to carry these
-    /// frames by `VideoPipelineEndToEndTests`, and what this exercises instead
-    /// is everything that test cannot — a real capture reaching a real window,
-    /// the indicator, the guard, the kill shortcut and the teardown ordering.
-    func startRemoteSelfView() {
-        guard !remoteSession.isRunning else { return }
-        remoteAuditPeerIP = nil
-
-        Task { @MainActor in
-            do {
-                try await remoteSession.startSelfView()
-                guard let layer = remoteSession.videoLayer else { return }
-                remoteViewerWindow.show(
-                    title: "This Mac — self view",
-                    layer: layer,
-                    aspect: remoteSession.dimensions,
-                    onClose: { [weak self] in self?.remoteSession.stop(.userStopped) })
-            } catch {
-                NetLogger.remote(event: "error", reason: "self view failed: \(error)")
-                presentRemoteStartFailure(error)
-            }
-        }
-    }
-
     /// The contact-strip button. Judges the request against the same policy an
     /// inbound invite is judged by, so the interface can never start something
     /// the gate would refuse.
@@ -563,10 +535,6 @@ final class AppModel: ObservableObject {
     }
 
     /// Files an audit record into the conversation it belongs to.
-    ///
-    /// A record with no peer — self-view — is logged rather than written. There
-    /// is no conversation with yourself to file it in, and inventing one would
-    /// put a system row in somebody's sidebar for a diagnostic they ran.
     private func recordRemoteAudit(_ record: RemoteAuditEntry) {
         NetLogger.remote(event: "audit", reason: record.summary)
         guard let ip = remoteAuditPeerIP else { return }

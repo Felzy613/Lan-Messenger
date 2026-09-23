@@ -182,23 +182,14 @@ struct LanMessengerApp: App {
                 Button("Show Main Window") { WindowController.showMainWindow() }
                     .keyboardShortcut("1", modifiers: [.command])
             }
-            // The only entry point into remote desktop today. Self-view needs no
-            // peer, which is what makes the whole pipeline runnable on one
-            // machine — and it is gated on the same setting a real session is,
-            // so nobody can capture their screen without having switched the
-            // feature on.
+            // Lets a running session (started from a contact's chat) be stopped
+            // from the menu bar, without hunting for the indicator.
             CommandMenu("Remote Desktop") {
                 if appModel.remoteSessionRunning {
                     Button("Stop Sharing") { appModel.stopRemoteSession() }
                         .keyboardShortcut(".", modifiers: [.command, .shift])
                     if let summary = appModel.remoteSessionSummary {
                         Text(summary)
-                    }
-                } else {
-                    Button("Start Self View…") { appModel.startRemoteSelfView() }
-                        .disabled(!ConfigStore.shared.config.remoteDesktopMode.isEnabled)
-                    if !ConfigStore.shared.config.remoteDesktopMode.isEnabled {
-                        Text("Turn this on in LAN Messenger Settings (the gear icon), under Remote Desktop")
                     }
                 }
             }
@@ -408,7 +399,8 @@ struct MigrationView: View {
 
 // MARK: - Remote desktop tray items
 
-/// The remote-desktop entry point, in the one menu that is always present.
+/// Shows a running remote-desktop session, if any, in the one menu that is
+/// always present — sessions themselves start from a contact's chat.
 private struct RemoteDesktopTrayItems: View {
 
     @EnvironmentObject var model: AppModel
@@ -419,17 +411,8 @@ private struct RemoteDesktopTrayItems: View {
                 Text("Sharing: \(summary)")
             }
             Button("Stop Sharing") { model.stopRemoteSession() }
-        } else if ConfigStore.shared.config.remoteDesktopMode.isEnabled {
-            Button("Start Self View") { model.startRemoteSelfView() }
-        } else {
-            // Disabled rather than hidden, with the reason attached. A menu item
-            // that simply is not there reads as a missing feature; one that is
-            // greyed out with an explanation reads as a setting.
-            Button("Start Self View") {}
-                .disabled(true)
-            Text("Turn this on in LAN Messenger Settings (the gear icon), under Remote Desktop")
-        }
 
-        Divider()
+            Divider()
+        }
     }
 }

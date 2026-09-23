@@ -32,7 +32,7 @@ public sealed class RemoteDesktopController
     private RemoteHostIndicatorWindow? _indicator;
     private RemoteConsentWindow? _consent;
     private RemoteSessionGuard? _guard;
-    /// The transport, for the two modes that have a peer. Null for self-view.
+    /// The transport, present for the whole life of a running session.
     private MediaSession? _media;
     private DispatcherQueue? _ui;
 
@@ -53,48 +53,6 @@ public sealed class RemoteDesktopController
         : "";
 
     private RemoteDesktopController() { }
-
-    /// Captures this screen and shows it back in a local window. No peer, no
-    /// socket — the fastest way to prove the whole chain works on one machine,
-    /// and the only thing that can be tested before the invite exchange exists.
-    public void StartSelfView(DispatcherQueue ui)
-    {
-        lock (_gate)
-        {
-            if (IsRunning) return;
-            _ui = ui;
-            _peerName = "This PC";
-            _startedAt = DateTime.UtcNow;
-
-            try
-            {
-                var viewer = new RemoteViewerWindow(_peerName);
-                _viewer = viewer;
-
-                var session = new RemoteDesktopSession(record => AppendAudit?.Invoke(record));
-                _session = session;
-
-                viewer.OnClosed = () => Stop(RemoteStopReason.UserStopped);
-                session.OnEnded = _ => CloseWindows();
-                session.OnChanged = () => OnChanged?.Invoke();
-
-                session.StartSelfView(viewer);
-                viewer.Activate();
-
-                ShowIndicator();
-                ArmGuard();
-            }
-            catch (Exception ex)
-            {
-                LanLogger.Remote("error", reason: $"self view failed: {ex.Message}");
-                CloseWindows();
-                _session?.Dispose();
-                _session = null;
-                throw;
-            }
-        }
-        OnChanged?.Invoke();
-    }
 
     /// What a host has agreed to share but not yet started sharing.
     ///

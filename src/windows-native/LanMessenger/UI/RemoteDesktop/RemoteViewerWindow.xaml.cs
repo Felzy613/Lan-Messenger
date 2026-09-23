@@ -406,12 +406,12 @@ public sealed partial class RemoteViewerWindow : Window, IVideoPresenter
     /// Latency, measured rather than reasoned about.
     ///
     /// capture_us has ridden along with the frame since capture handed it over,
-    /// through encode, decode and conversion, so in self-view the subtraction
-    /// here is the whole pipeline and nothing else. Across two machines it is
-    /// delay above the best frame of the session instead, because the stamp is
-    /// on the host's clock — `RemoteLatencyClock` decides which, and the stats
-    /// line says which one it printed. Without any of it, "it feels laggy" and
-    /// "it feels smooth" are the only two available measurements.
+    /// through encode, decode and conversion, so the subtraction here is delay
+    /// above the best frame of the session unless the ping exchange has
+    /// measured a real clock offset, because the stamp is on the host's clock —
+    /// `RemoteLatencyClock` decides which, and the stats line says which one it
+    /// printed. Without any of it, "it feels laggy" and "it feels smooth" are
+    /// the only two available measurements.
     private void NotePresented(ulong captureUs)
     {
         _presented++;
