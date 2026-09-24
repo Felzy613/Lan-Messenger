@@ -253,6 +253,24 @@ public sealed partial class AppModel : ObservableObject
         return coordinator;
     }
 
+    /// <summary>Files an audit record into the conversation it belongs to.</summary>
+    /// <remarks>
+    /// On the UI thread, like every other history append. The thread is not
+    /// resurfaced if the user had deleted it, matching the Mac: the record is
+    /// kept, and it is there when the conversation is reopened.
+    /// </remarks>
+    private void RecordRemoteAudit(string peerIP, RemoteAuditRecord record, double timestamp)
+    {
+        var entry = record.HistoryEntry(timestamp);
+        HistoryStore.Shared.Append(entry, peerIP);
+        HistoryStore.Shared.Save();
+        var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
+        if (!msgs.TryGetValue(peerIP, out var list)) list = msgs[peerIP] = [];
+        list.Add(entry);
+        Messages = msgs;
+        RefreshConversations();
+    }
+
     private void Start()
     {
         CryptoRuntimeDiagnostics.LogOnce();
@@ -271,6 +289,20 @@ public sealed partial class AppModel : ObservableObject
         // the six end up forgetting.
         RemoteDesktopController.Shared.AnnounceEnd = (sessionId, peerIP, reason) =>
             InviteCoordinator.SendEnd(sessionId, peerIP, reason);
+
+        // The audit trail. Left unassigned, every record a session raised went
+        // nowhere, and the thread never said that a screen had been shared. The
+        // time is taken here, where the event happened, rather than when the
+        // dispatcher gets to it; a SessionEnded raised from a teardown on the
+        // socket thread would otherwise carry whatever the UI thread was busy with.
+        RemoteDesktopController.Shared.AppendAudit = (peerIP, record) =>
+        {
+            LanLogger.Remote("audit", peer: peerIP, reason: record.Summary);
+            var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+            if (!_dq.TryEnqueue(() => RecordRemoteAudit(peerIP, record, timestamp)))
+                LanLogger.Remote("error", peer: peerIP,
+                                 reason: "audit record dropped: the UI dispatcher is gone");
+        };
 
         RemoteDesktopController.Shared.OnChanged = () =>
             _dq.TryEnqueue(() => RemoteSessionRunning = RemoteDesktopController.Shared.IsRunning);
@@ -781,7 +813,7 @@ public sealed partial class AppModel : ObservableObject
     private static int CountUnread(IReadOnlyList<MessageEntry> entries)
         => entries.Count(e => e.Incoming && !e.ReadReceiptSent);
 
-    private static string LastMessagePreview(IReadOnlyList<MessageEntry> entries)
+    public static string LastMessagePreview(IReadOnlyList<MessageEntry> entries)
     {
         if (entries.Count == 0) return "";
         var last = entries[^1];
@@ -791,6 +823,9 @@ public sealed partial class AppModel : ObservableObject
             var path = last.Text["__FILE__:".Length..];
             return "📎 " + Path.GetFileName(path);
         }
+        // An audit record is not a message. Without this the sidebar shows the
+        // raw JSON body, which is how a privacy feature ends up looking broken.
+        if (RemoteAuditRecord.IsAudit(last.Text)) return RemoteAuditRecord.SummaryOf(last.Text);
         return CollapseWhitespace(last.Text);
     }
 
@@ -873,6 +908,9 @@ public sealed partial class AppModel : ObservableObject
         if (forEveryone)
         {
             if (entry.Incoming || string.IsNullOrEmpty(entry.MessageId)) return;
+            // An audit record has no copy on the peer to delete; it exists only
+            // in this machine's history.
+            if (RemoteAuditRecord.IsAudit(entry.Text)) return;
             HistoryStore.Shared.MarkDeleted(entry.MessageId, peerIP, requireIncoming: false);
             HistoryStore.Shared.Save();
             if (Messages.TryGetValue(peerIP, out var list))
@@ -910,18 +948,31 @@ public sealed partial class AppModel : ObservableObject
         }
     }
 
+    /// <summary>Whether an entry may be edited from this machine.</summary>
+    /// <remarks>
+    /// Only our own outgoing text messages qualify: an attachment's Text is a
+    /// local file path, not a body; a deleted message has no body left; and an
+    /// audit record has no body to replace, since rewriting the trail is the one
+    /// thing it exists to prevent. The chat row's Edit menu item asks this same
+    /// question, so the menu never offers an edit that EditMessage refuses.
+    /// </remarks>
+    public static bool IsEditable(MessageEntry entry) =>
+        !entry.Incoming
+        && !string.IsNullOrEmpty(entry.MessageId)
+        && !entry.Deleted
+        && !entry.Text.StartsWith("__FILE__:", StringComparison.Ordinal)
+        && !RemoteAuditRecord.IsAudit(entry.Text);
+
     /// <summary>
     /// Replaces the text of one of our own outgoing messages, locally and on
-    /// the peer. Returns false when the message isn't editable, so the caller
-    /// can leave the composer in edit mode rather than silently dropping it.
-    ///
-    /// Only our own outgoing text messages qualify: an attachment's Text is a
-    /// local file path, not a body, and a deleted message has no body left.
+    /// the peer. Returns false when the message isn't editable (see
+    /// IsEditable), so the caller can leave the composer in edit mode rather
+    /// than silently dropping it.
     /// </summary>
     public bool EditMessage(MessageEntry entry, string newText, string peerIP)
     {
-        if (entry.Incoming || string.IsNullOrEmpty(entry.MessageId)) return false;
-        if (entry.Deleted || entry.Text.StartsWith("__FILE__:", StringComparison.Ordinal)) return false;
+        if (!IsEditable(entry)) return false;
+        string messageId = entry.MessageId!;   // IsEditable requires one
 
         var trimmed = newText.Trim();
         if (string.IsNullOrEmpty(trimmed)) return false;
@@ -930,13 +981,13 @@ public sealed partial class AppModel : ObservableObject
         if (trimmed == entry.Text) return true;
 
         var editedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-        if (!HistoryStore.Shared.ApplyEdit(entry.MessageId, peerIP, trimmed, editedAt, requireIncoming: false))
+        if (!HistoryStore.Shared.ApplyEdit(messageId, peerIP, trimmed, editedAt, requireIncoming: false))
             return false;
         HistoryStore.Shared.Save();
 
         if (Messages.TryGetValue(peerIP, out var list))
         {
-            var e = list.FirstOrDefault(x => x.MessageId == entry.MessageId);
+            var e = list.FirstOrDefault(x => x.MessageId == messageId);
             if (e is not null)
             {
                 e.Text     = trimmed;
@@ -953,7 +1004,7 @@ public sealed partial class AppModel : ObservableObject
                   ?? _knownPeerKeys.GetValueOrDefault(peerIP);
         if (!string.IsNullOrEmpty(key))
         {
-            MessagingService.Shared.SendEditMessage(entry.MessageId, trimmed, peerIP, key, editedAt,
+            MessagingService.Shared.SendEditMessage(messageId, trimmed, peerIP, key, editedAt,
                                                     RelayIdHashForPeerKey(key));
         }
         else

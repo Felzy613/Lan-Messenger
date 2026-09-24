@@ -514,12 +514,24 @@ Use the smallest sufficient set for the change:
   The two must agree, because the peer that vanishes is always the one on the
   *other* platform. Covered by `ProtocolCapabilityTests` on both sides.
 - Do not add a message-text marker prefix without updating every call site that
-  inspects `text`. There are three — the sidebar's last-message preview, the
-  editability guard in `AppModel`, and the chat row builder in `ChatView` — and
-  one that forgets renders the raw JSON body at the user. `__FILE__:` marks an
+  inspects `text`. On macOS there are three — the sidebar's last-message preview,
+  the editability guard in `AppModel`, and the chat row builder in `ChatView`.
+  On Windows there are four — `AppModel.LastMessagePreview`, `AppModel.IsEditable`
+  (which the bubble's context menu also reads, through the row),
+  `MessageRowViewModel.From`, and `MessagingService.ReplyPreviewText`. One that
+  forgets renders the raw JSON body at the user. `__FILE__:` marks an
   attachment and `__REMOTE__:` marks a remote-desktop audit record; both keep
   the stored history format unchanged, which is the whole reason for the trick.
-  Covered by `RemoteAuditTests`.
+  A marked text that will not decode is still an audit record and still must not
+  show its JSON (`RemoteAuditRecord.SummaryOf`). Covered by `RemoteAuditTests`
+  on both platforms.
+- Do not leave `RemoteDesktopController.AppendAudit` unassigned. It is invoked
+  with `?.`, so an unassigned sink fails silently: for all of v2.0.0 every
+  Windows session raised its audit records into nothing, and no Windows thread
+  ever said that a screen had been shared. `AppModel` assigns it beside
+  `AnnounceEnd` and hops to the dispatcher, because records are raised on the
+  socket and guard threads as well as the UI thread. No test can see the
+  assignment, because `AppModel` cannot be constructed in MSTest.
 - Do not hand an empty control frame to the JSON decoder. The keepalive **is**
   an empty frame on the control sub-channel — `MediaSession` sends one every 5
   seconds, and it exists precisely because a still screen sends no video to prove

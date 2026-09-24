@@ -1486,6 +1486,10 @@ JSON object with exactly these keys:
 | `duration` | number — seconds | `session_ended` only |
 | `viewing` | `true` | only when WE were the viewer |
 
+Keys are written in sorted order (`.sortedKeys` in Swift, `JsonPropertyOrder`
+on Windows), so the same record is the same bytes on both platforms, apart from
+Swift writing `/` as `\/`.
+
 `viewing` is written only when true, so a host's record is byte-identical to one
 written before the field existed, and a reader that does not know the key treats
 the record as a host's — which is what every record predating it was. Derived

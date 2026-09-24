@@ -330,17 +330,22 @@ Command:
 
 ```powershell
 cd src\windows-native
-$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse | Select-Object -First 1
+$testDll = Get-ChildItem LanMessenger.Tests\bin -Filter LanMessenger.Tests.dll -Recurse |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+"using $($testDll.FullName) built $($testDll.LastWriteTime)"
 dotnet vstest $testDll.FullName --logger:"console;verbosity=normal"
 ```
 
-Current suite: **210 passing**, last run on real Windows hardware 2026-09-14.
+Sort by write time and print it: after a failed build the previous DLL is still
+there, and an unsorted pick runs it and reports green from stale code.
+
+Current suite: **414 passing**, last run on real Windows hardware 2026-09-23.
 
 Coverage mirrors the macOS areas: config, crypto, frame codec, history, message
 status, network interface monitoring, packet validation, presence, message
 editing, relay control, clipboard attachments, and the remote-desktop suites
 (`RemoteSessionCryptoTests` 34, `MediaFrameTests` 26, `H264BitstreamTests` 15,
-`RemoteDesktopQueueTests` 4).
+`RemoteDesktopQueueTests` 4, `RemoteAuditTests` 9).
 
 One known result: `PacketValidatorTests.SanitizeFilenameStripsPath` **fails on
 macOS and passes on Windows**, because `SanitizeFilename` uses

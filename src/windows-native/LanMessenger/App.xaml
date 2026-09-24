@@ -17,18 +17,32 @@
                     <SolidColorBrush x:Key="AppReplyAccentBrush"       Color="#25D366" />
                     <SolidColorBrush x:Key="AppReplyAccentTextBrush"   Color="#128C4E" />
                     <SolidColorBrush x:Key="AppOnlineDotStrokeBrush"   Color="#FFFFFF" />
+                    <!-- Remote-desktop audit row: the design system's flat
+                         glass-regular chip, glass-edge rim, ink and ink-secondary. -->
+                    <SolidColorBrush x:Key="AppAuditChipBrush"         Color="#9EF8FAFB" />
+                    <SolidColorBrush x:Key="AppAuditChipEdgeBrush"     Color="#1A0B141A" />
+                    <SolidColorBrush x:Key="AppAuditInkBrush"          Color="#111B21" />
+                    <SolidColorBrush x:Key="AppAuditInkSecondaryBrush" Color="#54656F" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Dark">
                     <SolidColorBrush x:Key="AppChatBackgroundBrush"    Color="#0D1418" />
                     <SolidColorBrush x:Key="AppReplyAccentBrush"       Color="#25D366" />
                     <SolidColorBrush x:Key="AppReplyAccentTextBrush"   Color="#25D366" />
                     <SolidColorBrush x:Key="AppOnlineDotStrokeBrush"   Color="#111B21" />
+                    <SolidColorBrush x:Key="AppAuditChipBrush"         Color="#9E111B21" />
+                    <SolidColorBrush x:Key="AppAuditChipEdgeBrush"     Color="#14FFFFFF" />
+                    <SolidColorBrush x:Key="AppAuditInkBrush"          Color="#E9EDEF" />
+                    <SolidColorBrush x:Key="AppAuditInkSecondaryBrush" Color="#8696A0" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
                     <SolidColorBrush x:Key="AppChatBackgroundBrush"    Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="AppReplyAccentBrush"       Color="{ThemeResource SystemColorHighlightColor}" />
                     <SolidColorBrush x:Key="AppReplyAccentTextBrush"   Color="{ThemeResource SystemColorHighlightColor}" />
                     <SolidColorBrush x:Key="AppOnlineDotStrokeBrush"   Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AppAuditChipBrush"         Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AppAuditChipEdgeBrush"     Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AppAuditInkBrush"          Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AppAuditInkSecondaryBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 

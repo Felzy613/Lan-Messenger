@@ -437,7 +437,7 @@ public sealed partial class MessageBubbleControl : UserControl
 
     private void EditMenu_Click(object sender, RoutedEventArgs e)
     {
-        if (Row is null || Row.Incoming || Row.Deleted || Row.IsFile) return;
+        if (Row is null || !Row.IsEditable) return;
         var chatPage = FindParent<ChatPage>();
         chatPage?.RequestEditMessage(Row.MessageId);
     }
@@ -453,17 +453,13 @@ public sealed partial class MessageBubbleControl : UserControl
     private void BubbleMenu_Opening(object? sender, object e)
     {
         if (Row is null) return;
-        var deleted = Row.Deleted;
-        ReplyMenu.Visibility = deleted ? Visibility.Collapsed : Visibility.Visible;
-        // Only our own outgoing text messages can be edited. An attachment's
-        // text is a local file path rather than a body, and a deleted message
-        // has no body left to replace.
-        EditMenu.Visibility = (!deleted && !Row.Incoming && !Row.IsFile
-                               && !string.IsNullOrEmpty(Row.MessageId))
-            ? Visibility.Visible : Visibility.Collapsed;
+        ReplyMenu.Visibility = Row.CanReply ? Visibility.Visible : Visibility.Collapsed;
+        // Only our own outgoing text messages can be edited; the row carries
+        // AppModel.IsEditable's answer, which is what EditMessage enforces.
+        EditMenu.Visibility = Row.IsEditable ? Visibility.Visible : Visibility.Collapsed;
         // Copy is already hidden implicitly by being meaningless on a placeholder,
         // but leave it visible — it just copies the empty deleted text.
-        DeleteForEveryoneMenu.Visibility = (!deleted && !Row.Incoming) ? Visibility.Visible : Visibility.Collapsed;
+        DeleteForEveryoneMenu.Visibility = Row.CanDeleteForEveryone ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void DeleteForMeMenu_Click(object sender, RoutedEventArgs e)
@@ -475,7 +471,7 @@ public sealed partial class MessageBubbleControl : UserControl
 
     private void DeleteForEveryoneMenu_Click(object sender, RoutedEventArgs e)
     {
-        if (Row is null || Row.Incoming) return;
+        if (Row is null || !Row.CanDeleteForEveryone) return;
         var chatPage = FindParent<ChatPage>();
         chatPage?.RequestDeleteMessage(Row.MessageId, Row.Incoming, Row.Text, Row.IsFile, Row.FilePath, Row.Timestamp, forEveryone: true);
     }

@@ -1,3 +1,4 @@
+using LanMessenger.Core.Networking.Media;
 using LanMessenger.Core.Persistence;
 using LanMessenger.Core.Services;
 using Microsoft.UI.Dispatching;
@@ -36,6 +37,22 @@ public sealed class MessageRowViewModel : INotifyPropertyChanged
     /// matches macOS's `isFirstInRun: entry.incoming != prevIncoming`.
     public bool IsFirstInRun         { get; init; }
 
+    /// True for a remote-desktop audit record. The row is then a centred system
+    /// line (RemoteAuditRowControl) rather than a bubble, and Text holds the
+    /// summary sentence, never the stored JSON.
+    public bool IsAudit              { get; init; }
+    /// The decoded record, or null when IsAudit is set but the stored text will
+    /// not decode (a record from a newer build).
+    public RemoteAuditRecord? Audit  { get; init; }
+
+    // What the context menu may offer. Decided here, from the entry, so the
+    // menu and AppModel cannot disagree: AppModel.IsEditable is the same
+    // predicate EditMessage enforces. An audit row gets none of them. It has no
+    // body to edit or quote, and no copy on the peer to delete.
+    public bool IsEditable           { get; init; }
+    public bool CanReply             => !Deleted && !IsAudit;
+    public bool CanDeleteForEveryone => !Deleted && !Incoming && !IsAudit;
+
     // Status and DeliveredViaRelay are mutable — checkmarks and the relay
     // badge update in place without rebuilding the row. DeliveredViaRelay
     // starts false and flips true once the cloud relay Worker confirms an
@@ -73,6 +90,85 @@ public sealed class MessageRowViewModel : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    // MARK: - From a history entry
+
+    /// Builds the row for allEntries[index]. The list is passed rather than the
+    /// entry alone because a reply's thumbnail and a bubble's tail both depend
+    /// on neighbouring entries.
+    public static MessageRowViewModel From(IReadOnlyList<MessageEntry> allEntries, int index)
+    {
+        var e = allEntries[index];
+        var isFile  = e.Text.StartsWith("__FILE__:");
+        var path    = isFile ? e.Text["__FILE__:".Length..] : "";
+        var isAudit = RemoteAuditRecord.IsAudit(e.Text);
+
+        // Resolve the file path of the replied-to message so the bubble can
+        // show a thumbnail instead of plain text in the reply chip.
+        string? replyFilePath = null;
+        if (e.ReplyToMessageId is { Length: > 0 } replyId)
+        {
+            var orig = allEntries.FirstOrDefault(x => x.MessageId == replyId);
+            if (orig is not null && orig.Text.StartsWith("__FILE__:"))
+                replyFilePath = orig.Text["__FILE__:".Length..];
+        }
+
+        var prevIncoming = index > 0 ? allEntries[index - 1].Incoming : !e.Incoming;
+
+        return new MessageRowViewModel
+        {
+            Sender    = e.Sender,
+            Text      = FormatText(e),
+            Incoming  = e.Incoming,
+            Timestamp = FormatTimestamp(e.Timestamp),
+            Status    = e.Status,
+            IsFile    = isFile,
+            FilePath  = path,
+            MessageId = e.MessageId,
+            ReplyToMessageId  = e.ReplyToMessageId,
+            ReplyToPreview    = e.ReplyToPreview,
+            ReplyToSender     = e.ReplyToSender,
+            ReplyFilePath     = replyFilePath,
+            DeliveredViaRelay = e.DeliveryPath == "relay",
+            Deleted           = e.Deleted,
+            Edited            = e.Edited,
+            IsFirstInRun      = e.Incoming != prevIncoming,
+            IsAudit           = isAudit,
+            Audit             = isAudit ? RemoteAuditRecord.Decode(e.Text) : null,
+            IsEditable        = AppModel.IsEditable(e),
+        };
+    }
+
+    /// The text a row shows for an entry: an attachment's file name, an audit
+    /// record's sentence, or the message body.
+    internal static string FormatText(MessageEntry e)
+    {
+        if (e.Text.StartsWith("__FILE__:")) return Path.GetFileName(e.Text["__FILE__:".Length..]);
+        if (RemoteAuditRecord.IsAudit(e.Text)) return RemoteAuditRecord.SummaryOf(e.Text);
+        return e.Text;
+    }
+
+    internal static string FormatTimestamp(double unix) =>
+        DateTimeOffset.FromUnixTimeMilliseconds((long)(unix * 1000)).LocalDateTime.ToString("h:mm tt");
+}
+
+/// <summary>
+/// Chooses a row's shape. An audit record is a fact about the conversation
+/// rather than part of it, so it gets its own template instead of a bubble with
+/// most of its parts switched off. Separate templates also keep ListView's
+/// recycling honest: containers are pooled per template, so a recycled bubble
+/// never has to unlearn being a system row, or the other way round.
+/// </summary>
+public sealed partial class MessageRowTemplateSelector : DataTemplateSelector
+{
+    public DataTemplate? MessageTemplate { get; set; }
+    public DataTemplate? AuditTemplate   { get; set; }
+
+    protected override DataTemplate SelectTemplateCore(object item) =>
+        (item is MessageRowViewModel { IsAudit: true } ? AuditTemplate : MessageTemplate)!;
+
+    protected override DataTemplate SelectTemplateCore(object item, DependencyObject container) =>
+        SelectTemplateCore(item);
 }
 
 public sealed partial class ChatPage : Page
@@ -454,7 +550,7 @@ public sealed partial class ChatPage : Page
             for (var i = 0; i < _rows.Count; i++)
             {
                 _rows[i].Status = MapStatus(entries[i].Status);
-                _rows[i].Text   = FormatRowText(entries[i]);
+                _rows[i].Text   = MessageRowViewModel.FormatText(entries[i]);
                 _rows[i].Edited = entries[i].Edited;
             }
 
@@ -462,7 +558,7 @@ public sealed partial class ChatPage : Page
             var wasAtBottom = _pinnedToBottom;
             var rowsBefore  = _rows.Count;
             for (var i = _rows.Count; i < entries.Count; i++)
-                _rows.Add(MapEntry(entries, i));
+                _rows.Add(MessageRowViewModel.From(entries, i));
             var appended = _rows.Count > rowsBefore;
 
             // Sending always jumps to the newest message, the way opening a
@@ -493,7 +589,7 @@ public sealed partial class ChatPage : Page
         // Fallback — rebuild but try to preserve scroll position.
         var verticalOffset = _scroll?.VerticalOffset ?? 0;
         _rows.Clear();
-        for (var i = 0; i < entries.Count; i++) _rows.Add(MapEntry(entries, i));
+        for (var i = 0; i < entries.Count; i++) _rows.Add(MessageRowViewModel.From(entries, i));
         DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
         {
             _scroll?.ChangeView(null, verticalOffset, null, disableAnimation: true);
@@ -620,58 +716,10 @@ public sealed partial class ChatPage : Page
         // For messages without a MessageId (legacy file system messages), fall back to timestamp+text.
         if (row.MessageId is not null && entry.MessageId is not null)
             return row.MessageId == entry.MessageId;
-        return row.Text == FormatRowText(entry) && row.Timestamp == FormatTimestamp(entry.Timestamp);
-    }
-
-    private static string FormatTimestamp(double unix) =>
-        DateTimeOffset.FromUnixTimeMilliseconds((long)(unix * 1000)).LocalDateTime.ToString("h:mm tt");
-
-    private static string FormatRowText(MessageEntry e)
-    {
-        var isFile = e.Text.StartsWith("__FILE__:");
-        return isFile ? Path.GetFileName(e.Text["__FILE__:".Length..]) : e.Text;
+        return row.Text == MessageRowViewModel.FormatText(entry) && row.Timestamp == MessageRowViewModel.FormatTimestamp(entry.Timestamp);
     }
 
     private static string MapStatus(string raw) => raw;  // pass through; bubble interprets it
-
-    private static MessageRowViewModel MapEntry(IReadOnlyList<MessageEntry> allEntries, int index)
-    {
-        var e = allEntries[index];
-        var isFile = e.Text.StartsWith("__FILE__:");
-        var path   = isFile ? e.Text["__FILE__:".Length..] : "";
-
-        // Resolve the file path of the replied-to message so the bubble can
-        // show a thumbnail instead of plain text in the reply chip.
-        string? replyFilePath = null;
-        if (e.ReplyToMessageId is { Length: > 0 } replyId)
-        {
-            var orig = allEntries.FirstOrDefault(x => x.MessageId == replyId);
-            if (orig is not null && orig.Text.StartsWith("__FILE__:"))
-                replyFilePath = orig.Text["__FILE__:".Length..];
-        }
-
-        var prevIncoming = index > 0 ? allEntries[index - 1].Incoming : !e.Incoming;
-
-        return new MessageRowViewModel
-        {
-            Sender    = e.Sender,
-            Text      = isFile ? Path.GetFileName(path) : e.Text,
-            Incoming  = e.Incoming,
-            Timestamp = FormatTimestamp(e.Timestamp),
-            Status    = e.Status,
-            IsFile    = isFile,
-            FilePath  = path,
-            MessageId = e.MessageId,
-            ReplyToMessageId  = e.ReplyToMessageId,
-            ReplyToPreview    = e.ReplyToPreview,
-            ReplyToSender     = e.ReplyToSender,
-            ReplyFilePath     = replyFilePath,
-            DeliveredViaRelay = e.DeliveryPath == "relay",
-            Deleted           = e.Deleted,
-            Edited            = e.Edited,
-            IsFirstInRun      = e.Incoming != prevIncoming,
-        };
-    }
 
     // MARK: - Composer events
 
@@ -1141,7 +1189,7 @@ public sealed partial class ChatPage : Page
                 e.MessageId is null &&
                 e.Incoming == incoming &&
                 e.Text == rowText &&
-                FormatTimestamp(e.Timestamp) == timestamp);
+                MessageRowViewModel.FormatTimestamp(e.Timestamp) == timestamp);
         }
         if (target is null) return;
 

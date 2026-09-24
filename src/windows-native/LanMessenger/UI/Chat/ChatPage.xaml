@@ -5,6 +5,20 @@
     xmlns:local="using:LanMessenger.UI.Chat"
     xmlns:ui="using:LanMessenger.UI">
 
+    <Page.Resources>
+        <DataTemplate x:Key="MessageRowTemplate" x:DataType="local:MessageRowViewModel">
+            <local:MessageBubbleControl Row="{Binding}" />
+        </DataTemplate>
+        <!-- A remote-desktop audit record: a centred system line, not a
+             bubble, and with no context menu to reply, edit or delete it. -->
+        <DataTemplate x:Key="AuditRowTemplate" x:DataType="local:MessageRowViewModel">
+            <local:RemoteAuditRowControl Row="{Binding}" />
+        </DataTemplate>
+        <local:MessageRowTemplateSelector x:Key="MessageRowTemplates"
+                                          MessageTemplate="{StaticResource MessageRowTemplate}"
+                                          AuditTemplate="{StaticResource AuditRowTemplate}" />
+    </Page.Resources>
+
     <!-- The whole thread is the drop target, not just the composer strip:
          aiming at a 48 px bar at the bottom of the window is the kind of thing
          you only get right on the second try. -->
@@ -96,12 +110,8 @@
                   SelectionMode="None"
                   IsItemClickEnabled="False"
                   Padding="12,8"
-                  Background="{ThemeResource AppChatBackgroundBrush}">
-            <ListView.ItemTemplate>
-                <DataTemplate x:DataType="local:MessageRowViewModel">
-                    <local:MessageBubbleControl Row="{Binding}" />
-                </DataTemplate>
-            </ListView.ItemTemplate>
+                  Background="{ThemeResource AppChatBackgroundBrush}"
+                  ItemTemplateSelector="{StaticResource MessageRowTemplates}">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
