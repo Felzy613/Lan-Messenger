@@ -351,12 +351,12 @@ Inner loop: `cd src/macos && swift build && swift test`. Visual proof: the Image
 
 ### M1. Tokens into Theme.swift, plus a glass helper
 Files: `UI/Theme.swift`, new `UI/Glass.swift`, `UI/GlassTokens.swift` (generated in G1).
-- [ ] `Theme` keeps its API and re-sources values from `GlassTokens`:
+- [x] `Theme` keeps its API and re-sources values from `GlassTokens`:
   - `accent` becomes `GlassTokens.brand`.
   - `incomingBubble(_:)` and `outgoingBubble(_:)` return the translucent tokens. Add a `reduceTransparency: Bool` parameter with a default so call sites compile, and pass it from `@Environment(\.accessibilityReduceTransparency)` in the bubble views, where true selects the `-fallback` token.
   - `chatBackground` becomes wallpaper and `sidebarBackground` becomes sidebar-ground.
   - Add `accentInk`, `accentInkOut`, `metaOut`, `inkSecondary`, `tickRead`, `onBrand`, `insetFill`, `accentWash`, `presenceOnline` and `presenceOffline`.
-- [ ] `UI/Glass.swift`:
+- [x] `UI/Glass.swift`:
   ```swift
   enum GlassThickness { case clear, regular, thick }
 
@@ -378,18 +378,22 @@ Files: `UI/Theme.swift`, new `UI/Glass.swift`, `UI/GlassTokens.swift` (generated
   //   plus .overlay(shape.strokeBorder(GlassTokens.glassEdge)).
   ```
 
+*As built:* the Liquid Glass branch of `glassSurface` is behind `#if compiler(>=6.2)` as well as `#available(macOS 26, *)`, because `glassEffect` only exists in the macOS 26 SDK and CI's `macos-15` image may build with an older Xcode. `Glass.swift` also holds `BubbleShape` and a `bubbleSurface(incoming:tail:)` modifier (translucent fill honouring Reduce Transparency, the rim, the bubble shadow on the fill only so the text is not shadowed), used by every bubble type.
+
 **Done when** it builds and tests pass, and the ImageRenderer output of `MessageBubbleView` and `ConversationRowView` shows only colour changes.
 
 ### M2. Bubbles and thread content
 Files: `Chat/MessageBubbleView.swift`, `Chat/MediaBubbleView.swift`, `Chat/ReplyChipView.swift`, `Chat/BubbleStatusView.swift`, `TypingIndicatorView.swift`, `RemoteDesktop/RemoteAuditRowView.swift`.
-- [ ] Bubble fills use the translucent tokens, honouring Reduce Transparency. Add the rim: `.overlay(UnevenRoundedRectangle(…same radii…).strokeBorder(LinearGradient(colors: [GlassTokens.glassRim, GlassTokens.glassEdge], startPoint: .top, endPoint: .center), lineWidth: 1))`. Keep `shadow-bubble` as `.shadow(color: .black.opacity(0.13), radius: 0.75, y: 1)` from the tokens.
-- [ ] Meta text: `.foregroundStyle(.secondary)` inside bubbles becomes `Theme.inkSecondary` when incoming and `Theme.metaOut` when outgoing. `editedMarker` uses the same, not `.tertiary`. `relayBadge` drops `.opacity(0.75)`.
-- [ ] `BubbleStatusView`: read uses `Theme.tickRead`, sent and delivered use the meta colour of the bubble it sits in (pass `incoming: Bool` or an explicit colour), and failed uses `danger-ink`.
-- [ ] Reply chip: `insetFill`, radius 6; the sender in `accentInk` or `accentInkOut` by side; the preview in the meta colour.
-- [ ] File bubble: the doc icon in `accentInk` or `accentInkOut`. The Open pill is `accentWash` with `accentInk` text; the Show pill is `insetFill` with the meta colour.
-- [ ] `MediaBubbleView`: `bubbleBackground` radius 14 becomes 16 (`radius-bubble`), and the media clip stays 12.
-- [ ] `TypingBubbleView`: the translucent bubble plus the rim, with dots in `inkSecondary`.
-- [ ] `RemoteAuditRowView`: wrap the existing content in a centred capsule, `.glassSurface(.regular, in: Capsule())` without a float shadow. Text in `inkSecondary`, the summary's actor in `ink` semibold. Remove the `.opacity(0.6)` / `.opacity(0.75)` dimming. The wording logic (`viewing`) is untouched.
+- [x] Bubble fills use the translucent tokens, honouring Reduce Transparency. Add the rim: `.overlay(UnevenRoundedRectangle(…same radii…).strokeBorder(LinearGradient(colors: [GlassTokens.glassRim, GlassTokens.glassEdge], startPoint: .top, endPoint: .center), lineWidth: 1))`. Keep `shadow-bubble` as `.shadow(color: .black.opacity(0.13), radius: 0.75, y: 1)` from the tokens.
+- [x] Meta text: `.foregroundStyle(.secondary)` inside bubbles becomes `Theme.inkSecondary` when incoming and `Theme.metaOut` when outgoing. `editedMarker` uses the same, not `.tertiary`. `relayBadge` drops `.opacity(0.75)`.
+- [x] `BubbleStatusView`: read uses `Theme.tickRead`, sent and delivered use the meta colour of the bubble it sits in (pass `incoming: Bool` or an explicit colour), and failed uses `danger-ink`.
+- [x] Reply chip: `insetFill`, radius 6; the sender in `accentInk` or `accentInkOut` by side; the preview in the meta colour.
+- [x] File bubble: the doc icon in `accentInk` or `accentInkOut`. The Open pill is `accentWash` with `accentInk` text; the Show pill is `insetFill` with the meta colour.
+- [x] `MediaBubbleView`: `bubbleBackground` radius 14 becomes 16 (`radius-bubble`), and the media clip stays 12.
+- [x] `TypingBubbleView`: the translucent bubble plus the rim, with dots in `inkSecondary`.
+- [x] `RemoteAuditRowView`: wrap the existing content in a centred capsule, `.glassSurface(.regular, in: Capsule())` without a float shadow. Text in `inkSecondary`, the summary's actor in `ink` semibold. Remove the `.opacity(0.6)` / `.opacity(0.75)` dimming. The wording logic (`viewing`) is untouched.
+
+*Verified:* ImageRenderer renders of text, file, deleted and typing bubbles in light and dark (a temporary harness test, not committed). `RemoteAuditRowView` does not render through ImageRenderer on macOS 26, since `glassEffect` samples a live backdrop; it has to be checked in the running app (M6).
 
 **Done when** the ImageRenderer renders of each view, in light and dark, match `components/MessageBubble`, `StatusTicks`, `FileBubble`, `MediaBubble`, `ReplyChip`, `TypingIndicator` and `RemoteAuditRow`.
 

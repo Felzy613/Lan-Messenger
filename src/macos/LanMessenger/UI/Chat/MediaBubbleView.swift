@@ -57,9 +57,8 @@ struct MediaBubbleView: View {
     private var url: URL { URL(fileURLWithPath: path) }
     private var filename: String { url.lastPathComponent }
 
-    private var bubbleBackground: Color {
-        entry.incoming ? Theme.incomingBubble(colorScheme) : Theme.outgoingBubble(colorScheme)
-    }
+    /// The bubble's meta colour: time, file name, ticks.
+    private var meta: Color { Theme.meta(incoming: entry.incoming) }
 
     // Cap the inline rendering so a 4K image doesn't take over the chat list.
     private let maxBubbleWidth: CGFloat = 280
@@ -103,14 +102,8 @@ struct MediaBubbleView: View {
                 mediaTile
                 footer
             }
-            .padding(6)
-            .background(bubbleBackground,
-                        in: UnevenRoundedRectangle(
-                            topLeadingRadius: 16,
-                            bottomLeadingRadius: entry.incoming ? (isFirstInRun ? 4 : 16) : 16,
-                            bottomTrailingRadius: entry.incoming ? 16 : (isFirstInRun ? 4 : 16),
-                            topTrailingRadius: 16
-                        ))
+            .padding(4)
+            .bubbleSurface(incoming: entry.incoming, tail: isFirstInRun)
             .frame(maxWidth: maxBubbleWidth + 12)
             .contextMenu { bubbleContextMenu }
             // Drag the bubble straight out to Finder, Mail, or any app that
@@ -134,8 +127,10 @@ struct MediaBubbleView: View {
                 preview: preview,
                 sender: entry.replyToSender,
                 filePath: replyFilePath,
+                incoming: entry.incoming,
                 onTap: onTapReplyTarget
             )
+            .padding([.horizontal, .top], 2)
             .padding(.bottom, 4)
         }
     }
@@ -153,15 +148,21 @@ struct MediaBubbleView: View {
                 // 220×160 fixed frame from placeholderTile).  No max-width/height
                 // constraint needed here — removing it eliminates the layout
                 // ambiguity that caused the hang-report AG cycle.
+                // radius-media: 16 - 4 inset, concentric with the bubble.
                 tileContent
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: GlassTokens.Radius.media))
                 if kind == .video {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 36))
-                        .foregroundStyle(.white)
-                        .shadow(radius: 2)
-                        .padding(10)
-                        .accessibilityHidden(true)
+                    // A 48pt play disc on scrim: legible over any frame.
+                    ZStack {
+                        Circle().fill(GlassTokens.scrim)
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(GlassTokens.inkInverse)
+                            .offset(x: 1)
+                    }
+                    .frame(width: 48, height: 48)
+                    .padding(10)
+                    .accessibilityHidden(true)
                 }
             }
         }
@@ -196,15 +197,15 @@ struct MediaBubbleView: View {
     private func placeholderTile(systemImage: String, label: String) -> some View {
         ZStack {
             Rectangle()
-                .fill(Color.gray.opacity(0.18))
+                .fill(Theme.insetFill)
             VStack(spacing: 6) {
                 Image(systemName: systemImage)
                     .font(.system(size: 28))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(meta)
                 if !label.isEmpty {
                     Text(label)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(GlassTokens.Typography.caption)
+                        .foregroundStyle(meta)
                         .lineLimit(1)
                 }
             }
@@ -216,13 +217,13 @@ struct MediaBubbleView: View {
     private var footer: some View {
         HStack(spacing: 4) {
             Text(filename)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .font(GlassTokens.Typography.caption)
+                .foregroundStyle(meta)
                 .lineLimit(1)
             Spacer(minLength: 4)
             Text(formattedTime)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .font(GlassTokens.Typography.meta)
+                .foregroundStyle(meta)
             if !entry.incoming { statusIcon }
         }
         .padding(.horizontal, 4)
@@ -252,20 +253,21 @@ struct MediaBubbleView: View {
         HStack(spacing: 10) {
             Image(systemName: kind == .video ? "video.slash" : "photo.badge.exclamationmark")
                 .font(.system(size: 22))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(meta)
             VStack(alignment: .leading, spacing: 2) {
                 Text(filename)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(GlassTokens.Typography.fileName)
+                    .foregroundStyle(Theme.ink)
                     .lineLimit(1)
                 Text("File no longer available")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(GlassTokens.Typography.caption)
+                    .foregroundStyle(meta)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 14))
-        .frame(maxWidth: 320)
+        .bubbleSurface(incoming: entry.incoming, tail: isFirstInRun)
+        .frame(maxWidth: GlassTokens.Size.fileBubbleMax)
     }
 
     // MARK: - Preview panel
@@ -299,7 +301,7 @@ struct MediaBubbleView: View {
     }
 
     private var statusIcon: some View {
-        BubbleStatusView(status: entry.status)
+        BubbleStatusView(status: entry.status, incoming: entry.incoming)
     }
 
     // "Delete for Me" is always offered when a delete handler is wired up.

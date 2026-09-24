@@ -11,6 +11,9 @@ struct ReplyChipView: View {
     // Local absolute path of the replied-to file, if any. Set by ChatView after
     // looking up the original entry by replyToMessageId.
     let filePath: String?
+    /// Which side the bubble holding the chip is on: the sender takes accent-ink
+    /// or accent-ink-out, the preview the bubble's meta colour.
+    var incoming: Bool = true
     var onTap: (() -> Void)? = nil
 
     @State private var thumbnail: NSImage? = nil
@@ -32,7 +35,7 @@ struct ReplyChipView: View {
 
     private var chipContent: some View {
         HStack(spacing: 6) {
-            Rectangle().fill(Theme.accent).frame(width: 3)
+            RoundedRectangle(cornerRadius: 1.5).fill(Theme.accent).frame(width: 3)
             if let path = filePath, !path.isEmpty {
                 mediaReplyRow(path: path)
             } else {
@@ -42,7 +45,7 @@ struct ReplyChipView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        .background(Theme.insetFill, in: RoundedRectangle(cornerRadius: GlassTokens.Radius.chip))
     }
 
     @ViewBuilder
@@ -57,31 +60,31 @@ struct ReplyChipView: View {
                             .resizable()
                             .scaledToFill()
                             .frame(width: 36, height: 36)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .clipShape(RoundedRectangle(cornerRadius: GlassTokens.Radius.tail))
                             .overlay(
                                 mediaKind == .video
                                     ? AnyView(
                                         Image(systemName: "play.fill")
                                             .font(.system(size: 11))
-                                            .foregroundStyle(.white)
+                                            .foregroundStyle(GlassTokens.inkInverse)
                                             .shadow(radius: 1)
                                     )
                                     : AnyView(EmptyView())
                             )
                     } else {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.gray.opacity(0.18))
+                            RoundedRectangle(cornerRadius: GlassTokens.Radius.tail)
+                                .fill(Theme.insetFill)
                                 .frame(width: 36, height: 36)
                             Image(systemName: mediaKind == .video ? "play.fill" : "photo")
                                 .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Theme.meta(incoming: incoming))
                         }
                     }
                 case .other:
                     Image(systemName: "doc.fill")
                         .font(.system(size: 20))
-                        .foregroundStyle(Theme.accent)
+                        .foregroundStyle(Theme.accentInk(incoming: incoming))
                         .frame(width: 36, height: 36)
                 }
             }
@@ -93,11 +96,11 @@ struct ReplyChipView: View {
     private var textReplyStack: some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(senderLabel)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Theme.accent)
+                .font(GlassTokens.Typography.captionStrong)
+                .foregroundStyle(Theme.accentInk(incoming: incoming))
             Text(preview)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .font(GlassTokens.Typography.caption)
+                .foregroundStyle(Theme.meta(incoming: incoming))
                 .lineLimit(1)
         }
     }
