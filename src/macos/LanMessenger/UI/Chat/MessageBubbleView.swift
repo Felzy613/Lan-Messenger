@@ -15,6 +15,9 @@ struct MessageBubbleView: View {
     var onDelete: ((Bool) -> Void)? = nil
     /// Called when the user picks "Edit" — the composer takes over from there.
     var onEdit: (() -> Void)? = nil
+    /// False in a legacy thread, which has no identity key behind it:
+    /// "Delete for Everyone" would have nobody to tell.
+    var canReachPeer: Bool = true
     @Environment(\.colorScheme) var colorScheme
     // Tracks whether the received file still exists on disk (checked asynchronously).
     @State private var fileExists = false
@@ -67,7 +70,8 @@ struct MessageBubbleView: View {
                     onReply: onReply,
                     onTapReplyTarget: onTapReplyTarget,
                     replyFilePath: replyFilePath,
-                    onDelete: onDelete
+                    onDelete: onDelete,
+                    canReachPeer: canReachPeer
                 )
             case .other:
                 fileBubble(path: path)
@@ -363,7 +367,7 @@ struct MessageBubbleView: View {
             Button(role: .destructive) { onDelete?(false) } label: {
                 Label("Delete for Me", systemImage: "trash")
             }
-            if allowDeleteForEveryone, entry.messageId != nil {
+            if allowDeleteForEveryone, canReachPeer, entry.messageId != nil {
                 Button(role: .destructive) { onDelete?(true) } label: {
                     Label("Delete for Everyone", systemImage: "trash.fill")
                 }

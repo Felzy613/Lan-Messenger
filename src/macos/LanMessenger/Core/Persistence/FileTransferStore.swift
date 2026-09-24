@@ -1,7 +1,8 @@
 import Foundation
 
 // Tracks in-progress incoming file transfers.
-// Each transfer is identified by (senderIP, transferId).
+// Each transfer is identified by (senderIP, transferId) — the connection it is
+// arriving on. Which conversation it belongs to is `senderPublicKeyB64`.
 
 struct IncomingTransfer {
     let transferId: String
@@ -17,9 +18,11 @@ final class FileTransferStore {
 
     static let shared = FileTransferStore()
 
-    // Outgoing file queue per conversation (keyed by peer IP).
+    // Outgoing file queue per peer, keyed by the peer's identity key — never
+    // by address. A file queued while a peer is away waits for that device,
+    // and the address it will be sent to is looked up when it is sent.
     private(set) var outgoingQueues: [String: [OutgoingFileItem]] = [:]
-    private(set) var activeOutgoing: Set<String> = []   // peer IPs with an active transfer
+    private(set) var activeOutgoing: Set<String> = []   // peer keys with an active transfer
 
     // Incoming transfers in progress: (senderIP, transferId) → state
     private(set) var incoming: [TransferKey: IncomingTransfer] = [:]
@@ -112,22 +115,22 @@ final class FileTransferStore {
         let queuedAt: Date
     }
 
-    func enqueue(path: String, filename: String, forPeerIP ip: String) {
+    func enqueue(path: String, filename: String, forPeer peer: String) {
         let item = OutgoingFileItem(path: path, filename: filename, queuedAt: Date())
-        var queue = outgoingQueues[ip] ?? []
+        var queue = outgoingQueues[peer] ?? []
         queue.append(item)
-        outgoingQueues[ip] = queue
+        outgoingQueues[peer] = queue
     }
 
-    func markTransferStarted(peerIP: String) {
-        activeOutgoing.insert(peerIP)
+    func markTransferStarted(peer: String) {
+        activeOutgoing.insert(peer)
     }
 
-    func markTransferFinished(peerIP: String, success: Bool) {
-        activeOutgoing.remove(peerIP)
-        if success, var queue = outgoingQueues[peerIP], !queue.isEmpty {
+    func markTransferFinished(peer: String, success: Bool) {
+        activeOutgoing.remove(peer)
+        if success, var queue = outgoingQueues[peer], !queue.isEmpty {
             queue.removeFirst()
-            outgoingQueues[peerIP] = queue.isEmpty ? nil : queue
+            outgoingQueues[peer] = queue.isEmpty ? nil : queue
         }
     }
 

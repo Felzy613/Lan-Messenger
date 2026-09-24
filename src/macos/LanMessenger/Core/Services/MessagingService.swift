@@ -11,12 +11,49 @@ final class MessagingService {
 
     weak var coordinator: NetworkCoordinator?
 
-    // Called by AppModel to update UI state.
-    var onMessageReceived: ((String, MessageEntry) -> Void)?      // peerIP, entry
-    var onStatusUpdate: ((String, String, String) -> Void)?       // peerIP, messageId, status
-    var onTypingUpdate: ((String, String, Bool) -> Void)?         // peerIP, senderName, active
-    var onMessageDeleted: ((String, String) -> Void)?             // peerIP, messageId
-    var onMessageEdited: ((String, String, String, Double) -> Void)?  // peerIP, messageId, newText, editedAt
+    // Called by AppModel to update UI state. Every callback names the
+    // conversation by its id (`PeerID`) — the peer's identity key — never by
+    // the address a packet happened to arrive from. DHCP hands the same
+    // addresses to different machines, so an address is not a person.
+    var onMessageReceived: ((String, MessageEntry) -> Void)?      // peerID, entry
+    var onStatusUpdate: ((String, String, String) -> Void)?       // peerID, messageId, status
+    var onTypingUpdate: ((String, String, Bool) -> Void)?         // peerID, senderName, active
+    var onMessageDeleted: ((String, String) -> Void)?             // peerID, messageId
+    var onMessageEdited: ((String, String, String, Double) -> Void)?  // peerID, messageId, newText, editedAt
+
+    /// Whether `ip` is an address the device holding `key` has been seen at.
+    ///
+    /// The gate for packets that only *claim* a sender — typing, receipts and
+    /// `delete_message` are not encrypted, so their `sender_public_key_b64` is
+    /// whatever the sender typed. Encrypted packets prove the key by decrypting
+    /// and do not need this. Filed by source address, those packets at least
+    /// needed a completed TCP connection from that address; filed by a bare
+    /// claimed key they would need nothing at all, since public keys are
+    /// public. Binding the claim to an address that key is known at keeps them
+    /// exactly as hard to forge as before, and adds the identity check on top.
+    ///
+    /// Unset means "accept", so the service stays usable without an AppModel.
+    var isBoundAddress: ((_ key: String, _ ip: String) -> Bool)?
+
+    /// A message decrypted under `key` arrived from `ip` — the device holding
+    /// that key is there now. How a peer whose discovery beacons never reach
+    /// us still gets its replies: the address is learned from traffic that
+    /// proved who sent it, never from a claim. Fresh messages only; a
+    /// duplicate may be a replay.
+    var onPeerAddressProven: ((_ key: String, _ ip: String, _ sender: String) -> Void)?
+
+    /// The conversation an unencrypted packet belongs to, or nil to drop it.
+    private func claimedPeer(_ key: String, fromIP ip: String, _ what: String) -> String? {
+        guard PeerID.isKey(key) else {
+            NetLogger.info("Recv", "\(what) from \(ip) dropped — no usable sender key")
+            return nil
+        }
+        if let bound = isBoundAddress, !bound(key, ip) {
+            NetLogger.info("Recv", "\(what) from \(ip) dropped — not an address \(key.prefix(8)) is known at")
+            return nil
+        }
+        return key
+    }
     // Fired once the cloud relay Worker confirms an outgoing message was
     // actually stored — not when the upload is merely attempted. Lets the UI
     // show the "via relay" badge promptly instead of only after the
@@ -87,9 +124,12 @@ final class MessagingService {
             replyToPreview: replyPreview,
             replyToSender: replySender
         )
-        HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+        // Filed under the recipient's identity key — the same key it is about
+        // to be encrypted to — never under the address it happens to be sent to.
+        let peer = peerPublicKeyB64
+        HistoryStore.shared.append(entry: entry, forPeer: peer)
         HistoryStore.shared.save()
-        onMessageReceived?(ip, entry)
+        onMessageReceived?(peer, entry)
 
         guard let (nonceB64, ctB64) = try? SessionCrypto.encryptForPeer(
             myPrivate: KeyManager.shared.privateKey,
@@ -97,7 +137,7 @@ final class MessagingService {
             plaintext: Data(text.utf8),
             aad: aad
         ) else {
-            updateStatus("Failed", forMessageId: messageId, peerIP: ip)
+            updateStatus("Failed", forMessageId: messageId, peer: peer)
             return
         }
 
@@ -117,6 +157,18 @@ final class MessagingService {
             if let s = replySender { packet["reply_to_sender"] = s }
         }
 
+        // No live address means the peer is not on the LAN right now. Queue and
+        // relay straight away rather than dialling an address remembered from
+        // earlier: that address may belong to somebody else by now.
+        guard !ip.isEmpty else {
+            NetLogger.info("Send", "peer \(peer.prefix(8)) not on the LAN — queueing msgId=\(messageId) for relay/redelivery")
+            queuePendingMessage(messageId: messageId, text: text, peerPublicKeyB64: peerPublicKeyB64,
+                                peerRelayIdHash: peerRelayIdHash, timestamp: timestamp)
+            updateStatus("Queued", forMessageId: messageId, peer: peer)
+            HistoryStore.shared.save()
+            return
+        }
+
         sendJSON(packet, toIP: ip, port: tcpPort) { [weak self] success in
             guard let self else { return }
             let status = success ? "Sent" : "Queued"
@@ -132,7 +184,7 @@ final class MessagingService {
                     timestamp: timestamp
                 )
             }
-            self.updateStatus(status, forMessageId: messageId, peerIP: ip)
+            self.updateStatus(status, forMessageId: messageId, peer: peer)
             HistoryStore.shared.save()
         }
     }
@@ -148,14 +200,14 @@ final class MessagingService {
 
     // MARK: - Send typing indicator
 
-    func sendTyping(active: Bool, toPeerIP ip: String, peerPublicKeyB64: String) {
+    func sendTyping(active: Bool, toPeerIP ip: String, peerPublicKeyB64 peer: String) {
         let now = Date()
-        if !active, lastTypingState[ip] == false { return }
+        if !active, lastTypingState[peer] == false { return }
         if active {
-            if lastTypingState[ip] == true, let sent = typingSentAt[ip], now.timeIntervalSince(sent) < 3 { return }
+            if lastTypingState[peer] == true, let sent = typingSentAt[peer], now.timeIntervalSince(sent) < 3 { return }
         }
-        lastTypingState[ip] = active
-        typingSentAt[ip] = now
+        lastTypingState[peer] = active
+        typingSentAt[peer] = now
 
         let packet: [String: Any] = [
             "type": "typing",
@@ -384,7 +436,7 @@ final class MessagingService {
                 self.pendingInFlight.remove(msgId)
                 guard success else { return }
                 self.pendingLastTry.removeValue(forKey: msgId)
-                self.updateStatus("Sent", forMessageId: msgId, peerIP: ip)
+                self.updateStatus("Sent", forMessageId: msgId, peer: peerPublicKeyB64)
                 // Note whether this message had already landed on the relay
                 // before removing it from the queue — if so, clean up the
                 // Worker copy now that direct LAN delivery beat it there.
@@ -407,16 +459,11 @@ final class MessagingService {
     // MARK: - Private receive handlers
 
     private func handleText(_ pkt: TextPacket, fromIP ip: String) {
-        // Duplicate suppression: heartbeat-driven queue retries (and a sender
-        // whose sent_receipt got lost) can legitimately re-send a message we
-        // already have. Don't append it twice — but do re-acknowledge, because
-        // a re-send means the sender never saw our first receipt.
-        if HistoryStore.shared.entries(forPeerIP: ip).contains(where: { $0.messageId == pkt.messageId }) {
-            NetLogger.info("Recv", "duplicate text msgId=\(pkt.messageId) peer=\(ip) — re-sending receipt only")
-            sendReceipt(type: "sent_receipt", messageId: pkt.messageId, toPeerIP: ip)
-            return
-        }
-
+        // Decrypt FIRST. Opening under the claimed key is what proves who sent
+        // it — after this, `pkt.senderPublicKeyB64` is an identity rather than
+        // a claim, and it is the conversation the message belongs to. Checking
+        // for a duplicate before this answered a forged packet naming a real
+        // message id with a receipt, confirming to a stranger that we had it.
         let aad = Data(pkt.messageId.utf8)
         guard let plaintext = try? SessionCrypto.decryptFromPeer(
             myPrivate: KeyManager.shared.privateKey,
@@ -425,14 +472,26 @@ final class MessagingService {
             ciphertextB64: pkt.ciphertext,
             aad: aad
         ) else { return }
+        let peer = pkt.senderPublicKeyB64
 
+        // Duplicate suppression: heartbeat-driven queue retries (and a sender
+        // whose sent_receipt got lost) can legitimately re-send a message we
+        // already have. Don't append it twice — but do re-acknowledge, because
+        // a re-send means the sender never saw our first receipt.
+        if HistoryStore.shared.entries(forPeer: peer).contains(where: { $0.messageId == pkt.messageId }) {
+            NetLogger.info("Recv", "duplicate text msgId=\(pkt.messageId) peer=\(ip) — re-sending receipt only")
+            sendReceipt(type: "sent_receipt", messageId: pkt.messageId, toPeerIP: ip)
+            return
+        }
+
+        onPeerAddressProven?(peer, ip, pkt.sender)
         let text = String(data: plaintext, encoding: .utf8) ?? ""
 
         // If the packet didn't include a preview but we have the original in history, fill it in.
         var preview = pkt.replyToPreview
         var replyToSender = pkt.replyToSender
         if let replyId = pkt.replyToMessageId, preview == nil {
-            if let orig = HistoryStore.shared.entries(forPeerIP: ip).first(where: { $0.messageId == replyId }) {
+            if let orig = HistoryStore.shared.entries(forPeer: peer).first(where: { $0.messageId == replyId }) {
                 preview = Self.replyPreviewText(for: orig)
                 replyToSender = orig.sender
             }
@@ -450,28 +509,32 @@ final class MessagingService {
             replyToPreview: preview,
             replyToSender: replyToSender
         )
-        HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+        HistoryStore.shared.append(entry: entry, forPeer: peer)
         HistoryStore.shared.save()
-        onMessageReceived?(ip, entry)
+        onMessageReceived?(peer, entry)
 
         // Emit typing=false and sent_receipt (delivered)
-        onTypingUpdate?(ip, pkt.sender, false)
+        onTypingUpdate?(peer, pkt.sender, false)
         sendReceipt(type: "sent_receipt", messageId: pkt.messageId, toPeerIP: ip)
     }
 
     private func handleTyping(_ pkt: TypingPacket, fromIP ip: String) {
-        onTypingUpdate?(ip, pkt.sender, pkt.active)
+        guard let peer = claimedPeer(pkt.senderPublicKeyB64, fromIP: ip, "typing") else { return }
+        onTypingUpdate?(peer, pkt.sender, pkt.active)
     }
 
     // Applies an inbound "delete for everyone" notice: marks the matching
     // history entry as deleted (clearing text and reply preview fields) and
     // notifies the UI so the in-memory copy is updated to match.
     private func handleDeleteMessage(_ pkt: ReceiptPacket, fromIP ip: String) {
-        guard HistoryStore.shared.markDeleted(messageId: pkt.messageId, peerIP: ip, requireIncoming: true) else {
+        guard let peer = claimedPeer(pkt.senderPublicKeyB64, fromIP: ip, "delete_message") else { return }
+        // Scoped to the sender's own conversation AND to its incoming messages:
+        // a device can only withdraw what that same device said.
+        guard HistoryStore.shared.markDeleted(messageId: pkt.messageId, peer: peer, requireIncoming: true) else {
             NetLogger.info("Delete", "ignored inbound delete msgId=\(pkt.messageId) peer=\(ip) — no deletable incoming message")
             return
         }
-        onMessageDeleted?(ip, pkt.messageId)
+        onMessageDeleted?(peer, pkt.messageId)
     }
 
     // Applies an inbound edit: replaces the stored text of the peer's own
@@ -491,10 +554,13 @@ final class MessagingService {
             return
         }
         let newText = String(data: plaintext, encoding: .utf8) ?? ""
+        // Decrypted, so the key is proven: only this device's own conversation
+        // is searched, and within it only its incoming messages.
+        let peer = pkt.senderPublicKeyB64
 
         guard HistoryStore.shared.applyEdit(
             messageId: pkt.messageId,
-            peerIP: ip,
+            peer: peer,
             newText: newText,
             editedAt: pkt.timestamp,
             requireIncoming: true
@@ -503,56 +569,57 @@ final class MessagingService {
             return
         }
         NetLogger.info("Recv", "edit_message applied msgId=\(pkt.messageId) peer=\(ip)")
-        onMessageEdited?(ip, pkt.messageId, newText, pkt.timestamp)
+        onMessageEdited?(peer, pkt.messageId, newText, pkt.timestamp)
     }
 
     /// Applies a relay control record. Routed through the same HistoryStore
     /// entry points as the LAN `edit_message` / `delete_message` packets, so the
     /// `requireIncoming` gate applies identically: a peer can only edit or
     /// delete their own messages, never ours.
-    private func applyRelayControl(_ envelope: RelayControlEnvelope, fromIP ip: String) {
+    private func applyRelayControl(_ envelope: RelayControlEnvelope, peer: String) {
         switch envelope.op {
         case .edit:
             guard let newText = envelope.text,
                   HistoryStore.shared.applyEdit(
-                    messageId: envelope.target, peerIP: ip, newText: newText,
+                    messageId: envelope.target, peer: peer, newText: newText,
                     editedAt: envelope.at, requireIncoming: true) else {
-                NetLogger.info("Relay", "ignored relayed edit target=\(envelope.target) peer=\(ip) — no editable incoming message")
+                NetLogger.info("Relay", "ignored relayed edit target=\(envelope.target) peer=\(peer.prefix(8)) — no editable incoming message")
                 return
             }
-            NetLogger.info("Relay", "applied relayed edit target=\(envelope.target) peer=\(ip)")
-            onMessageEdited?(ip, envelope.target, newText, envelope.at)
+            NetLogger.info("Relay", "applied relayed edit target=\(envelope.target) peer=\(peer.prefix(8))")
+            onMessageEdited?(peer, envelope.target, newText, envelope.at)
 
         case .delete:
             guard HistoryStore.shared.markDeleted(
-                    messageId: envelope.target, peerIP: ip, requireIncoming: true) else {
-                NetLogger.info("Relay", "ignored relayed delete target=\(envelope.target) peer=\(ip) — no deletable incoming message")
+                    messageId: envelope.target, peer: peer, requireIncoming: true) else {
+                NetLogger.info("Relay", "ignored relayed delete target=\(envelope.target) peer=\(peer.prefix(8)) — no deletable incoming message")
                 return
             }
-            NetLogger.info("Relay", "applied relayed delete target=\(envelope.target) peer=\(ip)")
-            onMessageDeleted?(ip, envelope.target)
+            NetLogger.info("Relay", "applied relayed delete target=\(envelope.target) peer=\(peer.prefix(8))")
+            onMessageDeleted?(peer, envelope.target)
         }
     }
 
     private func handleReceipt(_ pkt: ReceiptPacket, fromIP ip: String) {
+        guard let peer = claimedPeer(pkt.senderPublicKeyB64, fromIP: ip, pkt.type) else { return }
         // sent_receipt = the peer has received the message (two grey ticks)
         // read_receipt = the peer has read it (two blue ticks)
         let status = pkt.type == "read_receipt" ? MessageStatus.read : MessageStatus.delivered
         // updateStatus is now rank-aware (see HistoryStore + MessageStatus): a
         // late "Sent" dispatch from the sender's own TCP-write completion
         // cannot regress this, and a "Delivered" cannot regress a prior "Read".
-        updateStatus(status, forMessageId: pkt.messageId, peerIP: ip)
+        updateStatus(status, forMessageId: pkt.messageId, peer: peer)
     }
 
     // MARK: - Helpers
 
-    private func updateStatus(_ status: String, forMessageId id: String, peerIP: String) {
+    private func updateStatus(_ status: String, forMessageId id: String, peer: String) {
         // Only notify the UI when the rank-aware HistoryStore actually applied
         // the change — otherwise the OnStatusUpdate listener would re-set the
         // status on its in-memory copy and the message would regress.
-        guard HistoryStore.shared.updateStatus(status, forMessageId: id, peerIP: peerIP) else { return }
+        guard HistoryStore.shared.updateStatus(status, forMessageId: id, peer: peer) else { return }
         HistoryStore.shared.save()
-        onStatusUpdate?(peerIP, id, status)
+        onStatusUpdate?(peer, id, status)
     }
 
     private func queuePendingMessage(
@@ -652,13 +719,15 @@ final class MessagingService {
     /// Decrypts and processes a message that arrived via the cloud relay.
     /// The ciphertext was produced by the sender and is decoded here exactly
     /// like a normal LAN text packet. Call from AppModel after fetchPending().
-    func handleRelayMessage(_ msg: RelayPendingMessage, fromStoredIP ip: String) {
-        // Global dedup: this message's messageId may already be filed under a
-        // *different* IP bucket than `ip` resolves to on this poll — peer IP
-        // resolution depends on ephemeral state (live peers, contacts,
-        // session cache) that can change between polls. A per-IP check here
-        // would miss that and re-append the message. If we already have it,
-        // just clean up the mailbox so it doesn't linger for the full TTL.
+    /// `ip` is only where to send the delivery receipt — the live address of
+    /// the sender if they are on the LAN, empty if not. The message is filed
+    /// under the sender's key, which decrypting it proves.
+    func handleRelayMessage(_ msg: RelayPendingMessage, replyAddress ip: String) {
+        // Global dedup: the same message may already have arrived over the LAN,
+        // and history written before conversations were filed by key can hold
+        // it under an address-named bucket this key's thread never reads. If we
+        // already have it, just clean up the mailbox so it doesn't linger for
+        // the full TTL.
         if HistoryStore.shared.containsMessageId(msg.messageId) {
             NetLogger.info("Relay", "duplicate relay msg \(msg.messageId) — already in history, deleting from mailbox only")
             Task { await RelayClient.shared.delete(messageId: msg.messageId) }
@@ -680,8 +749,9 @@ final class MessagingService {
 
         // A control record carries an edit or delete the sender made while we
         // were offline. It is never a chat message and must not become a bubble.
+        let peer = msg.senderPublicKeyB64
         if let envelope = RelayControlEnvelope.decode(text) {
-            applyRelayControl(envelope, fromIP: ip)
+            applyRelayControl(envelope, peer: peer)
             // Applied or refused, the record is spent: leaving it would replay
             // on every poll until the Worker's 72-hour TTL expires it.
             Task { await RelayClient.shared.delete(messageId: msg.messageId) }
@@ -698,14 +768,16 @@ final class MessagingService {
             readReceiptSent: false,
             deliveryPath: "relay"
         )
-        HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+        HistoryStore.shared.append(entry: entry, forPeer: peer)
         HistoryStore.shared.save()
-        onMessageReceived?(ip, entry)
-        NetLogger.info("Relay", "delivered relay msg \(msg.messageId) from \(msg.senderUsername) via ip=\(ip)")
+        onMessageReceived?(peer, entry)
+        NetLogger.info("Relay", "delivered relay msg \(msg.messageId) from \(msg.senderUsername) peer=\(peer.prefix(8))")
 
-        // Send sent_receipt so the sender sees "Delivered" for their relayed message.
-        // Only attempt when the IP is a real address (not a synthetic "relay-…" placeholder).
-        if !ip.hasPrefix("relay-") {
+        // Send sent_receipt so the sender sees "Delivered" for their relayed
+        // message — only when they are on the LAN right now. There is no
+        // longer a placeholder address to guard against: an empty one means
+        // "not here".
+        if !ip.isEmpty {
             sendReceipt(type: "sent_receipt", messageId: msg.messageId, toPeerIP: ip)
         }
 
@@ -717,6 +789,13 @@ final class MessagingService {
 
     private func sendJSON(_ dict: [String: Any], toIP ip: String, port: Int, completion: ((Bool) -> Void)?) {
         guard let frame = try? FrameCodec.encodeDict(dict) else { completion?(false); return }
+        // An empty address is a peer that is not on the LAN, and must fail
+        // rather than reach `inet_addr("")` — which is 0.0.0.0, and connecting
+        // to that reaches this machine's own listener.
+        guard !ip.isEmpty else {
+            DispatchQueue.main.async { completion?(false) }
+            return
+        }
         DispatchQueue.global(qos: .utility).async {
             let success = self.fireTCP(frame: frame, toIP: ip, port: port)
             DispatchQueue.main.async { completion?(success) }

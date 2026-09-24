@@ -3,7 +3,9 @@ import UniformTypeIdentifiers
 
 struct ChatView: View {
     @EnvironmentObject var model: AppModel
-    let peerIP: String
+    /// The conversation id (`PeerID`): the peer's identity key, or `ip:<address>`
+    /// for a legacy thread.
+    let peerID: String
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.controlActiveState) var controlActiveState
 
@@ -52,32 +54,32 @@ struct ChatView: View {
     private var showJumpButton: Bool { !isNearBottom && !isSettling }
 
     private var conv: ConversationViewModel? {
-        model.conversations.first { $0.peerIP == peerIP }
+        model.conversations.first { $0.peerID == peerID }
+            ?? model.archivedConversations.first { $0.peerID == peerID }
     }
 
     private var entries: [MessageEntry] {
-        model.messages[peerIP] ?? []
+        model.messages[peerID] ?? []
     }
 
-    /// By the conversation's identity key, not by "whoever is at this address".
-    /// A conversation is filed under an IP, and DHCP recycles those between
-    /// machines — asking who holds this thread's address answers with the wrong
-    /// device the moment it moves, and the dot then shows somebody else's
-    /// presence. Falls back to the address only for a thread with no saved
-    /// contact, which has no identity of its own to go by.
+    /// History from before identity keys that no contact could be matched to.
+    /// Readable, never writable: there is no key to encrypt a reply to, and
+    /// picking one by address is the mistake the key exists to prevent.
+    private var isLegacy: Bool { PeerID.isLegacy(peerID) }
+
+    /// By the conversation's identity key — never by "whoever is at this
+    /// address", which answers with the wrong device the moment DHCP moves
+    /// one. A legacy thread has no identity to go by and is never online.
     private var peerIsOnline: Bool {
-        if let key = conv?.peerPublicKeyB64, !key.isEmpty {
-            return model.peers[key]?.isOnline ?? false
-        }
-        return model.peers.values.first { $0.ip == peerIP }?.isOnline ?? false
+        model.peers[peerID]?.isOnline ?? false
     }
 
     private var peerIsTyping: Bool {
-        model.typingStates[peerIP]?.active ?? false
+        model.typingStates[peerID]?.active ?? false
     }
 
     private var peerName: String {
-        conv?.peerName ?? peerIP
+        conv?.peerName ?? PeerID.legacyAddress(peerID) ?? "Unknown"
     }
 
     var body: some View {
@@ -102,7 +104,7 @@ struct ChatView: View {
                 Divider()
             }
             messageList
-            if let transfer = model.activeTransfers[peerIP] {
+            if let transfer = model.activeTransfers[peerID] {
                 FileTransferBannerView(
                     label: transfer.label,
                     bytes: transfer.bytes,
@@ -112,12 +114,14 @@ struct ChatView: View {
                 .padding(.vertical, 4)
             }
             // The reply and edit banner lives inside the composer now.
-            if LiquidGlass.isAvailable {
-                ComposerView(peerIP: peerIP, replyTarget: $replyTarget, editTarget: $editTarget)
+            if isLegacy {
+                legacyNotice
+            } else if LiquidGlass.isAvailable {
+                ComposerView(peerID: peerID, replyTarget: $replyTarget, editTarget: $editTarget)
                     .environmentObject(model)
             } else {
                 Divider()
-                ComposerView(peerIP: peerIP, replyTarget: $replyTarget, editTarget: $editTarget)
+                ComposerView(peerID: peerID, replyTarget: $replyTarget, editTarget: $editTarget)
                     .environmentObject(model)
                     .background(.bar)
             }
@@ -128,7 +132,8 @@ struct ChatView: View {
         // thing you only get right on the second try; dropping anywhere on the
         // conversation you are looking at is what every other messenger does.
         .onDrop(of: AttachmentPasteboard.dropTypes, isTargeted: $isDropTargeted) { providers in
-            handleDrop(providers)
+            // Nobody to send it to in a legacy thread.
+            isLegacy ? false : handleDrop(providers)
         }
         .overlay { if isDropTargeted { dropOverlay } }
         // controlActiveState is .key/.active when the window is on screen,
@@ -139,6 +144,19 @@ struct ChatView: View {
         .onChange(of: controlActiveState) { state in if state != .inactive { markRead() } }
     }
 
+    /// Stands in for the composer in a legacy thread, saying why there isn't one.
+    private var legacyNotice: some View {
+        Text("Saved from an older version under the address \(PeerID.legacyAddress(peerID) ?? ""), "
+             + "which isn't linked to a contact. Messages here can be read but not answered.")
+            .font(GlassTokens.Typography.caption)
+            .foregroundStyle(Theme.inkSecondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(.bar)
+    }
+
     // MARK: - Drag and drop
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -147,9 +165,9 @@ struct ChatView: View {
             return false
         }
         AttachmentPasteboard.loadDroppedPaths(from: providers) { paths in
-            NetLogger.ui(event: "attachment_dropped", peer: peerIP, detail: "\(paths.count) file(s)")
+            NetLogger.ui(event: "attachment_dropped", peer: String(peerID.prefix(8)), detail: "\(paths.count) file(s)")
             for path in paths {
-                model.sendFile(path: path, toPeerIP: peerIP)
+                model.sendFile(path: path, toPeer: peerID)
             }
         }
         return true
@@ -168,7 +186,7 @@ struct ChatView: View {
                 Image(systemName: "paperclip")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Theme.accentInk)
-                Text("Drop to send to \(conv?.peerName ?? peerIP)")
+                Text("Drop to send to \(peerName)")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.ink)
             }
@@ -188,7 +206,7 @@ struct ChatView: View {
             AvatarView(name: conv?.peerName ?? "?", size: GlassTokens.Size.avatarHeader, photoB64: conv?.photoB64)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(conv?.peerName ?? peerIP)
+                    Text(peerName)
                         .font(GlassTokens.Typography.name)
                         .foregroundStyle(Theme.ink)
                     Circle()
@@ -238,8 +256,7 @@ struct ChatView: View {
     /// The invite status, but only in the conversation it is about — matched by
     /// identity key, never by address.
     private var remoteInviteStatusForThisPeer: String? {
-        guard let key = conv?.peerPublicKeyB64, !key.isEmpty,
-              model.remoteInviteTargetKey == key else { return nil }
+        guard !isLegacy, model.remoteInviteTargetKey == peerID else { return nil }
         return model.remoteInviteStatus
     }
 
@@ -256,14 +273,14 @@ struct ChatView: View {
         let key = conv?.peerPublicKeyB64 ?? ""
         let availability = model.remoteDesktopAvailability(forPeerKey: key)
         Button {
-            model.requestRemoteDesktop(peerKey: key, peerIP: peerIP)
+            model.requestRemoteDesktop(peerKey: key)
         } label: {
             Image(systemName: "macwindow.on.rectangle")
                 .font(.system(size: 15))
         }
         .buttonStyle(.borderless)
         .disabled(!availability.isAvailable)
-        .help(Self.remoteDesktopHint(availability, peerName: conv?.peerName ?? peerIP))
+        .help(Self.remoteDesktopHint(availability, peerName: peerName))
         .accessibilityLabel(Text("Request remote desktop"))
     }
 
@@ -334,7 +351,7 @@ struct ChatView: View {
                                 MessageBubbleView(
                                     entry: entry,
                                     isFirstInRun: entry.incoming != prevIncoming,
-                                    onReply: { withAnimation { editTarget = nil; replyTarget = entry } },
+                                    onReply: isLegacy ? nil : { withAnimation { editTarget = nil; replyTarget = entry } },
                                     onTapReplyTarget: {
                                         guard let targetId = entry.replyToMessageId,
                                               let match = entries.first(where: { $0.messageId == targetId }) else { return }
@@ -343,9 +360,10 @@ struct ChatView: View {
                                     },
                                     replyFilePath: resolvedReplyFilePath(for: entry),
                                     onDelete: { forEveryone in
-                                        model.deleteMessage(entry, peerIP: peerIP, forEveryone: forEveryone)
+                                        model.deleteMessage(entry, peer: peerID, forEveryone: forEveryone)
                                     },
-                                    onEdit: { withAnimation { replyTarget = nil; editTarget = entry } }
+                                    onEdit: isLegacy ? nil : { withAnimation { replyTarget = nil; editTarget = entry } },
+                                    canReachPeer: !isLegacy
                                 )
                                 .id(entry.id)
                                 .background(
@@ -544,7 +562,7 @@ struct ChatView: View {
     // MARK: - Read receipts
 
     private func markRead() {
-        model.markConversationRead(peerIP: peerIP)
+        model.markConversationRead(peer: peerID)
     }
 }
 

@@ -32,6 +32,9 @@ struct MediaBubbleView: View {
     /// Called when the user chooses a delete option from the context menu.
     /// The Bool is `forEveryone` — true for "Delete for Everyone", false for "Delete for Me".
     var onDelete: ((Bool) -> Void)? = nil
+    /// False in a legacy thread, which has no identity key behind it:
+    /// "Delete for Everyone" would have nobody to tell.
+    var canReachPeer: Bool = true
     @Environment(\.colorScheme) var colorScheme
 
     @State private var thumbnail: NSImage? = nil
@@ -314,7 +317,7 @@ struct MediaBubbleView: View {
             Button(role: .destructive) { onDelete?(false) } label: {
                 Label("Delete for Me", systemImage: "trash")
             }
-            if allowDeleteForEveryone, entry.messageId != nil {
+            if allowDeleteForEveryone, canReachPeer, entry.messageId != nil {
                 Button(role: .destructive) { onDelete?(true) } label: {
                     Label("Delete for Everyone", systemImage: "trash.fill")
                 }

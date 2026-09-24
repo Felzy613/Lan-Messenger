@@ -8,10 +8,10 @@ struct SidebarView: View {
     @State private var showNewMessage = false
 
     var body: some View {
-        List(selection: $model.selectedPeerIP) {
+        List(selection: $model.selectedPeerID) {
             ForEach(model.conversations) { conv in
-                ConversationRowView(conv: conv, isSelected: model.selectedPeerIP == conv.peerIP)
-                    .tag(conv.peerIP)
+                ConversationRowView(conv: conv, isSelected: model.selectedPeerID == conv.peerID)
+                    .tag(conv.peerID)
             }
             if !model.archivedConversations.isEmpty {
                 Section {
@@ -228,7 +228,7 @@ struct ArchivedConversationsView: View {
                         ConversationRowView(conv: conv)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                model.selectedPeerIP = conv.peerIP
+                                model.selectedPeerID = conv.peerID
                                 dismiss()
                             }
                     }
