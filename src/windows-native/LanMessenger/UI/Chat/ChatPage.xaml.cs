@@ -389,6 +389,10 @@ public sealed partial class ChatPage : Page
         if (_model is null) return;
         switch (e.PropertyName)
         {
+            case nameof(AppModel.RemoteInviteStatus):
+            case nameof(AppModel.RemoteInviteTargetKey):
+                UpdateHeaderOnlineState();
+                break;
             case nameof(AppModel.RemoteSessionRunning):
                 // A session ending re-enables the button. Nothing else in the
                 // header changes at that moment, so without this it stays
@@ -467,7 +471,7 @@ public sealed partial class ChatPage : Page
     {
         if (_model is null || _model.SelectedPeerIP is null) return;
         var ip = _model.SelectedPeerIP;
-        var peer    = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
+        var peer    = _model.PeerForConversation(ip);
         var contact = LanMessenger.Core.Persistence.ConfigStore.Shared.Config.Contacts
             .FirstOrDefault(c => c.LastIP == ip);
         // Fall back to the sender name from the most recent incoming message so that
@@ -488,8 +492,9 @@ public sealed partial class ChatPage : Page
     {
         if (_model is null || _model.SelectedPeerIP is null) return;
         var ip = _model.SelectedPeerIP;
-        var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
-        string key = peer?.PublicKeyB64 ?? "";
+        // The conversation's own identity, not whoever holds its address today:
+        // availability has to be judged for the device this thread is with.
+        string key = _model.PeerKeyForConversation(ip) ?? "";
         string name = HeaderName.Text;
 
         var availability = _model.RemoteDesktopAvailability(key);
@@ -502,7 +507,7 @@ public sealed partial class ChatPage : Page
     {
         if (_model is null || _model.SelectedPeerIP is null) return;
         var ip = _model.SelectedPeerIP;
-        var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
+        var peer = _model.PeerForConversation(ip);
         if (peer is null) return;
         // Nothing inside a WinUI event handler may throw.
         try { _model.RequestRemoteDesktop(peer.PublicKeyB64, ip); }
@@ -517,12 +522,20 @@ public sealed partial class ChatPage : Page
     {
         if (_model is null || _model.SelectedPeerIP is null) return;
         var ip = _model.SelectedPeerIP;
-        var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
+        var peer = _model.PeerForConversation(ip);
         var online = peer?.IsOnline ?? false;
         // Inline dot after the name: green when online, gray when offline (matches macOS header)
         HeaderNameDot.Fill = online ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
 
-        HeaderSubtext.Text = online ? "Online" : "Offline";
+        // The remote-desktop invite's progress replaces the caption, in this
+        // conversation only — matched by identity key, never by address.
+        // Without it every outcome (waiting, declined, unreachable, timed out)
+        // looked exactly like a button that did nothing.
+        var key = _model.PeerKeyForConversation(ip);
+        var status = key is not null && _model.RemoteInviteTargetKey == key
+            ? _model.RemoteInviteStatus
+            : null;
+        HeaderSubtext.Text = status ?? (online ? "Online" : "Offline");
         UpdateRemoteDesktopButton();
     }
 

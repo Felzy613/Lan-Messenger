@@ -59,8 +59,17 @@ struct ChatView: View {
         model.messages[peerIP] ?? []
     }
 
+    /// By the conversation's identity key, not by "whoever is at this address".
+    /// A conversation is filed under an IP, and DHCP recycles those between
+    /// machines — asking who holds this thread's address answers with the wrong
+    /// device the moment it moves, and the dot then shows somebody else's
+    /// presence. Falls back to the address only for a thread with no saved
+    /// contact, which has no identity of its own to go by.
     private var peerIsOnline: Bool {
-        model.peers.values.first { $0.ip == peerIP }?.isOnline ?? false
+        if let key = conv?.peerPublicKeyB64, !key.isEmpty {
+            return model.peers[key]?.isOnline ?? false
+        }
+        return model.peers.values.first { $0.ip == peerIP }?.isOnline ?? false
     }
 
     private var peerIsTyping: Bool {
@@ -199,6 +208,17 @@ struct ChatView: View {
                         .accessibilityLabel(Text("\(peerName) is typing"))
                         .help("\(peerName) is typing…")
                         .transition(.opacity)
+                } else if let status = remoteInviteStatusForThisPeer {
+                    // The remote-desktop invite's progress, in the one place the
+                    // user is looking right after pressing the button. Without
+                    // it every outcome — waiting, declined, unreachable, timed
+                    // out — looked exactly like a button that did nothing.
+                    Text(status)
+                        .font(GlassTokens.Typography.caption)
+                        .foregroundStyle(Theme.inkSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .transition(.opacity)
                 } else {
                     Text(peerIsOnline ? "Online" : "Offline")
                         .font(GlassTokens.Typography.caption)
@@ -207,12 +227,21 @@ struct ChatView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: peerIsTyping)
+            .animation(.easeInOut(duration: 0.2), value: remoteInviteStatusForThisPeer)
             Spacer()
             remoteDesktopButton
         }
     }
 
     // MARK: - Remote desktop
+
+    /// The invite status, but only in the conversation it is about — matched by
+    /// identity key, never by address.
+    private var remoteInviteStatusForThisPeer: String? {
+        guard let key = conv?.peerPublicKeyB64, !key.isEmpty,
+              model.remoteInviteTargetKey == key else { return nil }
+        return model.remoteInviteStatus
+    }
 
     /// The entry point, on the contact strip where somebody would reach for it.
     ///

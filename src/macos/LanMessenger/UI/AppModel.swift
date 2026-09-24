@@ -231,13 +231,37 @@ final class AppModel: ObservableObject {
                 self?.armedHosting = (sessionID, peerName, peerIP)
             }))
         coordinator.onStateChange = { [weak self] message in
-            self?.remoteInviteStatus = message.isEmpty ? nil : message
+            self?.showRemoteInviteStatus(message)
         }
         return coordinator
     }()
 
-    /// What the contact strip shows while an invite is in flight.
+    /// What the contact strip shows about an invite we sent: waiting, declined,
+    /// unreachable, timed out.
+    ///
+    /// Computed since the invite exchange was written and, until now, shown
+    /// nowhere — no view read it. Every outcome therefore looked the same as a
+    /// dead button: a decline, a timeout, an address that reached nobody, and
+    /// even an invite that was working and waiting for an answer.
     @Published private(set) var remoteInviteStatus: String?
+    /// Whose conversation the status belongs to, by identity key. Shown only in
+    /// that peer's header, so "Waiting for Ari…" never appears in the Dell's.
+    @Published private(set) var remoteInviteTargetKey: String?
+    private var remoteInviteStatusClear: Task<Void, Never>?
+
+    /// Sets the status, and lets anything final fade after a few seconds. The
+    /// waiting message stays for as long as the wait does; a decline or a
+    /// timeout is news once and then just noise in the header.
+    private func showRemoteInviteStatus(_ message: String) {
+        remoteInviteStatusClear?.cancel()
+        remoteInviteStatus = message.isEmpty ? nil : message
+        guard !message.isEmpty, !message.hasPrefix("Waiting for") else { return }
+        remoteInviteStatusClear = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.remoteInviteStatus = nil
+        }
+    }
     @Published var pendingImportKeyData: Data? = nil
     @Published var availableUpdate: UpdateInfo? = nil
     @Published var updateProgress: UpdateProgress = .idle
@@ -422,17 +446,36 @@ final class AppModel: ObservableObject {
     /// The contact-strip button. Judges the request against the same policy an
     /// inbound invite is judged by, so the interface can never start something
     /// the gate would refuse.
-    func requestRemoteDesktop(peerKey: String, peerIP: String) {
+    /// Asks the peer identified by `peerKey` to share their screen.
+    ///
+    /// **Addressed by identity key, not by the conversation's IP.** The key is
+    /// the only stable name a device on this LAN has; its address is whatever
+    /// DHCP handed it this morning, and the same numbers are handed to other
+    /// machines. `conversationIP` is where the conversation is filed — it is
+    /// not where to send anything. It used to be both, so an invite from the
+    /// Dell's conversation went to the Dell's previous address, which Ari held
+    /// by then; the Dell never saw it, and every click after that was refused
+    /// behind it.
+    func requestRemoteDesktop(peerKey: String, peerIP conversationIP: String) {
         let availability = remoteDesktopAvailability(forPeerKey: peerKey)
-        guard availability.isAvailable else {
-            NetLogger.remote(event: "invite_blocked", peer: peerIP,
+        guard availability.isAvailable, let peer = peers[peerKey] else {
+            NetLogger.remote(event: "invite_blocked", peer: conversationIP,
                              reason: "\(availability)")
             return
         }
-        remoteAuditPeerIP = peerIP
-
-        let peerName = peers[peerKey]?.username ?? "This peer"
-        inviteCoordinator.invite(peerKey: peerKey, peerIP: peerIP, peerName: peerName)
+        // Where the device is now, per the discovery table — the same lookup
+        // that just decided it is online.
+        let address = peer.ip
+        if address != conversationIP {
+            NetLogger.remote(event: "invite_address_resolved", peer: address,
+                             reason: "conversation filed under \(conversationIP)")
+        }
+        // Discovery re-files a conversation under the new address in the same
+        // step that updates `peers`, so the live address is also where this
+        // peer's audit record belongs.
+        remoteAuditPeerIP = address
+        remoteInviteTargetKey = peerKey
+        inviteCoordinator.invite(peerKey: peerKey, peerIP: address, peerName: peer.username)
     }
 
     /// The peer accepted and their media channel is attached. Show it.

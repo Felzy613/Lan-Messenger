@@ -157,7 +157,46 @@ public sealed partial class AppModel : ObservableObject
     public RemoteInviteCoordinator InviteCoordinator => _inviteCoordinator ??= BuildInviteCoordinator();
     private RemoteInviteCoordinator? _inviteCoordinator;
 
+    /// <summary>
+    /// What the contact strip shows about an invite we sent: waiting, declined,
+    /// unreachable, timed out.
+    /// </summary>
+    /// <remarks>
+    /// Computed since the invite exchange was written and, until now, bound to
+    /// nothing — so every outcome looked the same as a dead button: a decline,
+    /// a timeout, an address that reached nobody, and even an invite that was
+    /// working and waiting for an answer.
+    /// </remarks>
     [ObservableProperty] private string? _remoteInviteStatus;
+
+    /// <summary>
+    /// Whose conversation the status belongs to, by identity key. Shown only in
+    /// that peer's header, so "Waiting for Ari…" never appears in the Dell's.
+    /// </summary>
+    [ObservableProperty] private string? _remoteInviteTargetKey;
+
+    private CancellationTokenSource? _remoteInviteStatusClear;
+
+    /// <summary>
+    /// Sets the status, and lets anything final fade after a few seconds. The
+    /// waiting message stays for as long as the wait does; a decline or a
+    /// timeout is news once and then just noise in the header. UI thread only.
+    /// </summary>
+    private void ShowRemoteInviteStatus(string message)
+    {
+        _remoteInviteStatusClear?.Cancel();
+        RemoteInviteStatus = string.IsNullOrEmpty(message) ? null : message;
+        if (string.IsNullOrEmpty(message) || message.StartsWith("Waiting for", StringComparison.Ordinal))
+            return;
+
+        var cts = new CancellationTokenSource();
+        _remoteInviteStatusClear = cts;
+        _ = Task.Delay(TimeSpan.FromSeconds(6), cts.Token).ContinueWith(t =>
+        {
+            if (t.IsCanceled) return;
+            _dq.TryEnqueue(() => { if (!cts.IsCancellationRequested) RemoteInviteStatus = null; });
+        }, TaskScheduler.Default);
+    }
 
     /// <summary>Changes whenever a remote-desktop session starts or ends.</summary>
     /// <remarks>
@@ -173,16 +212,77 @@ public sealed partial class AppModel : ObservableObject
     /// Judged against the same policy an inbound invite is, so the interface can
     /// never start something the gate would refuse.
     /// </remarks>
-    public void RequestRemoteDesktop(string peerKey, string peerIP)
+    /// <summary>
+    /// The identity key of the device a conversation belongs to — the saved
+    /// contact the thread was built from, never whoever holds its IP today.
+    /// </summary>
+    /// <remarks>
+    /// A conversation is filed under an IP for storage compatibility, and LAN
+    /// addresses are recycled between machines by DHCP. Asking "which peer is at
+    /// this conversation's address?" therefore answers with the wrong device the
+    /// moment the address moves: on 2026-09-24 the Mac's thread on the Dell
+    /// resolved to Ari, so its header, its online dot, its remote-desktop
+    /// availability and the invite itself were all Ari's. The conversation
+    /// already knows who it is with; this reads that, and falls back to the
+    /// saved contact filed under the address only for a thread built before
+    /// rows carried their key.
+    /// </remarks>
+    public string? PeerKeyForConversation(string conversationIP)
+    {
+        var row = Conversations.FirstOrDefault(c => c.PeerIP == conversationIP)
+                  ?? ArchivedConversations.FirstOrDefault(c => c.PeerIP == conversationIP);
+        if (!string.IsNullOrEmpty(row?.PeerPublicKeyB64)) return row.PeerPublicKeyB64;
+        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == conversationIP);
+        return string.IsNullOrEmpty(contact?.PublicKeyB64) ? null : contact.PublicKeyB64;
+    }
+
+    /// <summary>
+    /// The live discovery record for a conversation's device, found by identity
+    /// key. Null when the device is not currently known on the network.
+    /// </summary>
+    public PeerInfo? PeerForConversation(string conversationIP)
+    {
+        var key = PeerKeyForConversation(conversationIP);
+        if (key is null)
+        {
+            // A thread with no saved contact behind it — a discovered peer we
+            // have history with. It has no identity of its own to go by, so the
+            // address is the only handle there is.
+            return Peers.Values.FirstOrDefault(p => p.IP == conversationIP);
+        }
+        return Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == key);
+    }
+
+    /// <summary>Asks the peer identified by <paramref name="peerKey"/> to share their screen.</summary>
+    /// <remarks>
+    /// <b>Addressed by identity key, not by the conversation's IP.</b> The key is
+    /// the only stable name a device on this LAN has; its address is whatever
+    /// DHCP handed it this morning, and the same numbers are handed to other
+    /// machines. <paramref name="conversationIP"/> is where the conversation is
+    /// filed — it is not where to send anything. It used to be both, so an
+    /// invite from the Mac's conversation went to an address Ari held by then;
+    /// the Mac never saw it, and every click after that was refused behind it.
+    /// </remarks>
+    public void RequestRemoteDesktop(string peerKey, string conversationIP)
     {
         var availability = RemoteDesktopAvailability(peerKey);
-        if (!availability.IsAvailable)
+        var peer = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == peerKey);
+        if (!availability.IsAvailable || peer is null || string.IsNullOrEmpty(peer.IP))
         {
-            LanLogger.Remote("invite_blocked", peer: peerIP, reason: availability.Reason.ToString());
+            LanLogger.Remote("invite_blocked", peer: conversationIP, reason: availability.Reason.ToString());
             return;
         }
-        var peer = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == peerKey);
-        InviteCoordinator.Invite(peerKey, peerIP, peer?.Username ?? peerIP);
+
+        // Where the device is now, per the discovery table — the same lookup
+        // that just decided it is online.
+        string address = peer.IP;
+        if (address != conversationIP)
+        {
+            LanLogger.Remote("invite_address_resolved", peer: address,
+                             reason: $"conversation filed under {conversationIP}");
+        }
+        RemoteInviteTargetKey = peerKey;
+        InviteCoordinator.Invite(peerKey, address, peer.Username);
     }
 
     /// <summary>Whether the button should be offered, and why not when it should not.</summary>
@@ -249,7 +349,7 @@ public sealed partial class AppModel : ObservableObject
                 RemoteDesktopController.Shared.ArmHosting(sessionId, peerName, peerIP),
         });
         coordinator.OnStateChange = message =>
-            _dq.TryEnqueue(() => RemoteInviteStatus = string.IsNullOrEmpty(message) ? null : message);
+            _dq.TryEnqueue(() => ShowRemoteInviteStatus(message));
         return coordinator;
     }
 

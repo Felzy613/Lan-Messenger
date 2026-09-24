@@ -705,6 +705,33 @@ Use the smallest sufficient set for the change:
   lock-protected list of the `ICodecAPI` RCWs it handed out and releases from
   that, which also removes the race against a thread still creating a value while
   teardown enumerates.
+- Do not address a peer by the IP its conversation is filed under. A
+  conversation is keyed by IP for storage compatibility, and DHCP recycles LAN
+  addresses between machines — over four days the Dell used three addresses and
+  Ari used eight, one of them the Dell's current one. The **identity key** is the
+  only stable name a device has. On 2026-09-24 the remote-desktop button on both
+  platforms sent its invite to Ari: macOS posted to the conversation's remembered
+  IP, and Windows went further and asked "which peer is at this conversation's
+  IP?", so the header's name, online dot and availability were Ari's too. Every
+  click after that was then refused behind the misdirected invite for a minute,
+  silently. Resolve the key from the conversation (`conv.peerPublicKeyB64`,
+  `AppModel.PeerKeyForConversation`), the address from the live discovery record
+  for that key at the moment of sending, and dial the media attach at the
+  authenticated source of the accept — it opened under the peer's key, so its
+  address is proof of where that device is now. Covered by
+  `testTheMediaChannelDialsWhereTheAuthenticatedAcceptCameFrom` and its Windows
+  mirror.
+- Do not refuse a new remote-desktop invite because another is pending. A
+  single app-wide pending slot turned one misdirected invite into a dead button
+  for every contact for sixty seconds. A new request supersedes the pending one
+  (withdrawn with `remote_end`, so a prompt that did land closes) unless it is
+  the same key at the same address, which is said again rather than ignored.
+- Do not compute a status and bind it to nothing. `remoteInviteStatus` /
+  `RemoteInviteStatus` — waiting, declined, unreachable, timed out — existed
+  from the day the invite exchange was written and no view ever read it, so
+  every outcome, including a working invite waiting for an answer, looked like a
+  button that did nothing. It replaces the header's Online caption in the
+  target's conversation only, matched by key.
 - Do not record a clean channel close as a fault. A peer pressing Stop closes the
   socket with no error; a network that went away closes it with one. Passing the
   same reason for both wrote "the session ended because the network connection
