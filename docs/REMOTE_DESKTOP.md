@@ -827,8 +827,10 @@ requirements** — a client that does not enforce them is not compatible.
   Windows wrote none until 2026-09-23. `RemoteDesktopController.AppendAudit`
   was declared, passed into every `RemoteDesktopSession` and invoked with `?.`,
   but nothing assigned it, so every record went nowhere without a trace.
-  `AppModel` now assigns it beside `AnnounceEnd`. It takes the peer IP along
-  with the record, because history is keyed by IP and the session never knows it.
+  `AppModel` now assigns it beside `AnnounceEnd`. It takes the peer's identity
+  key along with the record — history is filed by key, and the session never
+  knows which conversation it belongs to. (It carried the peer IP until 2.2.0,
+  when conversations stopped being filed by address.)
 
   The cost of that trick is that **every call site inspecting message text needs
   to know the prefix**. On macOS there are three: the sidebar's last-message

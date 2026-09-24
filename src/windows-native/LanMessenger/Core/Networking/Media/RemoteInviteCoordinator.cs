@@ -121,15 +121,45 @@ public sealed class RemoteInviteCoordinator
     // ---- Initiator ---------------------------------------------------------
 
     /// <summary>Asks a peer to share their screen.</summary>
+    /// <remarks>
+    /// <para>
+    /// <paramref name="peerIP"/> must be where the peer IS, resolved from its
+    /// identity key at the moment of the click — never an address a
+    /// conversation remembered. LAN addresses are recycled between machines by
+    /// DHCP: the Dell's address on the day this was written had previously
+    /// belonged to Ari, and a remembered one sent an invite to Ari's screen.
+    /// </para>
+    /// <para>
+    /// <b>A new request supersedes a pending one</b> unless it is the same peer
+    /// at the same address. This used to refuse everything while any invite was
+    /// outstanding — for up to a minute, with only a log line to say so — so one
+    /// click in the wrong conversation, or one invite aimed at a stale address,
+    /// made the button do nothing at all for everyone else.
+    /// </para>
+    /// </remarks>
     public void Invite(string peerKey, string peerIP, string peerName)
     {
-        lock (_gate)
+        PendingInvite? current;
+        lock (_gate) { current = _pending; }
+        if (current is not null)
         {
-            if (_pending is not null)
+            if (current.PeerKey == peerKey && current.PeerIP == peerIP)
             {
-                LanLogger.Remote("invite_blocked", peer: peerIP, reason: "already in flight");
+                // Genuinely already asking this device at this address. Say so
+                // again rather than nothing: a repeated click is a user who
+                // cannot tell whether the first one worked.
+                LanLogger.Remote("invite_already_pending", peer: peerIP,
+                                 sessionId: current.SessionId);
+                OnStateChange?.Invoke($"Waiting for {current.PeerName} to accept…");
                 return;
             }
+            // A different device, or the same device at a new address — either
+            // way the outstanding invite is not wanted or cannot arrive.
+            // Withdrawn properly, so a prompt that did reach somebody closes.
+            LanLogger.Remote("invite_superseded", peer: current.PeerIP,
+                             sessionId: current.SessionId,
+                             reason: current.PeerKey == peerKey ? "peer moved" : "different peer");
+            CancelInvite();
         }
 
         string sessionId = RemoteSessionCrypto.NewSessionId();
@@ -211,7 +241,11 @@ public sealed class RemoteInviteCoordinator
                 // actually agreed to, and the transcript binds that answer.
                 body.Params);
 
-            AttachAndView(invite, keys);
+            // Attach to where the answer came FROM. It opened under this peer's
+            // identity key, so its source address is proof of where that
+            // device is right now — fresher than the address the invite went
+            // to, which DHCP may have handed to someone else since.
+            AttachAndView(invite, keys, ip);
         }
         catch (Exception ex)
         {
@@ -226,7 +260,12 @@ public sealed class RemoteInviteCoordinator
         }
     }
 
-    private void AttachAndView(PendingInvite invite, RemoteSessionKeys keys)
+    /// <summary>
+    /// Connects, upgrades the socket and opens the viewer, at
+    /// <paramref name="address"/> — the authenticated source of the accept, not
+    /// the address the invite used.
+    /// </summary>
+    private void AttachAndView(PendingInvite invite, RemoteSessionKeys keys, string address)
     {
         var attach = new RemoteControlPacket
         {
@@ -238,22 +277,22 @@ public sealed class RemoteInviteCoordinator
         };
         byte[] frame = FrameCodec.Encode(attach);
 
-        object? connection = _env.AttachOutbound(invite.PeerIP, frame);
+        object? connection = _env.AttachOutbound(address, frame);
         if (connection is null)
         {
             OnStateChange?.Invoke($"Could not reach {invite.PeerName}.");
             return;
         }
 
-        LanLogger.Remote("attach_sent", peer: invite.PeerIP, sessionId: invite.SessionId);
+        LanLogger.Remote("attach_sent", peer: address, sessionId: invite.SessionId);
         OnStateChange?.Invoke($"Connected to {invite.PeerName}.");
 
         // The caller owns the connection from here: it builds the MediaSession
         // with these keys and opens the viewer window. Kept out of this object
         // on purpose — it is the one step that needs a UI thread, and this
         // class stays testable by not having one.
-        _env.StartViewing(invite.PeerName, invite.PeerIP, new RemoteAttachedChannel(
-            invite.SessionId, invite.PeerKey, invite.PeerIP, keys, connection));
+        _env.StartViewing(invite.PeerName, address, new RemoteAttachedChannel(
+            invite.SessionId, invite.PeerKey, address, keys, connection));
     }
 
     /// <summary>The peer refused, or could not.</summary>

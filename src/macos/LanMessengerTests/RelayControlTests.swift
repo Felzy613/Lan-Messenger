@@ -95,7 +95,7 @@ final class DeleteGateTests: XCTestCase {
     private let peer = "192.168.99.79"
 
     override func tearDown() {
-        HistoryStore.shared.delete(peerIP: peer)
+        HistoryStore.shared.delete(peer: peer)
         super.tearDown()
     }
 
@@ -103,11 +103,11 @@ final class DeleteGateTests: XCTestCase {
         HistoryStore.shared.append(
             entry: MessageEntry(sender: "Peer", text: "oops", incoming: true, timestamp: 1,
                                 messageId: "del-theirs", status: "", readReceiptSent: false),
-            forPeerIP: peer)
+            forPeer: peer)
 
-        XCTAssertTrue(HistoryStore.shared.markDeleted(messageId: "del-theirs", peerIP: peer,
+        XCTAssertTrue(HistoryStore.shared.markDeleted(messageId: "del-theirs", peer: peer,
                                                       requireIncoming: true))
-        let e = HistoryStore.shared.entries(forPeerIP: peer).first { $0.messageId == "del-theirs" }
+        let e = HistoryStore.shared.entries(forPeer: peer).first { $0.messageId == "del-theirs" }
         XCTAssertEqual(e?.deleted, true)
         XCTAssertEqual(e?.text, "")
     }
@@ -119,11 +119,11 @@ final class DeleteGateTests: XCTestCase {
         HistoryStore.shared.append(
             entry: MessageEntry(sender: "me", text: "the terms are $500", incoming: false, timestamp: 1,
                                 messageId: "del-spoof", status: "Sent", readReceiptSent: false),
-            forPeerIP: peer)
+            forPeer: peer)
 
-        XCTAssertFalse(HistoryStore.shared.markDeleted(messageId: "del-spoof", peerIP: peer,
+        XCTAssertFalse(HistoryStore.shared.markDeleted(messageId: "del-spoof", peer: peer,
                                                        requireIncoming: true))
-        let e = HistoryStore.shared.entries(forPeerIP: peer).first { $0.messageId == "del-spoof" }
+        let e = HistoryStore.shared.entries(forPeer: peer).first { $0.messageId == "del-spoof" }
         XCTAssertEqual(e?.text, "the terms are $500")
         XCTAssertEqual(e?.deleted, false)
     }
@@ -132,11 +132,11 @@ final class DeleteGateTests: XCTestCase {
         HistoryStore.shared.append(
             entry: MessageEntry(sender: "me", text: "never mind", incoming: false, timestamp: 1,
                                 messageId: "del-own", status: "Sent", readReceiptSent: false),
-            forPeerIP: peer)
+            forPeer: peer)
 
-        XCTAssertTrue(HistoryStore.shared.markDeleted(messageId: "del-own", peerIP: peer,
+        XCTAssertTrue(HistoryStore.shared.markDeleted(messageId: "del-own", peer: peer,
                                                       requireIncoming: false))
-        XCTAssertEqual(HistoryStore.shared.entries(forPeerIP: peer)
+        XCTAssertEqual(HistoryStore.shared.entries(forPeer: peer)
             .first { $0.messageId == "del-own" }?.deleted, true)
     }
 }

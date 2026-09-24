@@ -133,9 +133,14 @@
                                      Height="{StaticResource TokenSizePresenceInline}"
                                      VerticalAlignment="Center" />
                         </StackPanel>
+                        <!-- Online/Offline, or a remote-desktop invite's progress
+                             ("Waiting for Dovi's Computer to accept…"), which can be
+                             long — so it trims rather than pushing the header wider. -->
                         <TextBlock x:Name="HeaderSubtext"
                                    Style="{StaticResource TokenTypeCaptionStyle}"
-                                   Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+                                   Foreground="{ThemeResource TokenInkSecondaryBrush}"
+                                   TextTrimming="CharacterEllipsis"
+                                   MaxLines="1" />
                         <!-- Swapped in for the Online/Offline caption while the peer is
                              typing, so the header keeps its height and the state is
                              still legible when the thread is scrolled up and the

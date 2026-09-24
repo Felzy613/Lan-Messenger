@@ -10,7 +10,8 @@ namespace LanMessenger.UI.Sidebar;
 // Implements INPC so we can update individual rows without rebuilding the whole list.
 public sealed class ConversationRowViewModel : INotifyPropertyChanged
 {
-    public string PeerIP { get; init; } = "";
+    /// <summary>The conversation id (PeerId): the peer's identity key, or ip:&lt;address&gt; for a legacy thread.</summary>
+    public string ConversationId { get; init; } = "";
 
     private string _peerName = "";
     public string PeerName
@@ -125,7 +126,7 @@ public sealed partial class SidebarControl : UserControl
         // Merge: keep existing rows where possible (so selection survives), update fields in-place,
         // remove rows no longer present, and add new ones in the correct order.
         var target = _model.Conversations;
-        var byIP   = _rows.ToDictionary(r => r.PeerIP, r => r);
+        var byId   = _rows.ToDictionary(r => r.ConversationId, r => r);
 
         // Pass 1: ensure each target item has a row.
         for (var i = 0; i < target.Count; i++)
@@ -135,7 +136,7 @@ public sealed partial class SidebarControl : UserControl
             // The row keeps the real last message while the peer types — it
             // hides it behind the typing dots and puts it straight back
             // afterwards, rather than overwriting it with the word "typing...".
-            if (byIP.TryGetValue(c.PeerIP, out var existing))
+            if (byId.TryGetValue(c.ConversationId, out var existing))
             {
                 existing.PeerName    = c.PeerName;
                 existing.PhotoB64    = c.PhotoB64;
@@ -154,7 +155,7 @@ public sealed partial class SidebarControl : UserControl
             {
                 _rows.Insert(i, new ConversationRowViewModel
                 {
-                    PeerIP      = c.PeerIP,
+                    ConversationId = c.ConversationId,
                     PeerName    = c.PeerName,
                     PhotoB64    = c.PhotoB64,
                     LastMessage = c.LastMessage,
@@ -167,11 +168,11 @@ public sealed partial class SidebarControl : UserControl
             }
         }
 
-        // Pass 2: drop any leftover rows whose IP isn't in target.
-        var keepIPs = target.Select(c => c.PeerIP).ToHashSet();
+        // Pass 2: drop any leftover rows whose conversation isn't in target.
+        var keepIds = target.Select(c => c.ConversationId).ToHashSet();
         for (var i = _rows.Count - 1; i >= 0; i--)
         {
-            if (!keepIPs.Contains(_rows[i].PeerIP)) _rows.RemoveAt(i);
+            if (!keepIds.Contains(_rows[i].ConversationId)) _rows.RemoveAt(i);
         }
 
         EmptyState.Visibility = _rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -189,11 +190,11 @@ public sealed partial class SidebarControl : UserControl
         }
 
         // Restore selection without re-firing SelectionChanged.
-        if (_model.SelectedPeerIP is not null)
+        if (_model.SelectedConversationId is not null)
         {
             var idx = -1;
             for (var i = 0; i < _rows.Count; i++)
-                if (_rows[i].PeerIP == _model.SelectedPeerIP) { idx = i; break; }
+                if (_rows[i].ConversationId == _model.SelectedConversationId) { idx = i; break; }
             if (idx >= 0 && ConversationList.SelectedIndex != idx)
                 ConversationList.SelectedIndex = idx;
         }
@@ -209,7 +210,7 @@ public sealed partial class SidebarControl : UserControl
     private void ConversationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (ConversationList.SelectedItem is ConversationRowViewModel row)
-            ConversationSelected?.Invoke(row.PeerIP);
+            ConversationSelected?.Invoke(row.ConversationId);
     }
 
     private void ArchivedSection_Click(object sender, RoutedEventArgs e) =>

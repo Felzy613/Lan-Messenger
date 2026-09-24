@@ -24,10 +24,18 @@ final class FileTransferService {
 
     static let shared = FileTransferService()
 
-    var onProgress:     ((String, String, Int64, Int64) -> Void)?          // peerIP, label, bytes, total
-    var onComplete:     ((String, String, String, URL?) -> Void)?          // peerIP, label, transferId, localURL (non-nil on sender)
-    var onError:        ((String, String) -> Void)?                        // peerIP, message
-    var onIncomingFile: ((String, String, String, URL) -> Void)?           // peerIP, sender, transferId, finalURL
+    // Every callback names the peer by identity key — the conversation the
+    // transfer belongs to — never by the address it travelled over.
+    var onProgress:     ((String, String, Int64, Int64) -> Void)?          // peer, label, bytes, total
+    var onComplete:     ((String, String, String, URL?) -> Void)?          // peer, label, transferId, localURL (non-nil on sender)
+    var onError:        ((String, String) -> Void)?                        // peer, message
+    var onIncomingFile: ((String, String, String, String, URL) -> Void)?   // peer, fromAddress, sender, transferId, finalURL
+
+    /// Whether `key` is known to be at `ip` — set by AppModel. Consulted only
+    /// for an empty file: every chunk proves the sender's key by decrypting
+    /// under it, and a transfer with no chunks proves nothing, so it is taken
+    /// only from an address that key already lives at.
+    var isBoundAddress: ((_ key: String, _ ip: String) -> Bool)?
 
     private let chunkSize = 64 * 1024   // 64 KiB per chunk
     private let tcpPort   = 54232
@@ -74,6 +82,15 @@ final class FileTransferService {
     private func handleFileStart(_ pkt: FileStartPacket, fromIP ip: String) {
         let inboxDir = ConfigStore.shared.inboxDirectory
         let safe     = PacketValidator.sanitizeFilename(pkt.filename)
+        let peer     = pkt.senderPublicKeyB64
+        guard PeerID.isKey(peer) else {
+            NetLogger.fileTransfer(
+                event: "failed", transferId: pkt.transferId, peer: ip,
+                direction: "incoming", filename: safe, size: pkt.size,
+                reason: "no usable sender key"
+            )
+            return
+        }
 
         NetLogger.fileTransfer(
             event: "start", transferId: pkt.transferId, peer: ip,
@@ -94,11 +111,11 @@ final class FileTransferService {
                 direction: "incoming", filename: safe, size: pkt.size,
                 reason: "cannot create temp file — disk full or permission denied"
             )
-            onError?(ip, "Cannot save incoming file — check disk space and inbox permissions")
+            onError?(peer, "Cannot save incoming file — check disk space and inbox permissions")
             return
         }
         incomingStartTimes[FileTransferStore.TransferKey(ip: ip, transferId: pkt.transferId)] = Date()
-        onProgress?(ip, "Receiving \(safe)", 0, pkt.size)
+        onProgress?(peer, "Receiving \(safe)", 0, pkt.size)
     }
 
     private func handleFileChunk(_ pkt: FileChunkPacket, fromIP ip: String) {
@@ -132,6 +149,10 @@ final class FileTransferService {
                 ciphertextB64:      ciphertext,
                 aad:                aad
             ) else {
+                // Remembered, not just logged: a file with a chunk missing is
+                // corrupt, and one where no chunk opens was never from the key
+                // it named. Either way file_end must not finalize it.
+                self.chunkState.markFailed(key)
                 NetLogger.fileTransfer(
                     event: "failed", transferId: transferId, peer: ip,
                     direction: "incoming", filename: filename,
@@ -161,7 +182,7 @@ final class FileTransferService {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 FileTransferStore.shared.setBytesReceived(bytes, forKey: key)
-                self.onProgress?(ip, "Receiving \(filename)", bytes, totalSize)
+                self.onProgress?(senderKey, "Receiving \(filename)", bytes, totalSize)
             }
         }
     }
@@ -172,18 +193,39 @@ final class FileTransferService {
         let filename   = transfer.filename
         let sender     = pkt.sender
         let transferId = pkt.transferId
+        let peer       = transfer.senderPublicKeyB64
 
         // Route through chunkQueue so finalization runs only after the last
         // chunk write has completed (serial queue drains in arrival order).
         chunkQueue.async { [weak self] in
             guard let self else { return }
-            self.chunkState.remove(key)  // clean up tracker before main hop
+            let outcome = self.chunkState.remove(key)  // clean up tracker before main hop
             NetLogger.debug("FileTransfer",
                 "all chunks received transfer_id=\(transferId) — finalizing")
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 let startedAt = self.incomingStartTimes.removeValue(forKey: key)
                 let totalSize = FileTransferStore.shared.incoming[key]?.totalSize
+                // Chunks that decrypted are what prove the sender's key. A
+                // failed chunk means the file is corrupt or was never theirs;
+                // no chunks at all proves nothing, so an empty file is taken
+                // only from an address that key is already known at.
+                let refusal: String? = {
+                    if outcome.failed { return "one or more chunks failed to decrypt" }
+                    if outcome.received == 0, self.isBoundAddress?(peer, ip) == false {
+                        return "empty file from an address \(peer.prefix(8)) is not known at"
+                    }
+                    return nil
+                }()
+                if let refusal {
+                    FileTransferStore.shared.cancelIncoming(key: key)
+                    NetLogger.fileTransfer(
+                        event: "failed", transferId: transferId, peer: ip,
+                        direction: "incoming", filename: filename, reason: refusal
+                    )
+                    self.onError?(peer, "Could not receive \(filename) — it arrived damaged")
+                    return
+                }
                 guard let finalURL = FileTransferStore.shared.finalizeIncoming(
                     key:      key,
                     inboxDir: ConfigStore.shared.inboxDirectory
@@ -206,23 +248,28 @@ final class FileTransferService {
                     mime: Self.mimeFromFilename(filename),
                     durationMs: durationMs, bytesPerSec: bps
                 )
-                self.onComplete?(ip, "Receiving \(filename)", transferId, nil)
-                self.onIncomingFile?(ip, sender, transferId, finalURL)
+                self.onComplete?(peer, "Receiving \(filename)", transferId, nil)
+                self.onIncomingFile?(peer, ip, sender, transferId, finalURL)
             }
         }
     }
 
     // MARK: - Send
 
-    func enqueue(filePath: String, toPeerIP ip: String, peerPublicKeyB64: String) {
+    /// Queues a file for the peer with identity key `peer`, and starts it if
+    /// nothing else is going to them. `address` is where that device is right
+    /// now; the queue itself belongs to the key, so a file waiting out a DHCP
+    /// change goes to the same device at its new address, not to whoever
+    /// inherited the old one.
+    func enqueue(filePath: String, toPeer peer: String, address: String) {
         let url = URL(fileURLWithPath: filePath)
         NetLogger.fileTransfer(
-            event: "queued", peer: ip, direction: "outgoing",
+            event: "queued", peer: address, direction: "outgoing",
             filename: url.lastPathComponent, size: Self.fileSize(atPath: filePath),
             mime: Self.mimeFromFilename(url.lastPathComponent)
         )
-        FileTransferStore.shared.enqueue(path: filePath, filename: url.lastPathComponent, forPeerIP: ip)
-        startNextIfIdle(peerIP: ip, peerPublicKeyB64: peerPublicKeyB64)
+        FileTransferStore.shared.enqueue(path: filePath, filename: url.lastPathComponent, forPeer: peer)
+        startNextIfIdle(peer: peer, address: address)
     }
 
     // Best-effort file size lookup for log enrichment.  Returns nil when the
@@ -235,16 +282,19 @@ final class FileTransferService {
 
     // Re-trigger the queue for a peer that has just come back online — covers
     // the case where a previous attempt failed and the file is still queued.
-    func retryQueue(toPeerIP ip: String, peerPublicKeyB64: String) {
-        startNextIfIdle(peerIP: ip, peerPublicKeyB64: peerPublicKeyB64)
+    func retryQueue(toPeer peer: String, address: String) {
+        startNextIfIdle(peer: peer, address: address)
     }
 
-    private func startNextIfIdle(peerIP: String, peerPublicKeyB64: String) {
-        guard !FileTransferStore.shared.activeOutgoing.contains(peerIP),
-              let item = FileTransferStore.shared.outgoingQueues[peerIP]?.first else { return }
-        if let lastFail = lastSendFailureAt[peerIP], Date().timeIntervalSince(lastFail) < sendRetryCooldown { return }
+    private func startNextIfIdle(peer peerPublicKeyB64: String, address peerIP: String) {
+        // No address means the device is not on the LAN; the queue waits for it.
+        guard !peerIP.isEmpty,
+              !FileTransferStore.shared.activeOutgoing.contains(peerPublicKeyB64),
+              let item = FileTransferStore.shared.outgoingQueues[peerPublicKeyB64]?.first else { return }
+        if let lastFail = lastSendFailureAt[peerPublicKeyB64],
+           Date().timeIntervalSince(lastFail) < sendRetryCooldown { return }
 
-        FileTransferStore.shared.markTransferStarted(peerIP: peerIP)
+        FileTransferStore.shared.markTransferStarted(peer: peerPublicKeyB64)
         let path     = item.path
         let filename = item.filename
 
@@ -282,26 +332,26 @@ final class FileTransferService {
                 tcpPort:          54232,
                 onProgress: { bytes, total in
                     DispatchQueue.main.async { [weak self] in
-                        self?.onProgress?(peerIP, "Sending \(filename)", bytes, total)
+                        self?.onProgress?(peerPublicKeyB64, "Sending \(filename)", bytes, total)
                     }
                 },
                 onComplete: { url, transferId in
                     DispatchQueue.main.async { [weak self] in
-                        self?.onComplete?(peerIP, "Sending \(filename)", transferId, url)
+                        self?.onComplete?(peerPublicKeyB64, "Sending \(filename)", transferId, url)
                     }
                 }
             )
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                FileTransferStore.shared.markTransferFinished(peerIP: peerIP, success: success)
+                FileTransferStore.shared.markTransferFinished(peer: peerPublicKeyB64, success: success)
                 let durationMs = Int(Date().timeIntervalSince(outgoingStartedAt) * 1000)
                 let bps: Double? = {
                     guard durationMs > 0, let sz = outgoingSize else { return nil }
                     return Double(sz) * 1000.0 / Double(durationMs)
                 }()
                 if success {
-                    self.lastSendFailureAt.removeValue(forKey: peerIP)
+                    self.lastSendFailureAt.removeValue(forKey: peerPublicKeyB64)
                     NetLogger.fileTransfer(
                         event: "complete", peer: peerIP, direction: "outgoing",
                         filename: filename, size: outgoingSize,
@@ -309,16 +359,16 @@ final class FileTransferService {
                         bytesSent: outgoingSize,
                         durationMs: durationMs, bytesPerSec: bps
                     )
-                    self.startNextIfIdle(peerIP: peerIP, peerPublicKeyB64: peerPublicKeyB64)
+                    self.startNextIfIdle(peer: peerPublicKeyB64, address: peerIP)
                 } else {
-                    self.lastSendFailureAt[peerIP] = Date()
+                    self.lastSendFailureAt[peerPublicKeyB64] = Date()
                     NetLogger.fileTransfer(
                         event: "failed", peer: peerIP, direction: "outgoing",
                         filename: filename, size: outgoingSize,
                         durationMs: durationMs,
                         reason: "will retry on reconnect"
                     )
-                    self.onError?(peerIP, "Failed to send \(filename) — will retry when peer reconnects")
+                    self.onError?(peerPublicKeyB64, "Failed to send \(filename) — will retry when peer reconnects")
                 }
             }
         }
@@ -570,6 +620,11 @@ final class FileTransferService {
 private final class ChunkQueueState: @unchecked Sendable {
     private var bytesReceived: [FileTransferStore.TransferKey: Int64] = [:]
     private var lastProgressAt: [FileTransferStore.TransferKey: Date] = [:]
+    private var failed: Set<FileTransferStore.TransferKey> = []
+
+    func markFailed(_ key: FileTransferStore.TransferKey) {
+        failed.insert(key)
+    }
 
     // Called from chunkQueue. Updates byte counter and decides whether to
     // fire a progress event. Returns (totalReceived, shouldReportToMain).
@@ -590,8 +645,13 @@ private final class ChunkQueueState: @unchecked Sendable {
         return (received, fire)
     }
 
-    func remove(_ key: FileTransferStore.TransferKey) {
-        bytesReceived.removeValue(forKey: key)
+    /// Forgets a transfer and reports how it went: the plaintext bytes that
+    /// decrypted, and whether any chunk failed to.
+    @discardableResult
+    func remove(_ key: FileTransferStore.TransferKey) -> (received: Int64, failed: Bool) {
         lastProgressAt.removeValue(forKey: key)
+        let received = bytesReceived.removeValue(forKey: key) ?? 0
+        let didFail = failed.remove(key) != nil
+        return (received, didFail)
     }
 }

@@ -242,10 +242,10 @@ struct ContentView: View {
             SidebarView()
                 .environmentObject(model)
         } detail: {
-            if let ip = model.selectedPeerIP {
-                ChatView(peerIP: ip)
+            if let peer = model.selectedPeerID {
+                ChatView(peerID: peer)
                     .environmentObject(model)
-                    .id(ip)     // re-create the view when peer changes
+                    .id(peer)     // re-create the view when peer changes
             } else {
                 emptyState
             }
@@ -342,7 +342,7 @@ struct TrayMenuView: View {
             Text("Conversations").font(.caption)
             ForEach(model.conversations.prefix(8)) { conv in
                 Button {
-                    model.selectedPeerIP = conv.peerIP
+                    model.selectedPeerID = conv.peerID
                     WindowController.showMainWindow()
                 } label: {
                     HStack {

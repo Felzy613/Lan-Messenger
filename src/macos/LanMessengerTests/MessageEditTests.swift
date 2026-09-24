@@ -13,16 +13,16 @@ final class MessageEditTests: XCTestCase {
     private let peer = "192.168.99.77"
 
     override func tearDown() {
-        HistoryStore.shared.delete(peerIP: peer)
+        HistoryStore.shared.delete(peer: peer)
         super.tearDown()
     }
 
     private func seed(_ entry: MessageEntry) {
-        HistoryStore.shared.append(entry: entry, forPeerIP: peer)
+        HistoryStore.shared.append(entry: entry, forPeer: peer)
     }
 
     private func stored(_ messageId: String) -> MessageEntry? {
-        HistoryStore.shared.entries(forPeerIP: peer).first { $0.messageId == messageId }
+        HistoryStore.shared.entries(forPeer: peer).first { $0.messageId == messageId }
     }
 
     private func outgoing(_ id: String, _ text: String) -> MessageEntry {
@@ -41,7 +41,7 @@ final class MessageEditTests: XCTestCase {
         seed(outgoing("edit-own", "teh original"))
 
         XCTAssertTrue(HistoryStore.shared.applyEdit(
-            messageId: "edit-own", peerIP: peer,
+            messageId: "edit-own", peer: peer,
             newText: "the original", editedAt: 555, requireIncoming: false))
 
         let e = stored("edit-own")
@@ -57,7 +57,7 @@ final class MessageEditTests: XCTestCase {
         seed(incoming("edit-theirs", "hlelo"))
 
         XCTAssertTrue(HistoryStore.shared.applyEdit(
-            messageId: "edit-theirs", peerIP: peer,
+            messageId: "edit-theirs", peer: peer,
             newText: "hello", editedAt: 556, requireIncoming: true))
 
         XCTAssertEqual(stored("edit-theirs")?.text, "hello")
@@ -72,7 +72,7 @@ final class MessageEditTests: XCTestCase {
         // Exactly what a malicious peer would send: they know this id, because
         // we sent it to them.
         XCTAssertFalse(HistoryStore.shared.applyEdit(
-            messageId: "edit-spoof", peerIP: peer,
+            messageId: "edit-spoof", peer: peer,
             newText: "I agree to pay $10,000", editedAt: 557, requireIncoming: true))
 
         let e = stored("edit-spoof")
@@ -84,7 +84,7 @@ final class MessageEditTests: XCTestCase {
         seed(incoming("edit-inbound", "what they said"))
 
         XCTAssertFalse(HistoryStore.shared.applyEdit(
-            messageId: "edit-inbound", peerIP: peer,
+            messageId: "edit-inbound", peer: peer,
             newText: "what I wish they said", editedAt: 558, requireIncoming: false))
 
         XCTAssertEqual(stored("edit-inbound")?.text, "what they said")
@@ -99,7 +99,7 @@ final class MessageEditTests: XCTestCase {
         seed(outgoing("edit-file", "__FILE__:/Users/dave/Downloads/report.pdf"))
 
         XCTAssertFalse(HistoryStore.shared.applyEdit(
-            messageId: "edit-file", peerIP: peer,
+            messageId: "edit-file", peer: peer,
             newText: "something else", editedAt: 559, requireIncoming: false))
 
         XCTAssertEqual(stored("edit-file")?.text, "__FILE__:/Users/dave/Downloads/report.pdf")
@@ -111,7 +111,7 @@ final class MessageEditTests: XCTestCase {
         seed(e)
 
         XCTAssertFalse(HistoryStore.shared.applyEdit(
-            messageId: "edit-deleted", peerIP: peer,
+            messageId: "edit-deleted", peer: peer,
             newText: "undelete me", editedAt: 560, requireIncoming: false))
 
         XCTAssertEqual(stored("edit-deleted")?.text, "")
@@ -122,7 +122,7 @@ final class MessageEditTests: XCTestCase {
         seed(outgoing("edit-present", "untouched"))
 
         XCTAssertFalse(HistoryStore.shared.applyEdit(
-            messageId: "edit-absent", peerIP: peer,
+            messageId: "edit-absent", peer: peer,
             newText: "ghost", editedAt: 561, requireIncoming: false))
 
         XCTAssertEqual(stored("edit-present")?.text, "untouched")
@@ -130,7 +130,7 @@ final class MessageEditTests: XCTestCase {
 
     func testUnknownPeerChangesNothing() {
         XCTAssertFalse(HistoryStore.shared.applyEdit(
-            messageId: "anything", peerIP: "10.255.255.254",
+            messageId: "anything", peer: "10.255.255.254",
             newText: "ghost", editedAt: 562, requireIncoming: true))
     }
 

@@ -17,25 +17,51 @@ public sealed class MessagingService
     public NetworkCoordinator? Coordinator { get; set; }
     private DispatcherQueue? _dq;
 
-    // UI callbacks
-    public Action<string, MessageEntry>?      OnMessageReceived { get; set; }  // peerIP, entry
-    public Action<string, string, string>?    OnStatusUpdate    { get; set; }  // peerIP, messageId, status
-    public Action<string, string, bool>?      OnTypingUpdate    { get; set; }  // peerIP, senderName, active
-    public Action<string, string>?            OnMessageDeleted  { get; set; }  // peerIP, messageId
-    // peerIP, messageId, newText, editedAt
+    // UI callbacks. Every one names the conversation by its id (PeerId) — the
+    // peer's identity key — never by the address a packet happened to arrive
+    // from. DHCP hands the same addresses to different machines, so an address
+    // is not a person.
+    public Action<string, MessageEntry>?      OnMessageReceived { get; set; }  // peer, entry
+    public Action<string, string, string>?    OnStatusUpdate    { get; set; }  // peer, messageId, status
+    public Action<string, string, bool>?      OnTypingUpdate    { get; set; }  // peer, senderName, active
+    public Action<string, string>?            OnMessageDeleted  { get; set; }  // peer, messageId
+    // peer, messageId, newText, editedAt
     public Action<string, string, string, double>? OnMessageEdited { get; set; }
+
+    /// <summary>
+    /// Whether <c>ip</c> is an address the device holding <c>key</c> has been
+    /// seen at. The gate for packets that only <i>claim</i> a sender — typing,
+    /// receipts and delete_message are not encrypted, so their
+    /// sender_public_key_b64 is whatever the sender typed. Encrypted packets
+    /// prove the key by decrypting and do not need this. Filed by source
+    /// address, those packets at least needed a completed TCP connection from
+    /// that address; filed by a bare claimed key they would need nothing at
+    /// all, since public keys are public. Binding the claim to an address that
+    /// key is known at keeps them exactly as hard to forge as before.
+    /// Unset means "accept", so the service stays usable without an AppModel.
+    /// </summary>
+    public Func<string, string, bool>?        IsBoundAddress    { get; set; }  // key, ip
+
+    /// <summary>
+    /// A message decrypted under <c>key</c> arrived from <c>ip</c> — the device
+    /// holding that key is there now. How a peer whose discovery beacons never
+    /// reach us still gets its replies: the address is learned from traffic that
+    /// proved who sent it, never from a claim. Fresh messages only; a duplicate
+    /// may be a replay.
+    /// </summary>
+    public Action<string, string, string>?    OnPeerAddressProven { get; set; } // key, ip, senderName
     // Fired once the cloud relay Worker confirms an outgoing message was
     // actually stored — not when the upload is merely attempted. Lets the UI
     // show the "via relay" badge promptly instead of only after the
     // recipient later retrieves the message (which is what a full history
     // reload previously depended on).
     public Action<string>?                    OnDeliveryPathUpdate { get; set; } // messageId
-    // Fired whenever a direct outbound TCP send actually lands — a completed
-    // handshake + write is at least as strong proof of reachability as an
-    // inbound discovery beacon. Lets AppModel mark the peer online even when
-    // this machine's discovery reception is broken/firewalled, instead of
-    // presence depending solely on inbound traffic.
-    public Action<string>?                    OnPeerReachable      { get; set; } // peerIP
+    // Fired whenever a direct outbound TCP send to a peer's live address
+    // actually lands — a completed handshake + write is at least as strong
+    // proof of reachability as an inbound discovery beacon, so a peer we are
+    // talking to stays online between its own beacons. Names the key the send
+    // was addressed to, never "whoever is at this IP".
+    public Action<string, string>?            OnPeerReachable      { get; set; } // peer key, ip
 
     private const int TcpPort = 54232;
     private readonly Dictionary<string, DateTime> _typingSentAt    = [];
@@ -77,9 +103,17 @@ public sealed class MessagingService
 
     // MARK: - Send text
 
+    /// <summary>
+    /// Sends to <paramref name="peerPublicKeyB64"/>, filed under that key — the
+    /// same key it is encrypted to. <paramref name="peerIP"/> is where that
+    /// device is right now, or "" when it is not on the LAN: the message is
+    /// then queued and relayed at once rather than dialled at a remembered
+    /// address that may belong to somebody else by now.
+    /// </summary>
     public void SendText(string text, string peerIP, string peerPublicKeyB64,
                          string? peerRelayIdHash = null, MessageEntry? replyTo = null)
     {
+        var peer = peerPublicKeyB64;
         var messageId = Guid.NewGuid().ToString("N").ToLowerInvariant();
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
         var aad       = Encoding.UTF8.GetBytes(messageId);
@@ -98,10 +132,10 @@ public sealed class MessagingService
             ReplyToPreview   = replyPreview,
             ReplyToSender    = replyTo?.Sender,
         };
-        HistoryStore.Shared.Append(entry, peerIP);
+        HistoryStore.Shared.Append(entry, peer);
         HistoryStore.Shared.Save();
-        Dispatch(() => OnMessageReceived?.Invoke(peerIP, entry));
-        LanLogger.Info("Send", $"text msgId={messageId} peer={peerIP} bytes={text.Length}");
+        Dispatch(() => OnMessageReceived?.Invoke(peer, entry));
+        LanLogger.Info("Send", $"text msgId={messageId} peer={peer[..Math.Min(8, peer.Length)]} addr={peerIP} bytes={text.Length}");
 
         (string nonceB64, string ctB64)? encrypted;
         try
@@ -113,7 +147,7 @@ public sealed class MessagingService
         catch (Exception ex)
         {
             LanLogger.Error("Send", $"encrypt failed msgId={messageId} peer={peerIP}", ex);
-            ApplyStatus(MessageStatus.Failed, messageId, peerIP);
+            ApplyStatus(MessageStatus.Failed, messageId, peer);
             return;
         }
 
@@ -135,9 +169,17 @@ public sealed class MessagingService
             if (replyTo.Sender is not null) packet["reply_to_sender"] = replyTo.Sender;
         }
 
+        if (string.IsNullOrEmpty(peerIP))
+        {
+            LanLogger.Info("Send", $"peer {peer[..Math.Min(8, peer.Length)]} not on the LAN — queueing msgId={messageId} for relay/redelivery");
+            QueuePending(messageId, text, peerPublicKeyB64, peerRelayIdHash, timestamp);
+            ApplyStatus(MessageStatus.Queued, messageId, peer);
+            return;
+        }
+
         Task.Run(async () =>
         {
-            var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"text msgId={messageId}");
+            var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"text msgId={messageId}", peer);
             if (success)
             {
                 LanLogger.Info("Send", $"TCP delivered msgId={messageId} peer={peerIP}");
@@ -155,7 +197,7 @@ public sealed class MessagingService
                 // arrived between the WriteAsync and this dispatch, the rank
                 // check drops this update and the message correctly stays at
                 // two ticks instead of regressing to one.
-                ApplyStatus(status, messageId, peerIP);
+                ApplyStatus(status, messageId, peer);
             });
         });
     }
@@ -177,13 +219,15 @@ public sealed class MessagingService
 
     public void SendTyping(bool active, string peerIP, string peerPublicKeyB64)
     {
+        if (string.IsNullOrEmpty(peerIP)) return;
+        var peer = peerPublicKeyB64;
         var now = DateTime.UtcNow;
-        if (!active && _lastTypingState.TryGetValue(peerIP, out var last) && !last) return;
-        if (active && _lastTypingState.TryGetValue(peerIP, out var prev) && prev
-            && _typingSentAt.TryGetValue(peerIP, out var sent) && (now - sent).TotalSeconds < 3) return;
+        if (!active && _lastTypingState.TryGetValue(peer, out var last) && !last) return;
+        if (active && _lastTypingState.TryGetValue(peer, out var prev) && prev
+            && _typingSentAt.TryGetValue(peer, out var sent) && (now - sent).TotalSeconds < 3) return;
 
-        _lastTypingState[peerIP] = active;
-        _typingSentAt[peerIP]    = now;
+        _lastTypingState[peer] = active;
+        _typingSentAt[peer]    = now;
 
         var packet = new Dictionary<string, object?>
         {
@@ -193,13 +237,14 @@ public sealed class MessagingService
             ["sender_public_key_b64"] = KeyManager.Shared.PublicKeyB64,
             ["port"]                  = TcpPort,
         };
-        Task.Run(() => FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"typing active={active}"));
+        Task.Run(() => FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"typing active={active}", peer));
     }
 
     // MARK: - Send receipt
 
     public void SendReceipt(string type, string messageId, string peerIP)
     {
+        if (string.IsNullOrEmpty(peerIP)) return;
         var packet = new Dictionary<string, object?>
         {
             ["type"]                  = type,
@@ -428,7 +473,7 @@ public sealed class MessagingService
             var msgId = msg.MessageId;
             Task.Run(async () =>
             {
-                var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"pending msgId={msgId}");
+                var success = await FireTcpAsync(FrameCodec.EncodeDict(packet), peerIP, TcpPort, $"pending msgId={msgId}", peerPublicKeyB64);
                 // Remove only after confirmed delivery so a TCP failure doesn't
                 // silently drop the message from the queue. On failure, clearing
                 // the in-flight flag lets the next heartbeat retry after the
@@ -438,7 +483,7 @@ public sealed class MessagingService
                     _pendingInFlight.Remove(msgId);
                     if (!success) return;
                     _pendingLastTry.Remove(msgId);
-                    ApplyStatus(MessageStatus.Sent, msgId, peerIP);
+                    ApplyStatus(MessageStatus.Sent, msgId, peerPublicKeyB64);
                     // Note whether this message had already landed on the relay
                     // before removing it from the queue — if so, clean up the
                     // Worker copy now that direct LAN delivery beat it there.
@@ -459,17 +504,11 @@ public sealed class MessagingService
 
     private void HandleText(TextPacket pkt, string ip)
     {
-        // Duplicate suppression: heartbeat-driven queue retries (and a sender
-        // whose sent_receipt got lost) can legitimately re-send a message we
-        // already have. Don't append it twice — but do re-acknowledge, because
-        // a re-send means the sender never saw our first receipt.
-        if (HistoryStore.Shared.Entries(ip).Any(e => e.MessageId == pkt.MessageId))
-        {
-            LanLogger.Info("Recv", $"duplicate text msgId={pkt.MessageId} peer={ip} — re-sending receipt only");
-            SendReceipt("sent_receipt", pkt.MessageId, ip);
-            return;
-        }
-
+        // Decrypt FIRST. Opening under the claimed key is what proves who sent
+        // it — after this, pkt.SenderPublicKeyB64 is an identity rather than a
+        // claim, and it is the conversation the message belongs to. Checking
+        // for a duplicate before this answered a forged packet naming a real
+        // message id with a receipt, confirming to a stranger that we had it.
         var aad = Encoding.UTF8.GetBytes(pkt.MessageId);
         byte[] plaintext;
         try { plaintext = SessionCrypto.DecryptFromPeer(KeyManager.Shared.PrivateKey, pkt.SenderPublicKeyB64, pkt.Nonce, pkt.Ciphertext, aad); }
@@ -481,14 +520,27 @@ public sealed class MessagingService
             LanLogger.Error("Recv", $"decrypt failed msgId={pkt.MessageId} peer={ip}", ex);
             return;
         }
-        LanLogger.Info("Recv", $"text msgId={pkt.MessageId} peer={ip} bytes={plaintext.Length}");
+        var peer = pkt.SenderPublicKeyB64;
+
+        // Duplicate suppression: heartbeat-driven queue retries (and a sender
+        // whose sent_receipt got lost) can legitimately re-send a message we
+        // already have. Don't append it twice — but do re-acknowledge, because
+        // a re-send means the sender never saw our first receipt.
+        if (HistoryStore.Shared.Entries(peer).Any(e => e.MessageId == pkt.MessageId))
+        {
+            LanLogger.Info("Recv", $"duplicate text msgId={pkt.MessageId} peer={ip} — re-sending receipt only");
+            SendReceipt("sent_receipt", pkt.MessageId, ip);
+            return;
+        }
+        LanLogger.Info("Recv", $"text msgId={pkt.MessageId} peer={ip} key={peer[..Math.Min(8, peer.Length)]} bytes={plaintext.Length}");
+        Dispatch(() => OnPeerAddressProven?.Invoke(peer, ip, pkt.Sender));
 
         // If the packet didn't carry a preview but we know the original, fill it in.
         var preview = pkt.ReplyToPreview;
         var replyToSender = pkt.ReplyToSender;
         if (!string.IsNullOrEmpty(pkt.ReplyToMessageId) && preview is null)
         {
-            var orig = HistoryStore.Shared.Entries(ip)
+            var orig = HistoryStore.Shared.Entries(peer)
                 .FirstOrDefault(e => e.MessageId == pkt.ReplyToMessageId);
             if (orig is not null)
             {
@@ -507,30 +559,50 @@ public sealed class MessagingService
             ReplyToPreview   = preview,
             ReplyToSender    = replyToSender,
         };
-        HistoryStore.Shared.Append(entry, ip);
+        HistoryStore.Shared.Append(entry, peer);
         HistoryStore.Shared.Save();
 
         Dispatch(() =>
         {
-            OnMessageReceived?.Invoke(ip, entry);
-            OnTypingUpdate?.Invoke(ip, pkt.Sender, false);
+            OnMessageReceived?.Invoke(peer, entry);
+            OnTypingUpdate?.Invoke(peer, pkt.Sender, false);
         });
         SendReceipt("sent_receipt", pkt.MessageId, ip);
     }
 
-    private void HandleTyping(TypingPacket pkt, string ip) =>
-        Dispatch(() => OnTypingUpdate?.Invoke(ip, pkt.Sender, pkt.Active));
+    /// <summary>The conversation an unencrypted packet belongs to, or null to drop it.</summary>
+    private string? ClaimedPeer(string key, string ip, string what)
+    {
+        if (!PeerId.IsKey(key))
+        {
+            LanLogger.Info("Recv", $"{what} from {ip} dropped — no usable sender key");
+            return null;
+        }
+        if (IsBoundAddress is { } bound && !bound(key, ip))
+        {
+            LanLogger.Info("Recv", $"{what} from {ip} dropped — not an address {key[..8]} is known at");
+            return null;
+        }
+        return key;
+    }
+
+    private void HandleTyping(TypingPacket pkt, string ip)
+    {
+        if (ClaimedPeer(pkt.SenderPublicKeyB64, ip, "typing") is not { } peer) return;
+        Dispatch(() => OnTypingUpdate?.Invoke(peer, pkt.Sender, pkt.Active));
+    }
 
     private void HandleDeleteMessage(ReceiptPacket pkt, string ip)
     {
         LanLogger.Info("Recv", $"delete_message msgId={pkt.MessageId} peer={ip}");
-        if (!HistoryStore.Shared.MarkDeleted(pkt.MessageId, ip, requireIncoming: true))
+        if (ClaimedPeer(pkt.SenderPublicKeyB64, ip, "delete_message") is not { } peer) return;
+        if (!HistoryStore.Shared.MarkDeleted(pkt.MessageId, peer, requireIncoming: true))
         {
             LanLogger.Info("Delete", $"ignored inbound delete msgId={pkt.MessageId} peer={ip} — no deletable incoming message");
             return;
         }
         HistoryStore.Shared.Save();
-        Dispatch(() => OnMessageDeleted?.Invoke(ip, pkt.MessageId));
+        Dispatch(() => OnMessageDeleted?.Invoke(peer, pkt.MessageId));
     }
 
     // Applies an inbound edit: replaces the stored text of the peer's own
@@ -554,14 +626,17 @@ public sealed class MessagingService
         }
 
         var newText = Encoding.UTF8.GetString(plaintext);
-        if (!HistoryStore.Shared.ApplyEdit(pkt.MessageId, ip, newText, pkt.Timestamp, requireIncoming: true))
+        // Decrypted, so the key is proven: only this device's own conversation
+        // is searched, and within it only its incoming messages.
+        var peer = pkt.SenderPublicKeyB64;
+        if (!HistoryStore.Shared.ApplyEdit(pkt.MessageId, peer, newText, pkt.Timestamp, requireIncoming: true))
         {
             LanLogger.Info("Edit", $"ignored inbound edit msgId={pkt.MessageId} peer={ip} — no editable incoming message");
             return;
         }
         HistoryStore.Shared.Save();
         LanLogger.Info("Recv", $"edit_message applied msgId={pkt.MessageId} peer={ip}");
-        Dispatch(() => OnMessageEdited?.Invoke(ip, pkt.MessageId, newText, pkt.Timestamp));
+        Dispatch(() => OnMessageEdited?.Invoke(peer, pkt.MessageId, newText, pkt.Timestamp));
     }
 
     /// <summary>
@@ -570,30 +645,31 @@ public sealed class MessagingService
     /// requireIncoming gate applies identically: a peer can only edit or delete
     /// their own messages, never ours.
     /// </summary>
-    private void ApplyRelayControl(RelayControlEnvelope envelope, string ip)
+    private void ApplyRelayControl(RelayControlEnvelope envelope, string peer)
     {
+        var who = peer[..Math.Min(8, peer.Length)];
         if (envelope.Op == RelayControlOp.Edit)
         {
             var newText = envelope.Text ?? "";
-            if (!HistoryStore.Shared.ApplyEdit(envelope.Target, ip, newText, envelope.At, requireIncoming: true))
+            if (!HistoryStore.Shared.ApplyEdit(envelope.Target, peer, newText, envelope.At, requireIncoming: true))
             {
-                LanLogger.Info("Relay", $"ignored relayed edit target={envelope.Target} peer={ip} — no editable incoming message");
+                LanLogger.Info("Relay", $"ignored relayed edit target={envelope.Target} peer={who} — no editable incoming message");
                 return;
             }
             HistoryStore.Shared.Save();
-            LanLogger.Info("Relay", $"applied relayed edit target={envelope.Target} peer={ip}");
-            Dispatch(() => OnMessageEdited?.Invoke(ip, envelope.Target, newText, envelope.At));
+            LanLogger.Info("Relay", $"applied relayed edit target={envelope.Target} peer={who}");
+            Dispatch(() => OnMessageEdited?.Invoke(peer, envelope.Target, newText, envelope.At));
         }
         else
         {
-            if (!HistoryStore.Shared.MarkDeleted(envelope.Target, ip, requireIncoming: true))
+            if (!HistoryStore.Shared.MarkDeleted(envelope.Target, peer, requireIncoming: true))
             {
-                LanLogger.Info("Relay", $"ignored relayed delete target={envelope.Target} peer={ip} — no deletable incoming message");
+                LanLogger.Info("Relay", $"ignored relayed delete target={envelope.Target} peer={who} — no deletable incoming message");
                 return;
             }
             HistoryStore.Shared.Save();
-            LanLogger.Info("Relay", $"applied relayed delete target={envelope.Target} peer={ip}");
-            Dispatch(() => OnMessageDeleted?.Invoke(ip, envelope.Target));
+            LanLogger.Info("Relay", $"applied relayed delete target={envelope.Target} peer={who}");
+            Dispatch(() => OnMessageDeleted?.Invoke(peer, envelope.Target));
         }
     }
 
@@ -603,22 +679,23 @@ public sealed class MessagingService
         // read_receipt = read by the peer (two blue ticks)
         var status = pkt.Type == "read_receipt" ? MessageStatus.Read : MessageStatus.Delivered;
         LanLogger.Info("Recv", $"{pkt.Type} msgId={pkt.MessageId} peer={ip}");
+        if (ClaimedPeer(pkt.SenderPublicKeyB64, ip, pkt.Type) is not { } peer) return;
         // ApplyStatus is rank-aware: a late "Sent" dispatch from the sender's
         // own TCP-write completion cannot regress this. See MessageStatus.cs.
-        ApplyStatus(status, pkt.MessageId, ip);
+        ApplyStatus(status, pkt.MessageId, peer);
     }
 
     // MARK: - Helpers
 
     // Single funnel for every status mutation. Always rank-aware so the
     // races described in MessageStatus.cs can't downgrade a message.
-    private void ApplyStatus(string status, string messageId, string peerIP)
+    private void ApplyStatus(string status, string messageId, string peer)
     {
-        var applied = HistoryStore.Shared.UpdateStatus(status, messageId, peerIP);
+        var applied = HistoryStore.Shared.UpdateStatus(status, messageId, peer);
         if (!applied) return;
         HistoryStore.Shared.Save();
-        OnStatusUpdate?.Invoke(peerIP, messageId, status);
-        LanLogger.Info("Status", $"msgId={messageId} peer={peerIP} -> {status}");
+        OnStatusUpdate?.Invoke(peer, messageId, status);
+        LanLogger.Info("Status", $"msgId={messageId} peer={peer[..Math.Min(8, peer.Length)]} -> {status}");
     }
 
     private void QueuePending(
@@ -728,14 +805,18 @@ public sealed class MessagingService
 
     /// Decrypts and processes a message that arrived via the cloud relay.
     /// Call from AppModel after FetchPendingAsync().
-    public void HandleRelayMessage(RelayPendingMessage msg, string fromStoredIP)
+    /// <summary>
+    /// Filed under the sender's key. <paramref name="replyAddress"/> is only
+    /// where a delivery receipt can go — the sender's live address, or "" when
+    /// they are not on the LAN right now, in which case they simply don't get one.
+    /// </summary>
+    public void HandleRelayMessage(RelayPendingMessage msg, string replyAddress)
     {
-        // Global dedup: this message's MessageId may already be filed under a
-        // *different* IP bucket than fromStoredIP resolves to on this poll —
-        // peer IP resolution depends on ephemeral state (live peers, contacts,
-        // session cache) that can change between polls. A per-IP check here
-        // would miss that and re-append the message. If we already have it,
-        // just clean up the mailbox so it doesn't linger for the full TTL.
+        // Global dedup: the same message may already have arrived over the LAN,
+        // and history written before conversations were filed by key can hold
+        // it under an address-named bucket this key's thread never reads. If we
+        // already have it, just clean up the mailbox so it doesn't linger for
+        // the full TTL.
         if (HistoryStore.Shared.ContainsMessageId(msg.MessageId))
         {
             LanLogger.Info("Relay", $"duplicate relay msg {msg.MessageId} — already in history, deleting from mailbox only");
@@ -758,13 +839,14 @@ public sealed class MessagingService
         }
 
         var text = Encoding.UTF8.GetString(plaintext);
+        var peer = msg.SenderPublicKeyB64;
 
         // A control record carries an edit or delete the sender made while we
         // were offline. It is never a chat message and must not become a bubble.
         var control = RelayControlEnvelope.Decode(text);
         if (control is not null)
         {
-            ApplyRelayControl(control, fromStoredIP);
+            ApplyRelayControl(control, peer);
             // Applied or refused, the record is spent: leaving it would replay
             // on every poll until the Worker's 72-hour TTL expires it.
             _ = RelayClient.Shared.DeleteAsync(msg.MessageId);
@@ -782,22 +864,26 @@ public sealed class MessagingService
             ReadReceiptSent = false,
             DeliveryPath    = "relay",
         };
-        HistoryStore.Shared.Append(entry, fromStoredIP);
+        HistoryStore.Shared.Append(entry, peer);
         HistoryStore.Shared.Save();
-        Dispatch(() => OnMessageReceived?.Invoke(fromStoredIP, entry));
-        LanLogger.Info("Relay", $"delivered relay msg {msg.MessageId} from {msg.SenderUsername} via ip={fromStoredIP}");
+        Dispatch(() => OnMessageReceived?.Invoke(peer, entry));
+        LanLogger.Info("Relay", $"delivered relay msg {msg.MessageId} from {msg.SenderUsername} peer={peer[..Math.Min(8, peer.Length)]}");
 
-        // Send sent_receipt so the sender sees "Delivered" for their relayed message.
-        // Only attempt when the IP is a real address (not a synthetic "relay-…" placeholder).
-        if (!fromStoredIP.StartsWith("relay-", StringComparison.Ordinal))
-            SendReceipt("sent_receipt", msg.MessageId, fromStoredIP);
+        // Send sent_receipt so the sender sees "Delivered" for their relayed
+        // message — only when they are on the LAN right now.
+        if (!string.IsNullOrEmpty(replyAddress))
+            SendReceipt("sent_receipt", msg.MessageId, replyAddress);
 
         // Delete from relay now that we've processed it (best-effort)
         _ = RelayClient.Shared.DeleteAsync(msg.MessageId);
     }
 
-    private async Task<bool> FireTcpAsync(byte[] frame, string ip, int port, string description)
+    private async Task<bool> FireTcpAsync(byte[] frame, string ip, int port, string description,
+                                          string? peerKey = null)
     {
+        // An empty address is a peer that is not on the LAN: fail at once, and
+        // let the caller queue or relay.
+        if (string.IsNullOrEmpty(ip)) return false;
         // Two attempts with a short pause. A single SYN lost to Wi-Fi power
         // save or a peer's listener mid-rebuild is common on real LANs; without
         // the retry, one lost packet turns into a "Queued" message even though
@@ -805,13 +891,13 @@ public sealed class MessagingService
         // connected or delivered a partial frame, which the receiver discards.
         if (await FireTcpOnceAsync(frame, ip, port, description).ConfigureAwait(false))
         {
-            Dispatch(() => OnPeerReachable?.Invoke(ip));
+            if (peerKey is not null) Dispatch(() => OnPeerReachable?.Invoke(peerKey, ip));
             return true;
         }
         await Task.Delay(300).ConfigureAwait(false);
         if (await FireTcpOnceAsync(frame, ip, port, $"{description} (retry)").ConfigureAwait(false))
         {
-            Dispatch(() => OnPeerReachable?.Invoke(ip));
+            if (peerKey is not null) Dispatch(() => OnPeerReachable?.Invoke(peerKey, ip));
             return true;
         }
         return false;

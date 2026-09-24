@@ -31,9 +31,13 @@ struct PeerInfo: Identifiable {
 
 // ViewModel for one conversation row in the sidebar.
 struct ConversationViewModel: Identifiable {
-    var id: String { peerIP }
-    var peerIP: String
+    var id: String { peerID }
+    /// The conversation's identity (`PeerID`): the peer's key, or `ip:<address>`
+    /// for history from before keys were the filing name that no single
+    /// contact could be matched to.
+    var peerID: String
     var peerName: String
+    /// The key to encrypt to — equal to `peerID`, or "" for a legacy thread.
     var peerPublicKeyB64: String
     var photoB64: String?
     var lastMessage: String
@@ -43,6 +47,9 @@ struct ConversationViewModel: Identifiable {
     var typingSender: String
     var isOnline: Bool
     var isArchived: Bool
+    /// A thread with no key behind it. It can be read and deleted, not
+    /// replied to: there is nobody it can safely be encrypted to.
+    var isLegacy: Bool { PeerID.isLegacy(peerID) }
 }
 
 // Root state object. Wires up all services and is the single source of truth for the UI.
@@ -52,14 +59,15 @@ final class AppModel: ObservableObject {
     // MARK: - Published UI state
     @Published var peers: [String: PeerInfo] = [:]                  // keyed by publicKeyB64
 
-    // Cache of ip → publicKeyB64 for every peer we've ever seen a packet from.
-    // Persists across peer timeout/reconnect so we can reply to unsaved contacts
-    // even if they've gone offline or aren't in the contacts list.
-    private var knownPeerKeys: [String: String] = [:]
+    // Everything below is keyed by conversation id (`PeerID`) — the peer's
+    // identity key — and never by address. An address is where a device is
+    // this morning; DHCP gives the same numbers to other machines, so a thread
+    // filed by address is eventually somebody else's. Where to *send* is
+    // looked up at the moment of sending: `liveAddress(forPeer:)`.
     @Published var conversations: [ConversationViewModel] = []
     @Published var archivedConversations: [ConversationViewModel] = []
-    @Published var selectedPeerIP: String?
-    @Published var messages: [String: [MessageEntry]] = [:]          // keyed by peerIP
+    @Published var selectedPeerID: String?
+    @Published var messages: [String: [MessageEntry]] = [:]
     // In-memory only — not persisted to ConfigStore/disk. Lets the user switch
     // conversations without losing an in-progress, unsent draft.
     @Published var drafts: [String: String] = [:]
@@ -89,8 +97,8 @@ final class AppModel: ObservableObject {
 
     private let remoteViewerWindow = RemoteViewerWindowController()
 
-    /// The conversation an audit record belongs to.
-    private var remoteAuditPeerIP: String?
+    /// The conversation an audit record belongs to — the peer's identity key.
+    private var remoteAuditPeer: String?
 
     /// Who the live session is with. The second consent prompt needs the peer's
     /// key to show a fingerprint, and by the time control is requested the
@@ -231,13 +239,37 @@ final class AppModel: ObservableObject {
                 self?.armedHosting = (sessionID, peerName, peerIP)
             }))
         coordinator.onStateChange = { [weak self] message in
-            self?.remoteInviteStatus = message.isEmpty ? nil : message
+            self?.showRemoteInviteStatus(message)
         }
         return coordinator
     }()
 
-    /// What the contact strip shows while an invite is in flight.
+    /// What the contact strip shows about an invite we sent: waiting, declined,
+    /// unreachable, timed out.
+    ///
+    /// Computed since the invite exchange was written and, until now, shown
+    /// nowhere — no view read it. Every outcome therefore looked the same as a
+    /// dead button: a decline, a timeout, an address that reached nobody, and
+    /// even an invite that was working and waiting for an answer.
     @Published private(set) var remoteInviteStatus: String?
+    /// Whose conversation the status belongs to, by identity key. Shown only in
+    /// that peer's header, so "Waiting for Ari…" never appears in the Dell's.
+    @Published private(set) var remoteInviteTargetKey: String?
+    private var remoteInviteStatusClear: Task<Void, Never>?
+
+    /// Sets the status, and lets anything final fade after a few seconds. The
+    /// waiting message stays for as long as the wait does; a decline or a
+    /// timeout is news once and then just noise in the header.
+    private func showRemoteInviteStatus(_ message: String) {
+        remoteInviteStatusClear?.cancel()
+        remoteInviteStatus = message.isEmpty ? nil : message
+        guard !message.isEmpty, !message.hasPrefix("Waiting for") else { return }
+        remoteInviteStatusClear = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.remoteInviteStatus = nil
+        }
+    }
     @Published var pendingImportKeyData: Data? = nil
     @Published var availableUpdate: UpdateInfo? = nil
     @Published var updateProgress: UpdateProgress = .idle
@@ -322,6 +354,7 @@ final class AppModel: ObservableObject {
         isLocalNetworkAvailable = coordinator.isLocalNetworkAvailable
         NotificationService.shared.requestAuthorization()
         removeOwnContact()
+        migrateConversationLists()
         loadHistory()
         startPeerTimeoutTimer()
         checkMigration()
@@ -378,6 +411,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Re-files the archived and hidden lists from addresses to identity keys,
+    /// the same way `HistoryStore` re-files history at load. Idempotent: a key
+    /// is already an id, so once done this changes nothing.
+    private func migrateConversationLists() {
+        let contacts = ConfigStore.shared.config.contacts.map {
+            PeerID.Contact(publicKeyB64: $0.publicKeyB64, lastIP: $0.lastIP)
+        }
+        let config = ConfigStore.shared.config
+        let archived = PeerID.rekey(list: config.archivedConversations, contacts: contacts)
+        let hidden = PeerID.rekey(list: config.hiddenConversations, contacts: contacts)
+        guard archived != config.archivedConversations || hidden != config.hiddenConversations else { return }
+        ConfigStore.shared.config.archivedConversations = archived
+        ConfigStore.shared.config.hiddenConversations = hidden
+        ConfigStore.shared.save()
+        NetLogger.info("History", "re-filed archived/hidden conversation lists by identity key")
+    }
+
     // Called when the user toggles "Hide from Dock" in Settings. DockPolicyGuard
     // owns the policy so the toggle and the drift watchdog can't disagree about
     // what the current preference is.
@@ -419,25 +469,32 @@ final class AppModel: ObservableObject {
 
     // MARK: - Remote desktop
 
-    /// The contact-strip button. Judges the request against the same policy an
-    /// inbound invite is judged by, so the interface can never start something
-    /// the gate would refuse.
-    func requestRemoteDesktop(peerKey: String, peerIP: String) {
+    /// The contact-strip button: asks the peer identified by `peerKey` to share
+    /// their screen. Judges the request against the same policy an inbound
+    /// invite is judged by, so the interface can never start something the
+    /// gate would refuse.
+    ///
+    /// **Addressed by identity key.** The invite goes to wherever discovery
+    /// last saw that key — the same lookup that just decided it is online.
+    /// It used to go to the conversation's remembered address, so an invite
+    /// from the Dell's conversation went to the Dell's previous address, which
+    /// Ari held by then; the Dell never saw it, and every click after that was
+    /// refused behind it.
+    func requestRemoteDesktop(peerKey: String) {
         let availability = remoteDesktopAvailability(forPeerKey: peerKey)
-        guard availability.isAvailable else {
-            NetLogger.remote(event: "invite_blocked", peer: peerIP,
+        guard availability.isAvailable, let peer = peers[peerKey] else {
+            NetLogger.remote(event: "invite_blocked", peer: String(peerKey.prefix(8)),
                              reason: "\(availability)")
             return
         }
-        remoteAuditPeerIP = peerIP
-
-        let peerName = peers[peerKey]?.username ?? "This peer"
-        inviteCoordinator.invite(peerKey: peerKey, peerIP: peerIP, peerName: peerName)
+        remoteAuditPeer = peerKey
+        remoteInviteTargetKey = peerKey
+        inviteCoordinator.invite(peerKey: peerKey, peerIP: peer.ip, peerName: peer.username)
     }
 
     /// The peer accepted and their media channel is attached. Show it.
     private func startViewing(peerName: String, peerIP: String, media: MediaSession) {
-        remoteAuditPeerIP = peerIP
+        remoteAuditPeer = media.peerPublicKeyB64
         remoteSessionPeer = (peerName, peerIP, media.peerPublicKeyB64)
         adoptChannelClose(media, reason: .networkLost)
         Task { @MainActor in
@@ -480,7 +537,7 @@ final class AppModel: ObservableObject {
             return
         }
         armedHosting = nil
-        remoteAuditPeerIP = armed.peerIP
+        remoteAuditPeer = media.peerPublicKeyB64
         remoteSessionPeer = (armed.peerName, armed.peerIP, media.peerPublicKeyB64)
         adoptChannelClose(media, reason: .networkLost)
 
@@ -537,11 +594,11 @@ final class AppModel: ObservableObject {
     /// Files an audit record into the conversation it belongs to.
     private func recordRemoteAudit(_ record: RemoteAuditEntry) {
         NetLogger.remote(event: "audit", reason: record.summary)
-        guard let ip = remoteAuditPeerIP else { return }
+        guard let peer = remoteAuditPeer else { return }
         let entry = record.historyEntry()
-        HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+        HistoryStore.shared.append(entry: entry, forPeer: peer)
         HistoryStore.shared.save()
-        messages[ip, default: []].append(entry)
+        messages[peer, default: []].append(entry)
         refreshConversations()
     }
 
@@ -572,8 +629,6 @@ final class AppModel: ObservableObject {
         if publicKeyB64.isEmpty || publicKeyB64 == KeyManager.shared.publicKeyB64 { return }
         if coordinator.network.localIPs.contains(ip) { return }
 
-        // If we have a saved contact for this device ID whose IP has changed,
-        // migrate the conversation history so the user doesn't lose context.
         if let idx = ConfigStore.shared.config.contacts.firstIndex(where: { $0.publicKeyB64 == publicKeyB64 }) {
             // Refresh the stored display name from the peer's current broadcast
             // when the peer hasn't been manually renamed locally. This makes
@@ -585,24 +640,24 @@ final class AppModel: ObservableObject {
                 ConfigStore.shared.config.contacts[idx].username = cleaned
                 ConfigStore.shared.save()
             }
-            let oldIP = ConfigStore.shared.config.contacts[idx].lastIP
-            if oldIP != ip {
-                if let oldMessages = messages.removeValue(forKey: oldIP) {
-                    let merged = (messages[ip] ?? []) + oldMessages
-                    messages[ip] = merged.sorted { $0.timestamp < $1.timestamp }
-                }
-                HistoryStore.shared.migrate(fromIP: oldIP, toIP: ip)
-                HistoryStore.shared.save()
+            // Only a hint now: where to send unicast beacons, and what the
+            // trust check compares against. The conversation is filed by key,
+            // so a new address moves nothing.
+            if ConfigStore.shared.config.contacts[idx].lastIP != ip {
                 ConfigStore.shared.config.contacts[idx].lastIP = ip
-                if let archIdx = ConfigStore.shared.config.archivedConversations.firstIndex(of: oldIP) {
-                    ConfigStore.shared.config.archivedConversations[archIdx] = ip
-                }
-                if let hidIdx = ConfigStore.shared.config.hiddenConversations.firstIndex(of: oldIP) {
-                    ConfigStore.shared.config.hiddenConversations[hidIdx] = ip
-                }
                 ConfigStore.shared.save()
-                if selectedPeerIP == oldIP { selectedPeerIP = ip }
             }
+        }
+
+        // An address belongs to one device at a time. Whoever held it before is
+        // no longer reachable there, and leaving them marked online at it is
+        // how something meant for them reaches this peer instead.
+        for (key, var other) in peers where key != publicKeyB64 && other.ip == ip && other.isOnline {
+            NetLogger.peer(event: "presence", peer: ip, publicKey: key,
+                           reason: "online -> offline address now held by \(publicKeyB64.prefix(8))")
+            other.presence = .offline
+            other.lastSeen = .distantPast
+            peers[key] = other
         }
 
         // A heartbeat (beacon or reply) means the peer is reachable now —
@@ -612,7 +667,6 @@ final class AppModel: ObservableObject {
         let info = PeerInfo(ip: ip, username: username, port: port, publicKeyB64: publicKeyB64,
                             lastSeen: Date(), presence: .online, knownIPs: knownIPs, caps: caps)
         peers[publicKeyB64] = info
-        knownPeerKeys[ip] = publicKeyB64
         if let hash = relayIdHash, !hash.isEmpty {
             peerRelayIdHashes[publicKeyB64] = hash
             // Persist relay hash into the contact so it survives app restarts.
@@ -625,11 +679,86 @@ final class AppModel: ObservableObject {
             }
         }
 
-        migrateSyntheticRelayHistory(publicKeyB64: publicKeyB64, toIP: ip)
+        adoptRelayPlaceholder(forKey: publicKeyB64)
         refreshConversations()
         // Deliver any queued messages and files for this peer.
         MessagingService.shared.deliverPending(toPeerIP: ip, peerPublicKeyB64: publicKeyB64)
-        deliverPendingFiles(toPeerIP: ip, peerPublicKeyB64: publicKeyB64)
+        deliverPendingFiles(toPeer: publicKeyB64, address: ip)
+    }
+
+    /// A message decrypted under `key` arrived from `ip`, so that device is
+    /// there now. Covers a peer whose beacons never reach us: without it,
+    /// somebody who messages us could not be answered until discovery found
+    /// them. A peer already online elsewhere keeps its discovered address —
+    /// discovery is the authority on where a live peer is, and a message is
+    /// only evidence where discovery has none.
+    private func notePeerAddress(key: String, ip: String, sender: String) {
+        guard PeerID.isKey(key), !ip.isEmpty, key != KeyManager.shared.publicKeyB64,
+              !coordinator.network.localIPs.contains(ip) else { return }
+        if var info = peers[key] {
+            let moved = !info.isOnline && info.ip != ip
+            if moved {
+                NetLogger.peer(event: "address", peer: ip, publicKey: key,
+                               reason: "learned from an authenticated message (was \(info.ip))")
+                info.ip = ip
+                if !info.knownIPs.contains(ip) { info.knownIPs.insert(ip, at: 0) }
+            }
+            info.lastSeen = Date()
+            let wasOffline = !info.isOnline
+            info.presence = .online
+            peers[key] = info
+            if wasOffline { refreshConversations() }
+            if moved {
+                MessagingService.shared.deliverPending(toPeerIP: ip, peerPublicKeyB64: key)
+                deliverPendingFiles(toPeer: key, address: ip)
+            }
+            return
+        }
+        NetLogger.peer(event: "address", peer: ip, publicKey: key,
+                       reason: "learned from an authenticated message (never discovered)")
+        // Capabilities stay empty until a beacon says otherwise: absence must
+        // never be read as support.
+        peers[key] = PeerInfo(ip: ip, username: sender, port: 54232, publicKeyB64: key,
+                              lastSeen: Date(), presence: .online, knownIPs: [ip], caps: [])
+        refreshConversations()
+    }
+
+    /// Where the device with identity key `key` can be reached right now, or
+    /// "" when it is not on the LAN. The only way an address is chosen for
+    /// anything sent: never a remembered one, which may have been handed to
+    /// somebody else since.
+    func liveAddress(forPeer key: String) -> String {
+        guard let peer = peers[key], peer.isOnline else { return "" }
+        return peer.ip
+    }
+
+    /// Whether `ip` is an address the device holding `key` is known at. The
+    /// gate for packets that only claim a sender (see
+    /// `MessagingService.isBoundAddress`). A live peer is known at the
+    /// addresses discovery has seen it use; one not seen this session, at the
+    /// address its contact entry last recorded.
+    private func isBoundAddress(key: String, ip: String) -> Bool {
+        if let peer = peers[key] {
+            return peer.ip == ip || peer.knownIPs.contains(ip)
+        }
+        return ConfigStore.shared.config.contacts.contains { $0.publicKeyB64 == key && $0.lastIP == ip }
+    }
+
+    /// Re-files history an older build put under `relay-<key prefix>` —
+    /// relay messages from a peer it had never met on the LAN — once that
+    /// peer is known. Migration at load already did this for contacts; this
+    /// catches anybody else.
+    private func adoptRelayPlaceholder(forKey key: String) {
+        let placeholder = PeerID.relayPlaceholder(forKey: key)
+        guard HistoryStore.shared.merge(from: placeholder, into: key) else { return }
+        HistoryStore.shared.save()
+        messages[key] = HistoryStore.shared.entries(forPeer: key)
+        messages.removeValue(forKey: placeholder)
+        ConfigStore.shared.config.hiddenConversations.removeAll { $0 == placeholder }
+        ConfigStore.shared.config.archivedConversations.removeAll { $0 == placeholder }
+        ConfigStore.shared.save()
+        if selectedPeerID == placeholder { selectedPeerID = key }
+        NetLogger.info("Relay", "re-filed relay history from \(placeholder) to \(key.prefix(8))")
     }
 
     // How long a non-contact peer may sit offline before it is dropped from the
@@ -714,50 +843,55 @@ final class AppModel: ObservableObject {
         let hidden   = Set(ConfigStore.shared.config.hiddenConversations)
         var active: [ConversationViewModel] = []
         var archivedList: [ConversationViewModel] = []
-        var seenIPs = Set<String>()
+        var seen = Set<String>()
 
-        // Saved contacts — include whether currently online or offline.
+        // Saved contacts — include whether currently online or offline. One row
+        // per identity key, wherever that device happens to be.
         for contact in ConfigStore.shared.config.contacts {
-            let onlinePeer = peers.values.first { $0.publicKeyB64 == contact.publicKeyB64 && $0.isOnline }
-            let ip = onlinePeer?.ip ?? contact.lastIP
-            if hidden.contains(ip) || hidden.contains(contact.lastIP) { continue }
-            seenIPs.insert(ip)
-            let entries = messages[ip] ?? []
-            let typing = typingStates[ip]
+            let key = contact.publicKeyB64
+            guard !hidden.contains(key), seen.insert(key).inserted else { continue }
+            let entries = messages[key] ?? []
+            let typing = typingStates[key]
             let vm = ConversationViewModel(
-                peerIP: ip,
+                peerID: key,
                 peerName: contact.username,
-                peerPublicKeyB64: contact.publicKeyB64,
+                peerPublicKeyB64: key,
                 photoB64: contact.photoB64,
                 lastMessage: lastMessagePreview(entries),
                 lastTimestamp: entries.last.map { Date(timeIntervalSince1970: $0.timestamp) },
                 unreadCount: entries.filter { $0.incoming && !$0.readReceiptSent }.count,
                 isTyping: typing?.active ?? false,
                 typingSender: typing?.sender ?? "",
-                isOnline: onlinePeer != nil,
-                isArchived: archived.contains(ip)
+                isOnline: peers[key]?.isOnline ?? false,
+                isArchived: archived.contains(key)
             )
             if vm.isArchived { archivedList.append(vm) } else { active.append(vm) }
         }
 
-        // Any IP we have history with but no contact entry —
-        // e.g. someone messaged us once and isn't saved. Don't lose those.
-        for (ip, entries) in messages {
-            guard !seenIPs.contains(ip), !hidden.contains(ip), !entries.isEmpty else { continue }
-            let name = entries.last { $0.incoming }?.sender ?? ip
-            let onlinePeer = peers.values.first { $0.ip == ip && $0.isOnline }
+        // Anybody we have history with but no contact entry — e.g. someone who
+        // messaged us once and isn't saved — plus legacy threads no contact
+        // could be matched to. Don't lose those.
+        for (id, entries) in messages {
+            guard !seen.contains(id), !hidden.contains(id), !entries.isEmpty else { continue }
+            let key = PeerID.isKey(id) ? id : ""
+            let peer = key.isEmpty ? nil : peers[key]
+            let name = entries.last { $0.incoming }?.sender
+                ?? peer?.username
+                ?? PeerID.legacyAddress(id)
+                ?? "Unknown"
+            let typing = typingStates[id]
             let vm = ConversationViewModel(
-                peerIP: ip,
+                peerID: id,
                 peerName: name,
-                peerPublicKeyB64: onlinePeer?.publicKeyB64 ?? "",
+                peerPublicKeyB64: key,
                 photoB64: nil,
                 lastMessage: lastMessagePreview(entries),
                 lastTimestamp: entries.last.map { Date(timeIntervalSince1970: $0.timestamp) },
                 unreadCount: entries.filter { $0.incoming && !$0.readReceiptSent }.count,
-                isTyping: false,
-                typingSender: "",
-                isOnline: onlinePeer != nil,
-                isArchived: archived.contains(ip)
+                isTyping: typing?.active ?? false,
+                typingSender: typing?.sender ?? "",
+                isOnline: peer?.isOnline ?? false,
+                isArchived: archived.contains(id)
             )
             if vm.isArchived { archivedList.append(vm) } else { active.append(vm) }
         }
@@ -816,62 +950,67 @@ final class AppModel: ObservableObject {
 
     // MARK: - Messaging
 
-    func sendMessage(_ text: String, toPeerIP ip: String, replyTo: MessageEntry? = nil) {
-        // For offline peers, look up the public key from contacts or session cache
-        // so the message can still be queued. knownPeerKeys covers unsaved contacts.
-        let publicKey: String? = peerByIP(ip)?.publicKeyB64
-            ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == ip })?.publicKeyB64
-            ?? knownPeerKeys[ip]
-        guard let key = publicKey else { return }
+    /// Sends to the peer with identity key `peer`. The address is looked up
+    /// now, not remembered: a peer that is not on the LAN gets its message
+    /// queued and relayed rather than dialled at an address that may belong
+    /// to somebody else by now. That used to be the rule's opposite — the key
+    /// was looked up from the thread's address, so a thread whose address had
+    /// been handed to another device could encrypt to that device's key.
+    func sendMessage(_ text: String, toPeer peer: String, replyTo: MessageEntry? = nil) {
+        guard PeerID.isKey(peer) else {
+            NetLogger.warn("Send", "conversation \(peer) has no identity key — not sending")
+            return
+        }
+        let address = liveAddress(forPeer: peer)
         // Relay is ONLY used when the peer is confirmed offline. If the peer is
         // currently online and TCP fails, that is a transient error — queue locally
         // but do not upload to the cloud relay to avoid spurious relay deliveries.
-        let peerIsOnline = peers.values.contains { $0.publicKeyB64 == key && $0.isOnline }
-        // Fall back to the contact's persisted relay hash when the peer hasn't
-        // been seen live in this session (peerRelayIdHashes is in-memory only).
-        let relayHash: String? = peerIsOnline ? nil :
-            (peerRelayIdHashes[key] ?? ConfigStore.shared.config.contacts.first(where: { $0.publicKeyB64 == key })?.relayIdHash)
-        NetLogger.info("Send", "routing msgId for peer=\(key.prefix(8)) online=\(peerIsOnline) relay=\(relayHash != nil ? "yes" : "no")")
+        let peerIsOnline = !address.isEmpty
+        let relayHash: String? = peerIsOnline ? nil : relayIdHash(forPeerKey: peer)
+        NetLogger.info("Send", "routing msgId for peer=\(peer.prefix(8)) online=\(peerIsOnline) relay=\(relayHash != nil ? "yes" : "no")")
         MessagingService.shared.sendText(
             text,
-            toPeerIP: ip,
-            peerPublicKeyB64: key,
+            toPeerIP: address,
+            peerPublicKeyB64: peer,
             peerRelayIdHash: relayHash,
             replyTo: replyTo
         )
     }
 
-    func sendTyping(_ active: Bool, toPeerIP ip: String) {
-        guard let peer = peerByIP(ip) else { return }
-        MessagingService.shared.sendTyping(active: active, toPeerIP: ip, peerPublicKeyB64: peer.publicKeyB64)
+    func sendTyping(_ active: Bool, toPeer peer: String) {
+        let address = liveAddress(forPeer: peer)
+        guard !address.isEmpty else { return }
+        MessagingService.shared.sendTyping(active: active, toPeerIP: address, peerPublicKeyB64: peer)
     }
 
-    func markConversationRead(peerIP: String) {
-        guard var entries = messages[peerIP] else { return }
+    func markConversationRead(peer: String) {
+        guard var entries = messages[peer] else { return }
+        // A legacy thread has nobody to tell; its messages are still read.
+        let address = liveAddress(forPeer: peer)
         var changed = false
         for i in entries.indices where entries[i].incoming && !entries[i].readReceiptSent {
             // Send read_receipt for any entry that has a stable ID (text messages
             // and file entries that carry a transfer_id as their messageId).
-            if let id = entries[i].messageId {
-                MessagingService.shared.sendReceipt(type: "read_receipt", messageId: id, toPeerIP: peerIP)
+            if let id = entries[i].messageId, !address.isEmpty {
+                MessagingService.shared.sendReceipt(type: "read_receipt", messageId: id, toPeerIP: address)
             }
             entries[i].readReceiptSent = true
             changed = true
         }
         if changed {
-            messages[peerIP] = entries
+            messages[peer] = entries
             // Persist readReceiptSent for all entry types, including file entries
             // that have no messageId — markReadReceiptSent alone misses those.
-            HistoryStore.shared.markAllIncomingRead(forPeerIP: peerIP)
+            HistoryStore.shared.markAllIncomingRead(forPeer: peer)
             HistoryStore.shared.save()
             refreshConversations()
         }
     }
 
-    func sendReadReceipt(for entry: MessageEntry, peerIP: String) {
+    func sendReadReceipt(for entry: MessageEntry, peer: String) {
         // Kept for compatibility — delegates to markConversationRead.
         guard entry.incoming, !entry.readReceiptSent else { return }
-        markConversationRead(peerIP: peerIP)
+        markConversationRead(peer: peer)
     }
 
     // MARK: - Message deletion
@@ -879,11 +1018,12 @@ final class AppModel: ObservableObject {
     // "Delete for everyone" only applies to our own outgoing messages that have
     // a stable messageId. "Delete for me" removes the entry locally only and
     // never sends a packet.
-    func deleteMessage(_ entry: MessageEntry, peerIP: String, forEveryone: Bool) {
+    func deleteMessage(_ entry: MessageEntry, peer: String, forEveryone: Bool) {
         if forEveryone {
-            guard !entry.incoming, let messageId = entry.messageId else { return }
-            HistoryStore.shared.markDeleted(messageId: messageId, peerIP: peerIP, requireIncoming: false)
-            if var entries = messages[peerIP] {
+            // A legacy thread has no key to tell anybody with.
+            guard !entry.incoming, let messageId = entry.messageId, PeerID.isKey(peer) else { return }
+            HistoryStore.shared.markDeleted(messageId: messageId, peer: peer, requireIncoming: false)
+            if var entries = messages[peer] {
                 for i in entries.indices where entries[i].messageId == messageId {
                     entries[i].deleted = true
                     entries[i].text = ""
@@ -891,24 +1031,23 @@ final class AppModel: ObservableObject {
                     entries[i].replyToPreview = nil
                     entries[i].replyToSender = nil
                 }
-                messages[peerIP] = entries
+                messages[peer] = entries
             }
-            let key = peerByIP(peerIP)?.publicKeyB64
-                ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == peerIP })?.publicKeyB64
-                ?? knownPeerKeys[peerIP]
+            // An empty address fails the LAN write at once and goes straight
+            // to the relay control record.
             MessagingService.shared.sendDeleteMessage(
                 messageId: messageId,
-                toPeerIP: peerIP,
-                peerPublicKeyB64: key,
-                peerRelayIdHash: key.map { relayIdHash(forPeerKey: $0) } ?? nil
+                toPeerIP: liveAddress(forPeer: peer),
+                peerPublicKeyB64: peer,
+                peerRelayIdHash: relayIdHash(forPeerKey: peer)
             )
             refreshConversations()
         } else {
-            HistoryStore.shared.removeEntry(matching: entry, peerIP: peerIP)
-            if var entries = messages[peerIP] {
+            HistoryStore.shared.removeEntry(matching: entry, peer: peer)
+            if var entries = messages[peer] {
                 if let idx = entries.firstIndex(where: { MessageEntry.sameEntry($0, entry) }) {
                     entries.remove(at: idx)
-                    messages[peerIP] = entries
+                    messages[peer] = entries
                 }
             }
             refreshConversations()
@@ -924,8 +1063,10 @@ final class AppModel: ObservableObject {
     /// Only our own outgoing text messages qualify: an attachment's `text` is a
     /// local file path, not a body, and a deleted message has no body left.
     @discardableResult
-    func editMessage(_ entry: MessageEntry, newText: String, peerIP: String) -> Bool {
+    func editMessage(_ entry: MessageEntry, newText: String, peer: String) -> Bool {
         guard !entry.incoming, let messageId = entry.messageId else { return false }
+        // Nobody to send the replacement to in a legacy thread.
+        guard PeerID.isKey(peer) else { return false }
         guard !entry.deleted, !entry.text.hasPrefix("__FILE__:") else { return false }
         // An audit record has no body to replace, and rewriting the trail is
         // the one thing it exists to prevent.
@@ -940,39 +1081,32 @@ final class AppModel: ObservableObject {
         let editedAt = Date().timeIntervalSince1970
         guard HistoryStore.shared.applyEdit(
             messageId: messageId,
-            peerIP: peerIP,
+            peer: peer,
             newText: trimmed,
             editedAt: editedAt,
             requireIncoming: false
         ) else { return false }
 
-        if var entries = messages[peerIP] {
+        if var entries = messages[peer] {
             for i in entries.indices where entries[i].messageId == messageId {
                 entries[i].text = trimmed
                 entries[i].edited = true
                 entries[i].editedAt = editedAt
             }
-            messages[peerIP] = entries
+            messages[peer] = entries
         }
 
-        // Same key resolution as sendMessage — an offline peer still has a
-        // known key, and the queued-message rewrite inside sendEditMessage is
-        // the part that matters while they're away.
-        let publicKey: String? = peerByIP(peerIP)?.publicKeyB64
-            ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == peerIP })?.publicKeyB64
-            ?? knownPeerKeys[peerIP]
-        if let key = publicKey {
-            MessagingService.shared.sendEditMessage(
-                messageId: messageId,
-                newText: trimmed,
-                toPeerIP: peerIP,
-                peerPublicKeyB64: key,
-                peerRelayIdHash: relayIdHash(forPeerKey: key),
-                editedAt: editedAt
-            )
-        } else {
-            NetLogger.warn("Edit", "no public key for peer=\(peerIP) — edit applied locally only")
-        }
+        // An offline peer still gets it: the queued-message rewrite inside
+        // sendEditMessage, and the relay control record when the LAN write
+        // fails — which an empty address does at once.
+        MessagingService.shared.sendEditMessage(
+            messageId: messageId,
+            newText: trimmed,
+            toPeerIP: liveAddress(forPeer: peer),
+            peerPublicKeyB64: peer,
+            peerRelayIdHash: relayIdHash(forPeerKey: peer),
+            editedAt: editedAt
+        )
         refreshConversations()
         return true
     }
@@ -1048,14 +1182,11 @@ final class AppModel: ObservableObject {
                 }
                 NetLogger.info("Relay", "fetch done reason=\(reason) — delivering \(msgs.count) message(s)")
                 for msg in msgs {
-                    // Map sender public key → best known peer IP
-                    let ip: String = self.peers.values
-                        .first(where: { $0.publicKeyB64 == msg.senderPublicKeyB64 })?.ip
-                        ?? ConfigStore.shared.config.contacts
-                            .first(where: { $0.publicKeyB64 == msg.senderPublicKeyB64 })?.lastIP
-                        ?? self.knownPeerKeys.first(where: { $0.value == msg.senderPublicKeyB64 })?.key
-                        ?? "relay-\(msg.senderPublicKeyB64.prefix(8))"
-                    MessagingService.shared.handleRelayMessage(msg, fromStoredIP: ip)
+                    // Filed under the sender's key. The address is only where
+                    // a delivery receipt can go, and a sender not on the LAN
+                    // right now simply doesn't get one.
+                    MessagingService.shared.handleRelayMessage(
+                        msg, replyAddress: self.liveAddress(forPeer: msg.senderPublicKeyB64))
                 }
                 self.refreshConversations()
             }
@@ -1064,17 +1195,18 @@ final class AppModel: ObservableObject {
 
     // Queue or send a file. If the peer is offline, the file path is persisted
     // and retried whenever the peer comes back online.
-    func sendFile(path: String, toPeerIP ip: String) {
-        let publicKey: String? = peerByIP(ip)?.publicKeyB64
-            ?? ConfigStore.shared.config.contacts.first(where: { $0.lastIP == ip })?.publicKeyB64
-            ?? knownPeerKeys[ip]
-        guard let key = publicKey else { return }
+    func sendFile(path: String, toPeer key: String) {
+        guard PeerID.isKey(key) else {
+            NetLogger.warn("Send", "conversation \(key) has no identity key — not sending a file")
+            return
+        }
 
         // Stream immediately only when the peer is actually online. Offline peers
         // remain in the dict now (presence is explicit), so test isOnline rather
         // than mere existence — otherwise the file would skip the persisted queue.
-        if peerByIP(ip)?.isOnline == true {
-            FileTransferService.shared.enqueue(filePath: path, toPeerIP: ip, peerPublicKeyB64: key)
+        let address = liveAddress(forPeer: key)
+        if !address.isEmpty {
+            FileTransferService.shared.enqueue(filePath: path, toPeer: key, address: address)
         } else {
             // Persist the pending file so it survives an app restart while the peer is offline.
             let username = ConfigStore.shared.config.contacts.first { $0.publicKeyB64 == key }?.username ?? "Unknown"
@@ -1097,18 +1229,18 @@ final class AppModel: ObservableObject {
                 status: "Queued",
                 readReceiptSent: false
             )
-            HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+            HistoryStore.shared.append(entry: entry, forPeer: key)
             HistoryStore.shared.save()
-            var list = messages[ip] ?? []
+            var list = messages[key] ?? []
             list.append(entry)
-            messages[ip] = list
+            messages[key] = list
             refreshConversations()
         }
     }
 
-    private func deliverPendingFiles(toPeerIP ip: String, peerPublicKeyB64: String) {
+    private func deliverPendingFiles(toPeer peerPublicKeyB64: String, address ip: String) {
         // 1) Re-trigger any in-memory queue that stalled on an earlier failed attempt.
-        FileTransferService.shared.retryQueue(toPeerIP: ip, peerPublicKeyB64: peerPublicKeyB64)
+        FileTransferService.shared.retryQueue(toPeer: peerPublicKeyB64, address: ip)
 
         // 2) Drain the persistent pending-file queue for this peer.
         var pending = ConfigStore.shared.config.pendingFiles
@@ -1117,7 +1249,7 @@ final class AppModel: ObservableObject {
 
         for item in toDeliver {
             guard FileManager.default.fileExists(atPath: item.filePath) else { continue }
-            FileTransferService.shared.enqueue(filePath: item.filePath, toPeerIP: ip, peerPublicKeyB64: peerPublicKeyB64)
+            FileTransferService.shared.enqueue(filePath: item.filePath, toPeer: peerPublicKeyB64, address: ip)
         }
 
         pending.removeAll { $0.peerPublicKeyB64 == peerPublicKeyB64 }
@@ -1127,17 +1259,17 @@ final class AppModel: ObservableObject {
 
     // MARK: - Conversation actions
 
-    func archiveConversation(peerIP: String) {
-        if !ConfigStore.shared.config.archivedConversations.contains(peerIP) {
-            ConfigStore.shared.config.archivedConversations.append(peerIP)
+    func archiveConversation(peer: String) {
+        if !ConfigStore.shared.config.archivedConversations.contains(peer) {
+            ConfigStore.shared.config.archivedConversations.append(peer)
             ConfigStore.shared.save()
         }
-        if selectedPeerIP == peerIP { selectedPeerIP = nil }
+        if selectedPeerID == peer { selectedPeerID = nil }
         refreshConversations()
     }
 
-    func unarchiveConversation(peerIP: String) {
-        ConfigStore.shared.config.archivedConversations.removeAll { $0 == peerIP }
+    func unarchiveConversation(peer: String) {
+        ConfigStore.shared.config.archivedConversations.removeAll { $0 == peer }
         ConfigStore.shared.save()
         refreshConversations()
     }
@@ -1145,36 +1277,36 @@ final class AppModel: ObservableObject {
     // Deletes a conversation: removes message history and hides the thread from the
     // sidebar. The contact stays in the saved contacts list — re-open the thread
     // through the "New message" picker.
-    func deleteConversation(peerIP: String) {
-        messages.removeValue(forKey: peerIP)
-        HistoryStore.shared.delete(peerIP: peerIP)
+    func deleteConversation(peer: String) {
+        messages.removeValue(forKey: peer)
+        drafts.removeValue(forKey: peer)
+        HistoryStore.shared.delete(peer: peer)
         HistoryStore.shared.save()
-        if !ConfigStore.shared.config.hiddenConversations.contains(peerIP) {
-            ConfigStore.shared.config.hiddenConversations.append(peerIP)
+        if !ConfigStore.shared.config.hiddenConversations.contains(peer) {
+            ConfigStore.shared.config.hiddenConversations.append(peer)
         }
-        ConfigStore.shared.config.archivedConversations.removeAll { $0 == peerIP }
+        ConfigStore.shared.config.archivedConversations.removeAll { $0 == peer }
         ConfigStore.shared.save()
-        if selectedPeerIP == peerIP { selectedPeerIP = nil }
+        if selectedPeerID == peer { selectedPeerID = nil }
         refreshConversations()
     }
 
     func deleteContact(publicKeyB64: String) {
-        let removed = ConfigStore.shared.config.contacts.filter { $0.publicKeyB64 == publicKeyB64 }
+        let before = ConfigStore.shared.config.contacts.count
         ConfigStore.shared.config.contacts.removeAll { $0.publicKeyB64 == publicKeyB64 }
+        guard ConfigStore.shared.config.contacts.count != before else { return }
         ConfigStore.shared.save()
-        for c in removed { deleteConversation(peerIP: c.lastIP) }
+        deleteConversation(peer: publicKeyB64)
     }
 
     // Used by the "New message" picker: unhides the contact's thread and selects it
     // so the user can start chatting.
     func startConversation(withContact publicKeyB64: String) {
-        guard let contact = ConfigStore.shared.config.contacts.first(where: { $0.publicKeyB64 == publicKeyB64 }) else { return }
-        let onlinePeer = peers.values.first { $0.publicKeyB64 == publicKeyB64 }
-        let ip = onlinePeer?.ip ?? contact.lastIP
-        ConfigStore.shared.config.hiddenConversations.removeAll { $0 == ip || $0 == contact.lastIP }
+        guard ConfigStore.shared.config.contacts.contains(where: { $0.publicKeyB64 == publicKeyB64 }) else { return }
+        ConfigStore.shared.config.hiddenConversations.removeAll { $0 == publicKeyB64 }
         ConfigStore.shared.save()
         refreshConversations()
-        selectedPeerIP = ip
+        selectedPeerID = publicKeyB64
     }
 
     // Adds a discovered peer to the saved contacts list. Pass an optional custom name
@@ -1268,32 +1400,42 @@ final class AppModel: ObservableObject {
         coordinator.delegate = self
 
         MessagingService.shared.coordinator = coordinator
-        MessagingService.shared.onMessageReceived = { [weak self] ip, entry in
+        MessagingService.shared.isBoundAddress = { [weak self] key, ip in
+            self?.isBoundAddress(key: key, ip: ip) ?? false
+        }
+        MessagingService.shared.onPeerAddressProven = { [weak self] key, ip, sender in
+            self?.notePeerAddress(key: key, ip: ip, sender: sender)
+        }
+        FileTransferService.shared.isBoundAddress = { [weak self] key, ip in
+            self?.isBoundAddress(key: key, ip: ip) ?? false
+        }
+        // Every callback below names the conversation by identity key.
+        MessagingService.shared.onMessageReceived = { [weak self] peer, entry in
             guard let self else { return }
-            var list = self.messages[ip] ?? []
+            var list = self.messages[peer] ?? []
             list.append(entry)
-            self.messages[ip] = list
+            self.messages[peer] = list
             // Incoming message from a previously-deleted thread should resurface it.
-            if ConfigStore.shared.config.hiddenConversations.contains(ip) {
-                ConfigStore.shared.config.hiddenConversations.removeAll { $0 == ip }
+            if ConfigStore.shared.config.hiddenConversations.contains(peer) {
+                ConfigStore.shared.config.hiddenConversations.removeAll { $0 == peer }
                 ConfigStore.shared.save()
             }
             self.refreshConversations()
             // Only suppress the notification if the window is actually visible
             // AND the user is already looking at this conversation. When the window
-            // is closed/minimized, selectedPeerIP stays set to the last peer, so we
+            // is closed/minimized, selectedPeerID stays set to the last peer, so we
             // must not let it block notifications for that peer.
             let windowVisible = NSApp.windows.contains {
                 $0.isVisible && $0.canBecomeMain && !($0 is NSPanel)
             }
-            let isViewingConversation = windowVisible && self.selectedPeerIP == ip
+            let isViewingConversation = windowVisible && self.selectedPeerID == peer
             if entry.incoming && !isViewingConversation {
                 NotificationService.shared.showMessage(from: entry.sender, text: entry.text)
             }
         }
-        MessagingService.shared.onStatusUpdate = { [weak self] ip, msgId, status in
+        MessagingService.shared.onStatusUpdate = { [weak self] peer, msgId, status in
             guard let self else { return }
-            if var entries = self.messages[ip] {
+            if var entries = self.messages[peer] {
                 // Update the specific message by its ID.
                 for i in entries.indices where entries[i].messageId == msgId {
                     entries[i].status = status
@@ -1313,30 +1455,30 @@ final class AppModel: ObservableObject {
                         entries[i].status = status
                     }
                 }
-                self.messages[ip] = entries
+                self.messages[peer] = entries
             }
         }
         MessagingService.shared.onDeliveryPathUpdate = { [weak self] msgId in
             guard let self else { return }
-            // The message's IP bucket isn't known to the caller (a relay
-            // outbox retry only has the messageId), so scan for it — the
-            // same messages dict is already keyed by IP, mirroring HistoryStore.
-            for (ip, entries) in self.messages {
+            // The message's conversation isn't known to the caller (a relay
+            // outbox retry only has the messageId), so scan for it, mirroring
+            // HistoryStore.markRelayDelivery.
+            for (peer, entries) in self.messages {
                 guard let idx = entries.firstIndex(where: { $0.messageId == msgId }) else { continue }
                 var updated = entries
                 updated[idx].deliveryPath = "relay"
-                self.messages[ip] = updated
+                self.messages[peer] = updated
                 break
             }
         }
-        MessagingService.shared.onTypingUpdate = { [weak self] ip, sender, active in
+        MessagingService.shared.onTypingUpdate = { [weak self] peer, sender, active in
             guard let self else { return }
-            self.typingStates[ip] = (sender, active)
+            self.typingStates[peer] = (sender, active)
             self.refreshConversations()
         }
-        MessagingService.shared.onMessageDeleted = { [weak self] ip, messageId in
+        MessagingService.shared.onMessageDeleted = { [weak self] peer, messageId in
             guard let self else { return }
-            if var entries = self.messages[ip] {
+            if var entries = self.messages[peer] {
                 for i in entries.indices where entries[i].messageId == messageId {
                     entries[i].deleted = true
                     entries[i].text = ""
@@ -1344,36 +1486,36 @@ final class AppModel: ObservableObject {
                     entries[i].replyToPreview = nil
                     entries[i].replyToSender = nil
                 }
-                self.messages[ip] = entries
+                self.messages[peer] = entries
             }
             self.refreshConversations()
         }
 
         // Inbound edit already applied to HistoryStore by MessagingService;
         // mirror it into the in-memory copy the UI renders from.
-        MessagingService.shared.onMessageEdited = { [weak self] ip, messageId, newText, editedAt in
+        MessagingService.shared.onMessageEdited = { [weak self] peer, messageId, newText, editedAt in
             guard let self else { return }
-            if var entries = self.messages[ip] {
+            if var entries = self.messages[peer] {
                 for i in entries.indices where entries[i].messageId == messageId {
                     entries[i].text = newText
                     entries[i].edited = true
                     entries[i].editedAt = editedAt
                 }
-                self.messages[ip] = entries
+                self.messages[peer] = entries
             }
             self.refreshConversations()
         }
 
-        FileTransferService.shared.onProgress = { [weak self] ip, label, bytes, total in
-            self?.activeTransfers[ip] = (label, bytes, total)
+        FileTransferService.shared.onProgress = { [weak self] peer, label, bytes, total in
+            self?.activeTransfers[peer] = (label, bytes, total)
         }
-        FileTransferService.shared.onError = { [weak self] ip, _ in
+        FileTransferService.shared.onError = { [weak self] peer, _ in
             // Clear the in-progress banner so the UI doesn't stay stuck at 0%.
-            self?.activeTransfers.removeValue(forKey: ip)
+            self?.activeTransfers.removeValue(forKey: peer)
         }
-        FileTransferService.shared.onComplete = { [weak self] ip, _, transferId, localURL in
+        FileTransferService.shared.onComplete = { [weak self] peer, _, transferId, localURL in
             guard let self else { return }
-            self.activeTransfers.removeValue(forKey: ip)
+            self.activeTransfers.removeValue(forKey: peer)
             guard let url = localURL else { return }   // receiver side — no outgoing bubble needed
             let entry = MessageEntry(
                 sender: ConfigStore.shared.config.username,
@@ -1384,15 +1526,17 @@ final class AppModel: ObservableObject {
                 status: "Sent",
                 readReceiptSent: false
             )
-            HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+            HistoryStore.shared.append(entry: entry, forPeer: peer)
             HistoryStore.shared.save()
-            var list = self.messages[ip] ?? []
+            var list = self.messages[peer] ?? []
             list.append(entry)
-            self.messages[ip] = list
+            self.messages[peer] = list
             self.refreshConversations()
         }
-        FileTransferService.shared.onIncomingFile = { [weak self] ip, sender, transferId, url in
+        FileTransferService.shared.onIncomingFile = { [weak self] peer, address, sender, transferId, url in
             guard let self else { return }
+            // Its chunks decrypted under the key, so the device is at `address`.
+            self.notePeerAddress(key: peer, ip: address, sender: sender)
             NotificationService.shared.showFileReceived(from: sender, filename: url.lastPathComponent)
             // Prefix "__FILE__:" so MessageBubbleView can render a file bubble with an Open button.
             let entry = MessageEntry(
@@ -1404,33 +1548,16 @@ final class AppModel: ObservableObject {
                 status: "",
                 readReceiptSent: false
             )
-            HistoryStore.shared.append(entry: entry, forPeerIP: ip)
+            HistoryStore.shared.append(entry: entry, forPeer: peer)
             HistoryStore.shared.save()
-            var list = self.messages[ip] ?? []
+            var list = self.messages[peer] ?? []
             list.append(entry)
-            self.messages[ip] = list
+            self.messages[peer] = list
             self.refreshConversations()
-            // Notify the sender that the file was delivered (→ two grey checks).
-            MessagingService.shared.sendReceipt(type: "sent_receipt", messageId: transferId, toPeerIP: ip)
+            // Notify the sender that the file was delivered (→ two grey checks),
+            // over the connection's own address: it just came from there.
+            MessagingService.shared.sendReceipt(type: "sent_receipt", messageId: transferId, toPeerIP: address)
         }
-    }
-
-    private func peerByIP(_ ip: String) -> PeerInfo? {
-        peers.values.first { $0.ip == ip }
-    }
-
-    // Migrates history stored under a synthetic "relay-{keyPrefix}" IP — created when
-    // a relay message arrived from a peer we had never met on the LAN — to their real IP.
-    private func migrateSyntheticRelayHistory(publicKeyB64: String, toIP: String) {
-        let syntheticIP = "relay-\(publicKeyB64.prefix(8))"
-        guard HistoryStore.shared.history[syntheticIP] != nil else { return }
-        HistoryStore.shared.migrate(fromIP: syntheticIP, toIP: toIP)
-        HistoryStore.shared.save()
-        if let moved = messages.removeValue(forKey: syntheticIP) {
-            let merged = (messages[toIP] ?? []) + moved
-            messages[toIP] = merged.sorted { $0.timestamp < $1.timestamp }
-        }
-        NetLogger.info("Relay", "migrated synthetic-IP history from \(syntheticIP) → \(toIP)")
     }
 
     // Rank used to ensure status only moves forward (Queued → Sending → Sent → Delivered → Read).
@@ -1462,12 +1589,15 @@ extension AppModel: NetworkCoordinatorDelegate {
         // Refresh lastSeen for the sender so TCP activity keeps them online.
         // Gated rather than unconditional: media_attach arrives on a socket that
         // is about to stop being a JSON peer connection at all.
-        if packet.refreshesPresence {
-            if let key = packet.senderPublicKeyB64 { touchPeer(publicKeyB64: key) }
-            // Cache ip → publicKeyB64 so replies work even for unsaved / offline contacts.
-            if let key = packet.senderPublicKeyB64, !key.isEmpty {
-                knownPeerKeys[packet.senderIP] = key
-            }
+        //
+        // Only from an address that key is known at: the key in most packets
+        // is a claim, and a claim from anywhere would let any host mark any
+        // peer reachable at an address it has left. A peer that has moved is
+        // caught by discovery, or by `notePeerAddress` once a message it sent
+        // from the new address decrypts.
+        if packet.refreshesPresence, let key = packet.senderPublicKeyB64,
+           isBoundAddress(key: key, ip: packet.senderIP) {
+            touchPeer(publicKeyB64: key)
         }
         switch packet {
         case .text, .typing, .receipt, .delete, .edit:

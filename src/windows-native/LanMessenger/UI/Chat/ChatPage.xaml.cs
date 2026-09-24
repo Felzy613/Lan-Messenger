@@ -174,7 +174,12 @@ public sealed partial class MessageRowTemplateSelector : DataTemplateSelector
 public sealed partial class ChatPage : Page
 {
     private readonly ObservableCollection<MessageRowViewModel> _rows = [];
-    private string? _boundPeerIP;
+    /// The conversation id (PeerId) the page is showing: the peer's identity
+    /// key, or ip:&lt;address&gt; for a read-only legacy thread.
+    private string? _boundConversationId;
+
+    /// False while showing a legacy thread, which has no key to reply to.
+    internal bool CanReachPeer => !PeerId.IsLegacy(_boundConversationId);
     private ScrollViewer? _scroll;   // inner scroll viewer of MessagesList, cached after layout
 
     /// Whether the thread is following new content down. Latched rather than
@@ -249,9 +254,9 @@ public sealed partial class ChatPage : Page
     // Direct row update — no full message-list re-evaluation. Receipts arrive
     // in bursts during cross-platform delivery; using MergeMessages here would
     // touch every row in the chat for each receipt.
-    private void OnMessageStatusUpdated(string peerIP, string msgId, string status)
+    private void OnMessageStatusUpdated(string peer, string msgId, string status)
     {
-        if (peerIP != _boundPeerIP) return;
+        if (peer != _boundConversationId) return;
         var newRank = StatusRank(status);
         for (var i = 0; i < _rows.Count; i++)
         {
@@ -389,13 +394,17 @@ public sealed partial class ChatPage : Page
         if (_model is null) return;
         switch (e.PropertyName)
         {
+            case nameof(AppModel.RemoteInviteStatus):
+            case nameof(AppModel.RemoteInviteTargetKey):
+                UpdateHeaderOnlineState();
+                break;
             case nameof(AppModel.RemoteSessionRunning):
                 // A session ending re-enables the button. Nothing else in the
                 // header changes at that moment, so without this it stays
                 // greyed out from the first session onward.
                 UpdateRemoteDesktopButton();
                 break;
-            case nameof(AppModel.SelectedPeerIP):
+            case nameof(AppModel.SelectedConversationId):
                 RefreshForSelectedPeer(forceReload: true);
                 break;
 
@@ -423,7 +432,7 @@ public sealed partial class ChatPage : Page
     private void RefreshForSelectedPeer(bool forceReload)
     {
         if (_model is null) return;
-        var ip = _model.SelectedPeerIP;
+        var ip = _model.SelectedConversationId;
 
         // Leave edit mode BEFORE the draft save below. While editing,
         // Composer.Text holds an already-sent message; saving that as the
@@ -433,19 +442,24 @@ public sealed partial class ChatPage : Page
 
         // Save the composer's in-progress text as a draft for the conversation
         // we're leaving, then restore (or clear) it for the new one.
-        if (_boundPeerIP is not null && _boundPeerIP != ip)
+        if (_boundConversationId is not null && _boundConversationId != ip)
         {
             var draft = Composer.Text;
-            if (string.IsNullOrEmpty(draft)) _model.Drafts.Remove(_boundPeerIP);
-            else _model.Drafts[_boundPeerIP] = draft;
+            if (string.IsNullOrEmpty(draft)) _model.Drafts.Remove(_boundConversationId);
+            else _model.Drafts[_boundConversationId] = draft;
         }
-        if (forceReload || _boundPeerIP != ip)
+        if (forceReload || _boundConversationId != ip)
             Composer.Text = ip is not null && _model.Drafts.TryGetValue(ip, out var d) ? d : "";
 
-        _boundPeerIP = ip;
+        _boundConversationId = ip;
 
         // Reset reply state when switching peers.
         SetReplyTarget(null);
+
+        // A legacy thread can be read, not answered.
+        Composer.SetReadOnly(PeerId.LegacyAddress(ip) is { } legacyAddress
+            ? $"Saved under {legacyAddress} by an older version and not linked to a contact — read only"
+            : null);
 
         UpdateHeaderName();
         UpdateHeaderOnlineState();
@@ -465,17 +479,20 @@ public sealed partial class ChatPage : Page
 
     private void UpdateHeaderName()
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
-        var ip = _model.SelectedPeerIP;
-        var peer    = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
+        if (_model is null || _model.SelectedConversationId is null) return;
+        var id = _model.SelectedConversationId;
+        // The saved contact's name first — it is what the sidebar shows, and a
+        // name the user chose — then the live peer's own, then history.
         var contact = LanMessenger.Core.Persistence.ConfigStore.Shared.Config.Contacts
-            .FirstOrDefault(c => c.LastIP == ip);
+            .FirstOrDefault(c => c.PublicKeyB64 == id);
+        var peer    = _model.PeerForConversation(id);
         // Fall back to the sender name from the most recent incoming message so that
-        // offline peers whose conversation exists in history show their name, not the raw IP.
+        // offline peers whose conversation exists in history show their name.
         string? historyName = null;
-        if (_model.Messages.TryGetValue(ip, out var msgs))
+        if (_model.Messages.TryGetValue(id, out var msgs))
             historyName = msgs.LastOrDefault(e => e.Incoming)?.Sender;
-        var name = peer?.Username ?? contact?.Username ?? historyName ?? ip;
+        var name = contact?.Username ?? peer?.Username ?? historyName
+                   ?? PeerId.LegacyAddress(id) ?? "Unknown";
         HeaderAvatar.NameText = name;
         HeaderName.Text       = name;
         UpdateRemoteDesktopButton();
@@ -486,10 +503,10 @@ public sealed partial class ChatPage : Page
     /// the gate would refuse.
     private void UpdateRemoteDesktopButton()
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
-        var ip = _model.SelectedPeerIP;
-        var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
-        string key = peer?.PublicKeyB64 ?? "";
+        if (_model is null || _model.SelectedConversationId is null) return;
+        // The conversation's own identity, not whoever holds its address today:
+        // availability has to be judged for the device this thread is with.
+        string key = _model.PeerKeyForConversation(_model.SelectedConversationId) ?? "";
         string name = HeaderName.Text;
 
         var availability = _model.RemoteDesktopAvailability(key);
@@ -500,29 +517,34 @@ public sealed partial class ChatPage : Page
 
     private void RemoteDesktop_Click(object sender, RoutedEventArgs e)
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
-        var ip = _model.SelectedPeerIP;
-        var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
-        if (peer is null) return;
+        if (_model?.PeerKeyForConversation(_model.SelectedConversationId) is not { } key) return;
         // Nothing inside a WinUI event handler may throw.
-        try { _model.RequestRemoteDesktop(peer.PublicKeyB64, ip); }
+        try { _model.RequestRemoteDesktop(key); }
         catch (Exception ex)
         {
             LanMessenger.Core.Services.LanLogger.Remote(
-                "error", peer: ip, reason: $"invite from the chat header failed: {ex.Message}");
+                "error", peer: key[..8], reason: $"invite from the chat header failed: {ex.Message}");
         }
     }
 
     private void UpdateHeaderOnlineState()
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
-        var ip = _model.SelectedPeerIP;
-        var peer = _model.Peers.Values.FirstOrDefault(p => p.IP == ip);
+        if (_model is null || _model.SelectedConversationId is null) return;
+        var ip = _model.SelectedConversationId;
+        var peer = _model.PeerForConversation(ip);
         var online = peer?.IsOnline ?? false;
         // Inline dot after the name: green when online, gray when offline (matches macOS header)
         HeaderNameDot.Fill = online ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
 
-        HeaderSubtext.Text = online ? "Online" : "Offline";
+        // The remote-desktop invite's progress replaces the caption, in this
+        // conversation only — matched by identity key, never by address.
+        // Without it every outcome (waiting, declined, unreachable, timed out)
+        // looked exactly like a button that did nothing.
+        var key = _model.PeerKeyForConversation(ip);
+        var status = key is not null && _model.RemoteInviteTargetKey == key
+            ? _model.RemoteInviteStatus
+            : null;
+        HeaderSubtext.Text = status ?? (online ? "Online" : "Offline");
         UpdateRemoteDesktopButton();
     }
 
@@ -533,7 +555,7 @@ public sealed partial class ChatPage : Page
     private void UpdateTypingIndicator()
     {
         if (_model is null) return;
-        var ip = _model.SelectedPeerIP;
+        var ip = _model.SelectedConversationId;
         var typing = ip is not null
                      && _model.TypingStates.TryGetValue(ip, out var t)
                      && t.Active;
@@ -555,8 +577,8 @@ public sealed partial class ChatPage : Page
 
     private void UpdateTransferBanner()
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
-        var ip = _model.SelectedPeerIP;
+        if (_model is null || _model.SelectedConversationId is null) return;
+        var ip = _model.SelectedConversationId;
         if (_model.ActiveTransfers.TryGetValue(ip, out var xfer))
         {
             TransferBanner.Update(xfer.Label, xfer.Bytes, xfer.Total);
@@ -574,8 +596,8 @@ public sealed partial class ChatPage : Page
     // - Otherwise (rare — message deleted or reordered), do a careful full rebuild.
     private void MergeMessages()
     {
-        if (_model is null || _boundPeerIP is null) return;
-        var entries = _model.Messages.TryGetValue(_boundPeerIP, out var list) ? list : [];
+        if (_model is null || _boundConversationId is null) return;
+        var entries = _model.Messages.TryGetValue(_boundConversationId, out var list) ? list : [];
 
         // Append-only fast path: existing prefix matches.
         var prefixMatches = entries.Count >= _rows.Count;
@@ -629,7 +651,7 @@ public sealed partial class ChatPage : Page
             // visible — messages that arrive after the user hides to tray should
             // not be silently marked read.
             if (_model.IsWindowVisible && entries.Any(e => e.Incoming && !e.ReadReceiptSent))
-                _model.MarkConversationRead(_boundPeerIP);
+                _model.MarkConversationRead(_boundConversationId);
             return;
         }
 
@@ -772,7 +794,7 @@ public sealed partial class ChatPage : Page
 
     private void OnSend(string text)
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
+        if (_model is null || _model.SelectedConversationId is null) return;
         var trimmed = text.Trim();
         if (trimmed.Length == 0) return;
 
@@ -780,7 +802,7 @@ public sealed partial class ChatPage : Page
         {
             // Leave the composer in edit mode if the message turned out not to
             // be editable, rather than silently discarding what was typed.
-            if (!_model.EditMessage(editing, trimmed, _model.SelectedPeerIP))
+            if (!_model.EditMessage(editing, trimmed, _model.SelectedConversationId))
             {
                 LanLogger.Warn("Edit", "message no longer editable — keeping composer in edit mode");
                 Composer.Text = trimmed;
@@ -794,8 +816,8 @@ public sealed partial class ChatPage : Page
         MessageEntry? replyTo = null;
         if (ReplyTarget is not null) replyTo = ReplyTarget;
 
-        _model.SendMessage(trimmed, _model.SelectedPeerIP, replyTo);
-        _model.Drafts.Remove(_model.SelectedPeerIP);
+        _model.SendMessage(trimmed, _model.SelectedConversationId, replyTo);
+        _model.Drafts.Remove(_model.SelectedConversationId);
         SetReplyTarget(null);
     }
 
@@ -807,8 +829,8 @@ public sealed partial class ChatPage : Page
 
     private void OnTyping(bool active)
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
-        _model.SendTyping(active, _model.SelectedPeerIP);
+        if (_model is null || _model.SelectedConversationId is null) return;
+        _model.SendTyping(active, _model.SelectedConversationId);
     }
 
     // Synchronous Win32 file picker — replaces the WinRT FileOpenPicker that
@@ -819,8 +841,8 @@ public sealed partial class ChatPage : Page
     // open, so the UI thread stays responsive even though this is synchronous.
     private void OnAttachRequested()
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
-        var targetPeerIP = _model.SelectedPeerIP;
+        if (_model is null || _model.SelectedConversationId is null) return;
+        var targetPeer = _model.SelectedConversationId;
 
         Composer.IsAttachmentPickerOpen = true;
         try
@@ -845,7 +867,7 @@ public sealed partial class ChatPage : Page
             foreach (var path in files)
             {
                 if (!string.IsNullOrWhiteSpace(path))
-                    _model.SendFile(path, targetPeerIP);
+                    _model.SendFile(path, targetPeer);
             }
         }
         catch (Exception ex)
@@ -863,10 +885,10 @@ public sealed partial class ChatPage : Page
     /// paperclip and camera buttons.
     private void SendAttachments(IReadOnlyList<string> paths)
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
-        LanLogger.Info("Attachment", $"sending {paths.Count} attachment(s) to {_model.SelectedPeerIP}");
+        if (_model is null || _model.SelectedConversationId is null) return;
+        LanLogger.Info("Attachment", $"sending {paths.Count} attachment(s) to {_model.SelectedConversationId}");
         foreach (var p in paths)
-            _model.SendFile(p, _model.SelectedPeerIP);
+            _model.SendFile(p, _model.SelectedConversationId);
     }
 
     // ── Thread-wide file drop ────────────────────────────────────────────────
@@ -923,7 +945,7 @@ public sealed partial class ChatPage : Page
     private void AcceptFileDrag(DragEventArgs e)
     {
         NoteDragSession(e);
-        if (_model?.SelectedPeerIP is null) return;
+        if (_model?.SelectedConversationId is null || !CanReachPeer) return;
         if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
 
         e.AcceptedOperation = DataPackageOperation.Copy;
@@ -992,7 +1014,7 @@ public sealed partial class ChatPage : Page
     private async void Page_Drop(object sender, DragEventArgs e)
     {
         EndDragSession();
-        if (_model?.SelectedPeerIP is null) return;
+        if (_model?.SelectedConversationId is null) return;
         if (!e.DataView.Contains(StandardDataFormats.StorageItems))
         {
             LanLogger.Warn("Attachment", $"drop carried no files; formats=[{FormatsOf(e)}]");
@@ -1047,8 +1069,8 @@ public sealed partial class ChatPage : Page
     /// </summary>
     private async void OnScreenshotRequested()
     {
-        if (_model is null || _model.SelectedPeerIP is null) return;
-        var targetPeerIP = _model.SelectedPeerIP;
+        if (_model is null || _model.SelectedConversationId is null) return;
+        var targetPeer = _model.SelectedConversationId;
 
         Composer.IsScreenshotBusy = true;
         string? capturedPath = null;
@@ -1096,7 +1118,7 @@ public sealed partial class ChatPage : Page
 
             if (previewResult == ContentDialogResult.Primary)
             {
-                _model.SendFile(capturedPath, targetPeerIP);
+                _model.SendFile(capturedPath, targetPeer);
                 capturedPath = null;   // ownership transferred; don't delete
             }
             // else: user cancelled — fall through to finally which deletes the file
@@ -1193,8 +1215,8 @@ public sealed partial class ChatPage : Page
     // Called by MessageBubbleControl's "Edit" menu item.
     internal void RequestEditMessage(string? messageId)
     {
-        if (_model is null || _boundPeerIP is null || messageId is null) return;
-        var entries = _model.Messages.TryGetValue(_boundPeerIP, out var list) ? list : [];
+        if (_model is null || _boundConversationId is null || messageId is null) return;
+        var entries = _model.Messages.TryGetValue(_boundConversationId, out var list) ? list : [];
         var target = entries.FirstOrDefault(e => e.MessageId == messageId);
         if (target is null) return;
         SetEditTarget(target);
@@ -1203,8 +1225,8 @@ public sealed partial class ChatPage : Page
     // Called by MessageBubbleControl via its RequestReply event hook.
     internal void RequestReplyTo(string? messageId)
     {
-        if (_model is null || _boundPeerIP is null || messageId is null) return;
-        var entries = _model.Messages.TryGetValue(_boundPeerIP, out var list) ? list : [];
+        if (_model is null || _boundConversationId is null || messageId is null) return;
+        var entries = _model.Messages.TryGetValue(_boundConversationId, out var list) ? list : [];
         var target = entries.FirstOrDefault(e => e.MessageId == messageId);
         SetReplyTarget(target);
     }
@@ -1221,10 +1243,10 @@ public sealed partial class ChatPage : Page
     // Called by MessageBubbleControl's "Delete for me" / "Delete for everyone" menu items.
     internal void RequestDeleteMessage(string? messageId, bool incoming, string? text, bool isFile, string filePath, string timestamp, bool forEveryone)
     {
-        if (_model is null || _boundPeerIP is null) return;
+        if (_model is null || _boundConversationId is null) return;
         if (forEveryone && incoming) return;   // can only delete-for-everyone your own messages
 
-        var entries = _model.Messages.TryGetValue(_boundPeerIP, out var list) ? list : [];
+        var entries = _model.Messages.TryGetValue(_boundConversationId, out var list) ? list : [];
         MessageEntry? target = null;
         if (messageId is not null)
             target = entries.FirstOrDefault(e => e.MessageId == messageId);
@@ -1243,6 +1265,6 @@ public sealed partial class ChatPage : Page
 
         if (forEveryone && target.Incoming) return;
 
-        _model.DeleteMessage(target, _boundPeerIP, forEveryone);
+        _model.DeleteMessage(target, _boundConversationId, forEveryone);
     }
 }

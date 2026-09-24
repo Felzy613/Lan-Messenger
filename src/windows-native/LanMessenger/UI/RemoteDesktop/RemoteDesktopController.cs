@@ -39,13 +39,14 @@ public sealed class RemoteDesktopController
     private string _peerName = "";
     private DateTime _startedAt;
 
-    /// <summary>Where audit records go: (peer IP, record). Set by AppModel.</summary>
+    /// <summary>Where audit records go: (peer identity key, record). Set by AppModel.</summary>
     /// <remarks>
-    /// Carries the IP because history is keyed by it and the session never
-    /// learns it. Each session's sink captures its own peer's IP, so a record
-    /// raised late, such as SessionEnded from a teardown on the socket thread,
-    /// still lands in that peer's thread. Raised on whatever thread the event
-    /// happened on.
+    /// Carries the key because history is filed by it and the session never
+    /// learns it — never the address, which DHCP may have handed to somebody
+    /// else by the time the record lands. Each session's sink captures its own
+    /// peer's key, so a record raised late, such as SessionEnded from a teardown
+    /// on the socket thread, still lands in that peer's thread. Raised on
+    /// whatever thread the event happened on.
     /// </remarks>
     public Action<string, RemoteAuditRecord>? AppendAudit { get; set; }
 
@@ -140,7 +141,8 @@ public sealed class RemoteDesktopController
                 var viewer = new RemoteViewerWindow(peerName);
                 _viewer = viewer;
 
-                var session = new RemoteDesktopSession(record => AppendAudit?.Invoke(peerIP, record));
+                var peerKey = channel.PeerPublicKeyB64;
+                var session = new RemoteDesktopSession(record => AppendAudit?.Invoke(peerKey, record));
                 _session = session;
 
                 viewer.OnClosed = () => Stop(RemoteStopReason.UserStopped);
@@ -331,7 +333,8 @@ public sealed class RemoteDesktopController
 
             try
             {
-                var session = new RemoteDesktopSession(record => AppendAudit?.Invoke(armed.PeerIP, record));
+                var peerKey = media.PeerPublicKeyB64;
+                var session = new RemoteDesktopSession(record => AppendAudit?.Invoke(peerKey, record));
                 _session = session;
                 _media = media;
 

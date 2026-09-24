@@ -102,10 +102,36 @@ final class RemoteInviteCoordinator {
     // MARK: - Initiator
 
     /// Asks a peer to share their screen.
+    ///
+    /// `peerIP` must be where the peer IS, resolved from its identity key at the
+    /// moment of the click — never an address a conversation remembered. LAN
+    /// addresses are recycled between machines by DHCP: the Dell's address on
+    /// the day this was written had previously belonged to Ari, and a
+    /// remembered one sent the Dell's invite to Ari's screen.
+    ///
+    /// **A new request supersedes a pending one** unless it is the same peer at
+    /// the same address. This used to refuse everything while any invite was
+    /// outstanding — for up to a minute, with only a log line to say so — which
+    /// meant one click in the wrong conversation, or one invite aimed at a stale
+    /// address, made the button do nothing at all for everyone else.
     func invite(peerKey: String, peerIP: String, peerName: String) {
-        guard pending == nil else {
-            NetLogger.remote(event: "invite_blocked", peer: peerIP, reason: "already in flight")
-            return
+        if let current = pending {
+            if current.peerKey == peerKey && current.peerIP == peerIP {
+                // Genuinely already asking this device at this address. Say so
+                // again rather than nothing: a repeated click is a user who
+                // cannot tell whether the first one worked.
+                NetLogger.remote(event: "invite_already_pending", peer: peerIP,
+                                 sessionID: current.sessionID)
+                onStateChange?("Waiting for \(current.peerName) to accept…")
+                return
+            }
+            // A different device, or the same device at a new address — either
+            // way the outstanding invite is not wanted or cannot arrive. Withdraw
+            // it properly, so a prompt that did reach somebody closes.
+            NetLogger.remote(event: "invite_superseded", peer: current.peerIP,
+                             sessionID: current.sessionID,
+                             reason: current.peerKey == peerKey ? "peer moved" : "different peer")
+            cancelInvite()
         }
 
         let sessionID = RemoteSessionCrypto.newSessionID()
@@ -166,7 +192,11 @@ final class RemoteInviteCoordinator {
                 // actually agreed to, and the transcript binds that answer.
                 params: body.params)
 
-            try attachAndView(invite: invite, keys: keys)
+            // Attach to where the answer came FROM. It opened under this peer's
+            // identity key, so its source address is proof of where that
+            // device is right now — fresher than the address the invite went
+            // to, which DHCP may have handed to someone else since.
+            try attachAndView(invite: invite, keys: keys, address: ip)
         } catch {
             NetLogger.remote(event: "error", peer: ip, sessionID: packet.sessionId,
                              reason: "accept handling failed: \(error)")
@@ -175,8 +205,10 @@ final class RemoteInviteCoordinator {
         }
     }
 
-    /// Connects, upgrades the socket, and opens the viewer.
-    private func attachAndView(invite: PendingInvite, keys: RemoteSessionKeys) throws {
+    /// Connects, upgrades the socket, and opens the viewer, at `address` — the
+    /// authenticated source of the accept, not the address the invite used.
+    private func attachAndView(invite: PendingInvite, keys: RemoteSessionKeys,
+                               address: String) throws {
         let attach = RemoteControlPacket(type: "media_attach",
                                          sessionId: invite.sessionID,
                                          sender: env.ownUsername(),
@@ -184,17 +216,17 @@ final class RemoteInviteCoordinator {
                                          port: 54232)
         let frame = try FrameCodec.encode(attach)
 
-        let socket = env.attachOutbound(invite.peerIP, frame)
+        let socket = env.attachOutbound(address, frame)
         guard socket >= 0 else {
             onStateChange?("Could not reach \(invite.peerName).")
             return
         }
 
         // From here the descriptor is ours and speaks binary media framing.
-        let link = SocketMediaLink(adopting: socket, peerIP: invite.peerIP)
+        let link = SocketMediaLink(adopting: socket, peerIP: address)
         let media = MediaSession(sessionID: invite.sessionID,
                                  peerPublicKeyB64: invite.peerKey,
-                                 peerIP: invite.peerIP,
+                                 peerIP: address,
                                  role: .initiator,
                                  keys: keys,
                                  link: link)
@@ -208,9 +240,9 @@ final class RemoteInviteCoordinator {
         }
         media.start()
 
-        NetLogger.remote(event: "attach_sent", peer: invite.peerIP, sessionID: invite.sessionID)
+        NetLogger.remote(event: "attach_sent", peer: address, sessionID: invite.sessionID)
         onStateChange?("Connected to \(invite.peerName).")
-        env.startViewing(invite.peerName, invite.peerIP, media)
+        env.startViewing(invite.peerName, address, media)
     }
 
     /// The peer refused, or could not.

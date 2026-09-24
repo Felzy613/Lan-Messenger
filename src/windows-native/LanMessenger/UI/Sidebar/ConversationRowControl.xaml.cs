@@ -93,13 +93,13 @@ public sealed partial class ConversationRowControl : UserControl
     private void Archive_Click(object sender, RoutedEventArgs e)
     {
         if (Row is null || Model is null) return;
-        Model.ArchiveConversation(Row.PeerIP);
+        Model.ArchiveConversation(Row.ConversationId);
     }
 
     private void Unarchive_Click(object sender, RoutedEventArgs e)
     {
         if (Row is null || Model is null) return;
-        Model.UnarchiveConversation(Row.PeerIP);
+        Model.UnarchiveConversation(Row.ConversationId);
     }
 
     private async void Delete_Click(object sender, RoutedEventArgs e)
@@ -117,6 +117,6 @@ public sealed partial class ConversationRowControl : UserControl
         GlassDialog.Apply(dialog, destructive: true);
         var result = await dialog.ShowAsync();
         if (result == ContentDialogResult.Primary)
-            Model.DeleteConversation(Row.PeerIP);
+            Model.DeleteConversation(Row.ConversationId);
     }
 }

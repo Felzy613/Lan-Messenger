@@ -51,6 +51,7 @@ let package = Package(
                 .copy("macos_h264_sample.h264"),
                 .copy("media_control_vector.json"),
                 .copy("avatar_palette_vector.json"),
+                .copy("peer_id_vector.json"),
             ]
         ),
     ]

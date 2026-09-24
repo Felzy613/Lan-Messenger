@@ -110,9 +110,11 @@ public sealed partial class ContactsPage : Page
     // Rebuilds _allRows from the saved contacts list and triggers a filter pass.
     private void Refresh()
     {
-        var onlineIPs = _model?.Peers.Values
+        // By identity key: a contact is online when its own device is, not when
+        // somebody is answering at the address it last used.
+        var onlineKeys = _model?.Peers.Values
                                .Where(p => p.IsOnline)
-                               .Select(p => p.IP)
+                               .Select(p => p.PublicKeyB64)
                                .ToHashSet() ?? [];
 
         _allRows = ConfigStore.Shared.Config.Contacts.Select(c => new ContactRowViewModel
@@ -121,7 +123,7 @@ public sealed partial class ContactsPage : Page
             Username     = c.Username,
             LastIP       = c.LastIP,
             PhotoB64     = c.PhotoB64,
-            IsOnline     = onlineIPs.Contains(c.LastIP),
+            IsOnline     = onlineKeys.Contains(c.PublicKeyB64),
         }).ToList();
 
         ApplyFilter();

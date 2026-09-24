@@ -76,11 +76,11 @@ struct ConversationRowView: View {
                     Menu {
                         if conv.isArchived {
                             Button {
-                                model.unarchiveConversation(peerIP: conv.peerIP)
+                                model.unarchiveConversation(peer: conv.peerID)
                             } label: { Label("Unarchive", systemImage: "tray.and.arrow.up") }
                         } else {
                             Button {
-                                model.archiveConversation(peerIP: conv.peerIP)
+                                model.archiveConversation(peer: conv.peerID)
                             } label: { Label("Archive", systemImage: "archivebox") }
                         }
                         Divider()
@@ -113,7 +113,7 @@ struct ConversationRowView: View {
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                model.deleteConversation(peerIP: conv.peerIP)
+                model.deleteConversation(peer: conv.peerID)
             }
             Button("Cancel", role: .cancel) {}
         } message: {

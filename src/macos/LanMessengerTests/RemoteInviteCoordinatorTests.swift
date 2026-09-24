@@ -37,6 +37,10 @@ final class RemoteInviteCoordinatorTests: XCTestCase {
         var viewingStarts: [(String, String)] = []
         var hostingArmed: [(String, String, String)] = []
         var attachCalls = 0
+        /// Where each media attach was dialled.
+        var attachAddresses: [String] = []
+        /// Everything the coordinator told the interface, in order.
+        var statuses: [String] = []
         /// Set by the test to answer whatever prompt is raised.
         var consentAnswer: RemoteConsentOutcome = .declined(.declined)
         /// Session ids that had an accept window open at the moment the accept
@@ -88,8 +92,9 @@ final class RemoteInviteCoordinatorTests: XCTestCase {
                     recorder.windowOpenWhenAccepted[id] = registry.hasWindow(sessionID: id)
                 }
             },
-            attachOutbound: { _, _ in
+            attachOutbound: { ip, _ in
                 recorder.attachCalls += 1
+                recorder.attachAddresses.append(ip)
                 return -1      // no real socket in a unit test
             },
             ownPublicKeyB64: { peers.localKeyB64 },
@@ -105,7 +110,9 @@ final class RemoteInviteCoordinatorTests: XCTestCase {
             },
             startViewing: { name, ip, _ in recorder.viewingStarts.append((name, ip)) },
             armHosting: { id, name, ip in recorder.hostingArmed.append((id, name, ip)) })
-        return RemoteInviteCoordinator(environment: env)
+        let coordinator = RemoteInviteCoordinator(environment: env)
+        coordinator.onStateChange = { recorder.statuses.append($0) }
+        return coordinator
     }
 
     /// A `remote_invite` as the Dell would actually send one — sealed with the
@@ -282,6 +289,127 @@ final class RemoteInviteCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(recorder.decodedTypes(), ["remote_invite"])
         XCTAssertTrue(coordinator.hasInviteInFlight)
+    }
+
+    // MARK: - Addressed by identity, not by a remembered IP
+
+    /// The sent frames aimed at `ip`, by packet type.
+    private func types(sentTo ip: String, in recorder: Recorder) -> [String] {
+        recorder.sent.compactMap { entry in
+            guard entry.ip == ip, entry.frame.count > 4,
+                  let obj = try? JSONSerialization.jsonObject(with: entry.frame.dropFirst(4))
+                    as? [String: Any] else { return nil }
+            return obj["type"] as? String
+        }
+    }
+
+    func testInvitingSomebodyElseSupersedesThePendingInvite() {
+        // The bug: one invite outstanding refused every other for up to a
+        // minute, silently. Invite Ari by mistake — or have an invite aimed at
+        // an address that now belongs to Ari — and the Dell's button did
+        // nothing, nine clicks in a row, with only `invite_blocked` in a log.
+        let peers = Peers()
+        let ari = Curve25519.KeyAgreement.PrivateKey().publicKey
+            .rawRepresentation.base64EncodedString()
+        let recorder = Recorder()
+        let coordinator = makeCoordinator(
+            peers: peers,
+            contacts: [KnownContact(publicKeyB64: peers.remoteKeyB64, username: "Dell", lastIP: "192.168.68.27"),
+                       KnownContact(publicKeyB64: ari, username: "Ari", lastIP: "192.168.68.31")],
+            recorder: recorder)
+
+        coordinator.invite(peerKey: ari, peerIP: "192.168.68.31", peerName: "Ari")
+        let first = coordinator.pendingSessionID
+        coordinator.invite(peerKey: peers.remoteKeyB64, peerIP: "192.168.68.27", peerName: "Dell")
+
+        XCTAssertEqual(types(sentTo: "192.168.68.27", in: recorder), ["remote_invite"],
+                       "the Dell's invite was refused behind Ari's")
+        XCTAssertNotEqual(coordinator.pendingSessionID, first)
+        // Withdrawn, not abandoned: a prompt that did reach Ari must close.
+        XCTAssertEqual(types(sentTo: "192.168.68.31", in: recorder),
+                       ["remote_invite", "remote_end"])
+        XCTAssertEqual(recorder.statuses.last, "Waiting for Dell to accept…")
+    }
+
+    func testTheSamePeerAtANewAddressSupersedesTooBecauseTheOldOneCannotArrive() {
+        // DHCP moved the peer between two clicks. The pending invite went to an
+        // address that reaches nobody — or somebody else — so keeping it and
+        // refusing the new one would wait a full minute for an answer that is
+        // not coming.
+        let peers = Peers()
+        let recorder = Recorder()
+        let coordinator = makeCoordinator(peers: peers, recorder: recorder)
+
+        coordinator.invite(peerKey: peers.remoteKeyB64, peerIP: "192.168.68.31", peerName: "Dell")
+        coordinator.invite(peerKey: peers.remoteKeyB64, peerIP: "192.168.68.27", peerName: "Dell")
+
+        XCTAssertEqual(types(sentTo: "192.168.68.27", in: recorder), ["remote_invite"])
+        XCTAssertEqual(types(sentTo: "192.168.68.31", in: recorder),
+                       ["remote_invite", "remote_end"])
+    }
+
+    func testARepeatedClickSaysItIsStillWaitingRatherThanNothing() {
+        // Same device, same address: genuinely still asking. No second invite —
+        // but the status is said again, because a second click is a user who
+        // cannot tell whether the first one did anything.
+        let peers = Peers()
+        let recorder = Recorder()
+        let coordinator = makeCoordinator(peers: peers, recorder: recorder)
+
+        coordinator.invite(peerKey: peers.remoteKeyB64, peerIP: "10.0.0.9", peerName: "Dell")
+        recorder.statuses.removeAll()
+        coordinator.invite(peerKey: peers.remoteKeyB64, peerIP: "10.0.0.9", peerName: "Dell")
+
+        XCTAssertEqual(recorder.decodedTypes(), ["remote_invite"])
+        XCTAssertEqual(recorder.statuses, ["Waiting for Dell to accept…"])
+    }
+
+    func testTheMediaChannelDialsWhereTheAuthenticatedAcceptCameFrom() throws {
+        // The accept only opens under the peer's identity key, so its source
+        // address is proof of where that device is now. The invite's own
+        // address is older by a round trip and a human decision, and DHCP may
+        // have handed it on in the meantime.
+        let peers = Peers()
+        let recorder = Recorder()
+        let coordinator = makeCoordinator(peers: peers, recorder: recorder)
+
+        coordinator.invite(peerKey: peers.remoteKeyB64, peerIP: "192.168.68.31", peerName: "Dell")
+        let sessionID = try XCTUnwrap(coordinator.pendingSessionID)
+
+        let sealed = try makeInvite(peers: peers, sessionID: sessionID)
+        let accept = RemoteSessionPacket(type: "remote_accept",
+                                         sessionId: sessionID,
+                                         sender: "Dell",
+                                         senderPublicKeyB64: peers.remoteKeyB64,
+                                         port: 54232,
+                                         nonce: sealed.nonce,
+                                         ciphertext: sealed.ciphertext)
+        coordinator.handleAccept(accept, from: "192.168.68.27")
+
+        XCTAssertEqual(recorder.attachAddresses, ["192.168.68.27"])
+    }
+
+    func testAnAcceptThatDoesNotOpenDialsNothingWhateverItsAddress() throws {
+        // The other half of trusting the source address: it is only trusted
+        // after the body opens. A forged accept from a third machine must not
+        // make us dial it.
+        let peers = Peers()
+        let recorder = Recorder()
+        let coordinator = makeCoordinator(peers: peers, recorder: recorder)
+
+        coordinator.invite(peerKey: peers.remoteKeyB64, peerIP: "192.168.68.27", peerName: "Dell")
+        let sessionID = try XCTUnwrap(coordinator.pendingSessionID)
+
+        let forged = RemoteSessionPacket(type: "remote_accept",
+                                         sessionId: sessionID,
+                                         sender: "Dell",
+                                         senderPublicKeyB64: peers.remoteKeyB64,
+                                         port: 54232,
+                                         nonce: "AAAAAAAAAAAAAAAA",
+                                         ciphertext: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        coordinator.handleAccept(forged, from: "192.168.68.66")
+
+        XCTAssertTrue(recorder.attachAddresses.isEmpty)
     }
 
     func testADeclineForAnotherSessionDoesNotCancelOurs() {
