@@ -399,34 +399,36 @@ Files: `Chat/MessageBubbleView.swift`, `Chat/MediaBubbleView.swift`, `Chat/Reply
 
 ### M3. Chat chrome touch-ups
 Files: `Chat/ChatView.swift`, `Chat/ComposerView.swift`, `Chat/FileTransferBannerView.swift`, `Sidebar/ConversationRowView.swift`.
-- [ ] Header: on macOS 26, replace `.background(.bar)` with `.glassSurface(.regular, in: Capsule())`, add `.padding(8)` around it, and remove the `Divider()` below it. Before 26, keep `.bar` and the divider exactly as they are. Avatar 36, online dot 8, status text `inkSecondary`. The header stays a row above the thread in this milestone (the thread does not scroll under it yet; see M5).
-- [ ] Composer on macOS 26: `GlassEffectContainer(spacing: 8) { HStack(alignment: .bottom, spacing: 8) { pill; sendOrb } }`.
+- [x] Header: on macOS 26, replace `.background(.bar)` with `.glassSurface(.regular, in: Capsule())`, add `.padding(8)` around it, and remove the `Divider()` below it. Before 26, keep `.bar` and the divider exactly as they are. Avatar 36, online dot 8, status text `inkSecondary`. The header stays a row above the thread in this milestone (the thread does not scroll under it yet; see M5).
+- [x] Composer on macOS 26: `GlassEffectContainer(spacing: 8) { HStack(alignment: .bottom, spacing: 8) { pill; sendOrb } }`.
   - The **pill** is a `VStack` of the reply/edit banner plus the attach, screenshot and text row, with `.glassEffect(.regular, in: .rect(cornerRadius: 22))`.
   - The banner moves out of `ChatView` (`replyBanner(for:)` / `editBanner(for:)`) into the pill, **with the same strings and cancel actions**. Pass `replyTarget`/`editTarget` (already bindings on `ComposerView`) and a cancel closure. Delete the two banner rows from `ChatView`.
   - The text field loses `.background(.quaternary, …)`.
   - The **send orb**: a 36pt `Circle` in `Theme.accent` with `arrow.up` or `checkmark` at 15 semibold in `Theme.onBrand`, `.buttonStyle(.plain)`. Disabled uses `.glassEffect(.regular, in: .circle)` with an `inkSecondary` glyph.
   - Before 26, keep today's composer but still take the orb and the banner move, so the layout matches.
-- [ ] Jump to latest: on 26, `.glassEffect(.clear, in: .circle)`; before 26, keep the `.regularMaterial` circle. Size 32, glyph in `accentInk`.
-- [ ] `FileTransferBannerView`: a capsule `.glassSurface(.regular, …)` with `.padding(.horizontal, 8)`; the icon in an `accentWash` disc; a `brand` progress tint on `insetFill`; bytes monospaced in `inkSecondary`.
-- [ ] Drop overlay: `accentWash` fill, a 2px dashed `accentInk` border, and a `.glassSurface(.thick, in: Capsule())` label.
-- [ ] `ConversationRowView`:
+- [x] Jump to latest: on 26, `.glassEffect(.clear, in: .circle)`; before 26, keep the `.regularMaterial` circle. Size 32, glyph in `accentInk`.
+- [x] `FileTransferBannerView`: a capsule `.glassSurface(.regular, …)` with `.padding(.horizontal, 8)`; the icon in an `accentWash` disc; a `brand` progress tint on `insetFill`; bytes monospaced in `inkSecondary`.
+- [x] Drop overlay: `accentWash` fill, a 2px dashed `accentInk` border, and a `.glassSurface(.thick, in: Capsule())` label.
+- [x] `ConversationRowView`:
   - online dot `presenceOnline` / `presenceOffline` with a 2pt `presence-ring` stroke
   - time in `inkSecondary`, becoming `accentInk` semibold when `unreadCount > 0`
   - the unread badge text in `Theme.onBrand` and bold
   - typing capsule dots in `accentInk` on `accentWash`
 
+*As built:* the layout branch is `LiquidGlass.isAvailable` (macOS 26 *and* a macOS 26 SDK). The transfer banner is a glass capsule on every system. A selected sidebar row keeps the hierarchical `.primary`/`.secondary` styles, because before macOS 26 it sits on the accent highlight where only those turn white; `SidebarView` passes `isSelected` since `backgroundProminence` needs macOS 14.
+
 **Done when**, on a macOS 26 machine running the app: the header is a floating capsule, the composer and orb merge as glass, and reply, edit and cancel work as before. On a pre-26 renderer the layout matches with materials. The scroll pin checks from W3 (a), (b), (c) and (d) pass on macOS.
 
 ### M4. The windows that need touch-ups
 Files: `RemoteDesktop/RemoteConsentView.swift`, `RemoteDesktop/RemoteConsentPresenter.swift`, `RemoteDesktop/RemoteHostIndicatorView.swift`, `App/LanMessengerApp.swift` (`ContentView.emptyState`).
-- [ ] Consent:
+- [x] Consent:
   - Delete `.background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.98))`. That opaque fill is what blocks the system glass.
   - On macOS 26 the view takes `.glassSurface(.regular, in: .rect(cornerRadius: 26))`.
   - In `ConsentPanel`, set `isOpaque = false`, `backgroundColor = .clear`, `titlebarAppearsTransparent = true`, and add `.fullSizeContentView` to the style mask, so the glass reaches the panel's edges.
   - Before 26, `.thickMaterial`.
   - Key card: `insetFill`, radius 8. Warning row: `warningWash` with a `warningInk` icon, shown only when `request.warning != nil` (unchanged). The permissions `systemNotice` stays plain `insetFill`.
   - **Decline keeps `.keyboardShortcut(.defaultAction)` and the allow button gets none.**
-- [ ] Indicator: the **neutral HUD** from `components/RemoteHostIndicator`, replacing the orange and red capsules. In `RemoteHostIndicatorView`:
+- [x] Indicator: the **neutral HUD** from `components/RemoteHostIndicator`, replacing the orange and red capsules. In `RemoteHostIndicatorView`:
   - Delete `tint`.
   - Background: `Capsule().fill(GlassTokens.hudSurface)`. Overlay: `Capsule().strokeBorder(model.severity == .controlled ? GlassTokens.hudSignalControl : GlassTokens.hudRim, lineWidth: 1)`.
   - `PulsingDot(color:)` takes `hudSignalView` or `hudSignalControl`.
@@ -434,8 +436,10 @@ Files: `RemoteDesktop/RemoteConsentView.swift`, `RemoteDesktop/RemoteConsentPres
   - Stop Control: a `hudButton` capsule with `hudInk` text. Stop Sharing: a `GlassTokens.danger` capsule with `inkInverse` text, the only solid colour.
   - Height 44, padding 16 leading and 6 trailing. Add `.environment(\.colorScheme, .dark)`, so the HUD looks the same whatever the system theme.
   - The panel is already borderless, clear and non-opaque (`RemoteHostIndicatorPresenter`), so the capsule shape is real. Keep `.shadow` and `.fixedSize()`. No `glassEffect`: the HUD stays solid.
-- [ ] `ContentView.emptyState`: the EmptyState recipe, with a 64pt `.glassSurface(.clear, in: Circle())` disc. **Keep its copy.**
-- [ ] Settings, Contacts, New Message and Archived are system sheets and forms, already glass on 26. No change.
+- [x] `ContentView.emptyState`: the EmptyState recipe, with a 64pt `.glassSurface(.clear, in: Circle())` disc. **Keep its copy.**
+- [x] Settings, Contacts, New Message and Archived are system sheets and forms, already glass on 26. No change.
+
+*As built:* on macOS 26 the consent glass is tinted with `glass-thick`, so a security prompt cannot turn see-through over a busy desktop, and the content is padded to clear the now-transparent title bar. The panel flags are only changed on macOS 26; earlier systems keep the ordinary titled panel with `.thickMaterial` in place of the opaque slab. Decline keeps `.keyboardShortcut(.defaultAction)` and its system default-button look.
 
 **Done when** the consent panel shows glass edge to edge on macOS 26 and a thick material on 13–15 with no opaque slab, and the indicator is the dark HUD (amber dot when viewing; coral dot and outline when controlled; red Stop Sharing as the only filled colour) in both light and dark mode.
 

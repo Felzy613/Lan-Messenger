@@ -7,6 +7,19 @@ enum GlassThickness {
     case clear, regular, thick
 }
 
+/// Whether this build, on this system, draws Liquid Glass. Layout that only
+/// makes sense with glass (a floating header capsule instead of a bar and a
+/// divider) branches on this; the surfaces themselves go through
+/// `glassSurface`, which makes the same decision.
+enum LiquidGlass {
+    static var isAvailable: Bool {
+        #if compiler(>=6.2)
+        if #available(macOS 26, *) { return true }
+        #endif
+        return false
+    }
+}
+
 extension View {
     /// One call site for every glass surface. macOS 26 gets real Liquid Glass;
     /// earlier systems get the matching material and the glass edge; Reduce
