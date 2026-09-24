@@ -381,7 +381,7 @@ Files: `UI/Theme.swift`, new `UI/Glass.swift`, `UI/GlassTokens.swift` (generated
   //   plus .overlay(shape.strokeBorder(GlassTokens.glassEdge)).
   ```
 
-*As built:* the Liquid Glass branch of `glassSurface` is behind `#if compiler(>=6.2)` as well as `#available(macOS 26, *)`, because `glassEffect` only exists in the macOS 26 SDK and CI's `macos-15` image may build with an older Xcode. `Glass.swift` also holds `BubbleShape` and a `bubbleSurface(incoming:tail:)` modifier (translucent fill honouring Reduce Transparency, the rim, the bubble shadow on the fill only so the text is not shadowed), used by every bubble type.
+*As built:* the Liquid Glass branch of `glassSurface` is behind `#if compiler(>=6.2)` as well as `#available(macOS 26, *)`, because `glassEffect` only exists in the macOS 26 SDK. (CI has since moved to `macos-26`, and both macOS build jobs fail if the SDK is older than 26, so a shipped build cannot silently lose the glass; the guard stays for older local toolchains.) `Glass.swift` also holds `BubbleShape` and a `bubbleSurface(incoming:tail:)` modifier (translucent fill honouring Reduce Transparency, the rim, the bubble shadow on the fill only so the text is not shadowed), used by every bubble type.
 
 **Done when** it builds and tests pass, and the ImageRenderer output of `MessageBubbleView` and `ConversationRowView` shows only colour changes.
 

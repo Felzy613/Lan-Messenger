@@ -44,7 +44,7 @@ Workflow: `.github/workflows/pr-checks.yml`
 
 Jobs:
 
-- `test-macos`: runs `swift test` on `macos-15`.
+- `test-macos`: runs `swift test` on `macos-26`, after failing fast if the macOS SDK is older than 26.
 - `test-windows`: restores, builds the test project, and runs `dotnet vstest`
   on `windows-2022`.
 - `comment`: posts or updates a single PR summary comment.
