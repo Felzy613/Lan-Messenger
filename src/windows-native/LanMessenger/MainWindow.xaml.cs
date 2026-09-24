@@ -50,11 +50,16 @@ public sealed partial class MainWindow : Window
         // light or dark colors. XAML colors follow ThemeDictionaries on their
         // own; brushes assigned from C# need this explicit sync — without it,
         // dark-mode users got white bubbles with dark-on-dark hover states.
+        // Transparency effects matter too: with them off, acrylic falls back to
+        // its FallbackColor by itself, and the translucent bubbles have to be
+        // told to use their opaque -fallback tokens.
         if (Content is FrameworkElement root)
         {
-            UI.Theme.Initialize(root.ActualTheme == ElementTheme.Dark);
-            root.ActualThemeChanged += (fe, _) =>
-                UI.Theme.Initialize(fe.ActualTheme == ElementTheme.Dark);
+            ApplyTheme(root);
+            root.ActualThemeChanged += (fe, _) => ApplyTheme(fe);
+            // Raised on a background thread; Theme's brushes are UI objects.
+            _uiSettings.AdvancedEffectsEnabledChanged += (_, _) =>
+                DispatcherQueue.TryEnqueue(() => ApplyTheme(root));
         }
 
         Model = new AppModel(DispatcherQueue.GetForCurrentThread());
@@ -93,18 +98,31 @@ public sealed partial class MainWindow : Window
         Activated += OnWindowActivated;
     }
 
+    // Kept for the life of the window: AdvancedEffectsEnabledChanged is only
+    // raised while the UISettings instance that subscribed is still alive.
+    private readonly Windows.UI.ViewManagement.UISettings _uiSettings = new();
+
+    private void ApplyTheme(FrameworkElement root)
+    {
+        var transparency = true;
+        try { transparency = _uiSettings.AdvancedEffectsEnabled; }
+        catch (Exception) { /* keep translucent; acrylic still falls back by itself */ }
+        UI.Theme.Initialize(root.ActualTheme == ElementTheme.Dark, transparency);
+    }
+
     // Gives the whole window a translucent, wallpaper-tinted backdrop — the
     // Windows equivalent of the vibrancy macOS gets for free from
-    // `.listStyle(.sidebar)`. Without a SystemBackdrop, the sidebar's
-    // LayerFillColorDefaultBrush (semi-transparent by design) has nothing
-    // translucent to blend with and just reads as flat. The chat pane stays
-    // fully opaque either way (AppChatBackgroundBrush), matching macOS, where
-    // only the sidebar/header/composer chrome is translucent.
+    // `.listStyle(.sidebar)`. The sidebar panel floats on it as translucent
+    // glass; the chat pane paints its own wallpaper, with the header and
+    // composer as acrylic over the thread. BaseAlt is the more strongly
+    // wallpaper-tinted Mica, and sits closer to glass-regular than Base.
+    // MicaKind is in Microsoft.UI.Composition.SystemBackdrops, not beside
+    // MicaBackdrop in Microsoft.UI.Xaml.Media.
     private void ApplyBackdrop()
     {
         if (MicaController.IsSupported())
         {
-            SystemBackdrop = new MicaBackdrop { Kind = MicaKind.Base };
+            SystemBackdrop = new MicaBackdrop { Kind = MicaKind.BaseAlt };
         }
         else if (DesktopAcrylicController.IsSupported())
         {
@@ -153,6 +171,7 @@ public sealed partial class MainWindow : Window
             Content         = new SettingsPage { Model = Model },
             XamlRoot        = Content.XamlRoot,
         };
+        GlassDialog.Apply(dialog);
         _activeDialog = dialog;
         try { await dialog.ShowAsync(); }
         finally { _activeDialog = null; }
@@ -190,6 +209,7 @@ public sealed partial class MainWindow : Window
             },
             XamlRoot = Content.XamlRoot
         };
+        GlassDialog.Apply(dialog);
         var result = await dialog.ShowAsync();
         if (result == Microsoft.UI.Xaml.Controls.ContentDialogResult.Primary)
             Model.AcceptMigrationWithExistingKey();

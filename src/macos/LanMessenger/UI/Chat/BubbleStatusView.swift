@@ -4,6 +4,11 @@ import SwiftUI
 // Centralising this avoids the text/media/file implementations drifting apart.
 struct BubbleStatusView: View {
     let status: String
+    /// Ticks only ever sit in outgoing bubbles, but they take the meta colour
+    /// of whichever bubble they are in.
+    var incoming: Bool = false
+
+    private var meta: Color { Theme.meta(incoming: incoming) }
 
     // Every pre-delivery state (Queued / Sending / Sent / unset) collapses to a
     // single grey check so the UI never flips between visually different "in flight"
@@ -12,18 +17,20 @@ struct BubbleStatusView: View {
     var body: some View {
         switch status {
         case "Read":
-            doubleCheck(color: Color(red: 0.31, green: 0.62, blue: 0.97))
+            // tick-read, which differs by theme. Read is also two ticks, so it
+            // is never told apart by colour alone.
+            doubleCheck(color: Theme.tickRead)
         case "Delivered":
-            doubleCheck(color: .secondary)
+            doubleCheck(color: meta)
         case "Failed":
             Image(systemName: "exclamationmark.circle")
                 .font(.system(size: 10))
-                .foregroundStyle(.red)
+                .foregroundStyle(Theme.dangerInk)
         default:
-            // Sent / Sending / Queued / unset all show a single grey check.
+            // Sent / Sending / Queued / unset all show a single check.
             Image(systemName: "checkmark")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(meta)
         }
     }
 

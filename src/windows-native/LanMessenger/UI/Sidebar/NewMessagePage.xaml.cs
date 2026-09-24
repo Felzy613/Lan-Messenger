@@ -82,8 +82,8 @@ public sealed partial class NewMessagePage : Page
         {
             Width               = 11,
             Height              = 11,
-            Fill                = new SolidColorBrush(Color.FromArgb(255, 37, 211, 102)),
-            Stroke              = new SolidColorBrush(Microsoft.UI.Colors.White),
+            Fill                = Theme.OnlineDotBrush,
+            Stroke              = new SolidColorBrush(GlassTokens.Pick(GlassTokens.PresenceRingLight, GlassTokens.PresenceRingDark)),
             StrokeThickness     = 2,
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment   = VerticalAlignment.Bottom,

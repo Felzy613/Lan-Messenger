@@ -15,7 +15,7 @@ struct TypingDotsView: View {
     /// Explicit rather than `.secondary`: the hierarchical style resolves to
     /// near-invisible inside sidebar List cells on macOS 14+ (same reason the
     /// row's options button paints with `Color.primary.opacity(...)`).
-    var color: Color = Color.primary.opacity(0.45)
+    var color: Color = Theme.inkSecondary
 
     /// 0.6 s out, 0.6 s back, each dot a fifth of a second behind the one
     /// before it.
@@ -60,22 +60,14 @@ struct TypingDotsView: View {
 /// land. Matches `MessageBubbleView`'s incoming geometry, tail corner included.
 struct TypingBubbleView: View {
     let peerName: String
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
+            // Always the newest incoming row, so always the tail.
             TypingDotsView()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(
-                    Theme.incomingBubble(colorScheme),
-                    in: UnevenRoundedRectangle(
-                        topLeadingRadius: 16,
-                        bottomLeadingRadius: 4,
-                        bottomTrailingRadius: 16,
-                        topTrailingRadius: 16
-                    )
-                )
+                .bubbleSurface(incoming: true, tail: true)
             Spacer(minLength: 60)
         }
         .padding(.horizontal, 12)

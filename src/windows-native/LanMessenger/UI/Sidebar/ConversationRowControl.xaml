@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ui="using:LanMessenger.UI">
 
-    <Grid Padding="4,6" ColumnSpacing="10" Height="72">
+    <Grid Padding="4,6" ColumnSpacing="10" Height="{StaticResource TokenSizeRow}">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
@@ -12,53 +12,60 @@
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
-        <!-- Avatar with online dot (always visible; color set by code-behind) -->
-        <Grid Grid.Column="0">
-            <ui:AvatarControl x:Name="Avatar" Width="44" Height="44" />
+        <!-- Avatar with presence dot (always visible; colour set by code-behind) -->
+        <Grid Grid.Column="0" VerticalAlignment="Center">
+            <ui:AvatarControl x:Name="Avatar"
+                              Width="{StaticResource TokenSizeAvatarRow}"
+                              Height="{StaticResource TokenSizeAvatarRow}" />
             <Ellipse x:Name="OnlineDot"
-                     Width="11" Height="11"
-                     Fill="#25D366"
-                     Stroke="{ThemeResource AppOnlineDotStrokeBrush}" StrokeThickness="2"
+                     Width="{StaticResource TokenSizePresence}"
+                     Height="{StaticResource TokenSizePresence}"
+                     Stroke="{ThemeResource TokenPresenceRingBrush}" StrokeThickness="2"
                      HorizontalAlignment="Right" VerticalAlignment="Bottom" />
         </Grid>
 
         <!-- Name + preview -->
         <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
             <TextBlock x:Name="NameText"
-                       Style="{ThemeResource BodyStrongTextBlockStyle}"
+                       Style="{StaticResource TokenTypeNameStyle}"
+                       Foreground="{ThemeResource TokenInkBrush}"
                        TextTrimming="CharacterEllipsis" />
             <TextBlock x:Name="PreviewText"
-                       Style="{ThemeResource CaptionTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Style="{StaticResource TokenTypePreviewStyle}"
+                       Foreground="{ThemeResource TokenInkSecondaryBrush}"
                        TextWrapping="Wrap"
                        MaxLines="2"
                        TextTrimming="CharacterEllipsis" />
-            <!-- Takes the preview line's place while the peer is typing: a
-                 miniature of the thread's typing bubble, which is how Messages
-                 marks a typing conversation in its list. Dot size and colour
-                 are set in the code-behind. -->
-            <ui:TypingIndicatorControl x:Name="TypingDots"
-                                       HorizontalAlignment="Left"
-                                       Margin="0,2,0,2" />
+            <!-- Takes the preview line's place while the peer is typing: the
+                 thread's typing dots, smaller, in accent-ink on an accent-wash
+                 capsule. Dot size and colour are set in the code-behind. -->
+            <Border x:Name="TypingCapsule"
+                    Background="{ThemeResource TokenAccentWashBrush}"
+                    CornerRadius="10"
+                    Padding="8,5"
+                    Margin="0,2,0,0"
+                    HorizontalAlignment="Left"
+                    Visibility="Collapsed">
+                <ui:TypingIndicatorControl x:Name="TypingDots" />
+            </Border>
         </StackPanel>
 
         <!-- Timestamp + unread badge -->
         <StackPanel Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="4">
             <TextBlock x:Name="TimestampText"
-                       Style="{ThemeResource CaptionTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                       Style="{StaticResource TokenTypeCaptionStyle}"
                        HorizontalAlignment="Right" />
+            <!-- brand with on-brand numerals: white on the green is 2:1. -->
             <Border x:Name="UnreadBadge"
-                    Background="{StaticResource AppAccentBrush}"
+                    Background="{ThemeResource TokenBrandBrush}"
                     CornerRadius="10"
                     MinWidth="20" Height="20"
-                    Padding="4,0"
+                    Padding="6,0"
                     HorizontalAlignment="Right"
                     Visibility="Collapsed">
                 <TextBlock x:Name="UnreadCount"
-                           Foreground="White"
-                           FontSize="11"
-                           FontWeight="SemiBold"
+                           Style="{StaticResource TokenTypeBadgeStyle}"
+                           Foreground="{ThemeResource TokenOnBrandBrush}"
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center" />
             </Border>
@@ -67,13 +74,11 @@
         <!-- Three-dot conversation options menu -->
         <Button x:Name="OptionsBtn"
                 Grid.Column="3"
-                Background="Transparent"
-                BorderBrush="Transparent"
-                Padding="6"
-                MinWidth="32"
+                Style="{StaticResource GlassIconButtonStyle}"
                 Click="OptionsBtn_Click"
                 VerticalAlignment="Center"
-                ToolTipService.ToolTip="Conversation options">
+                ToolTipService.ToolTip="Conversation options"
+                AutomationProperties.Name="Conversation options">
             <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                       Glyph="&#xE712;"
                       FontSize="14" />

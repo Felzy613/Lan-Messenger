@@ -31,6 +31,12 @@ The repo does not commit `LanMessenger.xcodeproj`. macOS development uses
   handoff, and the plan for the remaining workstreams. Read this before touching
   anything under `Core/Networking/Media` or `RemoteSessionCrypto`.
 - [memory/](memory/) - repo-local project memory for future sessions.
+- [design/liquid-glass/](design/liquid-glass/) - the LAN Messenger Glass design
+  system: tokens for both themes, component guidelines with reference previews,
+  and the WinUI/SwiftUI mapping in `implementation.md`. Read it before changing
+  colours, materials, radii or any chat chrome on either platform.
+- [docs/LIQUID_GLASS_PLAN.md](docs/LIQUID_GLASS_PLAN.md) - the milestone-by-milestone
+  plan for implementing that design system on Windows and macOS, with status.
 
 Update the relevant docs when changing behavior, storage formats, protocol fields,
 build commands, CI, packaging, or release behavior.
@@ -138,6 +144,8 @@ PROTOCOL.md
 docs/
 memory/
 scripts/
+  design/          gen_tokens.py: tokens.json -> GlassTokens.swift/.cs/.xaml
+design/            liquid-glass/: the design system, tokens.json is the source
 spikes/            throwaway diagnostics; not part of either app
 version/
 src/
@@ -161,6 +169,7 @@ src/
       Core/
         Networking/
           Media/
+      Styles/      Glass.xaml; GlassTokens.xaml is generated
       UI/
     LanMessenger.Tests/
     LanMessenger.iss
@@ -936,3 +945,36 @@ Use the smallest sufficient set for the change:
   rather than emit "no user-facing changes", which is indistinguishable from a
   genuinely empty release. That bug shipped empty notes for every pre-release.
 - Do not treat generated Xcode project files as source.
+- Do not put an `AcrylicBrush` (or a material) on message bubbles. Acrylic is
+  only for chrome that has app content moving under it — header, composer,
+  transfer banner, jump button. Bubbles and the Windows sidebar panel use
+  translucent solid brushes: only the wallpaper is behind a bubble, and dozens
+  of blurred surfaces in a virtualised list cost frames nobody can see.
+- Do not paint the screen-sharing indicator in its state colour. It is a
+  neutral, solid `hud-surface` HUD, identical in both themes. The state shows
+  as the status dot (plus a coral outline for control), and the only filled
+  colour is the Stop Sharing button. A full amber or red bar reads as an alarm,
+  and an alarm that stays up for a whole session stops being seen.
+- Do not make the remote-desktop Allow button primary or give it a shortcut.
+  Decline stays the default on both platforms, and the warning colour appears
+  only for an unexpected key.
+- Do not give `MessagesList` a background brush. The wallpaper and its glows
+  are painted by `ThreadBackground` behind it, and the list padding, not a
+  margin, keeps the first and last messages clear of the floating chrome
+  (`ChatPage.UpdateThreadInsets`).
+- Do not try to restyle a Fluent brush from App.xaml when the control reads it
+  inside a visual-state storyboard. `TextControlBorderBrushFocused` and the
+  `AccentButton*` brushes resolve from the control's own tree and then the
+  style's defining dictionary, never reaching the app's — tried in App.xaml's
+  own `ThemeDictionaries` and in a merged dictionary, and a focused field kept
+  the user's red Windows accent underline both times. Set them per instance:
+  `GlassDialog.Apply` does it for every dialog.
+- Do not set white text or glyphs on the brand green. It is 2:1. Content on
+  `brand` is `on-brand` (#0B141A) — the send glyph, the unread count, any
+  primary button.
+- Do not add a colour, radius or size literal to UI code. Add a token to
+  `design/liquid-glass/tokens.json` and run `scripts/design/gen_tokens.py`,
+  which writes `GlassTokens.swift`, `GlassTokens.cs` and
+  `Styles/GlassTokens.xaml`. Never edit those three by hand: CI's `--check`
+  fails on a stale generated file, and `GlassTokensTests` fails a colour tuned
+  below its contrast floor.

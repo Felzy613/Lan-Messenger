@@ -256,19 +256,25 @@ struct ContentView: View {
         }
     }
 
+    /// The EmptyState recipe: a clear-glass disc holding the icon, a pane
+    /// title, and one line saying what to do next.
     private var emptyState: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 52))
-                .foregroundStyle(.quaternary)
-            Text("No conversation selected")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("Pick a peer from the sidebar, or wait for one to appear on the LAN.")
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 260)
+                .font(.system(size: 26))
+                .foregroundStyle(Theme.inkSecondary)
+                .frame(width: 64, height: 64)
+                .glassSurface(.clear, in: Circle())
+            VStack(spacing: 4) {
+                Text("No conversation selected")
+                    .font(GlassTokens.Typography.titlePane)
+                    .foregroundStyle(Theme.ink)
+                Text("Pick a peer from the sidebar, or wait for one to appear on the LAN.")
+                    .font(GlassTokens.Typography.label)
+                    .foregroundStyle(Theme.inkSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 240)
+            }
         }
     }
 }

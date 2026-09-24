@@ -80,6 +80,7 @@ state for the app.
 | `scripts/macos/validate-dmg.sh` | Mounts a DMG, validates layout and embedded app, then unmounts. |
 | `scripts/macos/smoke-test.sh` | Installs `.dmg`, `.pkg`, or `.zip`, launches the app, verifies it stays alive, and collects diagnostics on failure. |
 | `scripts/windows/smoke-test.ps1` | Silently installs Windows EXE, launches the app, verifies stability, and collects diagnostics. |
+| `scripts/design/gen_tokens.py` | Generates `GlassTokens.swift`, `GlassTokens.cs` and `Styles/GlassTokens.xaml` from `design/liquid-glass/tokens.json`. `--check` exits 1 with a diff when a generated file is stale; PR checks run it on both jobs. |
 | `scripts/shared/close-ci-issues.sh` | Comments on and closes open CI failure issues after a successful platform release. |
 
 ## macOS Project Root
@@ -217,8 +218,10 @@ untestable; everything above it runs against in-memory doubles. See
 | Path | Purpose |
 |---|---|
 | `src/macos/LanMessenger/UI/AppModel.swift` | Root observable state, service wiring, peer/contact/history migration, conversations, pending queues, updates, and actions. |
-| `src/macos/LanMessenger/UI/Theme.swift` | Shared color palette, bubble colors, accent, and formatting helpers. |
+| `src/macos/LanMessenger/UI/Theme.swift` | The app's colours, all sourced from `GlassTokens` (bubble fills with their Reduce Transparency fallbacks, ink, meta, accent, presence), plus avatar and timestamp helpers. |
+| `src/macos/LanMessenger/UI/Glass.swift` | `glassSurface(_:in:tint:)`, the one call site for glass (Liquid Glass on macOS 26, materials before, the opaque fallback with Reduce Transparency); `LiquidGlass.isAvailable`; `BubbleShape` and `bubbleSurface` for every message bubble; `glassShadow`. |
 | `src/macos/LanMessenger/UI/AvatarView.swift` | Avatar view supporting initials and base64 contact photos. |
+| `src/macos/LanMessenger/UI/GlassTokens.swift` | **Generated** by `scripts/design/gen_tokens.py`. Every design token: appearance-following `Color`s, `Raw` ARGB pairs, `Radius`, `Space`, `Size`, `Blur`, `Acrylic`, `Shadow`, `Typography`. Do not edit. |
 | `src/macos/LanMessenger/UI/AvatarPalette.swift` | The eight `avatar-*` colours and which one a name gets: FNV-1a over UTF-16 code units, reduced exactly as Windows `AvatarPalette.cs` does it, so a contact looks the same on both platforms and every launch. |
 | `src/macos/LanMessenger/UI/RemoteDesktop/RemoteConsentView.swift` | The consent prompt. Names the peer in the headline, always shows the fingerprint monospaced, shows no badge on the safe path, and makes Decline the default button. |
 | `src/macos/LanMessenger/UI/RemoteDesktop/RemoteInputCapture.swift` | The viewer's mouse and keyboard, turned into wire records. Normalizes against the **video rectangle**, not the view, and returns nothing for a point in a letterbox bar rather than clamping it to an edge. Never forwards the kill shortcut. |
@@ -245,6 +248,7 @@ untestable; everything above it runs against in-memory doubles. See
 | Path | Purpose |
 |---|---|
 | `src/macos/LanMessengerTests/AttachmentPasteboardTests.swift` | Paste precedence (files vs bitmap vs text), pasted-bitmap flavour/extension choice, drag item-provider decoding, and `AttachmentStore` naming/placement. |
+| `src/macos/LanMessengerTests/GlassTokensTests.swift` | Spot values from the generated tokens, the WCAG contrast floors (each glass composited over the wallpaper and its glow, the worse taken), and `AvatarPalette` equal to the `avatar-*` tokens. Mirrors `GlassTokensTests.cs`. |
 | `src/macos/LanMessengerTests/AvatarPaletteTests.swift` | The avatar palette, and each name's hash and slot, against `avatar_palette_vector.json`. Mirrors `AvatarPaletteTests.cs`. |
 | `src/macos/LanMessengerTests/ConfigStoreTests.swift` | Config and filename sanitization tests. |
 | `src/macos/LanMessengerTests/DockPolicyGuardTests.swift` | Guards the Dock-presence invariant: an AppKit promotion back to `.regular` must be corrected, and a policy that already matches must be left alone. |
@@ -301,7 +305,8 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/windows-native/LanMessenger/LanMessenger.csproj` | WinUI app project, dependencies, publish settings, version, asset copy, and PRI publish fix. |
 | `src/windows-native/LanMessenger.Tests/LanMessenger.Tests.csproj` | MSTest project and test-vector copy settings. |
 | `src/windows-native/LanMessenger/app.manifest` | Windows app manifest. |
-| `src/windows-native/LanMessenger/App.xaml` | WinUI application resource root. |
+| `src/windows-native/LanMessenger/App.xaml` | WinUI application resource root: merges `XamlControlsResources` then `Styles/Glass.xaml`. |
+| `src/windows-native/LanMessenger/Styles/Glass.xaml` | Hand-written glass recipes: `GlassSurfaceStyle`, the icon, primary, send, glass, danger, plain, pill and row button templates, `GlassDialogStyle`, `GlassSettingsGroupStyle`. Merges the generated `GlassTokens.xaml` itself. |
 | `src/windows-native/LanMessenger/App.xaml.cs` | WinUI app startup, binding/resource diagnostics, unhandled exception capture, crash log and message box. |
 | `src/windows-native/LanMessenger/MainWindow.xaml` | Main shell layout, sidebar/content columns, toolbar buttons, and tray icon. |
 | `src/windows-native/LanMessenger/MainWindow.xaml.cs` | Window shell behavior, dialog orchestration, chat/archive page reuse, migration dialog, tray lifecycle, the taskbar unread-count overlay icon (`ITaskbarList3.SetOverlayIcon`), and the tray icon's red-dot badge swap (`TrayIcon.IconSource`) — both driven by `AppModel.TotalUnreadCount`. |
@@ -427,9 +432,12 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 | Path | Purpose |
 |---|---|
 | `src/windows-native/LanMessenger/UI/AppModel.cs` | Root observable state, service wiring, peers, conversations, pending queues, contacts, read receipts, updates, and actions. |
-| `src/windows-native/LanMessenger/UI/Theme.cs` | Shared brushes, colors, and formatting helpers. |
+| `src/windows-native/LanMessenger/UI/Theme.cs` | Shared brushes for code-behind, all sourced from `GlassTokens`; rebuilt by `Initialize(isDark, transparencyEnabled)`, which raises `Theme.Changed` so on-screen bubbles and rows repaint. |
+| `src/windows-native/LanMessenger/UI/GlassDialog.cs` | `GlassDialog.Apply`: every `ContentDialog` as a thick-glass sheet, with per-dialog Fluent overrides (focus underline, default button) that App-level resources cannot reach. |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml` | Avatar control XAML. |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml.cs` | Avatar image/initial rendering logic. |
+| `src/windows-native/LanMessenger/UI/GlassTokens.cs` | **Generated** by `scripts/design/gen_tokens.py`. Every colour token as `<Name>Light`/`<Name>Dark`, `Pick`, `All`, and `Radius`/`Space`/`Size`/`Acrylic` constants for code-behind. Do not edit. |
+| `src/windows-native/LanMessenger/Styles/GlassTokens.xaml` | **Generated.** Light, Dark and HighContrast theme dictionaries: `Token<Name>Brush`/`Token<Name>Color` per colour token, the three `Glass*AcrylicBrush`es, `GlassSheenBrush`, `GlassRimBrush`; radius, size and space resources; the type ramp as `TokenType<Name>Style`. Do not edit. |
 | `src/windows-native/LanMessenger/UI/AvatarPalette.cs` | The eight `avatar-*` colours and which one a name gets (FNV-1a over UTF-16 code units, identical to macOS). WinRT-free so it compiles and tests off a UI host; `Theme` turns it into brushes. |
 | `src/windows-native/LanMessenger/UI/TypingIndicatorControl.xaml` | Three dots plus the `Border` that becomes an incoming bubble for the thread copy. |
 | `src/windows-native/LanMessenger/UI/TypingIndicatorControl.xaml.cs` | Staggered pulse storyboard built in code (targets the dot objects directly, so it works inside a `ListView` footer and a `DataTemplate`), `IsActive` start/stop, and the dot size/spacing/brush knobs the header and sidebar use. |
@@ -466,6 +474,7 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 
 | Path | Purpose |
 |---|---|
+| `src/windows-native/LanMessenger.Tests/GlassTokensTests.cs` | Mirror of the Swift token suite: spot values, contrast floors, avatar agreement. |
 | `src/windows-native/LanMessenger.Tests/AvatarPaletteTests.cs` | Mirror of the Swift avatar suite, against the shared vector. |
 | `src/windows-native/LanMessenger.Tests/ClipboardAttachmentsTests.cs` | Ctrl+V paste precedence and pasted-image filename safety. |
 | `src/windows-native/LanMessenger.Tests/ConfigStoreTests.cs` | Config and filename sanitization tests. |

@@ -296,6 +296,18 @@ public sealed partial class ChatPage : Page
         MessagesList.ItemsSource = _rows;
         WireDropTargets();
 
+        Composer.BannerCancelRequested += OnBannerCancelRequested;
+
+        // The chrome floats over the thread, so the list's padding has to
+        // follow its size: the header, the transfer banner appearing under it,
+        // and the composer growing with a reply banner or a multi-line draft.
+        TopChrome.SizeChanged += (_, _) => UpdateThreadInsets();
+        Composer.SizeChanged  += (_, _) => UpdateThreadInsets();
+
+        // Outside a popup a ThemeShadow casts only onto its receivers.
+        ChromeShadow.Receivers.Add(ThreadBackground);
+        Composer.UseShadow(ChromeShadow);
+
         // The thread's dots live in a bubble at message size; the header's are
         // caption-sized to sit where the Online/Offline text does.
         ThreadTyping.UseBubbleShell();
@@ -321,6 +333,41 @@ public sealed partial class ChatPage : Page
             UpdateJumpToLatest();
         };
         MessagesList.LayoutUpdated += layoutHandler;
+    }
+
+    private double _topInset = double.NaN;
+
+    /// Pads the thread so that, at rest, the first message sits 8px below the
+    /// top chrome and the last 8px above the composer; once the reader
+    /// scrolls, content passes under both.
+    ///
+    /// Growing the bottom inset grows the scroll content, and
+    /// OnScrollContentSizeChanged re-pins a pinned reader — that is the whole
+    /// of "the composer grew, keep the newest message visible". Do not add a
+    /// second path that scrolls on composer resize.
+    private void UpdateThreadInsets()
+    {
+        var top    = TopChrome.ActualHeight + 16;
+        var bottom = Composer.ActualHeight + 16;
+        var old    = MessagesList.Padding;
+        if (Math.Abs(old.Top - top) < 0.5 && Math.Abs(old.Bottom - bottom) < 0.5) return;
+        MessagesList.Padding = new Thickness(12, top, 12, bottom);
+        JumpToLatestBtn.Margin = new Thickness(0, 0, 20, Composer.ActualHeight + 8 + 12);
+
+        // The top inset moves every message down by the change. A pinned
+        // reader is re-pinned by the content growing; one reading further up
+        // is held where they were, so a transfer banner appearing does not
+        // shove the page out from under them.
+        var delta = double.IsNaN(_topInset) ? 0 : top - _topInset;
+        _topInset = top;
+        if (delta != 0 && !_pinnedToBottom && _scroll is not null)
+        {
+            // After the next layout pass: until then the extent is the old one
+            // and ChangeView would clamp the target to it.
+            var target = Math.Max(0, _scroll.VerticalOffset + delta);
+            DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low,
+                () => _scroll?.ChangeView(null, target, null, disableAnimation: true));
+        }
     }
 
     private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
@@ -1086,6 +1133,7 @@ public sealed partial class ChatPage : Page
                 CloseButtonText = "OK",
                 XamlRoot = this.XamlRoot,
             };
+            GlassDialog.Apply(dialog);
             _ = await dialog.ShowAsync();
         }
         catch (Exception ex)
@@ -1102,18 +1150,18 @@ public sealed partial class ChatPage : Page
         ReplyTarget = entry;
         if (entry is null)
         {
-            if (EditTarget is null) ReplyBanner.Visibility = Visibility.Collapsed;
+            if (EditTarget is null) Composer.HideBanner();
             return;
         }
-        ReplyBanner.Visibility = Visibility.Visible;
-        ReplyBannerWho.Text     = "Replying to " + (entry.Incoming ? entry.Sender : "yourself");
-        ReplyBannerPreview.Text = LanMessenger.Core.Services.MessagingService.ReplyPreviewText(entry);
+        Composer.ShowBanner("Replying to " + (entry.Incoming ? entry.Sender : "yourself"),
+                            LanMessenger.Core.Services.MessagingService.ReplyPreviewText(entry));
     }
 
     // MARK: - Edit target
 
     /// Swaps the composer into (or out of) edit mode. The banner is shared with
-    /// reply mode — the two are mutually exclusive, so one strip serves both.
+    /// reply mode — the two are mutually exclusive, so one banner in the
+    /// composer's pill serves both.
     public void SetEditTarget(MessageEntry? entry)
     {
         if (entry is not null && ReplyTarget is not null)
@@ -1130,7 +1178,7 @@ public sealed partial class ChatPage : Page
             }
             EditTarget = null;
             Composer.IsEditing = false;   // restore the send glyph on every exit path
-            if (ReplyTarget is null) ReplyBanner.Visibility = Visibility.Collapsed;
+            if (ReplyTarget is null) Composer.HideBanner();
             return;
         }
 
@@ -1138,9 +1186,8 @@ public sealed partial class ChatPage : Page
         EditTarget = entry;
         Composer.Text = entry.Text;
         Composer.IsEditing = true;
-        ReplyBanner.Visibility  = Visibility.Visible;
-        ReplyBannerWho.Text     = "Editing message";
-        ReplyBannerPreview.Text = LanMessenger.Core.Services.MessagingService.ReplyPreviewText(entry);
+        Composer.ShowBanner("Editing message",
+                            LanMessenger.Core.Services.MessagingService.ReplyPreviewText(entry));
     }
 
     // Called by MessageBubbleControl's "Edit" menu item.
@@ -1162,7 +1209,8 @@ public sealed partial class ChatPage : Page
         SetReplyTarget(target);
     }
 
-    private void CancelReplyBtn_Click(object sender, RoutedEventArgs e)
+    // The ✕ on the composer's banner.
+    private void OnBannerCancelRequested()
     {
         if (EditTarget is not null) SetEditTarget(null);
         else SetReplyTarget(null);

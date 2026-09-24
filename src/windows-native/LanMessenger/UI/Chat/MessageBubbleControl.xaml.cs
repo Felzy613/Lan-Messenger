@@ -31,7 +31,19 @@ public sealed partial class MessageBubbleControl : UserControl
     private MediaKind _mediaKind = MediaKind.Other;
     private bool      _fileExists;
 
-    public MessageBubbleControl() => InitializeComponent();
+    public MessageBubbleControl()
+    {
+        InitializeComponent();
+        // Theme swaps its brushes on a light/dark switch and when transparency
+        // effects are turned off; a bubble already on screen repaints then
+        // rather than keeping the old colours until its row next changes.
+        Loaded   += (_, _) => { if (!_themeHooked) { Theme.Changed += Refresh; _themeHooked = true; } };
+        Unloaded += (_, _) => { Theme.Changed -= Refresh; _themeHooked = false; };
+    }
+
+    // Loaded can fire again without an Unloaded between (re-parenting), which
+    // would subscribe twice and leak one handler past the next Unloaded.
+    private bool _themeHooked;
 
     private static void OnRowChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -67,6 +79,7 @@ public sealed partial class MessageBubbleControl : UserControl
         Bubble.CanDrag = _fileExists && !Row.Deleted;
 
         TimestampText.Text = Row.Timestamp;
+        ApplySideBrushes(Row.Incoming);
 
         // Reset everything to the hidden default so previously-shown panels
         // from a recycled list item don't leak across rows.
@@ -79,21 +92,25 @@ public sealed partial class MessageBubbleControl : UserControl
         MessageText.Text = "";
         MessageText.Visibility = Visibility.Visible;
         MessageText.FontStyle = Windows.UI.Text.FontStyle.Normal;
+        MessageText.ClearValue(TextBlock.FontSizeProperty);   // back to the message style's 14
         MessageText.Foreground = Theme.BubbleTextBrush;
         ImagePreview.Source = null;
 
-        // Tail corner: 4px on the side that touches the next bubble in the
-        // same run, 16px everywhere else. Set once here rather than per
-        // content-type branch below, since every branch shares one Border.
+        // Tail corner: radius-tail on the side that touches the next bubble in
+        // the same run, radius-bubble everywhere else. Set once here rather
+        // than per content-type branch below, since every branch shares one
+        // Border.
+        const double r = GlassTokens.Radius.Bubble, tail = GlassTokens.Radius.Tail;
         Bubble.CornerRadius = Row.Incoming
-            ? new CornerRadius(16, 16, 16, Row.IsFirstInRun ? 4 : 16)
-            : new CornerRadius(16, 16, Row.IsFirstInRun ? 4 : 16, 16);
+            ? new CornerRadius(r, r, r, Row.IsFirstInRun ? tail : r)
+            : new CornerRadius(r, r, Row.IsFirstInRun ? tail : r, r);
 
         if (Row.Deleted)
         {
             MessageText.Text = "This message was deleted";
             MessageText.FontStyle = Windows.UI.Text.FontStyle.Italic;
-            MessageText.Foreground = Theme.MutedTextBrush;
+            MessageText.FontSize = 13;
+            MessageText.Foreground = Row.Incoming ? Theme.MetaInBrush : Theme.MetaOutBrush;
             ReplyChip.Visibility = Visibility.Collapsed;
             ReplyChipThumbnailBorder.Visibility = Visibility.Collapsed;
             RelayBadge.Visibility = Visibility.Collapsed;
@@ -173,6 +190,30 @@ public sealed partial class MessageBubbleControl : UserControl
 
         UpdateRelayBadge();
         UpdateStatusGlyph();
+    }
+
+    /// Everything whose colour depends on which side the bubble is on. The
+    /// outgoing bubble is itself green, so its meta text is meta-out (on which
+    /// ink-secondary fails) and its accents the lighter accent-ink-out.
+    private void ApplySideBrushes(bool incoming)
+    {
+        var meta   = incoming ? Theme.MetaInBrush    : Theme.MetaOutBrush;
+        var accent = incoming ? Theme.AccentInkBrush : Theme.AccentInkOutBrush;
+
+        EditedText.Foreground      = meta;
+        TimestampText.Foreground   = meta;
+        RelayIcon.Foreground       = meta;
+        RelayText.Foreground       = meta;
+        FileMissingText.Foreground = meta;
+        VideoHintText.Foreground   = meta;
+        ReplyPreview.Foreground    = meta;
+        ReplyChipIcon.Foreground   = meta;
+        ReplySender.Foreground     = accent;
+        OpenFileBtn.Foreground       = accent;
+        ShowInExplorerBtn.Foreground = meta;
+
+        // A bubble always keeps 60px clear on the far side.
+        BubbleColumn.Margin = incoming ? new Thickness(0, 0, 60, 0) : new Thickness(60, 0, 0, 0);
     }
 
     private void UpdateRelayBadge()
@@ -286,14 +327,15 @@ public sealed partial class MessageBubbleControl : UserControl
     {
         if (Row is null || Row.Incoming) { StatusText.Text = ""; return; }
         // Modern-messenger style: every pre-delivery state (Sending/Queued/Sent
-        // and any unset value) collapses to a single grey check — no clocks, no
-        // "queued" indicator. Delivered = double grey, Read = double blue,
-        // Failed = red ✗.
+        // and any unset value) collapses to a single check — no clocks, no
+        // "queued" indicator. Sent and Delivered take the outgoing bubble's
+        // meta colour, Read is tick-read, Failed is danger-ink. Ticks only
+        // ever sit in outgoing bubbles.
         switch (Row.Status)
         {
             case "Delivered":
                 StatusText.Text       = "✓✓";
-                StatusText.Foreground = Theme.CheckGreyBrush;
+                StatusText.Foreground = Theme.MetaOutBrush;
                 break;
             case "Read":
                 StatusText.Text       = "✓✓";
@@ -301,11 +343,11 @@ public sealed partial class MessageBubbleControl : UserControl
                 break;
             case "Failed":
                 StatusText.Text       = "✗";
-                StatusText.Foreground = Theme.BubbleFailedBrush;
+                StatusText.Foreground = Theme.DangerInkBrush;
                 break;
             default:
                 StatusText.Text       = "✓";
-                StatusText.Foreground = Theme.CheckGreyBrush;
+                StatusText.Foreground = Theme.MetaOutBrush;
                 break;
         }
     }
@@ -417,6 +459,7 @@ public sealed partial class MessageBubbleControl : UserControl
                 CloseButtonText = "OK",
                 XamlRoot = this.XamlRoot,
             };
+            GlassDialog.Apply(dialog);
             _ = await dialog.ShowAsync();
         }
         catch (Exception ex)

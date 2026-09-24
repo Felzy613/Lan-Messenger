@@ -108,6 +108,16 @@ private final class ConsentPanel: NSPanel {
         isReleasedWhenClosed = false
         collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
 
+        if LiquidGlass.isAvailable {
+            // Glass edge to edge: a clear, non-opaque panel whose content runs
+            // under a transparent title bar (ConsentSurface pads for it). The
+            // close button stays, and still means no.
+            styleMask.insert(.fullSizeContentView)
+            titlebarAppearsTransparent = true
+            isOpaque = false
+            backgroundColor = .clear
+        }
+
         contentView = NSHostingView(rootView: body())
         setContentSize(NSHostingView(rootView: body()).fittingSize)
         center()

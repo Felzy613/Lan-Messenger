@@ -4,11 +4,17 @@ import SwiftUI
 //
 // It is small, it is always on top, and it is the only thing standing between
 // "I know I'm sharing" and "I forgot this was running". So it is designed for
-// peripheral vision first: colour and motion carry the state, and the text is
-// there for when somebody actually looks.
+// peripheral vision first: position, motion and one red button carry it, and
+// the text is there for when somebody actually looks.
 //
-// Red for control, amber for viewing. Not a subtle tint of the accent colour —
-// this is the one piece of chrome in the app that should be slightly unwelcome.
+// A neutral dark HUD, identical in light and dark mode, like the system's own
+// screen-recording indicators. Colour is spent in two places only: the
+// breathing dot (amber viewing, coral controlled) and the Stop Sharing button.
+// A full amber or red capsule read as an alarm, and an alarm that stays up for
+// a whole session teaches people to stop seeing it. Control, the riskier state,
+// also gets a coral outline; the words always say which state it is.
+//
+// Solid, never glass: the desktop behind must not wash out a security signal.
 
 struct RemoteHostIndicatorView: View {
 
@@ -17,54 +23,64 @@ struct RemoteHostIndicatorView: View {
     let onRevokeControl: () -> Void
     let onStop: () -> Void
 
-    private var tint: Color {
-        model.severity == .controlled
-            ? Color(red: 0.85, green: 0.19, blue: 0.19)
-            : Color(red: 0.90, green: 0.55, blue: 0.10)
-    }
+    private var controlled: Bool { model.severity == .controlled }
 
     var body: some View {
         HStack(spacing: 10) {
             // The one moving thing on the strip. A static dot becomes furniture
             // within a minute; a pulsing one keeps catching the eye, which is
             // the entire job.
-            PulsingDot(color: .white)
+            PulsingDot(color: controlled ? GlassTokens.hudSignalControl : GlassTokens.hudSignalView)
 
-            VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 8) {
                 Text(model.headline)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(GlassTokens.Typography.labelStrong)
+                    .foregroundStyle(GlassTokens.hudInk)
                     .lineLimit(1)
                 Text(elapsed)
-                    .font(.system(size: 10, weight: .regular))
+                    .font(GlassTokens.Typography.label)
                     .monospacedDigit()
-                    .opacity(0.85)
+                    .foregroundStyle(GlassTokens.hudInkSecondary)
             }
 
             Spacer(minLength: 8)
 
+            Rectangle()
+                .fill(GlassTokens.hudRim)
+                .frame(width: 1, height: 20)
+
             if model.showsRevokeControl {
                 // Usually what a host actually wants: "stop touching things",
-                // not "get out". Leaves the session running.
-                indicatorButton("Stop Control", action: onRevokeControl)
+                // not "get out". Leaves the session running. Neutral.
+                indicatorButton("Stop Control", fill: GlassTokens.hudButton, ink: GlassTokens.hudInk,
+                                action: onRevokeControl)
             }
-            indicatorButton("Stop Sharing", action: onStop)
+            // The only solid colour on the indicator.
+            indicatorButton("Stop Sharing", fill: GlassTokens.danger, ink: GlassTokens.inkInverse,
+                            action: onStop)
         }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(tint, in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 1))
+        .padding(.leading, 16)
+        .padding(.trailing, 6)
+        .frame(height: 44)
+        .background(GlassTokens.hudSurface, in: Capsule())
+        .overlay(Capsule().strokeBorder(controlled ? GlassTokens.hudSignalControl : GlassTokens.hudRim,
+                                        lineWidth: 1))
         .shadow(color: .black.opacity(0.28), radius: 8, y: 2)
+        // The same HUD whatever the system theme, and the controls inside it
+        // drawn for a dark surface.
+        .environment(\.colorScheme, .dark)
         .fixedSize()
     }
 
-    private func indicatorButton(_ title: String, action: @escaping () -> Void) -> some View {
+    private func indicatorButton(_ title: String, fill: Color, ink: Color,
+                                 action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(.white.opacity(0.22), in: Capsule())
+                .font(GlassTokens.Typography.labelStrong)
+                .foregroundStyle(ink)
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+                .background(fill, in: Capsule())
         }
         .buttonStyle(.plain)
         .contentShape(Capsule())

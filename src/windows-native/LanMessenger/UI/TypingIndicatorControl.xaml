@@ -11,24 +11,28 @@
          (DotDiameter / DotSpacing / DotBrush) — the starting Opacity and Scale
          below match the low end of the pulse so the first frame drawn is the
          same one the animation would draw. -->
-    <Border x:Name="Shell" HorizontalAlignment="Left" VerticalAlignment="Center">
+    <Border x:Name="Shell"
+            HorizontalAlignment="Left"
+            VerticalAlignment="Center"
+            BorderBrush="{ThemeResource GlassRimBrush}"
+            BorderThickness="0">
         <StackPanel x:Name="DotRow" Orientation="Horizontal" Spacing="5">
             <Ellipse x:Name="Dot1" Width="8" Height="8" Opacity="0.38"
-                     Fill="{ThemeResource TextFillColorSecondaryBrush}"
+                     Fill="{ThemeResource TokenInkSecondaryBrush}"
                      RenderTransformOrigin="0.5,0.5">
                 <Ellipse.RenderTransform>
                     <ScaleTransform x:Name="Dot1Scale" ScaleX="0.82" ScaleY="0.82" />
                 </Ellipse.RenderTransform>
             </Ellipse>
             <Ellipse x:Name="Dot2" Width="8" Height="8" Opacity="0.38"
-                     Fill="{ThemeResource TextFillColorSecondaryBrush}"
+                     Fill="{ThemeResource TokenInkSecondaryBrush}"
                      RenderTransformOrigin="0.5,0.5">
                 <Ellipse.RenderTransform>
                     <ScaleTransform x:Name="Dot2Scale" ScaleX="0.82" ScaleY="0.82" />
                 </Ellipse.RenderTransform>
             </Ellipse>
             <Ellipse x:Name="Dot3" Width="8" Height="8" Opacity="0.38"
-                     Fill="{ThemeResource TextFillColorSecondaryBrush}"
+                     Fill="{ThemeResource TokenInkSecondaryBrush}"
                      RenderTransformOrigin="0.5,0.5">
                 <Ellipse.RenderTransform>
                     <ScaleTransform x:Name="Dot3Scale" ScaleX="0.82" ScaleY="0.82" />

@@ -12,10 +12,18 @@
         <!-- CanDrag is switched on in Refresh() for file bubbles whose file is
              still on disk, so an attachment can be dragged straight out to
              Explorer, Outlook, or anything else that takes a file. -->
+        <!-- Tinted glass: a translucent solid brush from Theme (the opaque
+             -fallback token with transparency effects off) and the rim. Never
+             an AcrylicBrush: only the wallpaper is behind a bubble, and dozens
+             of blurred surfaces in a virtualised list cost frames for nothing
+             anyone can see. The far-side margin (60px clear) and the tail
+             corner are set in Refresh(). -->
         <Border x:Name="Bubble"
-                CornerRadius="16"
-                Padding="10,7,10,6"
-                MaxWidth="520"
+                CornerRadius="{StaticResource TokenRadiusBubble}"
+                Padding="10,7,10,7"
+                MaxWidth="{StaticResource TokenSizeBubbleMax}"
+                BorderThickness="1"
+                BorderBrush="{ThemeResource GlassRimBrush}"
                 CanDrag="False"
                 DragStarting="Bubble_DragStarting">
             <Border.ContextFlyout>
@@ -41,10 +49,10 @@
 
                 <!-- Reply chip — shows a thumbnail for image/video replies, a doc
                      icon for file replies, and plain text for text replies. -->
-                <!-- Alpha-gray reads on both light and dark bubbles -->
+                <!-- inset-fill, concentric with the bubble: 16 - 10 padding = 6. -->
                 <Border x:Name="ReplyChip"
-                        Background="#1A808080"
-                        CornerRadius="4"
+                        Background="{ThemeResource TokenInsetFillBrush}"
+                        CornerRadius="{StaticResource TokenRadiusChip}"
                         Padding="6,4"
                         Margin="0,0,0,4"
                         Tapped="ReplyChip_Tapped"
@@ -55,13 +63,13 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <Rectangle Grid.Column="0" Fill="{ThemeResource AppReplyAccentBrush}" />
+                        <Border Grid.Column="0" Background="{ThemeResource TokenBrandBrush}" CornerRadius="2" />
                         <!-- Optional thumbnail / icon for media and file replies -->
                         <Border x:Name="ReplyChipThumbnailBorder"
                                 Grid.Column="1"
                                 Width="36" Height="36"
-                                CornerRadius="4"
-                                Background="#22000000"
+                                CornerRadius="{StaticResource TokenRadiusTail}"
+                                Background="{ThemeResource TokenInsetFillBrush}"
                                 Visibility="Collapsed">
                             <Grid>
                                 <Image x:Name="ReplyChipImage"
@@ -72,17 +80,17 @@
                                           FontSize="18"
                                           HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
-                                          Foreground="White"
                                           Visibility="Collapsed" />
                             </Grid>
                         </Border>
                         <StackPanel Grid.Column="2" Spacing="0" VerticalAlignment="Center">
+                            <!-- Colours by side, from Refresh(): accent ink and the
+                                 bubble's meta colour. -->
                             <TextBlock x:Name="ReplySender"
-                                       FontSize="11" FontWeight="SemiBold"
-                                       Foreground="{ThemeResource AppReplyAccentTextBrush}" />
+                                       Style="{StaticResource TokenTypeCaptionStrongStyle}"
+                                       TextTrimming="CharacterEllipsis" />
                             <TextBlock x:Name="ReplyPreview"
-                                       FontSize="11"
-                                       Opacity="0.75"
+                                       Style="{StaticResource TokenTypeCaptionStyle}"
                                        TextTrimming="CharacterEllipsis"
                                        MaxLines="1" />
                         </StackPanel>
@@ -93,7 +101,7 @@
                      MaxWidth caps the bubble width so a 4K image cannot blow out
                      the chat list layout. Tap opens the modal viewer. -->
                 <Border x:Name="ImageTile"
-                        CornerRadius="10"
+                        CornerRadius="{StaticResource TokenRadiusMedia}"
                         Visibility="Collapsed"
                         Tapped="MediaTile_Tapped">
                     <Grid>
@@ -112,8 +120,8 @@
                      list shows a poster tile (filename + play icon) and the
                      player is only constructed inside the modal preview. -->
                 <Border x:Name="VideoTile"
-                        CornerRadius="10"
-                        Background="#22000000"
+                        CornerRadius="{StaticResource TokenRadiusMedia}"
+                        Background="{ThemeResource TokenInsetFillBrush}"
                         Padding="10"
                         Visibility="Collapsed"
                         Tapped="MediaTile_Tapped">
@@ -124,23 +132,24 @@
                         </Grid.ColumnDefinitions>
                         <Grid Grid.Column="0"
                               Width="60" Height="60"
-                              Background="#000000"
-                              CornerRadius="8">
+                              Background="{ThemeResource TokenScrimBrush}"
+                              CornerRadius="{StaticResource TokenRadiusCard}">
                             <FontIcon Glyph="&#xE714;"
                                       FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                       FontSize="28"
-                                      Foreground="White"
+                                      Foreground="{ThemeResource TokenInkInverseBrush}"
                                       HorizontalAlignment="Center"
                                       VerticalAlignment="Center" />
                         </Grid>
                         <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
                             <TextBlock x:Name="VideoFilename"
-                                       FontSize="13" FontWeight="SemiBold"
+                                       Style="{StaticResource TokenTypeFileNameStyle}"
+                                       Foreground="{ThemeResource TokenInkBrush}"
                                        TextTrimming="CharacterEllipsis"
                                        MaxLines="1" />
-                            <TextBlock Text="Tap to play"
-                                       FontSize="11"
-                                       Opacity="0.7" />
+                            <TextBlock x:Name="VideoHintText"
+                                       Text="Tap to play"
+                                       Style="{StaticResource TokenTypeCaptionStyle}" />
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -148,7 +157,7 @@
                 <!-- Generic message text — hidden when an inline media tile is shown. -->
                 <TextBlock x:Name="MessageText"
                            TextWrapping="Wrap"
-                           FontSize="14" />
+                           Style="{StaticResource TokenTypeMessageStyle}" />
 
                 <!-- File actions row (visible for non-media file bubbles only).
                      Open launches the file with its default app; "Show in folder"
@@ -159,11 +168,11 @@
                             Visibility="Collapsed">
                     <Button x:Name="OpenFileBtn"
                             Content="Open"
-                            Padding="8,2"
+                            Style="{StaticResource GlassPillAccentButtonStyle}"
                             Click="OpenFileBtn_Click" />
                     <Button x:Name="ShowInExplorerBtn"
                             Content="Show in folder"
-                            Padding="8,2"
+                            Style="{StaticResource GlassPillButtonStyle}"
                             Click="ShowInExplorerBtn_Click"
                             ToolTipService.ToolTip="Open File Explorer with this file selected" />
                 </StackPanel>
@@ -172,35 +181,37 @@
                      exists on disk (moved or deleted after history was written). -->
                 <TextBlock x:Name="FileMissingText"
                            Text="File no longer available"
-                           FontSize="11"
-                           Opacity="0.7"
+                           Style="{StaticResource TokenTypeCaptionStyle}"
                            Visibility="Collapsed" />
 
                 <StackPanel Orientation="Horizontal"
                             Spacing="4"
                             HorizontalAlignment="Right"
                             Margin="0,2,0,0">
+                    <!-- The meta row takes the bubble's meta colour from
+                         Refresh(): ink-secondary incoming, meta-out outgoing.
+                         Never Opacity: dimming is what took these below 4.5:1,
+                         and ink-secondary itself fails on the light green. -->
                     <!-- "edited" marker — shown for messages whose sender
                          replaced the text after sending. -->
                     <TextBlock x:Name="EditedText"
                                Text="edited"
-                               FontSize="10"
-                               Opacity="0.45"
+                               Style="{StaticResource TokenTypeMetaStyle}"
                                Visibility="Collapsed" />
                     <TextBlock x:Name="TimestampText"
-                               FontSize="10"
-                               Opacity="0.55" />
+                               Style="{StaticResource TokenTypeMetaStyle}" />
                     <!-- Relay delivery badge — hidden for direct LAN messages. -->
                     <StackPanel x:Name="RelayBadge"
                                 Orientation="Horizontal"
                                 Spacing="2"
-                                Visibility="Collapsed"
-                                Opacity="0.6">
-                        <FontIcon Glyph="&#xE753;"
+                                Visibility="Collapsed">
+                        <FontIcon x:Name="RelayIcon"
+                                  Glyph="&#xE753;"
                                   FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                   FontSize="9" />
-                        <TextBlock Text="via relay"
-                                   FontSize="9" />
+                        <TextBlock x:Name="RelayText"
+                                   Text="via relay"
+                                   Style="{StaticResource TokenTypeMicroStyle}" />
                     </StackPanel>
                     <!-- Status check marks (text glyphs). -->
                     <TextBlock x:Name="StatusText"

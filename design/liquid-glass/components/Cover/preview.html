@@ -1,0 +1,40 @@
+<!-- @dsCard height=300 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Cover</title>
+<style>
+  html, body { margin: 0; }
+  .cover { position: relative; width: 960px; height: 300px; overflow: hidden; background: var(--wallpaper); font-family: var(--font-display); }
+  .cover svg { position: absolute; left: 0; top: 0; }
+  .b-brand { fill: var(--brand); }
+  .b-ink { fill: var(--ink); }
+  .b-out { fill: var(--bubble-out-fallback); }
+  .b-read { fill: var(--tick-read); }
+  .g-glass { fill: var(--glass-regular); stroke: var(--glass-rim); stroke-width: 1.5; }
+  .d-ground { fill: var(--wallpaper); }
+  .d-onbrand { fill: var(--on-brand); }
+  .d-ink { fill: var(--ink); }
+  .r-bubble { rx: var(--radius-bubble); }
+  .r-tail { rx: var(--radius-tail); }
+  .r-pill { rx: 20px; }
+  .g-glass.r-pill { rx: 24px; }
+  .cover__text { position: absolute; left: 40px; top: 176px; max-width: 880px; }
+  .cover__name { margin: 0; font-size: 64px; line-height: 0.95; font-weight: 600; letter-spacing: -0.01em; color: var(--ink); }
+  .cover__tagline { margin: 12px 0 0; font-family: var(--font-sans); font-size: 14px; line-height: 20px; color: var(--ink-secondary); }
+</style></head>
+<body>
+<div class="cover">
+  <!--
+    blocks:  brand x2 (296x64, 300x108 bleeding right), ink (136x40), bubble-out-fallback (272x52), tick-read (40x40 disc); glass-regular capsule 264x48 over brand
+    arrange: top band, 24px from the top, a thread laid on its side: bubbles in runs with space-16 gaps, the last one bleeding off the right edge
+    pattern: the literal motif, the chat bubble: radius-bubble corners with one radius-tail corner, plus typing-dot triplets (r4, 16 pitch); WhatsApp is recognised by its tailed bubbles, so the shape is the brand
+    scales:  space-16 gaps, space-24 top inset, space-40 side inset; radius-bubble 16, radius-tail 4, pill = half the short side
+  -->
+  <svg width="960" height="140" viewBox="0 0 960 140" aria-hidden="true"><rect class="b-brand r-bubble" x="40" y="24" width="296" height="64"/><rect class="b-brand r-tail" x="40" y="56" width="32" height="32"/><rect class="b-ink r-bubble" x="352" y="24" width="136" height="40"/><rect class="b-ink r-tail" x="352" y="44" width="20" height="20"/><circle class="d-ground" cx="396" cy="44" r="4"/><circle class="d-ground" cx="412" cy="44" r="4"/><circle class="d-ground" cx="428" cy="44" r="4"/><rect class="b-out r-bubble" x="352" y="80" width="272" height="52"/><rect class="b-out r-tail" x="598" y="106" width="26" height="26"/><rect class="b-read r-pill" x="640" y="24" width="40" height="40"/><rect class="b-brand r-bubble" x="696" y="24" width="300" height="108"/><rect class="b-brand r-tail" x="696" y="100" width="32" height="32"/><circle class="d-onbrand" cx="744" cy="78" r="4"/><circle class="d-onbrand" cx="760" cy="78" r="4"/><circle class="d-onbrand" cx="776" cy="78" r="4"/><circle class="d-onbrand" cx="832" cy="78" r="4"/><circle class="d-onbrand" cx="848" cy="78" r="4"/><circle class="d-onbrand" cx="864" cy="78" r="4"/><circle class="d-ink" cx="96" cy="56" r="4"/><circle class="d-ink" cx="112" cy="56" r="4"/><circle class="d-ink" cx="128" cy="56" r="4"/><rect class="g-glass r-pill" x="208" y="60" width="264" height="48"/><circle class="d-ink" cx="290" cy="84" r="4"/><circle class="d-ink" cx="306" cy="84" r="4"/><circle class="d-ink" cx="322" cy="84" r="4"/></svg>
+  <div class="cover__text">
+    <h1 class="cover__name">LAN Messenger Glass</h1>
+    <p class="cover__tagline">WhatsApp’s conversation grammar, built from liquid glass.</p>
+  </div>
+</div>
+</body>
+</html>

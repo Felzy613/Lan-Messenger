@@ -3,52 +3,72 @@ import SwiftUI
 struct ConversationRowView: View {
     let conv: ConversationViewModel
     @EnvironmentObject var model: AppModel
+    /// Whether the row is the sidebar's selection. A selected sidebar row can
+    /// sit on the accent-coloured highlight, where only the hierarchical styles
+    /// turn white, so it keeps them; the token colours apply everywhere else.
+    /// Passed in because `backgroundProminence` needs macOS 14.
+    var isSelected: Bool = false
     @State private var confirmDelete = false
+
+    private var onSelection: Bool { isSelected }
+
+    private func secondaryStyle(_ token: Color) -> AnyShapeStyle {
+        onSelection ? AnyShapeStyle(.secondary) : AnyShapeStyle(token)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
-            AvatarView(name: conv.peerName, size: 44, photoB64: conv.photoB64)
+            AvatarView(name: conv.peerName, size: GlassTokens.Size.avatarRow, photoB64: conv.photoB64)
                 .overlay(alignment: .bottomTrailing) {
+                    // presence-ring separates the dot from the avatar in
+                    // either theme; offline is a real colour, not a faded one.
                     Circle()
-                        .fill(conv.isOnline ? Color.green : Color.gray.opacity(0.45))
-                        .frame(width: 11, height: 11)
+                        .fill(conv.isOnline ? Theme.presenceOnline : Theme.presenceOffline)
+                        .overlay(Circle().strokeBorder(Theme.presenceRing, lineWidth: 2))
+                        .frame(width: GlassTokens.Size.presence, height: GlassTokens.Size.presence)
                         .offset(x: 2, y: 2)
                 }
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(conv.peerName)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(GlassTokens.Typography.name)
                         .lineLimit(1)
                     Spacer()
                     if let ts = conv.lastTimestamp {
+                        // With unread messages the time turns semibold
+                        // accent-ink, the way WhatsApp marks something new.
                         Text(Theme.formatTimestamp(ts))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                            .font(conv.unreadCount > 0 ? GlassTokens.Typography.captionStrong
+                                                       : GlassTokens.Typography.caption)
+                            .foregroundStyle(conv.unreadCount > 0 && !onSelection
+                                             ? AnyShapeStyle(Theme.accentInk)
+                                             : secondaryStyle(Theme.inkSecondary))
                     }
                 }
                 HStack(alignment: .top) {
                     if conv.isTyping {
                         // A miniature of the thread's typing bubble, which is
                         // how Messages marks a typing conversation in its list.
-                        TypingDotsView(dotSize: 6, spacing: 4, color: Theme.accent)
+                        TypingDotsView(dotSize: 6, spacing: 4, color: Theme.accentInk)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 5)
-                            .background(Theme.accent.opacity(0.12), in: Capsule())
+                            .background(Theme.accentWash, in: Capsule())
                             .accessibilityElement()
                             .accessibilityLabel(Text("\(conv.peerName) is typing"))
                             .help("\(conv.peerName) is typing…")
                     } else {
                         Text(conv.lastMessage.isEmpty ? " " : conv.lastMessage)
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
+                            .font(GlassTokens.Typography.preview)
+                            .foregroundStyle(secondaryStyle(Theme.inkSecondary))
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                     }
                     Spacer()
                     if conv.unreadCount > 0 {
+                        // on-brand numerals: white on the brand green is 2:1.
                         Text("\(conv.unreadCount)")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.white)
+                            .font(GlassTokens.Typography.badge)
+                            .foregroundStyle(Theme.onBrand)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(Theme.accent, in: Capsule())
@@ -86,7 +106,7 @@ struct ConversationRowView: View {
             }
         }
         .padding(.vertical, 4)
-        .frame(height: 72)
+        .frame(height: GlassTokens.Size.row)
         .confirmationDialog(
             "Delete this conversation?",
             isPresented: $confirmDelete,

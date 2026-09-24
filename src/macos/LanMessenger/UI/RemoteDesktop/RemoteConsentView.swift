@@ -28,18 +28,14 @@ struct RemoteConsentView: View {
     let onAccept: () -> Void
     let onDecline: () -> Void
 
-    @Environment(\.colorScheme) private var scheme
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
             details
-            Divider()
             footer
         }
         .frame(width: 420)
-        .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.98))
+        .modifier(ConsentSurface())
     }
 
     // MARK: - Header
@@ -50,16 +46,19 @@ struct RemoteConsentView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(request.title)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(GlassTokens.Typography.titleSheet)
+                    .foregroundStyle(Theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(request.explanation)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .font(GlassTokens.Typography.label)
+                    .foregroundStyle(Theme.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
-        .padding(16)
+        .padding(.horizontal, 20)
+        .padding(.top, ConsentSurface.topInset)
+        .padding(.bottom, 12)
     }
 
     // MARK: - Identity
@@ -78,26 +77,30 @@ struct RemoteConsentView: View {
                 noticeRow(notice)
             }
 
-            identityRow(label: "Address", value: request.peerIP)
+            // The address and key card.
+            VStack(alignment: .leading, spacing: 8) {
+                identityRow(label: "Address", value: request.peerIP, monospaced: true)
 
-            // Monospaced, and never truncated: this is the one string on the
-            // dialog a careful user reads character by character against
-            // something the peer read out to them.
-            identityRow(label: "Key", value: request.fingerprint, monospaced: true)
+                // Monospaced, and never truncated: this is the one string on the
+                // dialog a careful user reads character by character against
+                // something the peer read out to them.
+                identityRow(label: "Key", value: request.fingerprint, monospaced: true)
+            }
+            .padding(10)
+            .background(Theme.insetFill, in: RoundedRectangle(cornerRadius: GlassTokens.Radius.card))
         }
-        .padding(16)
+        .padding(.horizontal, 20)
     }
 
     private func identityRow(label: String, value: String, monospaced: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
+                .font(GlassTokens.Typography.caption)
+                .foregroundStyle(Theme.inkSecondary)
                 .frame(width: 58, alignment: .leading)
             Text(value)
-                .font(.system(size: monospaced ? 12 : 12,
-                              weight: monospaced ? .regular : .regular,
-                              design: monospaced ? .monospaced : .default))
+                .font(monospaced ? GlassTokens.Typography.code : GlassTokens.Typography.label)
+                .foregroundStyle(Theme.ink)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -107,31 +110,31 @@ struct RemoteConsentView: View {
     private func noticeRow(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "info.circle.fill")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.inkSecondary)
                 .font(.system(size: 13))
             Text(text)
-                .font(.system(size: 12))
+                .font(GlassTokens.Typography.label)
+                .foregroundStyle(Theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(10)
-        .background(Color.primary.opacity(scheme == .dark ? 0.08 : 0.05),
-                    in: RoundedRectangle(cornerRadius: 8))
+        .background(Theme.insetFill, in: RoundedRectangle(cornerRadius: GlassTokens.Radius.card))
     }
 
     private func warningRow(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(GlassTokens.warningInk)
                 .font(.system(size: 13))
             Text(text)
-                .font(.system(size: 12))
+                .font(GlassTokens.Typography.label)
+                .foregroundStyle(Theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(10)
-        .background(Color.orange.opacity(scheme == .dark ? 0.16 : 0.12),
-                    in: RoundedRectangle(cornerRadius: 8))
+        .background(GlassTokens.warningWash, in: RoundedRectangle(cornerRadius: GlassTokens.Radius.card))
     }
 
     // MARK: - Actions
@@ -141,8 +144,8 @@ struct RemoteConsentView: View {
             // The countdown is stated rather than animated. A shrinking bar
             // reads as pressure to click something; a number reads as a fact.
             Text("Declines automatically in \(secondsRemaining)s")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .font(GlassTokens.Typography.caption)
+                .foregroundStyle(Theme.inkSecondary)
                 .monospacedDigit()
 
             Spacer(minLength: 0)
@@ -154,7 +157,29 @@ struct RemoteConsentView: View {
             // thing somebody aimed at and clicked.
             Button(request.acceptButtonTitle, action: onAccept)
         }
-        .padding(16)
+        .padding(EdgeInsets(top: 16, leading: 20, bottom: 20, trailing: 20))
+    }
+}
+
+/// The prompt's backing. It used to be an opaque `Color(white:)` slab, which
+/// is what kept the system glass out.
+///
+/// macOS 26: glass edge to edge, tinted with glass-thick so a security prompt
+/// never turns see-through over a busy desktop; `ConsentPanel` makes the panel
+/// transparent and full-size-content for it, so the content starts under the
+/// title bar and `topInset` clears it. Earlier systems keep the ordinary
+/// titled panel with a thick material behind the content.
+struct ConsentSurface: ViewModifier {
+    static var topInset: CGFloat { LiquidGlass.isAvailable ? 40 : 16 }
+
+    func body(content: Content) -> some View {
+        if LiquidGlass.isAvailable {
+            content.glassSurface(.regular,
+                                 in: RoundedRectangle(cornerRadius: GlassTokens.Radius.sheet),
+                                 tint: GlassTokens.glassThick)
+        } else {
+            content.background(.thickMaterial)
+        }
     }
 }
 

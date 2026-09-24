@@ -35,105 +35,18 @@ struct ComposerView: View {
         min(max(measuredHeight, minHeight), maxHeight)
     }
 
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            Button { openFilePicker() } label: {
-                Image(systemName: "paperclip")
-                    .font(.system(size: 16))
-                    .frame(width: 32, height: 32)
+        Group {
+            if LiquidGlass.isAvailable {
+                glassComposer
+            } else {
+                classicComposer
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.bottom, 4)
-            .help("Send file")
-
-            // Screenshot capture button.  Disabled while a capture is in
-            // progress so a double-tap can't enqueue two PNGs in a row.
-            Button { startScreenshotFlow() } label: {
-                ZStack {
-                    if screenshotBusy {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "camera.viewfinder")
-                            .font(.system(size: 16))
-                    }
-                }
-                .frame(width: 32, height: 32)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.bottom, 4)
-            .disabled(screenshotBusy)
-            .help("Capture and send a screenshot")
-
-            ZStack(alignment: .topLeading) {
-                if draft.isEmpty {
-                    Text("Message")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                }
-
-                // File drops are handled by ChatView, which covers the whole
-                // thread rather than just this strip.
-                ComposerTextEditor(text: $draft,
-                                   contentHeight: $measuredHeight,
-                                   onSubmit: send,
-                                   onCancel: cancelComposerMode,
-                                   onPasteAttachments: sendPastedAttachments)
-            }
-            .frame(height: clampedHeight)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
-            .onChange(of: draft) { newValue in
-                typingTimer?.cancel()
-                if newValue.isEmpty {
-                    model.sendTyping(false, toPeerIP: peerIP)
-                } else {
-                    model.sendTyping(true, toPeerIP: peerIP)
-                    typingTimer = Task {
-                        try? await Task.sleep(for: .seconds(3))
-                        guard !Task.isCancelled else { return }
-                        model.sendTyping(false, toPeerIP: peerIP)
-                    }
-                }
-                // While editing, the composer is showing someone's already-sent
-                // message — persisting that as the draft would resurrect it as
-                // an unsent message the next time the conversation is opened.
-                if editTarget == nil {
-                    model.drafts[peerIP] = newValue.isEmpty ? nil : newValue
-                }
-            }
-            // Keyed on id rather than the entry: MessageEntry isn't Equatable,
-            // and the id is what changes when a different message is picked.
-            .onChange(of: editTarget?.id) { _ in
-                if let target = editTarget {
-                    draftBeforeEdit = draft
-                    draft = target.text
-                } else {
-                    draft = draftBeforeEdit
-                    draftBeforeEdit = ""
-                }
-            }
-            .onAppear {
-                draft = model.drafts[peerIP] ?? ""
-            }
-
-            Button(action: send) {
-                Image(systemName: editTarget == nil ? "arrow.up.circle.fill" : "checkmark.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                     ? AnyShapeStyle(.tertiary)
-                                     : AnyShapeStyle(Theme.accent))
-            }
-            .buttonStyle(.plain)
-            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .padding(.bottom, 2)
-            .help(editTarget == nil ? "Send" : "Save edit")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
         // Screenshot error alert
         .alert("Screenshot failed",
                isPresented: Binding(get: { screenshotError != nil },
@@ -159,6 +72,229 @@ struct ComposerView: View {
                 )
             }
         }
+    }
+
+    // MARK: - Layouts
+
+    /// macOS 26: one glass pill (banner, attach, screenshot, field) beside the
+    /// send orb, merged as glass by the container.
+    @ViewBuilder
+    private var glassComposer: some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26, *) {
+            GlassEffectContainer(spacing: 8) {
+                HStack(alignment: .bottom, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        banner
+                        HStack(alignment: .bottom, spacing: 2) {
+                            attachButton
+                            screenshotButton
+                            field
+                        }
+                    }
+                    .padding(4)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 22))
+                    sendOrb
+                        .padding(.bottom, 4)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
+        } else {
+            classicComposer
+        }
+        #else
+        classicComposer
+        #endif
+    }
+
+    /// Before macOS 26: the strip ChatView puts on `.bar`, with the field on
+    /// `.quaternary` as before. It still takes the banner and the orb, so the
+    /// layout matches the glass one.
+    private var classicComposer: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            banner
+            HStack(alignment: .bottom, spacing: 8) {
+                attachButton
+                screenshotButton
+                field
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
+                sendOrb
+                    .padding(.bottom, 2)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: - Pieces
+
+    private var attachButton: some View {
+        Button { openFilePicker() } label: {
+            Image(systemName: "paperclip")
+                .font(.system(size: 16))
+                .frame(width: GlassTokens.Size.iconButton, height: GlassTokens.Size.iconButton)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.inkSecondary)
+        .help("Send file")
+    }
+
+    // Screenshot capture button.  Disabled while a capture is in
+    // progress so a double-tap can't enqueue two PNGs in a row.
+    private var screenshotButton: some View {
+        Button { startScreenshotFlow() } label: {
+            ZStack {
+                if screenshotBusy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.system(size: 16))
+                }
+            }
+            .frame(width: GlassTokens.Size.iconButton, height: GlassTokens.Size.iconButton)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.inkSecondary)
+        .disabled(screenshotBusy)
+        .help("Capture and send a screenshot")
+    }
+
+    private var field: some View {
+        ZStack(alignment: .topLeading) {
+            if draft.isEmpty {
+                Text("Message")
+                    .font(GlassTokens.Typography.message)
+                    .foregroundStyle(Theme.inkSecondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .allowsHitTesting(false)
+            }
+
+            // File drops are handled by ChatView, which covers the whole
+            // thread rather than just this strip.
+            ComposerTextEditor(text: $draft,
+                               contentHeight: $measuredHeight,
+                               onSubmit: send,
+                               onCancel: cancelComposerMode,
+                               onPasteAttachments: sendPastedAttachments)
+        }
+        .frame(height: clampedHeight)
+        .onChange(of: draft) { newValue in
+            typingTimer?.cancel()
+            if newValue.isEmpty {
+                model.sendTyping(false, toPeerIP: peerIP)
+            } else {
+                model.sendTyping(true, toPeerIP: peerIP)
+                typingTimer = Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    guard !Task.isCancelled else { return }
+                    model.sendTyping(false, toPeerIP: peerIP)
+                }
+            }
+            // While editing, the composer is showing someone's already-sent
+            // message — persisting that as the draft would resurrect it as
+            // an unsent message the next time the conversation is opened.
+            if editTarget == nil {
+                model.drafts[peerIP] = newValue.isEmpty ? nil : newValue
+            }
+        }
+        // Keyed on id rather than the entry: MessageEntry isn't Equatable,
+        // and the id is what changes when a different message is picked.
+        .onChange(of: editTarget?.id) { _ in
+            if let target = editTarget {
+                draftBeforeEdit = draft
+                draft = target.text
+            } else {
+                draft = draftBeforeEdit
+                draftBeforeEdit = ""
+            }
+        }
+        .onAppear {
+            draft = model.drafts[peerIP] ?? ""
+        }
+    }
+
+    /// The send orb: brand with an on-brand glyph while there is something to
+    /// send (white on brand is 2:1), glass with an ink-secondary glyph while
+    /// there is not. A checkmark while editing.
+    @ViewBuilder
+    private var sendOrb: some View {
+        let glyph = Image(systemName: editTarget == nil ? "arrow.up" : "checkmark")
+            .font(.system(size: 15, weight: .semibold))
+            .frame(width: GlassTokens.Size.send, height: GlassTokens.Size.send)
+        Button(action: send) {
+            if canSend {
+                glyph
+                    .foregroundStyle(Theme.onBrand)
+                    .background(Circle().fill(Theme.accent))
+            } else {
+                glyph
+                    .foregroundStyle(Theme.inkSecondary)
+                    .glassSurface(.regular, in: Circle())
+            }
+        }
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .disabled(!canSend)
+        .help(editTarget == nil ? "Send" : "Save edit")
+        .accessibilityLabel(Text(editTarget == nil ? "Send" : "Save edit"))
+    }
+
+    /// The reply or edit banner, grown inside the composer above the field.
+    /// The strings and cancel actions are the ones ChatView used to own.
+    @ViewBuilder
+    private var banner: some View {
+        if let editing = editTarget {
+            bannerView(title: "Editing message",
+                       preview: MessagingService.replyPreviewText(for: editing),
+                       cancelHelp: "Cancel editing (Esc)") {
+                withAnimation { editTarget = nil }
+            }
+            .transition(.opacity)
+        } else if let reply = replyTarget {
+            bannerView(title: "Replying to \(reply.incoming ? reply.sender : "yourself")",
+                       preview: MessagingService.replyPreviewText(for: reply),
+                       cancelHelp: nil) {
+                withAnimation { replyTarget = nil }
+            }
+            .transition(.opacity)
+        }
+    }
+
+    private func bannerView(title: String, preview: String, cancelHelp: String?,
+                            cancel: @escaping () -> Void) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(Theme.accent)
+                .frame(width: 3)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(GlassTokens.Typography.captionStrong)
+                    .foregroundStyle(Theme.accentInk)
+                Text(preview)
+                    .font(GlassTokens.Typography.label)
+                    .foregroundStyle(Theme.inkSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Button(action: cancel) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Theme.inkSecondary)
+            }
+            .buttonStyle(.plain)
+            .help(cancelHelp ?? "Cancel")
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .padding(.vertical, 6)
+        .background(Theme.insetFill, in: RoundedRectangle(cornerRadius: 18))
+        .padding(EdgeInsets(top: 2, leading: 2, bottom: 4, trailing: 2))
     }
 
     // MARK: - Screenshot flow

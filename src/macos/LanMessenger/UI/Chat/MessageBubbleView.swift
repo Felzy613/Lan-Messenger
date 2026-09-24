@@ -84,27 +84,23 @@ struct MessageBubbleView: View {
     // Rendered in place of the normal text/file/image content when
     // `entry.deleted == true`. Reply-chip and file-action UI are suppressed.
     private var deletedBubble: some View {
-        let bg = entry.incoming ? Theme.incomingBubble(colorScheme) : Theme.outgoingBubble(colorScheme)
-        return HStack(spacing: 6) {
+        HStack(spacing: 6) {
             Image(systemName: "trash")
                 .font(.system(size: 11))
-                .foregroundStyle(.secondary)
             Text("This message was deleted")
-                .font(.system(size: 13))
+                .font(GlassTokens.Typography.preview)
                 .italic()
-                .foregroundStyle(.secondary)
         }
+        .foregroundStyle(meta)
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(bg,
-                    in: UnevenRoundedRectangle(
-                        topLeadingRadius: 16,
-                        bottomLeadingRadius: entry.incoming ? (isFirstInRun ? 4 : 16) : 16,
-                        bottomTrailingRadius: entry.incoming ? 16 : (isFirstInRun ? 4 : 16),
-                        topTrailingRadius: 16
-                    ))
-        .frame(maxWidth: 420, alignment: entry.incoming ? .leading : .trailing)
+        .bubbleSurface(incoming: entry.incoming, tail: isFirstInRun)
+        .frame(maxWidth: GlassTokens.Size.bubbleMax, alignment: entry.incoming ? .leading : .trailing)
     }
+
+    /// Time, "edited", ticks and the relay badge: ink-secondary on an incoming
+    /// bubble, meta-out on an outgoing one (ink-secondary fails on the green).
+    private var meta: Color { Theme.meta(incoming: entry.incoming) }
 
     // MARK: - Reply preview chip (shown at top of bubble when replying)
 
@@ -115,6 +111,7 @@ struct MessageBubbleView: View {
                 preview: preview,
                 sender: entry.replyToSender,
                 filePath: replyFilePath,
+                incoming: entry.incoming,
                 onTap: onTapReplyTarget
             )
         }
@@ -125,22 +122,22 @@ struct MessageBubbleView: View {
     private func fileBubble(path: String) -> some View {
         let url  = URL(fileURLWithPath: path)
         let name = url.lastPathComponent
-        let bg = entry.incoming ? Theme.incomingBubble(colorScheme) : Theme.outgoingBubble(colorScheme)
 
         return VStack(alignment: .leading, spacing: 6) {
             replyChip
             HStack(spacing: 10) {
                 Image(systemName: "doc.fill")
                     .font(.system(size: 28))
-                    .foregroundStyle(Theme.accent)
+                    .foregroundStyle(Theme.accentInk(incoming: entry.incoming))
                 VStack(alignment: .leading, spacing: 3) {
                     Text(name)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(GlassTokens.Typography.fileName)
+                        .foregroundStyle(Theme.ink)
                         .lineLimit(2)
                     HStack(spacing: 4) {
                         Text(formattedTime)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+                            .font(GlassTokens.Typography.meta)
+                            .foregroundStyle(meta)
                         relayBadge
                         if !entry.incoming { statusIcon }
                     }
@@ -155,11 +152,11 @@ struct MessageBubbleView: View {
                         NSWorkspace.shared.open(url)
                     } label: {
                         Text("Open")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(GlassTokens.Typography.captionStrong)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(Theme.accent.opacity(0.2), in: Capsule())
-                            .foregroundStyle(Theme.accent)
+                            .background(Theme.accentWash, in: Capsule())
+                            .foregroundStyle(Theme.accentInk(incoming: entry.incoming))
                     }
                     .buttonStyle(.plain)
                     .help("Open \(name) with the default app")
@@ -168,31 +165,25 @@ struct MessageBubbleView: View {
                         FinderReveal.reveal(path: path) { msg in revealError = msg }
                     } label: {
                         Text("Show")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(GlassTokens.Typography.captionStrong)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(Color.secondary.opacity(0.15), in: Capsule())
-                            .foregroundStyle(.secondary)
+                            .background(Theme.insetFill, in: Capsule())
+                            .foregroundStyle(meta)
                     }
                     .buttonStyle(.plain)
                     .help("Show \(name) in Finder")
                 } else {
                     Text("Deleted")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(GlassTokens.Typography.caption)
+                        .foregroundStyle(meta)
                 }
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(bg,
-                    in: UnevenRoundedRectangle(
-                        topLeadingRadius: 16,
-                        bottomLeadingRadius: entry.incoming ? (isFirstInRun ? 4 : 16) : 16,
-                        bottomTrailingRadius: entry.incoming ? 16 : (isFirstInRun ? 4 : 16),
-                        topTrailingRadius: 16
-                    ))
-        .frame(maxWidth: 320)
+        .bubbleSurface(incoming: entry.incoming, tail: isFirstInRun)
+        .frame(maxWidth: GlassTokens.Size.fileBubbleMax)
         .task(id: path) {
             // Check file existence off the main thread so the view body stays non-blocking.
             let result = await Task.detached(priority: .utility) {
@@ -253,29 +244,24 @@ struct MessageBubbleView: View {
             VStack(alignment: .leading, spacing: 4) {
                 replyChip
                 Text(entry.text)
-                    .font(.system(size: 14))
+                    .font(GlassTokens.Typography.message)
+                    .foregroundStyle(Theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                 HStack(spacing: 4) {
                     editedMarker
                     Text(formattedTime)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                        .font(GlassTokens.Typography.meta)
+                        .foregroundStyle(meta)
                     relayBadge
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(Theme.incomingBubble(colorScheme),
-                        in: UnevenRoundedRectangle(
-                            topLeadingRadius: 16,
-                            bottomLeadingRadius: isFirstInRun ? 4 : 16,
-                            bottomTrailingRadius: 16,
-                            topTrailingRadius: 16
-                        ))
+            .bubbleSurface(incoming: true, tail: isFirstInRun)
         }
-        .frame(maxWidth: 420, alignment: .leading)
+        .frame(maxWidth: GlassTokens.Size.bubbleMax, alignment: .leading)
         .contextMenu {
             if onReply != nil {
                 Button { onReply?() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
@@ -295,7 +281,8 @@ struct MessageBubbleView: View {
         VStack(alignment: .trailing, spacing: 4) {
             replyChip
             Text(entry.text)
-                .font(.system(size: 14))
+                .font(GlassTokens.Typography.message)
+                .foregroundStyle(Theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -303,22 +290,16 @@ struct MessageBubbleView: View {
                 Spacer(minLength: 0)
                 editedMarker
                 Text(formattedTime)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .font(GlassTokens.Typography.meta)
+                    .foregroundStyle(meta)
                 relayBadge
                 statusIcon
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Theme.outgoingBubble(colorScheme),
-                    in: UnevenRoundedRectangle(
-                        topLeadingRadius: 16,
-                        bottomLeadingRadius: 16,
-                        bottomTrailingRadius: isFirstInRun ? 4 : 16,
-                        topTrailingRadius: 16
-                    ))
-        .frame(maxWidth: 420, alignment: .trailing)
+        .bubbleSurface(incoming: false, tail: isFirstInRun)
+        .frame(maxWidth: GlassTokens.Size.bubbleMax, alignment: .trailing)
         .contextMenu {
             if onReply != nil {
                 Button { onReply?() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
@@ -352,8 +333,8 @@ struct MessageBubbleView: View {
     private var editedMarker: some View {
         if entry.edited && !entry.deleted {
             Text("edited")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .font(GlassTokens.Typography.meta)
+                .foregroundStyle(meta)
                 .help(editedTooltip)
         }
     }
@@ -369,7 +350,7 @@ struct MessageBubbleView: View {
     }
 
     private var statusIcon: some View {
-        BubbleStatusView(status: entry.status)
+        BubbleStatusView(status: entry.status, incoming: entry.incoming)
     }
 
     // "Delete for Me" is always offered when a delete handler is wired up.
@@ -398,9 +379,10 @@ struct MessageBubbleView: View {
                 Image(systemName: "cloud")
                     .font(.system(size: 9))
                 Text("via relay")
-                    .font(.system(size: 9))
+                    .font(GlassTokens.Typography.micro)
             }
-            .foregroundStyle(.secondary.opacity(0.75))
+            // No opacity: dimming ink-secondary took it below 4.5:1.
+            .foregroundStyle(meta)
         }
     }
 }

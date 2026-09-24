@@ -10,7 +10,7 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $model.selectedPeerIP) {
             ForEach(model.conversations) { conv in
-                ConversationRowView(conv: conv)
+                ConversationRowView(conv: conv, isSelected: model.selectedPeerIP == conv.peerIP)
                     .tag(conv.peerIP)
             }
             if !model.archivedConversations.isEmpty {

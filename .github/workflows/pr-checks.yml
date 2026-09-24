@@ -27,6 +27,9 @@ jobs:
           key: swift-${{ runner.os }}-${{ hashFiles('src/macos/Package.swift') }}
           restore-keys: swift-${{ runner.os }}-
 
+      - name: Check generated design tokens are current
+        run: python3 ../../scripts/design/gen_tokens.py --check
+
       - name: Run full Swift test suite
         run: |
           set -o pipefail
@@ -66,6 +69,9 @@ jobs:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('src/windows-native/**/*.csproj') }}
           restore-keys: nuget-${{ runner.os }}-
+
+      - name: Check generated design tokens are current
+        run: python ..\..\scripts\design\gen_tokens.py --check
 
       - name: Restore dependencies
         run: msbuild /t:Restore /p:Configuration=Release /p:Platform=x64 LanMessenger.sln

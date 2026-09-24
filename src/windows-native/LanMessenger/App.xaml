@@ -4,66 +4,24 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Application.Resources>
         <ResourceDictionary>
+            <!-- XamlControlsResources first, so everything after it can
+                 override Fluent defaults. Styles/Glass.xaml merges the
+                 generated Styles/GlassTokens.xaml itself, so its styles can
+                 StaticResource the tokens; the Token*Brush, Token*Color and
+                 Glass*Brush resources reach the whole app through it.
+
+                 There is no hand-written palette here any more. Every colour
+                 comes from design/liquid-glass/tokens.json through
+                 scripts/design/gen_tokens.py. The brand green is fixed
+                 (TokenBrandBrush) rather than the user's OS accent: overriding
+                 SystemAccentColor app-wide is unreliable in WinAppSDK
+                 (microsoft-ui-xaml#6394), so every spot that would read
+                 AccentFillColorDefaultBrush / AccentButtonStyle points at a
+                 token or a Glass*ButtonStyle directly. -->
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <ResourceDictionary Source="ms-appx:///Styles/Glass.xaml" />
             </ResourceDictionary.MergedDictionaries>
-
-            <!-- App palette. ThemeResource lookups against these switch live
-                 with the system theme; the code-behind palette (UI/Theme.cs)
-                 mirrors the same colors for brushes assigned from C#. -->
-            <ResourceDictionary.ThemeDictionaries>
-                <ResourceDictionary x:Key="Light">
-                    <SolidColorBrush x:Key="AppChatBackgroundBrush"    Color="#E5DDD5" />
-                    <SolidColorBrush x:Key="AppReplyAccentBrush"       Color="#25D366" />
-                    <SolidColorBrush x:Key="AppReplyAccentTextBrush"   Color="#128C4E" />
-                    <SolidColorBrush x:Key="AppOnlineDotStrokeBrush"   Color="#FFFFFF" />
-                    <!-- Remote-desktop audit row: the design system's flat
-                         glass-regular chip, glass-edge rim, ink and ink-secondary. -->
-                    <SolidColorBrush x:Key="AppAuditChipBrush"         Color="#9EF8FAFB" />
-                    <SolidColorBrush x:Key="AppAuditChipEdgeBrush"     Color="#1A0B141A" />
-                    <SolidColorBrush x:Key="AppAuditInkBrush"          Color="#111B21" />
-                    <SolidColorBrush x:Key="AppAuditInkSecondaryBrush" Color="#54656F" />
-                </ResourceDictionary>
-                <ResourceDictionary x:Key="Dark">
-                    <SolidColorBrush x:Key="AppChatBackgroundBrush"    Color="#0D1418" />
-                    <SolidColorBrush x:Key="AppReplyAccentBrush"       Color="#25D366" />
-                    <SolidColorBrush x:Key="AppReplyAccentTextBrush"   Color="#25D366" />
-                    <SolidColorBrush x:Key="AppOnlineDotStrokeBrush"   Color="#111B21" />
-                    <SolidColorBrush x:Key="AppAuditChipBrush"         Color="#9E111B21" />
-                    <SolidColorBrush x:Key="AppAuditChipEdgeBrush"     Color="#14FFFFFF" />
-                    <SolidColorBrush x:Key="AppAuditInkBrush"          Color="#E9EDEF" />
-                    <SolidColorBrush x:Key="AppAuditInkSecondaryBrush" Color="#8696A0" />
-                </ResourceDictionary>
-                <ResourceDictionary x:Key="HighContrast">
-                    <SolidColorBrush x:Key="AppChatBackgroundBrush"    Color="{ThemeResource SystemColorWindowColor}" />
-                    <SolidColorBrush x:Key="AppReplyAccentBrush"       Color="{ThemeResource SystemColorHighlightColor}" />
-                    <SolidColorBrush x:Key="AppReplyAccentTextBrush"   Color="{ThemeResource SystemColorHighlightColor}" />
-                    <SolidColorBrush x:Key="AppOnlineDotStrokeBrush"   Color="{ThemeResource SystemColorWindowColor}" />
-                    <SolidColorBrush x:Key="AppAuditChipBrush"         Color="{ThemeResource SystemColorWindowColor}" />
-                    <SolidColorBrush x:Key="AppAuditChipEdgeBrush"     Color="{ThemeResource SystemColorWindowTextColor}" />
-                    <SolidColorBrush x:Key="AppAuditInkBrush"          Color="{ThemeResource SystemColorWindowTextColor}" />
-                    <SolidColorBrush x:Key="AppAuditInkSecondaryBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
-                </ResourceDictionary>
-            </ResourceDictionary.ThemeDictionaries>
-
-            <!-- Neutral hover/press fills for round icon buttons — alpha grays
-                 read as a subtle highlight on both light and dark backgrounds,
-                 unlike the previous alpha-black which vanished in dark mode. -->
-            <SolidColorBrush x:Key="AppIconHoverBrush"   Color="#2E808080" />
-            <SolidColorBrush x:Key="AppIconPressedBrush" Color="#46808080" />
-
-            <!-- Fixed brand accent — matches macOS's hardcoded Theme.accent
-                 (WhatsApp green) exactly, independent of the Windows user's OS
-                 accent color preference. Overriding SystemAccentColor globally
-                 is unreliable in WinAppSDK (microsoft-ui-xaml#6394), so instead
-                 every spot that used to read AccentFillColorDefaultBrush /
-                 AccentButtonStyle / AccentTextFillColorPrimaryBrush points at
-                 this brush directly — same technique already used for the
-                 round icon buttons above. -->
-            <SolidColorBrush x:Key="AppAccentBrush"            Color="#25D366" />
-            <SolidColorBrush x:Key="AppAccentBrushPointerOver" Color="#1EBE5D" />
-            <SolidColorBrush x:Key="AppAccentBrushPressed"     Color="#1AAD54" />
-
         </ResourceDictionary>
     </Application.Resources>
 </Application>

@@ -13,8 +13,8 @@
                 MaxWidth="460"
                 Padding="14,6"
                 CornerRadius="20"
-                Background="{ThemeResource AppAuditChipBrush}"
-                BorderBrush="{ThemeResource AppAuditChipEdgeBrush}"
+                Background="{ThemeResource TokenGlassRegularBrush}"
+                BorderBrush="{ThemeResource TokenGlassEdgeBrush}"
                 BorderThickness="1">
             <StackPanel Spacing="2">
                 <Grid HorizontalAlignment="Center" ColumnSpacing="6">
@@ -30,10 +30,10 @@
                         <FontIcon x:Name="EventIcon"
                                   FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                   FontSize="12"
-                                  Foreground="{ThemeResource AppAuditInkSecondaryBrush}" />
+                                  Foreground="{ThemeResource TokenInkSecondaryBrush}" />
                         <Line x:Name="IconSlash"
                               X1="0.5" Y1="0.5" X2="11.5" Y2="11.5"
-                              Stroke="{ThemeResource AppAuditInkSecondaryBrush}"
+                              Stroke="{ThemeResource TokenInkSecondaryBrush}"
                               StrokeThickness="1.25"
                               StrokeStartLineCap="Round"
                               StrokeEndLineCap="Round"
@@ -46,13 +46,13 @@
                                LineHeight="14"
                                TextWrapping="Wrap"
                                TextAlignment="Center"
-                               Foreground="{ThemeResource AppAuditInkSecondaryBrush}"><Run x:Name="LeadRun" /><Run x:Name="NameRun" FontWeight="SemiBold" Foreground="{ThemeResource AppAuditInkBrush}" /><Run x:Name="TailRun" /><Run x:Name="DurationRun" /></TextBlock>
+                               Foreground="{ThemeResource TokenInkSecondaryBrush}"><Run x:Name="LeadRun" /><Run x:Name="NameRun" FontWeight="SemiBold" Foreground="{ThemeResource TokenInkBrush}" /><Run x:Name="TailRun" /><Run x:Name="DurationRun" /></TextBlock>
                 </Grid>
                 <TextBlock x:Name="WhenText"
                            HorizontalAlignment="Center"
                            FontSize="9"
                            LineHeight="11"
-                           Foreground="{ThemeResource AppAuditInkSecondaryBrush}" />
+                           Foreground="{ThemeResource TokenInkSecondaryBrush}" />
             </StackPanel>
         </Border>
     </Grid>

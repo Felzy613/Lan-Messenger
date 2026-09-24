@@ -7,118 +7,115 @@
 
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="280" />
+            <ColumnDefinition Width="296" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <!-- Sidebar pane -->
-        <Grid Grid.Column="0"
-              Background="{ThemeResource LayerFillColorDefaultBrush}"
-              BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
-              BorderThickness="0,0,1,0">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-            </Grid.RowDefinitions>
+        <!-- Sidebar: one pane of glass floating on the Mica backdrop, inset 8px
+             from the window. It takes the translucent SOLID glass-regular
+             brush, not acrylic: Mica is already the blur, and nothing in this
+             window scrolls under the panel. The column is 296 so the list
+             inside keeps the 280 it had before the inset. -->
+        <ContentControl Grid.Column="0"
+                        Style="{StaticResource GlassSurfaceStyle}"
+                        Background="{ThemeResource TokenGlassRegularBrush}"
+                        Margin="8,8,0,8"
+                        CornerRadius="{StaticResource TokenRadiusPanel}"
+                        Padding="8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-            <!-- Header: title on left, icon buttons on right — matches macOS toolbar placement -->
-            <Grid Grid.Row="0" Padding="16,12,8,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+                <!-- Title on the left, toolbar group on the right — matches macOS toolbar placement -->
+                <Grid Grid.Row="0" Padding="8,4,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                <TextBlock Grid.Column="0"
-                           Text="Chats"
-                           Style="{ThemeResource TitleTextBlockStyle}"
-                           VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="0"
+                               Text="Chats"
+                               Style="{StaticResource TokenTypeTitlePaneStyle}"
+                               Foreground="{ThemeResource TokenInkBrush}"
+                               VerticalAlignment="Center" />
 
-                <StackPanel Grid.Column="1"
-                            Orientation="Horizontal"
-                            Spacing="2">
-                    <Button x:Name="NewMessageBtn"
-                            Width="36" Height="36"
-                            Padding="0"
-                            CornerRadius="18"
-                            BorderThickness="0"
-                            ToolTipService.ToolTip="New message"
-                            Click="NewMessageBtn_Click">
-                        <Button.Resources>
-                            <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                            <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
-                            <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
-                            <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
-                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
-                        </Button.Resources>
-                        <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                  Glyph="&#xE932;"
-                                  FontSize="16" />
-                    </Button>
-                    <Button x:Name="ContactsBtn"
-                            Width="36" Height="36"
-                            Padding="0"
-                            CornerRadius="18"
-                            BorderThickness="0"
-                            ToolTipService.ToolTip="Contacts"
-                            Click="ContactsBtn_Click">
-                        <Button.Resources>
-                            <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                            <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
-                            <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
-                            <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
-                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
-                        </Button.Resources>
-                        <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                  Glyph="&#xE77B;"
-                                  FontSize="16" />
-                    </Button>
-                    <Button x:Name="SettingsBtn"
-                            Width="36" Height="36"
-                            Padding="0"
-                            CornerRadius="18"
-                            BorderThickness="0"
-                            ToolTipService.ToolTip="Settings"
-                            Click="SettingsBtn_Click">
-                        <Button.Resources>
-                            <SolidColorBrush x:Key="ButtonBackground"             Color="Transparent"/>
-                            <StaticResource x:Key="ButtonBackgroundPointerOver"   ResourceKey="AppIconHoverBrush"/>
-                            <StaticResource x:Key="ButtonBackgroundPressed"       ResourceKey="AppIconPressedBrush"/>
-                            <SolidColorBrush x:Key="ButtonBorderBrush"            Color="Transparent"/>
-                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
-                        </Button.Resources>
-                        <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                  Glyph="&#xE713;"
-                                  FontSize="16" />
-                    </Button>
-                </StackPanel>
+                    <!-- A flat glass capsule: clear fill and the rim, no float,
+                         because it sits inside the panel's own glass. -->
+                    <Border Grid.Column="1"
+                            Background="{ThemeResource TokenGlassClearBrush}"
+                            BorderBrush="{ThemeResource GlassRimBrush}"
+                            BorderThickness="1"
+                            CornerRadius="20"
+                            Padding="3">
+                        <StackPanel Orientation="Horizontal" Spacing="2">
+                            <Button x:Name="NewMessageBtn"
+                                    Style="{StaticResource GlassIconButtonStyle}"
+                                    ToolTipService.ToolTip="New message"
+                                    AutomationProperties.Name="New message"
+                                    Click="NewMessageBtn_Click">
+                                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                          Glyph="&#xE932;"
+                                          FontSize="16" />
+                            </Button>
+                            <Button x:Name="ContactsBtn"
+                                    Style="{StaticResource GlassIconButtonStyle}"
+                                    ToolTipService.ToolTip="Contacts"
+                                    AutomationProperties.Name="Contacts"
+                                    Click="ContactsBtn_Click">
+                                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                          Glyph="&#xE77B;"
+                                          FontSize="16" />
+                            </Button>
+                            <Button x:Name="SettingsBtn"
+                                    Style="{StaticResource GlassIconButtonStyle}"
+                                    ToolTipService.ToolTip="Settings"
+                                    AutomationProperties.Name="Settings"
+                                    Click="SettingsBtn_Click">
+                                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                          Glyph="&#xE713;"
+                                          FontSize="16" />
+                            </Button>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <sidebar:SidebarControl x:Name="Sidebar"
+                                        Grid.Row="1" />
             </Grid>
+        </ContentControl>
 
-            <sidebar:SidebarControl x:Name="Sidebar"
-                                    Grid.Row="1" />
-        </Grid>
-
-        <!-- Placeholder shown until a conversation is opened — previously this
-             was a bare blank pane. Sits UNDER the ContentControl so it is
-             covered automatically once content is set. -->
+        <!-- Placeholder shown until a conversation is opened. Sits UNDER the
+             ContentControl so it is covered automatically once content is set.
+             The EmptyState recipe: a clear-glass disc, a pane title, one line. -->
         <StackPanel x:Name="NoConversationState"
                     Grid.Column="1"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
-                    Spacing="10">
-            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                      Glyph="&#xE8BD;"
-                      FontSize="44"
-                      Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-            <TextBlock Text="LAN Messenger"
-                       HorizontalAlignment="Center"
-                       Style="{ThemeResource SubtitleTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            <TextBlock Text="Select a conversation, or start a new one with the pencil button."
-                       HorizontalAlignment="Center"
-                       TextAlignment="Center"
-                       MaxWidth="300"
-                       TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    Spacing="12">
+            <Grid Width="64" Height="64" HorizontalAlignment="Center">
+                <Ellipse Fill="{ThemeResource TokenGlassClearBrush}"
+                         Stroke="{ThemeResource GlassRimBrush}"
+                         StrokeThickness="1" />
+                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                          Glyph="&#xE8BD;"
+                          FontSize="26"
+                          Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+            </Grid>
+            <StackPanel Spacing="4">
+                <TextBlock Text="LAN Messenger"
+                           HorizontalAlignment="Center"
+                           Style="{StaticResource TokenTypeTitlePaneStyle}"
+                           Foreground="{ThemeResource TokenInkBrush}" />
+                <TextBlock Text="Select a conversation, or start a new one with the pencil button."
+                           HorizontalAlignment="Center"
+                           TextAlignment="Center"
+                           MaxWidth="240"
+                           TextWrapping="Wrap"
+                           Style="{StaticResource TokenTypeLabelStyle}"
+                           Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+            </StackPanel>
         </StackPanel>
 
         <!-- Content area -->

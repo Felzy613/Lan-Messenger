@@ -73,28 +73,45 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            // macOS 26: the header is a floating glass capsule and the composer
+            // a glass pill, both on the wallpaper, with no dividers. Before 26
+            // they stay on `.bar` with dividers, exactly as they were. Either
+            // way the header and composer are rows above and below the thread,
+            // not overlays: ChatView's scroll geometry assumes the viewport is
+            // the visible area.
+            if LiquidGlass.isAvailable {
+                header
+                    .padding(.horizontal, 10)
+                    .frame(height: GlassTokens.Size.header)
+                    .glassSurface(.regular, in: Capsule())
+                    .padding(8)
+            } else {
+                header
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.bar)
+                Divider()
+            }
             messageList
             if let transfer = model.activeTransfers[peerIP] {
-                Divider()
                 FileTransferBannerView(
                     label: transfer.label,
                     bytes: transfer.bytes,
                     total: transfer.total
                 )
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
             }
-            if let editing = editTarget {
-                editBanner(for: editing)
-                    .transition(.opacity)
-            } else if let reply = replyTarget {
-                replyBanner(for: reply)
-                    .transition(.opacity)
+            // The reply and edit banner lives inside the composer now.
+            if LiquidGlass.isAvailable {
+                ComposerView(peerIP: peerIP, replyTarget: $replyTarget, editTarget: $editTarget)
+                    .environmentObject(model)
+            } else {
+                Divider()
+                ComposerView(peerIP: peerIP, replyTarget: $replyTarget, editTarget: $editTarget)
+                    .environmentObject(model)
+                    .background(.bar)
             }
-            Divider()
-            ComposerView(peerIP: peerIP, replyTarget: $replyTarget, editTarget: $editTarget)
-                .environmentObject(model)
-                .background(.bar)
         }
         .background(Theme.chatBackground(colorScheme))
         // The whole thread is the drop target, not just the composer strip.
@@ -131,19 +148,23 @@ struct ChatView: View {
 
     private var dropOverlay: some View {
         ZStack {
-            Theme.accent.opacity(0.08)
-            RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(Theme.accent,
-                              style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+            RoundedRectangle(cornerRadius: GlassTokens.Radius.bubble)
+                .fill(Theme.accentWash)
                 .padding(10)
-            VStack(spacing: 8) {
-                Image(systemName: "paperclip.circle.fill")
-                    .font(.system(size: 38))
-                    .foregroundStyle(Theme.accent)
+            RoundedRectangle(cornerRadius: GlassTokens.Radius.bubble)
+                .strokeBorder(Theme.accentInk,
+                              style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                .padding(10)
+            HStack(spacing: 10) {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.accentInk)
                 Text("Drop to send to \(conv?.peerName ?? peerIP)")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.ink)
             }
+            .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 18))
+            .glassSurface(.thick, in: Capsule())
         }
         .allowsHitTesting(false)
         .transition(.opacity)
@@ -151,23 +172,26 @@ struct ChatView: View {
 
     // MARK: - Header
 
+    /// The header's contents. Its chrome — a glass capsule on macOS 26, the
+    /// bar before it — is applied in `body`.
     private var header: some View {
         HStack(spacing: 10) {
-            AvatarView(name: conv?.peerName ?? "?", size: 36, photoB64: conv?.photoB64)
+            AvatarView(name: conv?.peerName ?? "?", size: GlassTokens.Size.avatarHeader, photoB64: conv?.photoB64)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(conv?.peerName ?? peerIP)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(GlassTokens.Typography.name)
+                        .foregroundStyle(Theme.ink)
                     Circle()
-                        .fill(peerIsOnline ? Color.green : Color.gray)
-                        .frame(width: 8, height: 8)
+                        .fill(peerIsOnline ? Theme.presenceOnline : Theme.presenceOffline)
+                        .frame(width: GlassTokens.Size.presenceInline, height: GlassTokens.Size.presenceInline)
                 }
                 // The dots replace the caption rather than sitting beside it,
                 // so the header keeps its height and the peer's state is still
                 // legible while the thread is scrolled up and the in-thread
                 // typing bubble is off screen.
                 if peerIsTyping {
-                    TypingDotsView(dotSize: 5, spacing: 3, color: Color.primary.opacity(0.5))
+                    TypingDotsView(dotSize: 5, spacing: 3, color: Theme.inkSecondary)
                         .frame(height: 13, alignment: .leading)
                         // The dots themselves are accessibility-hidden; this
                         // wrapper is what VoiceOver actually reads.
@@ -177,8 +201,8 @@ struct ChatView: View {
                         .transition(.opacity)
                 } else {
                     Text(peerIsOnline ? "Online" : "Offline")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(GlassTokens.Typography.caption)
+                        .foregroundStyle(Theme.inkSecondary)
                         .transition(.opacity)
                 }
             }
@@ -186,9 +210,6 @@ struct ChatView: View {
             Spacer()
             remoteDesktopButton
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.bar)
     }
 
     // MARK: - Remote desktop
@@ -300,7 +321,7 @@ struct ChatView: View {
                                 .id(entry.id)
                                 .background(
                                     scrollHighlightID == entry.id
-                                    ? Theme.accent.opacity(0.10)
+                                    ? Theme.accentWash
                                     : Color.clear
                                 )
                             }
@@ -420,16 +441,15 @@ struct ChatView: View {
     /// off screen.
     private func jumpToLatestButton(action: @escaping () -> Void) -> some View {
         Button(action: action) {
+            // Clear glass on macOS 26; the material circle before it.
             Image(systemName: "chevron.down")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Theme.accent)
-                .frame(width: 30, height: 30)
-                .background(
-                    Circle()
-                        .fill(.regularMaterial)
-                        .overlay(Circle().strokeBorder(Color.primary.opacity(0.08)))
-                        .shadow(color: .black.opacity(0.18), radius: 4, y: 1)
-                )
+                .foregroundStyle(Theme.accentInk)
+                .frame(width: GlassTokens.Size.iconButton, height: GlassTokens.Size.iconButton)
+                .glassSurface(LiquidGlass.isAvailable ? .clear : .regular, in: Circle())
+                .glassShadow(light: GlassTokens.Shadow.floatLight,
+                             dark: GlassTokens.Shadow.floatDark,
+                             scheme: colorScheme)
         }
         .buttonStyle(.plain)
         .help("Jump to latest")
@@ -477,65 +497,6 @@ struct ChatView: View {
         } else {
             proxy.scrollTo(Self.threadEndID, anchor: .bottom)
         }
-    }
-
-    // MARK: - Reply banner above composer
-
-    private func replyBanner(for reply: MessageEntry) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Rectangle().fill(Theme.accent).frame(width: 3, height: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Replying to \(reply.incoming ? reply.sender : "yourself")")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                Text(MessagingService.replyPreviewText(for: reply))
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            Button {
-                withAnimation { replyTarget = nil }
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .background(.bar)
-    }
-
-    // MARK: - Edit banner above composer
-
-    private func editBanner(for entry: MessageEntry) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Rectangle().fill(Theme.accent).frame(width: 3, height: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Editing message")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                Text(MessagingService.replyPreviewText(for: entry))
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            Button {
-                withAnimation { editTarget = nil }
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Cancel editing (Esc)")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .background(.bar)
     }
 
     // MARK: - Reply file path lookup

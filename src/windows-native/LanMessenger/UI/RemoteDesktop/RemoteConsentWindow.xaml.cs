@@ -94,7 +94,22 @@ public sealed partial class RemoteConsentWindow : Window
             presenter.IsMaximizable = false;
             presenter.IsMinimizable = false;
         }
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(440, 300));
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(460, 360));
+
+        // Real glass over the desktop; the root grid is transparent for it.
+        // Falls back to a solid colour by itself when transparency is off.
+        try { SystemBackdrop = new Microsoft.UI.Xaml.Media.DesktopAcrylicBackdrop(); }
+        catch (Exception ex) { LanLogger.Remote("error", reason: $"consent backdrop: {ex.Message}"); }
+
+        // Focus starts on Decline, so Enter declines. Only the first
+        // activation: after that, focus is wherever the user put it.
+        var focused = false;
+        Activated += (_, _) =>
+        {
+            if (focused) return;
+            focused = true;
+            DeclineButton.Focus(FocusState.Programmatic);
+        };
 
         // The close button is a way out, so it means no.
         Closed += (_, _) => Finish(RemoteConsentOutcome.Declined());

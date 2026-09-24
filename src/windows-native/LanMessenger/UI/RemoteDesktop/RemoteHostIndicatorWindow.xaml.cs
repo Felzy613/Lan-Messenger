@@ -94,16 +94,21 @@ public sealed partial class RemoteHostIndicatorWindow : Window
             ? $"{peerName} is controlling your screen"
             : $"{peerName} is viewing your screen";
 
-        // Red for control, amber for viewing. Not a subtle tint of the accent
-        // colour — this is the one piece of chrome that should be slightly
-        // unwelcome.
-        Strip.Background = new SolidColorBrush(controlled
-            ? Windows.UI.Color.FromArgb(0xFF, 0xD9, 0x30, 0x25)
-            : Windows.UI.Color.FromArgb(0xFF, 0xE5, 0x8C, 0x1A));
+        // The state colour lives in the dot, and for control also in the
+        // window's outline: the riskier state is noticeable without the whole
+        // strip turning into an alarm. The words say the state too, so colour
+        // is never the only signal.
+        PulseDot.Fill = controlled ? SignalControlBrush : SignalViewBrush;
+        _controlled = controlled;
 
         StopControlButton.Visibility = controlled ? Visibility.Visible : Visibility.Collapsed;
         Reposition();
     }
+
+    // hud-* tokens are the same in both themes, so one brush each will do.
+    private static readonly SolidColorBrush SignalViewBrush    = new(GlassTokens.HudSignalViewLight);
+    private static readonly SolidColorBrush SignalControlBrush = new(GlassTokens.HudSignalControlLight);
+    private bool _controlled;
 
     private void UpdateElapsed()
     {
@@ -132,18 +137,62 @@ public sealed partial class RemoteHostIndicatorWindow : Window
         {
             var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
             int width = Math.Min(560, Math.Max(320, area.WorkArea.Width / 3));
-            int height = 52;
+            int height = 44;
 
             int x = area.WorkArea.X + (area.WorkArea.Width - width) / 2;
             int y = area.WorkArea.Y + TopInset;
 
             AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(x, y, width, height));
+            ApplyWindowShape();
         }
         catch (Exception ex)
         {
             // An indicator in the wrong place is a nuisance; one that threw
             // while positioning is a session with no indicator at all.
             LanLogger.Remote("error", reason: $"indicator reposition failed: {ex.Message}");
+        }
+    }
+
+    /// Rounded corners and the controlled outline, both from DWM. Re-applied
+    /// after every reposition. Windows 11 only: on Windows 10 the call returns
+    /// an error, which is logged once and otherwise ignored — the indicator is
+    /// still there, just square and without the outline, and the headline
+    /// still names the state.
+    private void ApplyWindowShape()
+    {
+        SetDwmAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND);
+        SetDwmAttribute(DWMWA_BORDER_COLOR, _controlled ? ColorRef(GlassTokens.HudSignalControlLight) : DWMWA_COLOR_DEFAULT);
+    }
+
+    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    private const int DWMWA_BORDER_COLOR = 34;
+    private const int DWMWCP_ROUND = 2;
+    private const int DWMWA_COLOR_DEFAULT = unchecked((int)0xFFFFFFFF);
+    private static bool _dwmFailureLogged;
+
+    /// A COLORREF is 0x00BBGGRR.
+    private static int ColorRef(Windows.UI.Color c) => (c.B << 16) | (c.G << 8) | c.R;
+
+    private void SetDwmAttribute(int attribute, int value)
+    {
+        // Nothing here may throw: this runs from the constructor and from
+        // grant changes, and an indicator that failed to build is a session
+        // with no indicator at all.
+        try
+        {
+            IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            int hr = DwmSetWindowAttribute(hwnd, attribute, ref value, sizeof(int));
+            if (hr != 0 && !_dwmFailureLogged)
+            {
+                _dwmFailureLogged = true;
+                LanLogger.Remote("error", reason: $"indicator dwm attribute {attribute} failed: 0x{hr:X8}");
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_dwmFailureLogged) return;
+            _dwmFailureLogged = true;
+            LanLogger.Remote("error", reason: $"indicator dwm attribute {attribute} threw: {ex.Message}");
         }
     }
 
@@ -173,6 +222,10 @@ public sealed partial class RemoteHostIndicatorWindow : Window
 
     private void StopSharing_Click(object sender, RoutedEventArgs e) => OnStopSharing?.Invoke();
     private void StopControl_Click(object sender, RoutedEventArgs e) => OnStopControl?.Invoke();
+
+    // DwmSetWindowAttribute is the real export name.
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
     // GetWindowLongPtrW and SetWindowLongPtrW are the real 64-bit exports.
     // A DllImport naming something that is not exported fails at the first call

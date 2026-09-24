@@ -66,6 +66,7 @@ public sealed class ContactsDialog : ContentDialog
         CloseButtonText        = "";
         IsPrimaryButtonEnabled = true;
         DefaultButton          = ContentDialogButton.Primary;
+        GlassDialog.Apply(this);
     }
 
     private void EnterFindState()
@@ -79,6 +80,7 @@ public sealed class ContactsDialog : ContentDialog
         CloseButtonText        = "Cancel";
         IsPrimaryButtonEnabled = false;
         DefaultButton          = ContentDialogButton.Primary;
+        GlassDialog.Apply(this);
     }
 
     private void EnterNameState()
@@ -93,6 +95,7 @@ public sealed class ContactsDialog : ContentDialog
         CloseButtonText        = $"Use \"{_naming.Username}\"";
         IsPrimaryButtonEnabled = true;
         DefaultButton          = ContentDialogButton.Primary;
+        GlassDialog.Apply(this);
     }
 
     private void EnterEditState(string publicKeyB64)
@@ -108,6 +111,7 @@ public sealed class ContactsDialog : ContentDialog
         CloseButtonText        = "Cancel";
         IsPrimaryButtonEnabled = true;
         DefaultButton          = ContentDialogButton.Primary;
+        GlassDialog.Apply(this);
     }
 
     private void EnterDeleteState(string publicKeyB64)
@@ -127,6 +131,7 @@ public sealed class ContactsDialog : ContentDialog
         // Default to Close (Cancel) here specifically so pressing Enter can't
         // accidentally delete a contact.
         DefaultButton = ContentDialogButton.Close;
+        GlassDialog.Apply(this, destructive: true);
     }
 
     // MARK: - Button dispatch
