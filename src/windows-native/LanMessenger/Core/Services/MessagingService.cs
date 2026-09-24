@@ -1,5 +1,6 @@
 using LanMessenger.Core.Crypto;
 using LanMessenger.Core.Networking;
+using LanMessenger.Core.Networking.Media;
 using LanMessenger.Core.Persistence;
 using LanMessenger.Core.Protocol;
 using Microsoft.UI.Dispatching;
@@ -166,6 +167,9 @@ public sealed class MessagingService
             var path = entry.Text["__FILE__:".Length..];
             return "📎 " + Path.GetFileName(path);
         }
+        // Unreachable today, since an audit row offers neither reply nor edit,
+        // but this is one of the places that inspects text for a marker.
+        if (RemoteAuditRecord.IsAudit(entry.Text)) return RemoteAuditRecord.SummaryOf(entry.Text);
         return entry.Text.Length <= 80 ? entry.Text : entry.Text[..80];
     }
 

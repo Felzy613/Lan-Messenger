@@ -73,7 +73,7 @@ desktop, and it needs its own channel, size cap and loop guard.
 | WS5 | Decode + present, both platforms | **Both done and verified on hardware** — Windows self-view measured 2026-09-18 | no |
 | WS6 | Cross-platform conformance | **Done** — both fixtures committed, both suites assert the other platform | no |
 | WS7 | Input capture + injection | **Done on both platforms and proven between the two machines** 2026-09-20 — Mac → Dell drives the mouse and keyboard; Dell → Mac reaches the injector and is gated only by the macOS Accessibility TCC grant | done |
-| WS8 | Consent, indicator, kill switch, invite exchange | **Done on both platforms and proven between the two machines** 2026-09-20 — invite, consent, accept, attach, capture, the second control prompt and the grant, in both directions | done |
+| WS8 | Consent, indicator, kill switch, invite exchange | **Done on both platforms and proven between the two machines** 2026-09-20 — invite, consent, accept, attach, capture, the second control prompt and the grant, in both directions. The Windows audit trail was not wired until 2026-09-23 (see below) | done |
 | WS9 | Settings, logging, diagnostics | **Done** — log channel, stats contents, and the settings toggle on both platforms | no |
 | WS10 | Latency tuning | **Done and measured between the two machines** 2026-09-21 — **26–31ms glass to glass at 29–30fps**, against a clock offset of 32.57 days that `ping`/`pong` now measures. The two-frame rule is enforced or accounted for at all five places | done |
 | WS11 | Packaging, docs, CI | **`dpiAwareness` done**, and the app builds with it; Vortice refs and the SDK decision wait on WS4b | no |
@@ -85,7 +85,7 @@ Test counts on this branch, both suites green:
 - macOS **513 passing**, 11 skipped (all generators or hardware-gated: the
   H.264 fixture emitter, the control-vector emitter, the UI renderers, and the
   live capture check)
-- Windows **400 passing**, run on real hardware 2026-09-21 from a freshly built
+- Windows **414 passing**, run on real hardware 2026-09-23 from a freshly built
   binary, with the app project compiling — which is what validates the XAML
 
 Of those, the remote-desktop tests are:
@@ -104,7 +104,7 @@ Of those, the remote-desktop tests are:
 | `RemoteConsentTests` | 22 | — (folded into `RemoteSessionShapeTests`, 23) |
 | `RemoteHostIndicatorTests` | 13 | — |
 | `RemoteSessionStopTests` | 12 | — (folded into `RemoteSessionShapeTests`) |
-| `RemoteAuditTests` | 16 | — (folded into `RemoteSessionShapeTests`) |
+| `RemoteAuditTests` | 16 | 9 (the record's encoding and wording stay in `RemoteSessionShapeTests`) |
 | `RemoteDesktopSessionTests` | 10 | — |
 | `RemoteInviteCoordinatorTests` | 16 | 18 |
 | `RemoteInputRecordTests` | 14 | 17 |
@@ -353,6 +353,9 @@ testing and each now has a rule in `CLAUDE.md`:
   branch in `package.sh` fix that, so grant once and rebuild freely — see
   [DEVELOPMENT.md → TCC grants](DEVELOPMENT.md#tcc-grants). The control consent
   prompt says so when the grant is missing.
+- The Windows audit row on screen. The wiring, the preview and the row model are
+  unit-tested (`RemoteAuditTests`), and the XAML compiles, but no real session
+  has yet put a `RemoteAuditRowControl` in front of anybody.
 - macOS → macOS presentation. The decoder's output has been decoded, but nothing
   has been on screen in that configuration: `SampleBufferVideoPresenter` is
   tested against a layer with no window behind it, which catches a rejected
@@ -817,14 +820,24 @@ requirements** — a client that does not enforce them is not compatible.
   lock, and the session must stop once with the first cause rather than twice,
   since the second callback would arrive after teardown had already run.
 - An audit entry in chat history for every session start, stop and control
-  grant. **Done on macOS.** Stored the way attachments are — an ordinary
+  grant. **Done on both platforms.** Stored the way attachments are — an ordinary
   `MessageEntry` whose `text` carries a `__REMOTE__:` marker and a JSON body —
   so the history format is unchanged and there is nothing to migrate.
 
+  Windows wrote none until 2026-09-23. `RemoteDesktopController.AppendAudit`
+  was declared, passed into every `RemoteDesktopSession` and invoked with `?.`,
+  but nothing assigned it, so every record went nowhere without a trace.
+  `AppModel` now assigns it beside `AnnounceEnd`. It takes the peer IP along
+  with the record, because history is keyed by IP and the session never knows it.
+
   The cost of that trick is that **every call site inspecting message text needs
-  to know the prefix**, and there are three: the sidebar's last-message preview,
-  the editability guard, and the chat row builder. A fourth that forgets renders
-  raw JSON at somebody. `RemoteAuditTests` pins the conventions apart.
+  to know the prefix**. On macOS there are three: the sidebar's last-message
+  preview, the editability guard, and the chat row builder. On Windows there are
+  four: `AppModel.LastMessagePreview`, `AppModel.IsEditable`,
+  `MessageRowViewModel.From`, and `MessagingService.ReplyPreviewText`. One that
+  forgets renders raw JSON at somebody. `RemoteAuditTests` on each platform pins
+  the conventions apart; the Windows suite also asserts the preview, the row, and
+  that the row offers no edit, reply or delete-for-everyone.
 
 **Window patterns**, so nobody rediscovers them:
 

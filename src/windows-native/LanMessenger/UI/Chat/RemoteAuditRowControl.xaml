@@ -1,0 +1,59 @@
+<UserControl
+    x:Class="LanMessenger.UI.Chat.RemoteAuditRowControl"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- The design system's RemoteAuditRow. Centred and in secondary ink: it
+         is a fact about the conversation rather than part of it, and must not
+         read as something either party said. No bubble, no side, no context
+         menu, and no status ticks, since no packet was ever sent for it.
+         The chip is flat glass: a rim but no float shadow, because it belongs
+         to the thread rather than floating over it. -->
+    <Grid Padding="12,4">
+        <Border HorizontalAlignment="Center"
+                MaxWidth="460"
+                Padding="14,6"
+                CornerRadius="20"
+                Background="{ThemeResource TokenGlassRegularBrush}"
+                BorderBrush="{ThemeResource TokenGlassEdgeBrush}"
+                BorderThickness="1">
+            <StackPanel Spacing="2">
+                <Grid HorizontalAlignment="Center" ColumnSpacing="6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <!-- A revoked grant is the grant's hand with a slash
+                         through it. The trail is skimmed, and the two events
+                         it most matters to tell apart are "they watched" and
+                         "they drove". -->
+                    <Grid Width="12" Height="12" VerticalAlignment="Center">
+                        <FontIcon x:Name="EventIcon"
+                                  FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                  FontSize="12"
+                                  Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+                        <Line x:Name="IconSlash"
+                              X1="0.5" Y1="0.5" X2="11.5" Y2="11.5"
+                              Stroke="{ThemeResource TokenInkSecondaryBrush}"
+                              StrokeThickness="1.25"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Visibility="Collapsed" />
+                    </Grid>
+                    <!-- The runs sit on one line on purpose: XAML turns the
+                         whitespace between inline elements into a space. -->
+                    <TextBlock Grid.Column="1"
+                               FontSize="11"
+                               LineHeight="14"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               Foreground="{ThemeResource TokenInkSecondaryBrush}"><Run x:Name="LeadRun" /><Run x:Name="NameRun" FontWeight="SemiBold" Foreground="{ThemeResource TokenInkBrush}" /><Run x:Name="TailRun" /><Run x:Name="DurationRun" /></TextBlock>
+                </Grid>
+                <TextBlock x:Name="WhenText"
+                           HorizontalAlignment="Center"
+                           FontSize="9"
+                           LineHeight="11"
+                           Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

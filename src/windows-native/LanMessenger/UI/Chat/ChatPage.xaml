@@ -10,6 +10,17 @@
              casts only onto its Receivers, so the constructor adds
              ThreadBackground; without that the chrome casts nothing. -->
         <ThemeShadow x:Name="ChromeShadow" />
+        <DataTemplate x:Key="MessageRowTemplate" x:DataType="local:MessageRowViewModel">
+            <local:MessageBubbleControl Row="{Binding}" />
+        </DataTemplate>
+        <!-- A remote-desktop audit record: a centred system line, not a
+             bubble, and with no context menu to reply, edit or delete it. -->
+        <DataTemplate x:Key="AuditRowTemplate" x:DataType="local:MessageRowViewModel">
+            <local:RemoteAuditRowControl Row="{Binding}" />
+        </DataTemplate>
+        <local:MessageRowTemplateSelector x:Key="MessageRowTemplates"
+                                          MessageTemplate="{StaticResource MessageRowTemplate}"
+                                          AuditTemplate="{StaticResource AuditRowTemplate}" />
     </Page.Resources>
 
     <!-- The whole thread is the drop target, not just the composer strip:
@@ -65,12 +76,8 @@
                   SelectionMode="None"
                   IsItemClickEnabled="False"
                   Padding="12,80,12,72"
-                  Background="Transparent">
-            <ListView.ItemTemplate>
-                <DataTemplate x:DataType="local:MessageRowViewModel">
-                    <local:MessageBubbleControl Row="{Binding}" />
-                </DataTemplate>
-            </ListView.ItemTemplate>
+                  Background="Transparent"
+                  ItemTemplateSelector="{StaticResource MessageRowTemplates}">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />

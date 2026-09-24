@@ -39,9 +39,15 @@ public sealed class RemoteDesktopController
     private string _peerName = "";
     private DateTime _startedAt;
 
-    /// Where audit records go. Set by AppModel so a session can be exercised
-    /// without a history store.
-    public Action<RemoteAuditRecord>? AppendAudit { get; set; }
+    /// <summary>Where audit records go: (peer IP, record). Set by AppModel.</summary>
+    /// <remarks>
+    /// Carries the IP because history is keyed by it and the session never
+    /// learns it. Each session's sink captures its own peer's IP, so a record
+    /// raised late, such as SessionEnded from a teardown on the socket thread,
+    /// still lands in that peer's thread. Raised on whatever thread the event
+    /// happened on.
+    /// </remarks>
+    public Action<string, RemoteAuditRecord>? AppendAudit { get; set; }
 
     /// <summary>Tells the peer why a session ended. Set by AppModel.</summary>
     public Action<string, string, RemoteStopReason>? AnnounceEnd { get; set; }
@@ -134,7 +140,7 @@ public sealed class RemoteDesktopController
                 var viewer = new RemoteViewerWindow(peerName);
                 _viewer = viewer;
 
-                var session = new RemoteDesktopSession(record => AppendAudit?.Invoke(record));
+                var session = new RemoteDesktopSession(record => AppendAudit?.Invoke(peerIP, record));
                 _session = session;
 
                 viewer.OnClosed = () => Stop(RemoteStopReason.UserStopped);
@@ -325,7 +331,7 @@ public sealed class RemoteDesktopController
 
             try
             {
-                var session = new RemoteDesktopSession(record => AppendAudit?.Invoke(record));
+                var session = new RemoteDesktopSession(record => AppendAudit?.Invoke(armed.PeerIP, record));
                 _session = session;
                 _media = media;
 

@@ -1,3 +1,5 @@
+using LanMessenger.Core.Persistence;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -19,13 +21,16 @@ public enum RemoteAuditEvent { SessionStarted, ControlGranted, ControlRevoked, S
 
 public sealed class RemoteAuditRecord
 {
-    [JsonPropertyName("event")]    public string EventToken { get; set; } = "";
-    [JsonPropertyName("peerName")] public string PeerName { get; set; } = "";
+    // The explicit order is alphabetical because the Swift encoder writes
+    // sorted keys; declaration order would put "event" first and every record
+    // would differ from the Mac's in its first byte.
+    [JsonPropertyName("event"), JsonPropertyOrder(1)]    public string EventToken { get; set; } = "";
+    [JsonPropertyName("peerName"), JsonPropertyOrder(2)] public string PeerName { get; set; } = "";
     /// Present on SessionEnded. The wire token, so the stored record survives a
     /// change of wording in the sentence shown for it.
-    [JsonPropertyName("reason")]   public string? Reason { get; set; }
+    [JsonPropertyName("reason"), JsonPropertyOrder(3)]   public string? Reason { get; set; }
     /// Seconds. Present on SessionEnded.
-    [JsonPropertyName("duration")] public double? Duration { get; set; }
+    [JsonPropertyName("duration"), JsonPropertyOrder(0)] public double? Duration { get; set; }
     /// <summary>Whether WE were the one watching.</summary>
     /// <remarks>
     /// Optional, and absent means host — both backwards compatible with records
@@ -36,7 +41,7 @@ public sealed class RemoteAuditRecord
     /// screen." in its own history. Written only when true, so a host's records
     /// keep exactly the bytes they had before.
     /// </remarks>
-    [JsonPropertyName("viewing")]  public bool? Viewing { get; set; }
+    [JsonPropertyName("viewing"), JsonPropertyOrder(4)]  public bool? Viewing { get; set; }
 
     /// <summary>True when we were watching. Null is host, for older records.</summary>
     [JsonIgnore] public bool WasViewing => Viewing == true;
@@ -55,8 +60,11 @@ public sealed class RemoteAuditRecord
     }
 
     /// The prefix that marks a history entry as an audit record rather than a
-    /// message. Three places inspect message text for a prefix and all three
-    /// must know this one; a fourth that forgets renders raw JSON at the user.
+    /// message. Every place that inspects message text must know this one: the
+    /// sidebar preview (AppModel.LastMessagePreview), the editability guard
+    /// (AppModel.IsEditable), the chat row builder (MessageRowViewModel.From)
+    /// and the reply/edit banner (MessagingService.ReplyPreviewText). One that
+    /// forgets renders raw JSON at the user.
     public const string Marker = "__REMOTE__:";
 
     public static string Token(RemoteAuditEvent e) => e switch
@@ -88,9 +96,35 @@ public sealed class RemoteAuditRecord
     private static readonly JsonSerializerOptions Options = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        // The default encoder writes an apostrophe as \u0027 and any accented
+        // letter as \u00XX, so "Zoë's PC" was stored in a form the Swift encoder
+        // never produces. This is not embedded in HTML anywhere; it is the body
+        // of an encrypted history entry. Swift still writes '/' as "\/", which
+        // nothing here can match, and both decoders read either spelling.
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
     public string Encoded() => Marker + JsonSerializer.Serialize(this, Options);
+
+    /// <summary>The history entry that carries this record.</summary>
+    /// <remarks>
+    /// Not incoming, because an incoming entry counts toward the unread badge
+    /// and enters the read-receipt path, and this is a note about what happened
+    /// rather than something the peer said. No message id either: there is no
+    /// packet it corresponds to, which also puts it out of reach of every
+    /// edit_message and delete_message, since both find their target by id.
+    /// Mirror of RemoteAuditEntry.historyEntry(at:).
+    /// </remarks>
+    public MessageEntry HistoryEntry(double timestamp) => new()
+    {
+        Sender          = "",
+        Text            = Encoded(),
+        Incoming        = false,
+        Timestamp       = timestamp,
+        MessageId       = null,
+        Status          = "",
+        ReadReceiptSent = true,
+    };
 
     /// Decodes a stored text, or null if it is not an audit record. Tolerant of
     /// a record written by a newer build: a history entry that cannot be
@@ -107,6 +141,16 @@ public sealed class RemoteAuditRecord
     }
 
     public static bool IsAudit(string text) => text.StartsWith(Marker, StringComparison.Ordinal);
+
+    /// <summary>The sentence to show for a stored text that carries the marker.</summary>
+    /// <remarks>
+    /// Call only when IsAudit is true. A marked text that will not decode (a
+    /// record from a newer build, or a damaged one) is still an audit record,
+    /// and its JSON body is the one thing it must never be shown as.
+    /// </remarks>
+    public static string SummaryOf(string text) => Decode(text)?.Summary ?? UndecodableSummary;
+
+    public const string UndecodableSummary = "Screen sharing event.";
 
     /// <summary>The sentence shown in the thread and in the sidebar preview.</summary>
     /// <remarks>
