@@ -68,10 +68,10 @@
                                        TextTrimming="CharacterEllipsis" />
                         </StackPanel>
                         <Button Grid.Column="2" Content="Open"
-                                Tag="{x:Bind PeerIP}" Click="OpenBtn_Click" />
+                                Tag="{x:Bind ConversationId}" Click="OpenBtn_Click" />
                         <Button Grid.Column="3" Margin="6,0,0,0"
                                 Content="Unarchive"
-                                Tag="{x:Bind PeerIP}" Click="UnarchiveBtn_Click" />
+                                Tag="{x:Bind ConversationId}" Click="UnarchiveBtn_Click" />
                     </Grid>
                 </DataTemplate>
             </ListView.ItemTemplate>

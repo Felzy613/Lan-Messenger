@@ -133,8 +133,8 @@ Use [FILE_MAP.md](FILE_MAP.md) for the detailed inventory.
 ```text
 DiscoveryService
   -> NetworkCoordinator
-  -> AppModel.upsertPeer
-  -> contacts/history migration
+  -> AppModel.upsertPeer (by identity key; a new address updates the
+     contact's last_ip hint and moves no history)
   -> refresh sidebar conversations
 
 TCP listener / PeerSession
@@ -214,21 +214,30 @@ each tick), or Offline (`≥ 12 s`). `AppModel` runs the evaluator about once a
 second, issues probes for quiet peers, flips an explicit `presence` field on
 transitions, and prunes non-contact peers that stay offline beyond five minutes.
 
-A heartbeat (discovery/reply or any inbound TCP packet) marks a peer online; a
+A heartbeat (discovery/reply, or an inbound TCP packet from an address that
+peer's key is known at) marks a peer online; a
 `goodbye` marks it offline immediately; losing the local network marks every peer
 offline at once. Offline peers are retained in the dictionary (their public key is
 needed to queue/relay), so callers that need reachability test `IsOnline`/
 `isOnline` rather than mere presence in the map. The cloud relay carries messages
 only and never participates in presence.
 
-Windows also treats a successful *outbound* TCP send (`OnPeerReachable` on
-`MessagingService`/`FileTransferService`) as a heartbeat, synthesizing a live
-peer entry from saved contact/session-cache data if one doesn't exist yet. This
-covers machines where discovery *reception* is broken (multicast/UDP blocked, a
-Hyper-V/WSL virtual adapter confusing the Windows Firewall network-profile
-classification) but direct TCP delivery still works — otherwise presence
-flickers offline during any lull between exchanges even though the peer is
-reachable the whole time. See [PROTOCOL.md](../PROTOCOL.md#presence).
+Windows also treats a successful *outbound* TCP send to a peer's live address
+(`OnPeerReachable` on `MessagingService`/`FileTransferService`, carrying the key
+the send was addressed to) as a heartbeat for that key, so a peer we are talking
+to does not flicker offline between its own beacons.
+
+A message or file that decrypts under a key (`notePeerAddress`/`NotePeerAddress`)
+marks that key online at the packet's source address when it was not already
+online elsewhere — creating the peer entry if discovery never produced one.
+That is what covers machines where discovery *reception* is broken (multicast/UDP
+blocked, a Hyper-V/WSL virtual adapter confusing the Windows Firewall
+network-profile classification): the first authenticated message makes the
+sender answerable. It replaced a Windows fallback that synthesized a live peer
+from "whichever contact last used this IP", which is exactly the lookup DHCP
+churn defeats. When discovery places a key at an address another online peer
+was recorded at, that peer is marked offline. See
+[PROTOCOL.md](../PROTOCOL.md#presence).
 
 ### Network Coordinator
 
@@ -329,12 +338,26 @@ It does not store private keys.
 History shape:
 
 ```text
-peer IP -> list of MessageEntry
+conversation id -> list of MessageEntry
+conversation id = peer identity key (base64 X25519, 44 chars)
+                | "ip:<address>"   (legacy history no single contact owned; read-only)
 ```
 
-This IP-keyed model is a compatibility constraint. `AppModel` compensates by
-migrating history when a saved contact reappears with the same public key at a
-new IP.
+Conversations used to be filed by peer IP, and `AppModel` moved history whenever
+a contact reappeared at a new address. DHCP hands the same addresses to other
+machines, so that model eventually filed one person's thread under another's
+name and pointed sends at the wrong device. `HistoryStore` now re-files any
+address-named bucket once, at load, through `PeerID.rekey` / `PeerId.Rekey`
+(an address owned by exactly one contact becomes its key; anything ambiguous
+becomes `ip:<address>`), and `AppModel` does the same for the archived/hidden
+lists. The rules are in PROTOCOL.md → Conversation Identity and pinned by
+`peer_id_vector.json` in both suites. Sending resolves an address from the live
+peer record for the key at that moment (`liveAddress(forPeer:)` / `LiveAddress`);
+an offline peer has none and its message is queued and relayed.
+
+Under XCTest/MSTest `HistoryStore` writes to a temp file instead of the real
+history: the suites use the shared instance directly, and the test process can
+open the real key.
 
 The message status update path is rank-aware. This prevents race conditions where
 a late local "Sent" update overwrites a remote `sent_receipt` or `read_receipt`.
@@ -487,8 +510,8 @@ It owns:
 
 - discovered peers keyed by public key;
 - active and archived conversation lists;
-- selected peer IP;
-- message lists keyed by peer IP;
+- the selected conversation id (`selectedPeerID` / `SelectedConversationId`);
+- message lists, drafts, typing states and transfer banners keyed by conversation id;
 - typing states;
 - active transfer banners;
 - migration prompt state;
@@ -703,7 +726,7 @@ with a baked-in red dot) via `TrayIcon.IconSource`, since `TaskbarIcon` has no
 separate overlay slot for the notification-area icon.
 
 The composer keeps an in-memory per-conversation draft (`AppModel.Drafts`,
-keyed by peer IP, not persisted) so switching conversations without sending
+keyed by conversation id, not persisted) so switching conversations without sending
 restores the typed text; the draft is cleared once the message is sent.
 
 Screenshot capture (`ChatPage.OnScreenshotRequested`) offers "Select region...",

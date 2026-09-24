@@ -182,13 +182,21 @@ Inputs:
   `discovery` to each address the peer has advertised (its `ips`) to reconfirm it
   before declaring it offline.
 - **Outbound reachability** (Windows) — a successful outbound TCP send (message
-  or file) to a peer refreshes its `last_seen` and marks it online, same as an
-  inbound heartbeat. A completed connect + write is at least as strong evidence
-  of reachability as an inbound packet, and this catches the case where this
-  machine's own discovery *reception* is broken or firewalled (multicast/UDP
-  blocked, a virtual adapter confusing the network-profile classification) while
-  outbound TCP still works fine — without it, presence depended solely on
-  inbound traffic and would flicker offline during any lull between exchanges.
+  or file) to a peer's live address refreshes that peer's `last_seen`, same as
+  an inbound heartbeat, so a peer we are talking to stays online between its own
+  beacons. It refreshes the key the send was addressed to, and only while that
+  key is still recorded at the address that answered — never "whoever is at
+  this IP".
+- **Authenticated traffic** — a fresh `text` or a received file that decrypts
+  under a key marks that key online at the packet's source address if it was
+  not already online elsewhere. This is how a peer whose beacons never reach
+  this machine (discovery reception firewalled, a virtual adapter confusing the
+  network-profile classification) becomes reachable.
+- **Address handover** — when discovery places a key at an address another
+  online peer was recorded at, that other peer is marked offline: an address
+  belongs to one device at a time.
+- Unencrypted inbound TCP packets (typing, receipts) refresh a peer only when
+  they come from an address that key is known at; see Conversation Identity.
 
 State, evaluated about once per second against `now - last_seen`:
 
@@ -706,7 +714,7 @@ Inner plaintext JSON:
 
 ```json
 {
-  "192.168.1.42": [
+  "zKr1Wt0q9Cq9b3Gm1vXl4c5f0YdS6UeQp2Hn8mJ7aB4=": [
     {
       "sender": "Alice",
       "text": "Hello",
@@ -728,7 +736,15 @@ Inner plaintext JSON:
 
 Rules:
 
-- Top-level keys are peer IP addresses, not public keys.
+- Top-level keys are **conversation ids**, and a conversation id is the peer's
+  **identity key** — the base64 X25519 public key its contact entry is pinned
+  by (44 characters, decoding to 32 bytes). Never the peer's address: DHCP hands
+  the same LAN addresses to different machines, so a thread filed by address is
+  eventually filed under somebody else. See **Conversation Identity** below.
+- The one other form is `ip:<address>`: history written by an older client
+  under an address that migration could not attribute to exactly one contact.
+  It is readable and deletable, never writable — there is no key to encrypt a
+  reply to, and choosing one by address is the mistake the key exists to avoid.
 - Each peer list is capped to 200 entries.
 - File messages are represented as `text` values prefixed with `__FILE__:`.
 - Reply fields are optional and must decode cleanly if absent.
@@ -743,6 +759,63 @@ Rules:
   message keeps its position in the thread. When `edited` is `true` the UI
   appends an "(edited)" marker; only the latest text is retained — history
   keeps no revision list.
+
+### Conversation Identity
+
+Every per-conversation structure is keyed by conversation id: the history map
+above, `archived_conversations` and `hidden_conversations` in config, and each
+client's in-memory selection, drafts, typing indicators and transfer banners.
+An address is looked up only at the moment something is sent, from the live
+discovery record for that key, and a peer that is not online has no address:
+its message is queued (and relayed when the relay is configured) rather than
+dialled at an address remembered from earlier, which may since have been given
+to another device. That other device would accept the TCP write, fail to
+decrypt, and send no receipt — the message would read "Sent" and be lost.
+
+Filing follows from what proves a sender:
+
+- `text`, `edit_message`, `file_chunk` and relay messages are encrypted, so
+  opening them under `sender_public_key_b64` proves the key; they are filed
+  under it from any address. A fresh `text` that opens also tells the receiver
+  where that device is now, so a peer whose beacons never arrive can still be
+  answered.
+- `typing`, `sent_receipt`, `read_receipt` and `delete_message` are not
+  encrypted: their `sender_public_key_b64` is a claim. They are accepted only
+  from an address that key is known at — its discovered address or one it has
+  advertised in `ips`, or, for a peer not seen this session, its contact's
+  `last_ip`. That keeps them exactly as hard to forge as when history was keyed
+  by source address.
+- An incoming file whose chunks do not all decrypt is discarded, not
+  finalized; a file with no chunks at all proves nothing and is accepted only
+  from an address the key is known at.
+
+A duplicate `text` (a retry whose receipt was lost) is detected after
+decryption, so a forged packet naming a real `message_id` is never answered
+with a receipt.
+
+**Migration.** History, `archived_conversations` and `hidden_conversations`
+written by older clients are re-filed once, when history loads, and saved back
+only if anything moved. The rule for each name, in order:
+
+1. A key is already an id; an `ip:` id is already migrated.
+2. An address that **exactly one** saved contact has as its `last_ip` becomes
+   that contact's key.
+3. `relay-<8 chars>` — the placeholder older clients used for a relay message
+   from a peer never met on the LAN — becomes the one saved contact whose key
+   starts with those characters. If none does, it is kept as
+   `ip:relay-<8 chars>` and re-filed under the key when a peer with that prefix
+   is next discovered; the relay copies were authenticated by decryption, so
+   the prefix match is not a guess.
+4. Anything else becomes `ip:<address>`. Ambiguity is never resolved by
+   guessing: two contacts recorded at one address is the very collision this
+   exists to end.
+
+Buckets that land on the same id are merged: de-duplicated by `message_id`
+(first copy wins; entries without one are all kept), sorted by `timestamp`
+(stable), capped to 200. A bucket that is the only source for its id is kept
+exactly as it was. The migration is idempotent and changes no field inside an
+entry, so the file shape is unchanged. Both platforms must produce identical
+ids; `peer_id_vector.json` (in both test directories) pins the rules.
 
 ## Config Format
 
@@ -891,18 +964,16 @@ App start -> RelayClient.fetchPending(relay_id)
   -> RelayClient.delete(message_id) to clean up
 ```
 
-Incoming relay messages are deduplicated **globally by `message_id`** across
-the whole local history (all peer-IP buckets), not just the IP bucket the
-message happens to resolve to on that particular poll. Peer IP resolution
-for a relay sender is ephemeral — it depends on live discovery state,
-contacts, and session caches, which can change between polls (e.g. macOS
-purges offline peers) — so a per-IP check can miss an earlier delivery
-filed under a different bucket and re-append the message. If the client
-already has the `message_id` anywhere in history, it does not reprocess or
-re-append it; it only issues the mailbox `DELETE` cleanup. History
-migration (moving a synthetic `relay-{keyPrefix}` bucket to a peer's real IP
-once discovered) also dedupes by `message_id` when merging, as defense in
-depth.
+Relay messages are filed under the sender's identity key — the key they
+decrypted under — and a delivery receipt is sent only if that key is online on
+the LAN right now. Incoming relay messages are deduplicated **globally by
+`message_id`** across the whole local history, not just the sender's
+conversation: the same message may already have arrived over the LAN, and
+history written before conversations were keyed by identity can hold it under
+an address-named bucket. If the client already has the `message_id` anywhere in
+history, it does not reprocess or re-append it; it only issues the mailbox
+`DELETE` cleanup. Re-filing a legacy `relay-{keyPrefix}` bucket under its key
+also dedupes by `message_id` when merging, as defense in depth.
 
 If a message is delivered directly over the LAN (`deliverPending` succeeds)
 after it was already confirmed-stored on the relay, the client best-effort
@@ -1012,12 +1083,14 @@ TCP listener -> PacketValidator -> FileTransferService
   -> append incoming file bubble and show notification
 ```
 
-### Contact IP Migration
+### Contact Address Changes
 
-Contacts are keyed by public key, but history is keyed by IP for compatibility.
-When a saved contact broadcasts the same public key from a new IP, clients migrate
-history, hidden conversation state, archived state, and selected conversation from
-old IP to new IP.
+Contacts and conversations are both keyed by public key, so a saved contact
+broadcasting the same key from a new address moves nothing: the client records
+the new `last_ip` (used only for unicast beacon hints and the trust check) and
+the conversation stays where it is. Older clients re-filed history from the old
+address to the new one at this point; that is what the one-time migration in
+**Conversation Identity** replaces.
 
 ## Remote Desktop
 
@@ -1502,8 +1575,12 @@ somebody's history.
 - New packet fields must be optional unless the protocol version is explicitly
   bumped and both platforms are updated together.
 - `reply_to_*` fields are intentionally optional and unencrypted.
-- Existing history keyed by IP is a compatibility constraint. Do not switch to
-  public-key keys without a migration plan.
+- History and the archived/hidden lists are keyed by identity key since
+  macOS 2.2.0 / Windows 2.2.0, with the one-time migration described under
+  **Conversation Identity**. The file format is unchanged, so an older client
+  reading a migrated file sees key-named conversations it treats as unknown
+  peers; downgrading is not supported and loses nothing, since the entries are
+  intact.
 - Combined GitHub releases may expose only public installers. In-app updaters
   also inspect per-platform releases for ZIP/EXE assets and SHA256 sidecars.
 - Legacy Python config migration may import non-key config fields and optionally

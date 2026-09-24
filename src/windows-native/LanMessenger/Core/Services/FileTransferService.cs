@@ -27,13 +27,30 @@ public sealed class FileTransferService
 {
     public static FileTransferService Shared { get; } = new();
 
-    public Action<string, string, long, long>?       OnProgress     { get; set; }  // peerIP, label, bytes, total
-    public Action<string, string, string, string?>?  OnComplete     { get; set; }  // peerIP, label, transferId, localPath (sender only)
-    public Action<string, string>?                   OnError        { get; set; }  // peerIP, message
-    public Action<string, string, string, string>?   OnIncomingFile { get; set; }  // peerIP, sender, transferId, finalPath
+    // Every callback names the peer by identity key — the conversation the
+    // transfer belongs to — never by the address it travelled over.
+    public Action<string, string, long, long>?       OnProgress     { get; set; }  // peer, label, bytes, total
+    public Action<string, string, string, string?>?  OnComplete     { get; set; }  // peer, label, transferId, localPath (sender only)
+    public Action<string, string>?                   OnError        { get; set; }  // peer, message
+    // peer, fromAddress, sender, transferId, finalPath
+    public Action<string, string, string, string, string>? OnIncomingFile { get; set; }
     // Fired the moment an outgoing transfer's TCP connect succeeds — proof of
     // reachability, same purpose as MessagingService.OnPeerReachable.
-    public Action<string>?                           OnPeerReachable { get; set; }  // peerIP
+    public Action<string, string>?                   OnPeerReachable { get; set; }  // peer key, ip
+
+    /// <summary>
+    /// Whether <c>key</c> is known to be at <c>ip</c> — set by AppModel.
+    /// Consulted only for an empty file: every chunk proves the sender's key by
+    /// decrypting under it, and a transfer with no chunks proves nothing, so it
+    /// is taken only from an address that key already lives at.
+    /// </summary>
+    public Func<string, string, bool>?               IsBoundAddress { get; set; }  // key, ip
+
+    // Transfers with a chunk that failed to decrypt. Written by the channel
+    // consumer, read by the same consumer at finalization — a file with a chunk
+    // missing is corrupt, and one where no chunk opens was never from the key
+    // it named.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<TransferKey, bool> _failedTransfers = new();
 
     private DispatcherQueue? _dq;
     private const int ChunkSize = 64 * 1024; // 64 KiB
@@ -80,6 +97,15 @@ public sealed class FileTransferService
     {
         var key  = new TransferKey(ip, pkt.TransferId);
         var safe = PacketValidator.SanitizeFilename(pkt.Filename);
+        var peer = pkt.SenderPublicKeyB64;
+        if (!PeerId.IsKey(peer))
+        {
+            LanLogger.FileTransfer(
+                "failed", transferId: pkt.TransferId, peer: ip,
+                direction: "incoming", filename: safe, size: pkt.Size,
+                reason: "no usable sender key");
+            return;
+        }
 
         LanLogger.FileTransfer(
             "start", transferId: pkt.TransferId, peer: ip,
@@ -96,7 +122,7 @@ public sealed class FileTransferService
                 "failed", transferId: pkt.TransferId, peer: ip,
                 direction: "incoming", filename: safe, size: pkt.Size,
                 reason: "cannot create temp file — disk full or permission denied");
-            Dispatch(() => OnError?.Invoke(ip, "Cannot save incoming file — check disk space and inbox permissions"));
+            Dispatch(() => OnError?.Invoke(peer, "Cannot save incoming file — check disk space and inbox permissions"));
             return;
         }
 
@@ -109,7 +135,7 @@ public sealed class FileTransferService
         // Spin up one background Task that drains this channel in order.
         _ = Task.Run(() => DrainChannelAsync(ch.Reader));
 
-        Dispatch(() => OnProgress?.Invoke(ip, $"Receiving {safe}", 0, pkt.Size));
+        Dispatch(() => OnProgress?.Invoke(peer, $"Receiving {safe}", 0, pkt.Size));
     }
 
     private void HandleFileChunk(FileChunkPacket pkt, string ip)
@@ -140,6 +166,7 @@ public sealed class FileTransferService
             }
             catch (Exception ex)
             {
+                _failedTransfers[key] = true;
                 LanLogger.FileTransfer(
                     "failed", transferId: transferId, peer: ip,
                     direction: "incoming", filename: filename,
@@ -162,7 +189,7 @@ public sealed class FileTransferService
                           (totalSize > 0 && received >= totalSize);
                 if (!due) return;
                 _lastIncomingReportAt[key] = now;
-                OnProgress?.Invoke(ip, $"Receiving {filename}", received, totalSize);
+                OnProgress?.Invoke(senderKey, $"Receiving {filename}", received, totalSize);
             });
         });
     }
@@ -179,12 +206,38 @@ public sealed class FileTransferService
         var filename   = transfer.Filename;
         var sender     = pkt.Sender;
         var transferId = pkt.TransferId;
+        var peer       = transfer.SenderPublicKeyB64;
+        // Asked here, on the UI thread, because it reads AppModel's peer table.
+        var bound      = IsBoundAddress?.Invoke(peer, ip) ?? true;
 
         // Enqueue the finalization work — the channel consumer guarantees it only
         // runs after every preceding chunk write has completed.
         ch.Writer.TryWrite(async () =>
         {
             var size = transfer.TotalSize;
+            // Chunks that decrypted are what prove the sender's key. A failed
+            // chunk means the file is corrupt or was never theirs; no chunks at
+            // all proves nothing, so an empty file is taken only from an
+            // address that key is already known at.
+            var failed = _failedTransfers.TryRemove(key, out _);
+            var refusal = failed ? "one or more chunks failed to decrypt"
+                        : transfer.BytesReceived == 0 && !bound
+                            ? $"empty file from an address {peer[..8]} is not known at"
+                            : null;
+            if (refusal is not null)
+            {
+                FileTransferStore.Shared.CancelIncoming(key);
+                LanLogger.FileTransfer(
+                    "failed", transferId: transferId, peer: ip,
+                    direction: "incoming", filename: filename, size: size, reason: refusal);
+                Dispatch(() =>
+                {
+                    _lastIncomingReportAt.Remove(key);
+                    _incomingStartTimes.Remove(key);
+                    OnError?.Invoke(peer, $"Could not receive {filename} — it arrived damaged");
+                });
+                return;
+            }
             var finalPath = FileTransferStore.Shared.FinalizeIncoming(
                 key, ConfigStore.Shared.InboxDirectory);
             if (finalPath is null)
@@ -213,8 +266,8 @@ public sealed class FileTransferService
                     direction: "incoming", filename: filename, size: size,
                     mime: MimeFromFilename(filename),
                     durationMs: durationMs, bytesPerSec: bps);
-                OnComplete?.Invoke(ip, $"Receiving {filename}", transferId, null);
-                OnIncomingFile?.Invoke(ip, sender, transferId, finalPath);
+                OnComplete?.Invoke(peer, $"Receiving {filename}", transferId, null);
+                OnIncomingFile?.Invoke(peer, ip, sender, transferId, finalPath);
             });
             await Task.CompletedTask; // satisfies Func<Task> signature
         });
@@ -235,32 +288,41 @@ public sealed class FileTransferService
 
     // MARK: - Send
 
-    public void Enqueue(string filePath, string peerIP, string peerPublicKeyB64)
+    /// <summary>
+    /// Queues a file for the peer with identity key <paramref name="peer"/>, and
+    /// starts it if nothing else is going to them. <paramref name="address"/> is
+    /// where that device is right now; the queue itself belongs to the key, so a
+    /// file waiting out a DHCP change goes to the same device at its new
+    /// address, not to whoever inherited the old one.
+    /// </summary>
+    public void Enqueue(string filePath, string peer, string address)
     {
         var name = Path.GetFileName(filePath);
         long? size = null;
         try { size = new FileInfo(filePath).Length; } catch { /* file may have been deleted */ }
         LanLogger.FileTransfer(
-            "queued", peer: peerIP, direction: "outgoing",
+            "queued", peer: address, direction: "outgoing",
             filename: name, size: size, mime: MimeFromFilename(name));
-        FileTransferStore.Shared.Enqueue(filePath, name, peerIP);
-        StartNextIfIdle(peerIP, peerPublicKeyB64);
+        FileTransferStore.Shared.Enqueue(filePath, name, peer);
+        StartNextIfIdle(peer, address);
     }
 
     // Re-trigger the queue for a peer that has just come back online — covers
     // the case where a previous attempt failed and the file is still queued.
-    public void RetryQueue(string peerIP, string peerPublicKeyB64) =>
-        StartNextIfIdle(peerIP, peerPublicKeyB64);
+    public void RetryQueue(string peer, string address) =>
+        StartNextIfIdle(peer, address);
 
-    private void StartNextIfIdle(string peerIP, string peerPublicKeyB64)
+    private void StartNextIfIdle(string peerPublicKeyB64, string peerIP)
     {
-        if (FileTransferStore.Shared.ActiveOutgoing.Contains(peerIP)) return;
-        if (!FileTransferStore.Shared.OutgoingQueues.TryGetValue(peerIP, out var q) || q.Count == 0) return;
-        if (_lastSendFailureAt.TryGetValue(peerIP, out var lastFail)
+        // No address means the device is not on the LAN; the queue waits for it.
+        if (string.IsNullOrEmpty(peerIP)) return;
+        if (FileTransferStore.Shared.ActiveOutgoing.Contains(peerPublicKeyB64)) return;
+        if (!FileTransferStore.Shared.OutgoingQueues.TryGetValue(peerPublicKeyB64, out var q) || q.Count == 0) return;
+        if (_lastSendFailureAt.TryGetValue(peerPublicKeyB64, out var lastFail)
             && DateTime.UtcNow - lastFail < SendRetryCooldown) return;
         var item = q.Peek();
 
-        FileTransferStore.Shared.MarkTransferStarted(peerIP);
+        FileTransferStore.Shared.MarkTransferStarted(peerPublicKeyB64);
         long? outgoingSize = null;
         try { outgoingSize = new FileInfo(item.Path).Length; } catch { /* deleted between enqueue and send */ }
         LanLogger.FileTransfer(
@@ -275,14 +337,14 @@ public sealed class FileTransferService
                                .ConfigureAwait(false);
             Dispatch(() =>
             {
-                FileTransferStore.Shared.MarkTransferFinished(peerIP, success);
+                FileTransferStore.Shared.MarkTransferFinished(peerPublicKeyB64, success);
                 var durationMs = (int)(DateTime.UtcNow - startedAt).TotalMilliseconds;
                 double? bps = (durationMs > 0 && outgoingSize > 0)
                     ? (double)outgoingSize.Value * 1000.0 / durationMs
                     : null;
                 if (success)
                 {
-                    _lastSendFailureAt.Remove(peerIP);
+                    _lastSendFailureAt.Remove(peerPublicKeyB64);
                     LanLogger.FileTransfer(
                         "complete", peer: peerIP, direction: "outgoing",
                         filename: item.Filename, size: outgoingSize,
@@ -290,11 +352,11 @@ public sealed class FileTransferService
                         bytesSent: outgoingSize,
                         durationMs: durationMs, bytesPerSec: bps);
                     // Advance to the next queued file.
-                    StartNextIfIdle(peerIP, peerPublicKeyB64);
+                    StartNextIfIdle(peerPublicKeyB64, peerIP);
                 }
                 else
                 {
-                    _lastSendFailureAt[peerIP] = DateTime.UtcNow;
+                    _lastSendFailureAt[peerPublicKeyB64] = DateTime.UtcNow;
                     LanLogger.FileTransfer(
                         "failed", peer: peerIP, direction: "outgoing",
                         filename: item.Filename, size: outgoingSize,
@@ -302,7 +364,7 @@ public sealed class FileTransferService
                         reason: "will retry on reconnect");
                     // Do NOT retry immediately — the item stays queued and will be
                     // retried when RetryQueue() is called (e.g., on peer reconnect).
-                    OnError?.Invoke(peerIP, $"Failed to send {item.Filename} — will retry when peer reconnects");
+                    OnError?.Invoke(peerPublicKeyB64, $"Failed to send {item.Filename} — will retry when peer reconnects");
                 }
             });
         });
@@ -360,7 +422,7 @@ public sealed class FileTransferService
             await tcp.ConnectAsync(peerIP, TcpPort)
                      .WaitAsync(TimeSpan.FromSeconds(10))
                      .ConfigureAwait(false);
-            Dispatch(() => OnPeerReachable?.Invoke(peerIP));
+            Dispatch(() => OnPeerReachable?.Invoke(peerPublicKeyB64, peerIP));
 
             // Disable Nagle's algorithm — reduces latency on the final small frame.
             tcp.NoDelay = true;
@@ -378,7 +440,7 @@ public sealed class FileTransferService
                 ["sender"] = myName, ["sender_public_key_b64"] = myKey, ["port"] = TcpPort,
             };
             await stream.WriteAsync(FrameCodec.EncodeDict(startPacket)).ConfigureAwait(false);
-            Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", 0, totalSize));
+            Dispatch(() => OnProgress?.Invoke(peerPublicKeyB64, $"Sending {filename}", 0, totalSize));
 
             // ── file_chunks ───────────────────────────────────────────────────────
             // Throttle progress updates to ~12 Hz. The earlier code OR'd a
@@ -413,7 +475,7 @@ public sealed class FileTransferService
                 {
                     var snap = sent;
                     lastReportAt = now;
-                    Dispatch(() => OnProgress?.Invoke(peerIP, $"Sending {filename}", snap, totalSize));
+                    Dispatch(() => OnProgress?.Invoke(peerPublicKeyB64, $"Sending {filename}", snap, totalSize));
                 }
             }
 
@@ -442,8 +504,8 @@ public sealed class FileTransferService
 
             Dispatch(() =>
             {
-                OnProgress?.Invoke(peerIP, $"Sending {filename}", totalSize, totalSize);
-                OnComplete?.Invoke(peerIP, $"Sending {filename}", transferId, path);
+                OnProgress?.Invoke(peerPublicKeyB64, $"Sending {filename}", totalSize, totalSize);
+                OnComplete?.Invoke(peerPublicKeyB64, $"Sending {filename}", transferId, path);
             });
             return true;
         }

@@ -149,6 +149,66 @@ final class PeerIDTests: XCTestCase {
             [dell, "ip:192.168.1.9"])
     }
 
+    // MARK: - The shared vector
+
+    /// `peer_id_vector.json` is asserted by the Windows suite too. The same
+    /// person reads both machines' histories, so the two platforms must file
+    /// the same legacy bucket under the same id.
+    private struct Vector: Decodable {
+        struct Contact: Decodable { let public_key_b64: String; let last_ip: String }
+        struct IsKey: Decodable { let id: String; let is_key: Bool }
+        struct Resolve: Decodable { let name: String; let id: String }
+        struct Placeholder: Decodable { let key: String; let id: String }
+        struct Entry: Decodable { let message_id: String; let timestamp: Double }
+        struct Rekey: Decodable {
+            let cap: Int
+            let history: [String: [Entry]]
+            let expected: [String: [String]]
+            let moved: [String: String]
+        }
+        struct RekeyList: Decodable { let list: [String]; let expected: [String] }
+        let contacts: [Contact]
+        let is_key: [IsKey]
+        let resolve: [Resolve]
+        let relay_placeholder: Placeholder
+        let rekey: Rekey
+        let rekey_list: RekeyList
+    }
+
+    private func vector() throws -> Vector {
+        let url: URL
+        if let bundled = Bundle(for: PeerIDTests.self)
+            .url(forResource: "peer_id_vector", withExtension: "json") {
+            url = bundled
+        } else {
+            url = URL(fileURLWithPath: #file).deletingLastPathComponent()
+                .appendingPathComponent("peer_id_vector.json")
+        }
+        return try JSONDecoder().decode(Vector.self, from: try Data(contentsOf: url))
+    }
+
+    func testTheSharedVectorResolvesIdenticallyOnBothPlatforms() throws {
+        let v = try vector()
+        let contacts = v.contacts.map { PeerID.Contact(publicKeyB64: $0.public_key_b64, lastIP: $0.last_ip) }
+
+        for c in v.is_key {
+            XCTAssertEqual(PeerID.isKey(c.id), c.is_key, c.id)
+        }
+        for c in v.resolve {
+            XCTAssertEqual(PeerID.resolve(legacyName: c.name, contacts: contacts), c.id, c.name)
+        }
+        XCTAssertEqual(PeerID.relayPlaceholder(forKey: v.relay_placeholder.key), v.relay_placeholder.id)
+
+        let history = v.rekey.history.mapValues { list in
+            list.map { entry($0.message_id, at: $0.timestamp) }
+        }
+        let (result, moved) = PeerID.rekey(history: history, contacts: contacts, cap: v.rekey.cap)
+        XCTAssertEqual(moved, v.rekey.moved)
+        XCTAssertEqual(result.mapValues { $0.compactMap(\.messageId) }, v.rekey.expected)
+
+        XCTAssertEqual(PeerID.rekey(list: v.rekey_list.list, contacts: contacts), v.rekey_list.expected)
+    }
+
     // MARK: - HistoryStore.merge
 
     func testHistoryStoreMergesAPlaceholderIntoTheKey() {

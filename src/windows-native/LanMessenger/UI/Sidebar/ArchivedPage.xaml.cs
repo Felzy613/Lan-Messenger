@@ -46,7 +46,7 @@ public sealed partial class ArchivedPage : Page
         if (_model is null) return;
         var rows = _model.ArchivedConversations.Select(c => new ConversationRowViewModel
         {
-            PeerIP      = c.PeerIP,
+            ConversationId = c.ConversationId,
             PeerName    = c.PeerName,
             PhotoB64    = c.PhotoB64,
             LastMessage = c.LastMessage,
@@ -63,19 +63,19 @@ public sealed partial class ArchivedPage : Page
     private void OpenBtn_Click(object sender, RoutedEventArgs e)
     {
         if (_model is null) return;
-        if (sender is Button btn && btn.Tag is string ip)
+        if (sender is Button btn && btn.Tag is string id)
         {
-            _model.UnarchiveConversation(ip);
-            _model.SelectedPeerIP = ip;
-            ConversationOpened?.Invoke(ip);
+            _model.UnarchiveConversation(id);
+            _model.SelectedConversationId = id;
+            ConversationOpened?.Invoke(id);
         }
     }
 
     private void UnarchiveBtn_Click(object sender, RoutedEventArgs e)
     {
         if (_model is null) return;
-        if (sender is Button btn && btn.Tag is string ip)
-            _model.UnarchiveConversation(ip);
+        if (sender is Button btn && btn.Tag is string id)
+            _model.UnarchiveConversation(id);
     }
 
     private void BackBtn_Click(object sender, RoutedEventArgs e) => BackRequested?.Invoke();

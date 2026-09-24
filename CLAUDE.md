@@ -193,8 +193,9 @@ Discovery:
 2. Receivers self-suppress by local IP and public key.
 3. A `discovery` datagram gets a `discovery_reply` sent back to source IP on UDP
    54231.
-4. `AppModel` upserts peers by public key and migrates saved contact history if
-   the peer appears on a new IP.
+4. `AppModel` upserts peers by public key. A new address moves nothing —
+   conversations are filed by key — it only updates the contact's `last_ip`
+   hint and marks any other peer recorded at that address offline.
 
 Messaging:
 
@@ -220,7 +221,8 @@ Persistence:
 
 - Config is JSON in the platform app-data directory.
 - Private keys are not stored in config. macOS uses Keychain. Windows uses DPAPI.
-- History is encrypted JSON, keyed by peer IP, capped at 200 messages per peer.
+- History is encrypted JSON, keyed by the peer's identity key (see
+  PROTOCOL.md → Conversation Identity), capped at 200 messages per peer.
 - Pending offline text and file queues live in config.
 
 ## Protocol Rules That Must Not Drift
@@ -256,7 +258,12 @@ IDs:
 
 History:
 
-- Keyed by peer IP address for compatibility.
+- Keyed by conversation id: the peer's base64 X25519 identity key, or
+  `ip:<address>` for legacy history no single contact owned at migration
+  (read-only). `PeerID.swift` / `PeerId.cs`; `peer_id_vector.json` in both test
+  directories pins the migration rules.
+- The archived/hidden lists and every in-memory per-conversation map
+  (selection, drafts, typing, transfers) use the same id.
 - Capped to 200 entries per peer.
 - Optional reply fields must decode cleanly when missing.
 
@@ -705,22 +712,38 @@ Use the smallest sufficient set for the change:
   lock-protected list of the `ICodecAPI` RCWs it handed out and releases from
   that, which also removes the race against a thread still creating a value while
   teardown enumerates.
-- Do not address a peer by the IP its conversation is filed under. A
-  conversation is keyed by IP for storage compatibility, and DHCP recycles LAN
+- Do not identify or address a peer by an IP address. DHCP recycles LAN
   addresses between machines — over four days the Dell used three addresses and
   Ari used eight, one of them the Dell's current one. The **identity key** is the
-  only stable name a device has. On 2026-09-24 the remote-desktop button on both
-  platforms sent its invite to Ari: macOS posted to the conversation's remembered
-  IP, and Windows went further and asked "which peer is at this conversation's
-  IP?", so the header's name, online dot and availability were Ari's too. Every
-  click after that was then refused behind the misdirected invite for a minute,
-  silently. Resolve the key from the conversation (`conv.peerPublicKeyB64`,
-  `AppModel.PeerKeyForConversation`), the address from the live discovery record
-  for that key at the moment of sending, and dial the media attach at the
-  authenticated source of the accept — it opened under the peer's key, so its
-  address is proof of where that device is now. Covered by
-  `testTheMediaChannelDialsWhereTheAuthenticatedAcceptCameFrom` and its Windows
-  mirror.
+  only stable name a device has, and every conversation, history bucket,
+  archived/hidden entry, draft, typing state and transfer queue is keyed by it.
+  On 2026-09-24 the remote-desktop button on both platforms sent its invite to
+  Ari: macOS posted to the conversation's remembered IP, and Windows asked
+  "which peer is at this conversation's IP?", so the header's name, online dot
+  and availability were Ari's too. The same lookup chose the key `sendMessage`
+  encrypted to — a thread whose address had been handed on could encrypt to the
+  wrong person. The address comes from the live discovery record for the key at
+  the moment of sending (`liveAddress(forPeer:)` / `LiveAddress`), and an
+  offline peer has none: its message is queued and relayed, never dialled at a
+  remembered address, where another device would take the write and silently
+  drop it. The media attach dials the authenticated source of the accept.
+  Covered by `PeerIDTests`/`PeerIdTests`, `peer_id_vector.json` and
+  `testTheMediaChannelDialsWhereTheAuthenticatedAcceptCameFrom`.
+- Do not file an unencrypted packet under the key it claims without checking
+  where it came from. `typing`, receipts and `delete_message` carry
+  `sender_public_key_b64` as plain text, and public keys are public; filed by
+  claim alone, any host could type into, tick, or blank messages in anybody's
+  thread. They are accepted only from an address that key is known at
+  (`isBoundAddress`/`IsBoundAddress`). Encrypted packets prove the key by
+  decrypting and need no such check — which is also why `handleText` decrypts
+  *before* its duplicate check: answering a forged duplicate with a receipt
+  told a stranger which message ids exist. Covered by `ClaimedSenderBindingTests`.
+- Do not let the test suites reach the real history file. Both suites exercise
+  `HistoryStore.shared`/`HistoryStore.Shared` directly, the test process can
+  open the real key, and a save during a test wrote a 1970-dated thread under
+  `192.168.99.77` into a user's actual history. `HistoryStore` points itself at a
+  temp file when XCTest/MSTest is loaded; keep new persistence singletons behind
+  the same guard.
 - Do not refuse a new remote-desktop invite because another is pending. A
   single app-wide pending slot turned one misdirected invite into a dead button
   for every contact for sixty seconds. A new request supersedes the pending one

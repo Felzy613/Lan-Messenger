@@ -496,13 +496,16 @@ public sealed partial class MessageBubbleControl : UserControl
     private void BubbleMenu_Opening(object? sender, object e)
     {
         if (Row is null) return;
-        ReplyMenu.Visibility = Row.CanReply ? Visibility.Visible : Visibility.Collapsed;
+        // A legacy thread has no key behind it: nothing in it can be answered,
+        // edited on the peer, or deleted for them.
+        var reachable = FindParent<ChatPage>()?.CanReachPeer ?? true;
+        ReplyMenu.Visibility = reachable && Row.CanReply ? Visibility.Visible : Visibility.Collapsed;
         // Only our own outgoing text messages can be edited; the row carries
         // AppModel.IsEditable's answer, which is what EditMessage enforces.
-        EditMenu.Visibility = Row.IsEditable ? Visibility.Visible : Visibility.Collapsed;
+        EditMenu.Visibility = reachable && Row.IsEditable ? Visibility.Visible : Visibility.Collapsed;
         // Copy is already hidden implicitly by being meaningless on a placeholder,
         // but leave it visible — it just copies the empty deleted text.
-        DeleteForEveryoneMenu.Visibility = Row.CanDeleteForEveryone ? Visibility.Visible : Visibility.Collapsed;
+        DeleteForEveryoneMenu.Visibility = reachable && Row.CanDeleteForEveryone ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void DeleteForMeMenu_Click(object sender, RoutedEventArgs e)

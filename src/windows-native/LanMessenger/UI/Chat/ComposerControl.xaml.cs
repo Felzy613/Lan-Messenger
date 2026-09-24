@@ -64,6 +64,23 @@ public sealed partial class ComposerControl : UserControl
         }
     }
 
+    /// <summary>
+    /// Switches the composer off for a legacy thread — history saved by an
+    /// older version under an address no contact could be matched to. There is
+    /// no key behind it to encrypt a reply to, and picking one by address is the
+    /// mistake identity keys exist to prevent. The reason is shown where the
+    /// user would type. Null turns it back on.
+    /// </summary>
+    public void SetReadOnly(string? reason)
+    {
+        var readOnly = reason is not null;
+        InputBox.IsEnabled        = !readOnly;
+        InputBox.PlaceholderText  = reason ?? "Message";
+        SendBtn.IsEnabled         = !readOnly;
+        AttachBtn.IsEnabled       = !readOnly && !_isAttachmentPickerOpen;
+        ScreenshotBtn.IsEnabled   = !readOnly && !IsScreenshotBusy;
+    }
+
     /// Shows the reply or edit banner inside the pill, above the field. The
     /// pill grows upward, and ChatPage's thread padding follows it.
     public void ShowBanner(string title, string preview)

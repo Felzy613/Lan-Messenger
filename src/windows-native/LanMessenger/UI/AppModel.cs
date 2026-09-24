@@ -41,8 +41,14 @@ public sealed class PeerInfo
 // View model for one conversation row in the sidebar.
 public sealed class ConversationViewModel
 {
-    public string    PeerIP           { get; init; } = "";
+    /// <summary>
+    /// The conversation's identity (see <see cref="PeerId"/>): the peer's key, or
+    /// <c>ip:&lt;address&gt;</c> for history from before keys were the filing name
+    /// that no single contact could be matched to.
+    /// </summary>
+    public string    ConversationId   { get; init; } = "";
     public string    PeerName         { get; init; } = "";
+    /// <summary>The key to encrypt to — equal to ConversationId, or "" for a legacy thread.</summary>
     public string    PeerPublicKeyB64 { get; init; } = "";
     public string?   PhotoB64         { get; init; }
     public string    LastMessage      { get; init; } = "";
@@ -52,6 +58,11 @@ public sealed class ConversationViewModel
     public string    TypingSender     { get; init; } = "";
     public bool      IsOnline         { get; init; }
     public bool      IsArchived       { get; init; }
+    /// <summary>
+    /// A thread with no key behind it. It can be read and deleted, not replied
+    /// to: there is nobody it can safely be encrypted to.
+    /// </summary>
+    public bool      IsLegacy         => PeerId.IsLegacy(ConversationId);
 }
 
 // Root state object. Wires all services; single source of truth for the UI.
@@ -61,7 +72,12 @@ public sealed partial class AppModel : ObservableObject
     [ObservableProperty] private Dictionary<string, PeerInfo>   _peers         = [];
     [ObservableProperty] private List<ConversationViewModel>     _conversations = [];
     [ObservableProperty] private List<ConversationViewModel>     _archivedConversations = [];
-    [ObservableProperty] private string?                         _selectedPeerIP;
+    // Everything below is keyed by conversation id (PeerId) — the peer's
+    // identity key — and never by address. An address is where a device is
+    // this morning; DHCP gives the same numbers to other machines, so a thread
+    // filed by address is eventually somebody else's. Where to *send* is looked
+    // up at the moment of sending: LiveAddress(key).
+    [ObservableProperty] private string?                         _selectedConversationId;
     [ObservableProperty] private Dictionary<string, List<MessageEntry>> _messages = [];
     [ObservableProperty] private Dictionary<string, (string Sender, bool Active)> _typingStates = [];
     [ObservableProperty] private Dictionary<string, (string Label, long Bytes, long Total)> _activeTransfers = [];
@@ -117,21 +133,6 @@ public sealed partial class AppModel : ObservableObject
     // SHA256(relay_id) for each peer, populated from discovery packets.
     // Used to upload queued messages to the cloud relay mailbox of offline peers.
     private readonly Dictionary<string, string> _peerRelayIdHashes = [];   // keyed by peerPublicKeyB64
-
-    // Session cache of peerIP -> senderPublicKeyB64, populated from ANY inbound
-    // packet (not just discovery). Lets us reply to a peer whose beacon we never
-    // received — e.g. discovery is one-way/blocked on this machine's network
-    // profile but the peer's direct TCP connection still got through — and to
-    // unsaved contacts generally. Mirrors macOS's knownPeerKeys.
-    private readonly Dictionary<string, string> _knownPeerKeys = [];   // keyed by peerIP
-
-    // File sends attempted before this machine had learned the peer's public
-    // key — most commonly the first few seconds after app startup, before any
-    // discovery beacon or inbound packet has arrived. Rather than silently
-    // dropping the send (the previous behavior — no bubble, no error, file
-    // never leaves the machine), stash it here and flush it the moment
-    // _knownPeerKeys resolves that IP.
-    private readonly Dictionary<string, List<string>> _pendingKeylessFiles = [];   // keyed by peerIP
 
     // Bursts of incoming packets (a chatty room, an active file transfer, a peer
     // typing fast) can produce many RefreshConversations calls per frame. Each
@@ -207,82 +208,48 @@ public sealed partial class AppModel : ObservableObject
     /// </remarks>
     [ObservableProperty] private bool _remoteSessionRunning;
 
-    /// <summary>The contact-strip button.</summary>
-    /// <remarks>
-    /// Judged against the same policy an inbound invite is, so the interface can
-    /// never start something the gate would refuse.
-    /// </remarks>
     /// <summary>
-    /// The identity key of the device a conversation belongs to — the saved
-    /// contact the thread was built from, never whoever holds its IP today.
+    /// The identity key of the device a conversation belongs to, or null for a
+    /// legacy thread that has none. A conversation id already is the key; this
+    /// exists so call sites say what they mean.
     /// </summary>
-    /// <remarks>
-    /// A conversation is filed under an IP for storage compatibility, and LAN
-    /// addresses are recycled between machines by DHCP. Asking "which peer is at
-    /// this conversation's address?" therefore answers with the wrong device the
-    /// moment the address moves: on 2026-09-24 the Mac's thread on the Dell
-    /// resolved to Ari, so its header, its online dot, its remote-desktop
-    /// availability and the invite itself were all Ari's. The conversation
-    /// already knows who it is with; this reads that, and falls back to the
-    /// saved contact filed under the address only for a thread built before
-    /// rows carried their key.
-    /// </remarks>
-    public string? PeerKeyForConversation(string conversationIP)
-    {
-        var row = Conversations.FirstOrDefault(c => c.PeerIP == conversationIP)
-                  ?? ArchivedConversations.FirstOrDefault(c => c.PeerIP == conversationIP);
-        if (!string.IsNullOrEmpty(row?.PeerPublicKeyB64)) return row.PeerPublicKeyB64;
-        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == conversationIP);
-        return string.IsNullOrEmpty(contact?.PublicKeyB64) ? null : contact.PublicKeyB64;
-    }
+    public string? PeerKeyForConversation(string? conversationId) =>
+        PeerId.IsKey(conversationId) ? conversationId : null;
 
     /// <summary>
     /// The live discovery record for a conversation's device, found by identity
-    /// key. Null when the device is not currently known on the network.
+    /// key. Null when the device is not currently known on the network, and
+    /// always null for a legacy thread — asking "who is at this old address?"
+    /// is how the wrong device's name and presence ended up in a header.
     /// </summary>
-    public PeerInfo? PeerForConversation(string conversationIP)
-    {
-        var key = PeerKeyForConversation(conversationIP);
-        if (key is null)
-        {
-            // A thread with no saved contact behind it — a discovered peer we
-            // have history with. It has no identity of its own to go by, so the
-            // address is the only handle there is.
-            return Peers.Values.FirstOrDefault(p => p.IP == conversationIP);
-        }
-        return Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == key);
-    }
+    public PeerInfo? PeerForConversation(string? conversationId) =>
+        PeerKeyForConversation(conversationId) is { } key ? Peers.GetValueOrDefault(key) : null;
 
-    /// <summary>Asks the peer identified by <paramref name="peerKey"/> to share their screen.</summary>
+    /// <summary>
+    /// The contact-strip button: asks the peer identified by
+    /// <paramref name="peerKey"/> to share their screen. Judged against the same
+    /// policy an inbound invite is, so the interface can never start something
+    /// the gate would refuse.
+    /// </summary>
     /// <remarks>
-    /// <b>Addressed by identity key, not by the conversation's IP.</b> The key is
-    /// the only stable name a device on this LAN has; its address is whatever
-    /// DHCP handed it this morning, and the same numbers are handed to other
-    /// machines. <paramref name="conversationIP"/> is where the conversation is
-    /// filed — it is not where to send anything. It used to be both, so an
-    /// invite from the Mac's conversation went to an address Ari held by then;
-    /// the Mac never saw it, and every click after that was refused behind it.
+    /// <b>Addressed by identity key.</b> The invite goes to wherever discovery
+    /// last saw that key — the same lookup that just decided it is online. It
+    /// used to go to the conversation's remembered address, so an invite from the
+    /// Mac's conversation went to an address Ari held by then; the Mac never saw
+    /// it, and every click after that was refused behind it.
     /// </remarks>
-    public void RequestRemoteDesktop(string peerKey, string conversationIP)
+    public void RequestRemoteDesktop(string peerKey)
     {
         var availability = RemoteDesktopAvailability(peerKey);
-        var peer = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == peerKey);
+        var peer = Peers.GetValueOrDefault(peerKey);
         if (!availability.IsAvailable || peer is null || string.IsNullOrEmpty(peer.IP))
         {
-            LanLogger.Remote("invite_blocked", peer: conversationIP, reason: availability.Reason.ToString());
+            LanLogger.Remote("invite_blocked", peer: peerKey[..Math.Min(8, peerKey.Length)],
+                             reason: availability.Reason.ToString());
             return;
         }
-
-        // Where the device is now, per the discovery table — the same lookup
-        // that just decided it is online.
-        string address = peer.IP;
-        if (address != conversationIP)
-        {
-            LanLogger.Remote("invite_address_resolved", peer: address,
-                             reason: $"conversation filed under {conversationIP}");
-        }
         RemoteInviteTargetKey = peerKey;
-        InviteCoordinator.Invite(peerKey, address, peer.Username);
+        InviteCoordinator.Invite(peerKey, peer.IP, peer.Username);
     }
 
     /// <summary>Whether the button should be offered, and why not when it should not.</summary>
@@ -359,13 +326,13 @@ public sealed partial class AppModel : ObservableObject
     /// resurfaced if the user had deleted it, matching the Mac: the record is
     /// kept, and it is there when the conversation is reopened.
     /// </remarks>
-    private void RecordRemoteAudit(string peerIP, RemoteAuditRecord record, double timestamp)
+    private void RecordRemoteAudit(string peer, RemoteAuditRecord record, double timestamp)
     {
         var entry = record.HistoryEntry(timestamp);
-        HistoryStore.Shared.Append(entry, peerIP);
+        HistoryStore.Shared.Append(entry, peer);
         HistoryStore.Shared.Save();
         var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
-        if (!msgs.TryGetValue(peerIP, out var list)) list = msgs[peerIP] = [];
+        if (!msgs.TryGetValue(peer, out var list)) list = msgs[peer] = [];
         list.Add(entry);
         Messages = msgs;
         RefreshConversations();
@@ -395,12 +362,13 @@ public sealed partial class AppModel : ObservableObject
         // time is taken here, where the event happened, rather than when the
         // dispatcher gets to it; a SessionEnded raised from a teardown on the
         // socket thread would otherwise carry whatever the UI thread was busy with.
-        RemoteDesktopController.Shared.AppendAudit = (peerIP, record) =>
+        RemoteDesktopController.Shared.AppendAudit = (peerKey, record) =>
         {
-            LanLogger.Remote("audit", peer: peerIP, reason: record.Summary);
+            var who = peerKey[..Math.Min(8, peerKey.Length)];
+            LanLogger.Remote("audit", peer: who, reason: record.Summary);
             var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-            if (!_dq.TryEnqueue(() => RecordRemoteAudit(peerIP, record, timestamp)))
-                LanLogger.Remote("error", peer: peerIP,
+            if (!_dq.TryEnqueue(() => RecordRemoteAudit(peerKey, record, timestamp)))
+                LanLogger.Remote("error", peer: who,
                                  reason: "audit record dropped: the UI dispatcher is gone");
         };
 
@@ -470,6 +438,7 @@ public sealed partial class AppModel : ObservableObject
         };
 
         NotificationService.Shared.Register();
+        MigrateConversationLists();
         LoadHistory();
         StartPeerTimeoutTimer();
         CheckMigration();
@@ -504,6 +473,25 @@ public sealed partial class AppModel : ObservableObject
     }
 
     // MARK: - Migration
+
+    /// <summary>
+    /// Re-files the archived and hidden lists from addresses to identity keys,
+    /// the same way HistoryStore re-files history at load. Idempotent: a key is
+    /// already an id, so once done this changes nothing.
+    /// </summary>
+    private static void MigrateConversationLists()
+    {
+        var config = ConfigStore.Shared.Config;
+        var contacts = config.Contacts.Select(c => new PeerId.Contact(c.PublicKeyB64, c.LastIP)).ToList();
+        var archived = PeerId.Rekey(config.ArchivedConversations, contacts);
+        var hidden   = PeerId.Rekey(config.HiddenConversations, contacts);
+        if (archived.SequenceEqual(config.ArchivedConversations) && hidden.SequenceEqual(config.HiddenConversations))
+            return;
+        config.ArchivedConversations = archived;
+        config.HiddenConversations = hidden;
+        ConfigStore.Shared.Save();
+        LanLogger.Info("History", "re-filed archived/hidden conversation lists by identity key");
+    }
 
     private void CheckMigration()
     {
@@ -540,8 +528,6 @@ public sealed partial class AppModel : ObservableObject
             publicKeyB64 == KeyManager.Shared.PublicKeyB64) return;
         if (Coordinator.Network.LocalIPs.Contains(ip)) return;
 
-        // If we have a saved contact for this device ID whose IP has changed,
-        // migrate the conversation history so the user doesn't lose context.
         var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
         if (contact is not null)
         {
@@ -559,25 +545,11 @@ public sealed partial class AppModel : ObservableObject
         }
         if (contact is not null && contact.LastIP != ip)
         {
-            var oldIP = contact.LastIP;
-            var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
-            if (msgs.Remove(oldIP, out var oldList))
-            {
-                if (!msgs.TryGetValue(ip, out var curList)) curList = msgs[ip] = [];
-                curList.AddRange(oldList);
-                curList.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
-            }
-            Messages = msgs;
-
-            HistoryStore.Shared.Migrate(oldIP, ip);
-            HistoryStore.Shared.Save();
+            // Only a hint now: where to send unicast beacons, and what the trust
+            // check compares against. The conversation is filed by key, so a new
+            // address moves nothing.
             contact.LastIP = ip;
-            var arch = ConfigStore.Shared.Config.ArchivedConversations;
-            for (var i = 0; i < arch.Count; i++) if (arch[i] == oldIP) arch[i] = ip;
-            var hid = ConfigStore.Shared.Config.HiddenConversations;
-            for (var i = 0; i < hid.Count; i++) if (hid[i] == oldIP) hid[i] = ip;
             ConfigStore.Shared.Save();
-            if (SelectedPeerIP == oldIP) SelectedPeerIP = ip;
         }
 
         // Every address the peer has advertised, used as probe targets. The
@@ -588,6 +560,19 @@ public sealed partial class AppModel : ObservableObject
 
         var current = Peers;
         var updated = new Dictionary<string, PeerInfo>(current);
+
+        // An address belongs to one device at a time. Whoever held it before is
+        // no longer reachable there, and leaving them marked online at it is how
+        // something meant for them reaches this peer instead.
+        foreach (var other in updated.Values.Where(p =>
+                     p.PublicKeyB64 != publicKeyB64 && p.IP == ip && p.IsOnline).ToList())
+        {
+            LanLogger.Peer(event_: "presence", peer: ip, publicKey: other.PublicKeyB64,
+                           reason: $"Online -> Offline address now held by {publicKeyB64[..Math.Min(8, publicKeyB64.Length)]}");
+            other.Presence = PeerPresence.Offline;
+            other.LastSeen = DateTime.MinValue;
+        }
+
         if (updated.TryGetValue(publicKeyB64, out var existing))
         {
             if (existing.IP == ip)
@@ -604,7 +589,7 @@ public sealed partial class AppModel : ObservableObject
                     LanLogger.Info("Net", $"peer {ip} ({publicKeyB64[..8]}) came back online");
                     // Reassign Peers so the chat header refreshes on the comeback.
                     Peers = updated;
-                    MigrateSyntheticRelayHistory(publicKeyB64, ip);
+                    AdoptRelayPlaceholder(publicKeyB64);
                     RefreshConversations();
                 }
                 // Drain queues on EVERY heartbeat, not just the offline→online
@@ -613,7 +598,7 @@ public sealed partial class AppModel : ObservableObject
                 // "Queued" until the peer bounced; now the next beacon retries
                 // it. Both calls self-throttle and are no-ops with empty queues.
                 MessagingService.Shared.DeliverPending(ip, publicKeyB64);
-                DeliverPendingFiles(ip, publicKeyB64);
+                DeliverPendingFiles(publicKeyB64, ip);
                 return;
             }
             // IP changed — fall through to replace the entry below.
@@ -640,10 +625,110 @@ public sealed partial class AppModel : ObservableObject
             }
         }
 
-        MigrateSyntheticRelayHistory(publicKeyB64, ip);
+        AdoptRelayPlaceholder(publicKeyB64);
         RefreshConversations();
         MessagingService.Shared.DeliverPending(ip, publicKeyB64);
-        DeliverPendingFiles(ip, publicKeyB64);
+        DeliverPendingFiles(publicKeyB64, ip);
+    }
+
+    /// <summary>
+    /// A message decrypted under <paramref name="key"/> arrived from
+    /// <paramref name="ip"/>, so that device is there now. Covers a peer whose
+    /// beacons never reach us: without it, somebody who messages us could not
+    /// be answered until discovery found them. A peer already online elsewhere
+    /// keeps its discovered address — discovery is the authority on where a live
+    /// peer is, and a message is only evidence where discovery has none.
+    /// </summary>
+    private void NotePeerAddress(string key, string ip, string sender)
+    {
+        if (!PeerId.IsKey(key) || string.IsNullOrEmpty(ip) || key == KeyManager.Shared.PublicKeyB64
+            || Coordinator.Network.LocalIPs.Contains(ip)) return;
+        var updated = new Dictionary<string, PeerInfo>(Peers);
+        if (updated.TryGetValue(key, out var info))
+        {
+            var moved = !info.IsOnline && info.IP != ip;
+            var wasOffline = !info.IsOnline;
+            if (moved)
+            {
+                LanLogger.Peer(event_: "address", peer: ip, publicKey: key,
+                               reason: $"learned from an authenticated message (was {info.IP})");
+                var knownIPs = new List<string>(info.KnownIPs);
+                knownIPs.Remove(ip);
+                knownIPs.Insert(0, ip);
+                // PeerInfo.IP is init-only: a moved peer is a new record.
+                info = updated[key] = new PeerInfo
+                {
+                    IP = ip, Username = info.Username, Port = info.Port,
+                    PublicKeyB64 = key, KnownIPs = knownIPs, Caps = info.Caps,
+                };
+            }
+            info.LastSeen = DateTime.UtcNow;
+            info.Presence = PeerPresence.Online;
+            if (!wasOffline) return;
+            Peers = updated;
+            RefreshConversations();
+            if (moved)
+            {
+                MessagingService.Shared.DeliverPending(ip, key);
+                DeliverPendingFiles(key, ip);
+            }
+            return;
+        }
+        LanLogger.Peer(event_: "address", peer: ip, publicKey: key,
+                       reason: "learned from an authenticated message (never discovered)");
+        // Capabilities stay empty until a beacon says otherwise: absence must
+        // never be read as support.
+        updated[key] = new PeerInfo
+        {
+            IP = ip, Username = sender, Port = 54232, PublicKeyB64 = key,
+            LastSeen = DateTime.UtcNow, Presence = PeerPresence.Online, KnownIPs = [ip],
+        };
+        Peers = updated;
+        RefreshConversations();
+    }
+
+    /// <summary>
+    /// Where the device with identity key <paramref name="key"/> can be reached
+    /// right now, or "" when it is not on the LAN. The only way an address is
+    /// chosen for anything sent: never a remembered one, which may have been
+    /// handed to somebody else since.
+    /// </summary>
+    public string LiveAddress(string key) =>
+        Peers.TryGetValue(key, out var p) && p.IsOnline ? p.IP : "";
+
+    /// <summary>
+    /// Whether <paramref name="ip"/> is an address the device holding
+    /// <paramref name="key"/> is known at. The gate for packets that only claim a
+    /// sender (see MessagingService.IsBoundAddress). A live peer is known at the
+    /// addresses discovery has seen it use; one not seen this session, at the
+    /// address its contact entry last recorded.
+    /// </summary>
+    private bool IsBoundAddress(string key, string ip)
+    {
+        if (Peers.TryGetValue(key, out var p)) return p.IP == ip || p.KnownIPs.Contains(ip);
+        return ConfigStore.Shared.Config.Contacts.Any(c => c.PublicKeyB64 == key && c.LastIP == ip);
+    }
+
+    /// <summary>
+    /// Re-files history an older build put under <c>relay-&lt;key prefix&gt;</c> —
+    /// relay messages from a peer it had never met on the LAN — once that peer is
+    /// known. Migration at load already did this for contacts; this catches
+    /// anybody else.
+    /// </summary>
+    private void AdoptRelayPlaceholder(string key)
+    {
+        var placeholder = PeerId.RelayPlaceholder(key);
+        if (!HistoryStore.Shared.Merge(placeholder, key)) return;
+        HistoryStore.Shared.Save();
+        var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
+        msgs.Remove(placeholder);
+        msgs[key] = new List<MessageEntry>(HistoryStore.Shared.Entries(key));
+        Messages = msgs;
+        ConfigStore.Shared.Config.HiddenConversations.RemoveAll(x => x == placeholder);
+        ConfigStore.Shared.Config.ArchivedConversations.RemoveAll(x => x == placeholder);
+        ConfigStore.Shared.Save();
+        if (SelectedConversationId == placeholder) SelectedConversationId = key;
+        LanLogger.Info("Relay", $"re-filed relay history from {placeholder} to {key[..Math.Min(8, key.Length)]}");
     }
 
     private void TouchPeer(string? publicKeyB64)
@@ -664,42 +749,14 @@ public sealed partial class AppModel : ObservableObject
         }
     }
 
-    // A completed outbound TCP send (message or file) is unambiguous proof a
-    // peer is reachable right now — at least as strong as a discovery beacon.
-    // Without this, presence depended solely on inbound traffic, so a peer
-    // whose beacons this machine can't receive (broken multicast reception,
-    // firewalled UDP, a Hyper-V/WSL virtual adapter confusing the Windows
-    // Firewall network-profile — outbound TCP is unaffected by any of that)
-    // would flicker offline during any lull between exchanges even though
-    // direct delivery kept succeeding the whole time.
-    private void MarkPeerReachable(string peerIP)
+    // A completed outbound TCP send (message or file) to a peer's live address
+    // is proof that peer is still reachable — at least as strong as a discovery
+    // beacon — so a peer we are talking to stays online between its own
+    // beacons. Keyed: it refreshes the device the send was addressed to, and
+    // only while that device is still recorded at the address that answered.
+    private void MarkPeerReachable(string key, string ip)
     {
-        var existing = PeerByIP(peerIP);
-        if (existing is not null)
-        {
-            TouchPeer(existing.PublicKeyB64);
-            return;
-        }
-        // Not in the live peer dict at all (never discovered this session via
-        // UDP) — synthesize a minimal online entry from what we already know,
-        // same shape UpsertPeer builds for a fresh discovery, so the sidebar
-        // dot reflects reality immediately instead of waiting for a beacon
-        // that may never arrive.
-        var publicKey = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
-            ?? _knownPeerKeys.GetValueOrDefault(peerIP);
-        if (publicKey is null) return;
-        var username = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKey)?.Username ?? "Unknown";
-        var updated = new Dictionary<string, PeerInfo>(Peers)
-        {
-            [publicKey] = new PeerInfo
-            {
-                IP = peerIP, Username = username, Port = 54232,
-                PublicKeyB64 = publicKey, LastSeen = DateTime.UtcNow,
-                Presence = PeerPresence.Online, KnownIPs = [peerIP],
-            }
-        };
-        Peers = updated;
-        RefreshConversations();
+        if (Peers.TryGetValue(key, out var p) && p.IP == ip) TouchPeer(key);
     }
 
     // How long a non-contact peer may sit offline before it is dropped from the
@@ -837,7 +894,7 @@ public sealed partial class AppModel : ObservableObject
 
     private void RefreshConversationsNow()
     {
-        // Threads only exist for saved contacts (or IPs we have history with) —
+        // Threads only exist for saved contacts (or peers we have history with) —
         // random discovered peers must not auto-appear as conversations.
         // `HiddenConversations` covers threads the user deleted; the contact
         // stays saved so the user can re-open the thread from "New message".
@@ -845,25 +902,24 @@ public sealed partial class AppModel : ObservableObject
         var archived = ConfigStore.Shared.Config.ArchivedConversations.ToHashSet();
         var active   = new List<ConversationViewModel>();
         var arch     = new List<ConversationViewModel>();
-        var seenIPs  = new HashSet<string>();
+        var seen     = new HashSet<string>();
 
-        // Saved contacts — include whether currently online or offline.
+        // Saved contacts — include whether currently online or offline. One row
+        // per identity key, wherever that device happens to be. Deduplicating by
+        // address instead meant two contacts DHCP had put on one address shared
+        // a row, and one of the two threads vanished from the list.
         foreach (var contact in ConfigStore.Shared.Config.Contacts)
         {
-            var onlinePeer = Peers.Values.FirstOrDefault(p =>
-                p.PublicKeyB64 == contact.PublicKeyB64 && p.IsOnline);
-            var ip = onlinePeer?.IP ?? contact.LastIP;
-            if (hidden.Contains(ip) || hidden.Contains(contact.LastIP)) continue;
-            if (seenIPs.Contains(ip)) continue;
-            seenIPs.Add(ip);
-            var entries = Messages.TryGetValue(ip, out var list) ? list : [];
+            var key = contact.PublicKeyB64;
+            if (hidden.Contains(key) || !seen.Add(key)) continue;
+            var entries = Messages.TryGetValue(key, out var list) ? list : [];
             var last    = entries.Count > 0 ? entries[^1] : null;
-            var typing  = TypingStates.TryGetValue(ip, out var t) ? t : default;
+            var typing  = TypingStates.TryGetValue(key, out var t) ? t : default;
             var vm = new ConversationViewModel
             {
-                PeerIP           = ip,
+                ConversationId   = key,
                 PeerName         = contact.Username,
-                PeerPublicKeyB64 = contact.PublicKeyB64,
+                PeerPublicKeyB64 = key,
                 PhotoB64         = contact.PhotoB64,
                 LastMessage      = LastMessagePreview(entries),
                 LastTimestamp    = last is not null
@@ -872,31 +928,38 @@ public sealed partial class AppModel : ObservableObject
                 UnreadCount  = CountUnread(entries),
                 IsTyping     = typing.Active,
                 TypingSender = typing.Sender ?? "",
-                IsOnline     = onlinePeer is not null,
-                IsArchived   = archived.Contains(ip),
+                IsOnline     = Peers.TryGetValue(key, out var p) && p.IsOnline,
+                IsArchived   = archived.Contains(key),
             };
             (vm.IsArchived ? arch : active).Add(vm);
         }
 
-        // Any IPs we have message history with but no contact entry —
-        // e.g. someone messaged us once and isn't saved. Don't lose those.
-        foreach (var (ip, entries) in Messages)
+        // Anybody we have history with but no contact entry — e.g. someone who
+        // messaged us once and isn't saved — plus legacy threads no contact
+        // could be matched to. Don't lose those.
+        foreach (var (id, entries) in Messages)
         {
-            if (hidden.Contains(ip) || seenIPs.Contains(ip) || entries.Count == 0) continue;
+            if (hidden.Contains(id) || seen.Contains(id) || entries.Count == 0) continue;
             var last = entries[^1];
-            var name = entries.LastOrDefault(e => e.Incoming)?.Sender ?? ip;
-            var onlinePeer = Peers.Values.FirstOrDefault(p => p.IP == ip && p.IsOnline);
+            var key  = PeerId.IsKey(id) ? id : "";
+            var peer = key.Length > 0 ? Peers.GetValueOrDefault(key) : null;
+            var name = entries.LastOrDefault(e => e.Incoming)?.Sender
+                       ?? peer?.Username
+                       ?? PeerId.LegacyAddress(id)
+                       ?? "Unknown";
+            var typing = TypingStates.TryGetValue(id, out var t) ? t : default;
             var vm = new ConversationViewModel
             {
-                PeerIP           = ip,
+                ConversationId   = id,
                 PeerName         = name,
-                PeerPublicKeyB64 = onlinePeer?.PublicKeyB64 ?? "",
+                PeerPublicKeyB64 = key,
                 LastMessage      = LastMessagePreview(entries),
                 LastTimestamp    = DateTimeOffset.FromUnixTimeMilliseconds((long)(last.Timestamp * 1000)).UtcDateTime,
                 UnreadCount      = CountUnread(entries),
-                IsTyping         = false,
-                IsOnline         = onlinePeer is not null,
-                IsArchived       = archived.Contains(ip),
+                IsTyping         = typing.Active,
+                TypingSender     = typing.Sender ?? "",
+                IsOnline         = peer?.IsOnline ?? false,
+                IsArchived       = archived.Contains(id),
             };
             (vm.IsArchived ? arch : active).Add(vm);
         }
@@ -937,54 +1000,59 @@ public sealed partial class AppModel : ObservableObject
 
     // MARK: - Messaging
 
-    public void SendMessage(string text, string peerIP, MessageEntry? replyTo = null)
+    /// <summary>
+    /// Sends to the peer with identity key <paramref name="peer"/>. The address is
+    /// looked up now, not remembered: a peer that is not on the LAN gets its
+    /// message queued and relayed rather than dialled at an address that may
+    /// belong to somebody else by now. That used to be the rule's opposite — the
+    /// key was looked up from the thread's address, so a thread whose address had
+    /// been handed to another device could encrypt to that device's key.
+    /// </summary>
+    public void SendMessage(string text, string peer, MessageEntry? replyTo = null)
     {
-        // Find the public key either from currently-online peers, or fall back to saved
-        // contacts, or to the session cache of any peer we've ever received a packet
-        // from (so we can still queue messages to offline / unsaved contacts).
-        var publicKey = PeerByIP(peerIP)?.PublicKeyB64
-            ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
-            ?? _knownPeerKeys.GetValueOrDefault(peerIP);
-        if (publicKey is null) return;
+        if (!PeerId.IsKey(peer))
+        {
+            LanLogger.Warn("Send", $"conversation {peer} has no identity key — not sending");
+            return;
+        }
+        var address = LiveAddress(peer);
         // Relay is ONLY used when the peer is confirmed offline. If the peer is
         // currently online and TCP fails, that is a transient error — queue locally
         // but do not upload to the cloud relay to avoid spurious relay deliveries.
-        var peerIsOnline = Peers.Values.Any(p => p.PublicKeyB64 == publicKey && p.IsOnline);
-        // Fall back to the contact's persisted relay hash when the peer hasn't
-        // been seen live in this session (_peerRelayIdHashes is in-memory only).
-        _peerRelayIdHashes.TryGetValue(publicKey, out var relayIdHash);
-        relayIdHash ??= ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKey)?.RelayIdHash;
-        if (peerIsOnline) relayIdHash = null;
-        LanLogger.Info("Send", $"routing for peer={publicKey[..Math.Min(8, publicKey.Length)]} online={peerIsOnline} relay={relayIdHash is not null}");
-        MessagingService.Shared.SendText(text, peerIP, publicKey, relayIdHash, replyTo);
+        var peerIsOnline = address.Length > 0;
+        var relayIdHash = peerIsOnline ? null : RelayIdHashForPeerKey(peer);
+        LanLogger.Info("Send", $"routing for peer={peer[..8]} online={peerIsOnline} relay={relayIdHash is not null}");
+        MessagingService.Shared.SendText(text, address, peer, relayIdHash, replyTo);
     }
 
-    public void SendTyping(bool active, string peerIP)
+    public void SendTyping(bool active, string peer)
     {
-        var peer = PeerByIP(peerIP);
-        if (peer is null) return;
-        MessagingService.Shared.SendTyping(active, peerIP, peer.PublicKeyB64);
+        var address = LiveAddress(peer);
+        if (address.Length == 0) return;
+        MessagingService.Shared.SendTyping(active, address, peer);
     }
 
-    public void SendReadReceipt(MessageEntry entry, string peerIP)
+    public void SendReadReceipt(MessageEntry entry, string peer)
     {
         if (!entry.Incoming || entry.MessageId is null || entry.ReadReceiptSent) return;
-        MarkConversationRead(peerIP);
+        MarkConversationRead(peer);
     }
 
-    // Marks every incoming unread message for the given peer as read, sends read
-    // receipts, and updates the in-memory `Messages` so the unread badge clears.
-    public void MarkConversationRead(string peerIP)
+    // Marks every incoming unread message for the given conversation as read,
+    // sends read receipts, and updates the in-memory `Messages` so the unread
+    // badge clears. A legacy thread has nobody to tell; its messages are still read.
+    public void MarkConversationRead(string peer)
     {
-        if (!Messages.TryGetValue(peerIP, out var list) || list.Count == 0) return;
+        if (!Messages.TryGetValue(peer, out var list) || list.Count == 0) return;
+        var address = PeerId.IsKey(peer) ? LiveAddress(peer) : "";
         var anyChanged = false;
         foreach (var e in list)
         {
             if (!e.Incoming || e.ReadReceiptSent) continue;
             // Send read_receipt for any entry that has a stable ID (text messages
             // and file entries that carry a transfer_id as their MessageId).
-            if (e.MessageId is { } id)
-                MessagingService.Shared.SendReceipt("read_receipt", id, peerIP);
+            if (e.MessageId is { } id && address.Length > 0)
+                MessagingService.Shared.SendReceipt("read_receipt", id, address);
             e.ReadReceiptSent = true;
             anyChanged = true;
         }
@@ -992,7 +1060,7 @@ public sealed partial class AppModel : ObservableObject
         {
             // Persist readReceiptSent for all entry types, including file entries
             // that have no MessageId — MarkReadReceiptSent alone misses those.
-            HistoryStore.Shared.MarkAllIncomingRead(peerIP);
+            HistoryStore.Shared.MarkAllIncomingRead(peer);
             HistoryStore.Shared.Save();
             OnPropertyChanged(nameof(Messages));
             RefreshConversations();
@@ -1003,17 +1071,19 @@ public sealed partial class AppModel : ObservableObject
     // (clearing text/reply fields) both locally and on the peer's copy via
     // delete_message; only the sender's own outgoing messages qualify. "Delete
     // for me" removes the entry from the local history only — no packet is sent.
-    public void DeleteMessage(MessageEntry entry, string peerIP, bool forEveryone)
+    public void DeleteMessage(MessageEntry entry, string peer, bool forEveryone)
     {
         if (forEveryone)
         {
             if (entry.Incoming || string.IsNullOrEmpty(entry.MessageId)) return;
+            // A legacy thread has no key to tell anybody with.
+            if (!PeerId.IsKey(peer)) return;
             // An audit record has no copy on the peer to delete; it exists only
             // in this machine's history.
             if (RemoteAuditRecord.IsAudit(entry.Text)) return;
-            HistoryStore.Shared.MarkDeleted(entry.MessageId, peerIP, requireIncoming: false);
+            HistoryStore.Shared.MarkDeleted(entry.MessageId, peer, requireIncoming: false);
             HistoryStore.Shared.Save();
-            if (Messages.TryGetValue(peerIP, out var list))
+            if (Messages.TryGetValue(peer, out var list))
             {
                 var e = list.FirstOrDefault(x => x.MessageId == entry.MessageId);
                 if (e is not null)
@@ -1025,20 +1095,18 @@ public sealed partial class AppModel : ObservableObject
                     e.ReplyToSender    = null;
                 }
             }
-            var deleteKey = PeerByIP(peerIP)?.PublicKeyB64
-                ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
-                ?? _knownPeerKeys.GetValueOrDefault(peerIP);
+            // An empty address fails the LAN write at once and goes straight to
+            // the relay control record.
             MessagingService.Shared.SendDeleteMessage(
-                entry.MessageId, peerIP, deleteKey,
-                deleteKey is null ? null : RelayIdHashForPeerKey(deleteKey));
+                entry.MessageId, LiveAddress(peer), peer, RelayIdHashForPeerKey(peer));
             OnPropertyChanged(nameof(Messages));
             RefreshConversations();
         }
         else
         {
-            HistoryStore.Shared.RemoveEntry(entry, peerIP);
+            HistoryStore.Shared.RemoveEntry(entry, peer);
             HistoryStore.Shared.Save();
-            if (Messages.TryGetValue(peerIP, out var list))
+            if (Messages.TryGetValue(peer, out var list))
             {
                 var idx = list.FindIndex(e => MessageEntry.SameEntry(e, entry));
                 if (idx >= 0) list.RemoveAt(idx);
@@ -1069,9 +1137,11 @@ public sealed partial class AppModel : ObservableObject
     /// IsEditable), so the caller can leave the composer in edit mode rather
     /// than silently dropping it.
     /// </summary>
-    public bool EditMessage(MessageEntry entry, string newText, string peerIP)
+    public bool EditMessage(MessageEntry entry, string newText, string peer)
     {
         if (!IsEditable(entry)) return false;
+        // Nobody to send the replacement to in a legacy thread.
+        if (!PeerId.IsKey(peer)) return false;
         string messageId = entry.MessageId!;   // IsEditable requires one
 
         var trimmed = newText.Trim();
@@ -1081,11 +1151,11 @@ public sealed partial class AppModel : ObservableObject
         if (trimmed == entry.Text) return true;
 
         var editedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-        if (!HistoryStore.Shared.ApplyEdit(messageId, peerIP, trimmed, editedAt, requireIncoming: false))
+        if (!HistoryStore.Shared.ApplyEdit(messageId, peer, trimmed, editedAt, requireIncoming: false))
             return false;
         HistoryStore.Shared.Save();
 
-        if (Messages.TryGetValue(peerIP, out var list))
+        if (Messages.TryGetValue(peer, out var list))
         {
             var e = list.FirstOrDefault(x => x.MessageId == messageId);
             if (e is not null)
@@ -1096,21 +1166,11 @@ public sealed partial class AppModel : ObservableObject
             }
         }
 
-        // Same key resolution as SendMessage — an offline peer still has a
-        // known key, and the queued-message rewrite inside SendEditMessage is
-        // the part that matters while they're away.
-        var key = PeerByIP(peerIP)?.PublicKeyB64
-                  ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
-                  ?? _knownPeerKeys.GetValueOrDefault(peerIP);
-        if (!string.IsNullOrEmpty(key))
-        {
-            MessagingService.Shared.SendEditMessage(messageId, trimmed, peerIP, key, editedAt,
-                                                    RelayIdHashForPeerKey(key));
-        }
-        else
-        {
-            LanLogger.Warn("Edit", $"no public key for peer={peerIP} — edit applied locally only");
-        }
+        // An offline peer still gets it: the queued-message rewrite inside
+        // SendEditMessage, and the relay control record when the LAN write
+        // fails — which an empty address does at once.
+        MessagingService.Shared.SendEditMessage(messageId, trimmed, LiveAddress(peer), peer, editedAt,
+                                                RelayIdHashForPeerKey(peer));
 
         OnPropertyChanged(nameof(Messages));
         RefreshConversations();
@@ -1133,37 +1193,30 @@ public sealed partial class AppModel : ObservableObject
 
     // Queue or send a file. If the peer is offline, the path is persisted in
     // config and retried whenever the peer comes back online.
-    public bool SendFile(string filePath, string peerIP)
+    public bool SendFile(string filePath, string peer)
     {
         if (!File.Exists(filePath))
         {
             LanLogger.Warn("Attachment", $"Cannot send missing file: {filePath}");
             return false;
         }
-
-        var peer = PeerByIP(peerIP);
-        var publicKey = peer?.PublicKeyB64
-            ?? ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.LastIP == peerIP)?.PublicKeyB64
-            ?? _knownPeerKeys.GetValueOrDefault(peerIP);
-        if (publicKey is null)
+        // The conversation id is the key — there is no longer a window, right
+        // after startup, in which a thread is known but its key is not. A legacy
+        // thread has none and cannot be sent to.
+        if (!PeerId.IsKey(peer))
         {
-            // This machine hasn't learned the peer's public key yet (e.g. sent
-            // right after app startup, before a discovery beacon or any inbound
-            // packet has arrived). Defer instead of dropping — WireDelegates
-            // flushes this the moment _knownPeerKeys resolves the IP.
-            LanLogger.Warn("Attachment", $"Peer public key not yet known for {peerIP} — deferring send of \"{Path.GetFileName(filePath)}\".");
-            if (!_pendingKeylessFiles.TryGetValue(peerIP, out var deferred))
-                deferred = _pendingKeylessFiles[peerIP] = [];
-            deferred.Add(filePath);
-            return true;
+            LanLogger.Warn("Attachment", $"conversation {peer} has no identity key — not sending \"{Path.GetFileName(filePath)}\"");
+            return false;
         }
+        var publicKey = peer;
 
         // Stream immediately only when the peer is actually online. Offline peers
         // stay in the dict (presence is explicit), so test IsOnline rather than
         // mere existence — otherwise the file would skip the persisted queue.
-        if (peer is not null && peer.IsOnline)
+        var address = LiveAddress(peer);
+        if (address.Length > 0)
         {
-            FileTransferService.Shared.Enqueue(filePath, peerIP, publicKey);
+            FileTransferService.Shared.Enqueue(filePath, peer, address);
             return true;
         }
 
@@ -1188,20 +1241,20 @@ public sealed partial class AppModel : ObservableObject
             Status = "Queued",
             ReadReceiptSent = false,
         };
-        HistoryStore.Shared.Append(entry, peerIP);
+        HistoryStore.Shared.Append(entry, peer);
         HistoryStore.Shared.Save();
         var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
-        if (!msgs.TryGetValue(peerIP, out var l)) l = msgs[peerIP] = [];
+        if (!msgs.TryGetValue(peer, out var l)) l = msgs[peer] = [];
         l.Add(entry);
         Messages = msgs;
         RefreshConversations();
         return true;
     }
 
-    private void DeliverPendingFiles(string peerIP, string peerPublicKeyB64)
+    private void DeliverPendingFiles(string peerPublicKeyB64, string peerIP)
     {
         // 1) Re-trigger any in-memory queue that stalled on an earlier failed attempt.
-        FileTransferService.Shared.RetryQueue(peerIP, peerPublicKeyB64);
+        FileTransferService.Shared.RetryQueue(peerPublicKeyB64, peerIP);
 
         // 2) Drain the persistent pending-file queue for this peer.
         var matching = ConfigStore.Shared.Config.PendingFiles
@@ -1211,7 +1264,7 @@ public sealed partial class AppModel : ObservableObject
         foreach (var item in matching)
         {
             if (!File.Exists(item.FilePath)) continue;
-            FileTransferService.Shared.Enqueue(item.FilePath, peerIP, peerPublicKeyB64);
+            FileTransferService.Shared.Enqueue(item.FilePath, peerPublicKeyB64, peerIP);
         }
 
         ConfigStore.Shared.Config.PendingFiles.RemoveAll(f => f.PeerPublicKeyB64 == peerPublicKeyB64);
@@ -1281,13 +1334,10 @@ public sealed partial class AppModel : ObservableObject
             {
                 foreach (var msg in msgs)
                 {
-                    // Map sender public key → best known peer IP
-                    var ip = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == msg.SenderPublicKeyB64)?.IP
-                          ?? ConfigStore.Shared.Config.Contacts
-                                 .FirstOrDefault(c => c.PublicKeyB64 == msg.SenderPublicKeyB64)?.LastIP
-                          ?? _knownPeerKeys.FirstOrDefault(kv => kv.Value == msg.SenderPublicKeyB64).Key
-                          ?? $"relay-{msg.SenderPublicKeyB64[..Math.Min(8, msg.SenderPublicKeyB64.Length)]}";
-                    MessagingService.Shared.HandleRelayMessage(msg, ip);
+                    // Filed under the sender's key. The address is only where a
+                    // delivery receipt can go, and a sender not on the LAN right
+                    // now simply doesn't get one.
+                    MessagingService.Shared.HandleRelayMessage(msg, LiveAddress(msg.SenderPublicKeyB64));
                 }
                 RefreshConversations();
             });
@@ -1300,20 +1350,20 @@ public sealed partial class AppModel : ObservableObject
 
     // MARK: - Conversation / contact actions
 
-    public void ArchiveConversation(string peerIP)
+    public void ArchiveConversation(string peer)
     {
-        if (!ConfigStore.Shared.Config.ArchivedConversations.Contains(peerIP))
+        if (!ConfigStore.Shared.Config.ArchivedConversations.Contains(peer))
         {
-            ConfigStore.Shared.Config.ArchivedConversations.Add(peerIP);
+            ConfigStore.Shared.Config.ArchivedConversations.Add(peer);
             ConfigStore.Shared.Save();
         }
-        if (SelectedPeerIP == peerIP) SelectedPeerIP = null;
+        if (SelectedConversationId == peer) SelectedConversationId = null;
         RefreshConversations();
     }
 
-    public void UnarchiveConversation(string peerIP)
+    public void UnarchiveConversation(string peer)
     {
-        ConfigStore.Shared.Config.ArchivedConversations.RemoveAll(x => x == peerIP);
+        ConfigStore.Shared.Config.ArchivedConversations.RemoveAll(x => x == peer);
         ConfigStore.Shared.Save();
         RefreshConversations();
     }
@@ -1321,40 +1371,37 @@ public sealed partial class AppModel : ObservableObject
     // Deletes a conversation: removes message history and hides the thread from the
     // sidebar. The contact stays in the saved contacts list — re-open the thread
     // through the "New message" picker.
-    public void DeleteConversation(string peerIP)
+    public void DeleteConversation(string peer)
     {
         var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
-        msgs.Remove(peerIP);
+        msgs.Remove(peer);
         Messages = msgs;
-        HistoryStore.Shared.Delete(peerIP);
+        Drafts.Remove(peer);
+        HistoryStore.Shared.Delete(peer);
         HistoryStore.Shared.Save();
-        if (!ConfigStore.Shared.Config.HiddenConversations.Contains(peerIP))
-            ConfigStore.Shared.Config.HiddenConversations.Add(peerIP);
-        ConfigStore.Shared.Config.ArchivedConversations.RemoveAll(x => x == peerIP);
+        if (!ConfigStore.Shared.Config.HiddenConversations.Contains(peer))
+            ConfigStore.Shared.Config.HiddenConversations.Add(peer);
+        ConfigStore.Shared.Config.ArchivedConversations.RemoveAll(x => x == peer);
         ConfigStore.Shared.Save();
-        if (SelectedPeerIP == peerIP) SelectedPeerIP = null;
+        if (SelectedConversationId == peer) SelectedConversationId = null;
         RefreshConversations();
     }
 
     // Unhide a contact's thread and select it so the user can chat with them.
     public void StartConversation(string publicKeyB64)
     {
-        var contact = ConfigStore.Shared.Config.Contacts.FirstOrDefault(c => c.PublicKeyB64 == publicKeyB64);
-        if (contact is null) return;
-        var onlinePeer = Peers.Values.FirstOrDefault(p => p.PublicKeyB64 == publicKeyB64);
-        var ip = onlinePeer?.IP ?? contact.LastIP;
-        ConfigStore.Shared.Config.HiddenConversations.RemoveAll(h => h == ip || h == contact.LastIP);
+        if (!ConfigStore.Shared.Config.Contacts.Any(c => c.PublicKeyB64 == publicKeyB64)) return;
+        ConfigStore.Shared.Config.HiddenConversations.RemoveAll(h => h == publicKeyB64);
         ConfigStore.Shared.Save();
         RefreshConversations();
-        SelectedPeerIP = ip;
+        SelectedConversationId = publicKeyB64;
     }
 
     public void DeleteContact(string publicKeyB64)
     {
-        var removed = ConfigStore.Shared.Config.Contacts.Where(c => c.PublicKeyB64 == publicKeyB64).ToList();
-        ConfigStore.Shared.Config.Contacts.RemoveAll(c => c.PublicKeyB64 == publicKeyB64);
+        if (ConfigStore.Shared.Config.Contacts.RemoveAll(c => c.PublicKeyB64 == publicKeyB64) == 0) return;
         ConfigStore.Shared.Save();
-        foreach (var c in removed) DeleteConversation(c.LastIP);
+        DeleteConversation(publicKeyB64);
     }
 
     public void UpdateContact(string publicKeyB64, string username, string? photoB64)
@@ -1432,23 +1479,24 @@ public sealed partial class AppModel : ObservableObject
 
         MessagingService.Shared.OnPeerReachable    = MarkPeerReachable;
         FileTransferService.Shared.OnPeerReachable = MarkPeerReachable;
+        MessagingService.Shared.IsBoundAddress     = IsBoundAddress;
+        FileTransferService.Shared.IsBoundAddress  = IsBoundAddress;
+        MessagingService.Shared.OnPeerAddressProven = NotePeerAddress;
 
         Coordinator.PacketReceived += pkt =>
         {
             // Refresh LastSeen for the sender so TCP activity (text, typing,
             // receipts, file chunks) keeps them marked online — mirrors macOS touchPeer.
             // Gated rather than unconditional: media_attach arrives on a socket
-            // that is about to stop being a JSON peer connection at all.
-            if (pkt.RefreshesPresence) TouchPeer(pkt.SenderPublicKeyB64);
-            // Cache ip -> publicKeyB64 so replies work even for unsaved / offline
-            // contacts, or when this machine's own discovery reception is broken.
-            if (pkt.RefreshesPresence && !string.IsNullOrEmpty(pkt.SenderPublicKeyB64))
-            {
-                _knownPeerKeys[pkt.SenderIP] = pkt.SenderPublicKeyB64;
-                // Flush any file sends that arrived before we knew this peer's key.
-                if (_pendingKeylessFiles.Remove(pkt.SenderIP, out var deferredFiles))
-                    foreach (var path in deferredFiles) SendFile(path, pkt.SenderIP);
-            }
+            // that is about to stop being a JSON peer connection at all. And only
+            // from an address that key is known at: the key in most packets is a
+            // claim, and a claim from anywhere would let any host mark any peer
+            // reachable at an address it has left. A peer that has moved is
+            // caught by discovery, or by NotePeerAddress once a message it sent
+            // from the new address decrypts.
+            if (pkt.RefreshesPresence && pkt.SenderPublicKeyB64 is { Length: > 0 } sender
+                && IsBoundAddress(sender, pkt.SenderIP))
+                TouchPeer(sender);
             switch (pkt)
             {
                 case ValidatedText or ValidatedTyping or ValidatedReceipt or ValidatedDelete:
@@ -1478,16 +1526,17 @@ public sealed partial class AppModel : ObservableObject
 
         Coordinator.PeerDeparted += HandleGoodbye;
 
-        MessagingService.Shared.OnMessageReceived = (ip, entry) =>
+        // Every callback below names the conversation by identity key.
+        MessagingService.Shared.OnMessageReceived = (peer, entry) =>
         {
             var updated = new Dictionary<string, List<MessageEntry>>(Messages);
-            if (!updated.TryGetValue(ip, out var list)) list = updated[ip] = [];
+            if (!updated.TryGetValue(peer, out var list)) list = updated[peer] = [];
             list.Add(entry);
             Messages = updated;
             // Incoming message from a previously-deleted thread should resurface it.
-            if (ConfigStore.Shared.Config.HiddenConversations.Contains(ip))
+            if (ConfigStore.Shared.Config.HiddenConversations.Contains(peer))
             {
-                ConfigStore.Shared.Config.HiddenConversations.RemoveAll(h => h == ip);
+                ConfigStore.Shared.Config.HiddenConversations.RemoveAll(h => h == peer);
                 ConfigStore.Shared.Save();
             }
             RefreshConversations();
@@ -1495,18 +1544,18 @@ public sealed partial class AppModel : ObservableObject
                 NotificationService.Shared.ShowMessage(entry.Sender, entry.Text);
         };
 
-        MessagingService.Shared.OnStatusUpdate = (ip, msgId, status) =>
+        MessagingService.Shared.OnStatusUpdate = (peer, msgId, status) =>
         {
-            if (!Messages.TryGetValue(ip, out var list)) return;
+            if (!Messages.TryGetValue(peer, out var list)) return;
             foreach (var e in list.Where(e => e.MessageId == msgId)) e.Status = status;
             // Targeted notification — no full Messages PropertyChanged. ChatPage
             // updates one row in place; Sidebar ignores status updates entirely.
-            MessageStatusUpdated?.Invoke(ip, msgId, status);
+            MessageStatusUpdated?.Invoke(peer, msgId, status);
         };
 
         MessagingService.Shared.OnDeliveryPathUpdate = msgId =>
         {
-            // The message's IP bucket isn't known to the caller (a relay
+            // The message's conversation isn't known to the caller (a relay
             // outbox retry only has the messageId), so scan for it.
             foreach (var list in Messages.Values)
             {
@@ -1518,9 +1567,9 @@ public sealed partial class AppModel : ObservableObject
             MessageDeliveryPathUpdated?.Invoke(msgId);
         };
 
-        MessagingService.Shared.OnMessageDeleted = (ip, messageId) =>
+        MessagingService.Shared.OnMessageDeleted = (peer, messageId) =>
         {
-            if (!Messages.TryGetValue(ip, out var list)) return;
+            if (!Messages.TryGetValue(peer, out var list)) return;
             var entry = list.FirstOrDefault(e => e.MessageId == messageId);
             if (entry is null) return;
             entry.Deleted          = true;
@@ -1534,9 +1583,9 @@ public sealed partial class AppModel : ObservableObject
 
         // Inbound edit already applied to HistoryStore by MessagingService;
         // mirror it into the in-memory copy the UI renders from.
-        MessagingService.Shared.OnMessageEdited = (ip, messageId, newText, editedAt) =>
+        MessagingService.Shared.OnMessageEdited = (peer, messageId, newText, editedAt) =>
         {
-            if (!Messages.TryGetValue(ip, out var list)) return;
+            if (!Messages.TryGetValue(peer, out var list)) return;
             var entry = list.FirstOrDefault(e => e.MessageId == messageId);
             if (entry is null) return;
             entry.Text     = newText;
@@ -1546,38 +1595,38 @@ public sealed partial class AppModel : ObservableObject
             RefreshConversations();
         };
 
-        MessagingService.Shared.OnTypingUpdate = (ip, sender, active) =>
+        MessagingService.Shared.OnTypingUpdate = (peer, sender, active) =>
         {
             var updated = new Dictionary<string, (string, bool)>(TypingStates)
             {
-                [ip] = (sender, active)
+                [peer] = (sender, active)
             };
             TypingStates = updated;
             RefreshConversations();
         };
 
-        FileTransferService.Shared.OnProgress = (ip, label, bytes, total) =>
+        FileTransferService.Shared.OnProgress = (peer, label, bytes, total) =>
         {
             var updated = new Dictionary<string, (string, long, long)>(ActiveTransfers)
             {
-                [ip] = (label, bytes, total)
+                [peer] = (label, bytes, total)
             };
             ActiveTransfers = updated;
         };
 
-        FileTransferService.Shared.OnError = (ip, _) =>
+        FileTransferService.Shared.OnError = (peer, _) =>
         {
             // Clear the in-progress banner so the UI doesn't stay stuck mid-progress
             // (was previously never wired up — mirrors macOS's onError handler).
             var updated = new Dictionary<string, (string, long, long)>(ActiveTransfers);
-            updated.Remove(ip);
+            updated.Remove(peer);
             ActiveTransfers = updated;
         };
 
-        FileTransferService.Shared.OnComplete = (ip, label, transferId, localPath) =>
+        FileTransferService.Shared.OnComplete = (peer, label, transferId, localPath) =>
         {
             var updated = new Dictionary<string, (string, long, long)>(ActiveTransfers);
-            updated.Remove(ip);
+            updated.Remove(peer);
             ActiveTransfers = updated;
 
             // Sender side gets a non-null local path — add an outgoing file bubble.
@@ -1591,17 +1640,19 @@ public sealed partial class AppModel : ObservableObject
                 MessageId = transferId,   // stable ID enables receipt matching
                 Status = "Sent", ReadReceiptSent = false,
             };
-            HistoryStore.Shared.Append(entry, ip);
+            HistoryStore.Shared.Append(entry, peer);
             HistoryStore.Shared.Save();
             var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
-            if (!msgs.TryGetValue(ip, out var l)) l = msgs[ip] = [];
+            if (!msgs.TryGetValue(peer, out var l)) l = msgs[peer] = [];
             l.Add(entry);
             Messages = msgs;
             RefreshConversations();
         };
 
-        FileTransferService.Shared.OnIncomingFile = (ip, sender, transferId, path) =>
+        FileTransferService.Shared.OnIncomingFile = (peer, address, sender, transferId, path) =>
         {
+            // Its chunks decrypted under the key, so the device is at `address`.
+            NotePeerAddress(peer, address, sender);
             if (ShouldShowNotification)
                 NotificationService.Shared.ShowFileReceived(sender, Path.GetFileName(path));
             var entry = new MessageEntry
@@ -1611,15 +1662,16 @@ public sealed partial class AppModel : ObservableObject
                 MessageId = transferId,   // stable ID enables read-receipt matching
                 Status = "", ReadReceiptSent = false,
             };
-            HistoryStore.Shared.Append(entry, ip);
+            HistoryStore.Shared.Append(entry, peer);
             HistoryStore.Shared.Save();
             var updated = new Dictionary<string, List<MessageEntry>>(Messages);
-            if (!updated.TryGetValue(ip, out var list)) list = updated[ip] = [];
+            if (!updated.TryGetValue(peer, out var list)) list = updated[peer] = [];
             list.Add(entry);
             Messages = updated;
             RefreshConversations();
-            // Notify the sender that the file was delivered (→ two grey checks).
-            MessagingService.Shared.SendReceipt("sent_receipt", transferId, ip);
+            // Notify the sender that the file was delivered (→ two grey checks),
+            // over the connection's own address: it just came from there.
+            MessagingService.Shared.SendReceipt("sent_receipt", transferId, address);
         };
     }
 
@@ -1633,27 +1685,5 @@ public sealed partial class AppModel : ObservableObject
         Messages = HistoryStore.Shared.History
             .ToDictionary(kv => kv.Key, kv => new List<MessageEntry>(kv.Value));
         RefreshConversations();
-    }
-
-    private PeerInfo? PeerByIP(string ip) => Peers.Values.FirstOrDefault(p => p.IP == ip);
-
-    // Migrates history stored under a synthetic "relay-{keyPrefix}" IP — created
-    // when a relay message arrived from a peer we had never met on the LAN — to the
-    // peer's real IP now that they have appeared on the network.
-    private void MigrateSyntheticRelayHistory(string publicKeyB64, string realIP)
-    {
-        var syntheticIP = $"relay-{publicKeyB64[..Math.Min(8, publicKeyB64.Length)]}";
-        if (!HistoryStore.Shared.History.ContainsKey(syntheticIP)) return;
-        HistoryStore.Shared.Migrate(syntheticIP, realIP);
-        HistoryStore.Shared.Save();
-        var msgs = new Dictionary<string, List<MessageEntry>>(Messages);
-        if (msgs.Remove(syntheticIP, out var moved))
-        {
-            if (!msgs.TryGetValue(realIP, out var cur)) cur = msgs[realIP] = [];
-            cur.AddRange(moved);
-            cur.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
-        }
-        Messages = msgs;
-        LanLogger.Info("Relay", $"migrated synthetic-IP history from {syntheticIP} → {realIP}");
     }
 }

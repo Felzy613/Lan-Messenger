@@ -1,0 +1,166 @@
+{
+  "_comment": "Conversation-id migration, asserted by PeerIDTests.swift and PeerIdTests.cs. Both platforms must file the same legacy history under the same id: the same person reads both machines. Expected values come from the rules in PROTOCOL.md -> History, not from either implementation.",
+  "contacts": [
+    {
+      "public_key_b64": "ERERERERERERERERERERERERERERERERERERERERERE=",
+      "last_ip": "192.168.68.27"
+    },
+    {
+      "public_key_b64": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
+      "last_ip": "192.168.68.31"
+    },
+    {
+      "public_key_b64": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=",
+      "last_ip": "192.168.68.40"
+    },
+    {
+      "public_key_b64": "REREREREREREREREREREREREREREREREREREREREREQ=",
+      "last_ip": "192.168.68.40"
+    }
+  ],
+  "is_key": [
+    {
+      "id": "ERERERERERERERERERERERERERERERERERERERERERE=",
+      "is_key": true
+    },
+    {
+      "id": "192.168.68.27",
+      "is_key": false
+    },
+    {
+      "id": "ip:192.168.68.27",
+      "is_key": false
+    },
+    {
+      "id": "AQIDBA==",
+      "is_key": false
+    },
+    {
+      "id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "is_key": false
+    },
+    {
+      "id": "",
+      "is_key": false
+    }
+  ],
+  "resolve": [
+    {
+      "name": "192.168.68.27",
+      "id": "ERERERERERERERERERERERERERERERERERERERERERE="
+    },
+    {
+      "name": "192.168.68.31",
+      "id": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI="
+    },
+    {
+      "name": "192.168.68.40",
+      "id": "ip:192.168.68.40"
+    },
+    {
+      "name": "192.168.68.9",
+      "id": "ip:192.168.68.9"
+    },
+    {
+      "name": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
+      "id": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI="
+    },
+    {
+      "name": "ip:192.168.68.27",
+      "id": "ip:192.168.68.27"
+    },
+    {
+      "name": "relay-ERERERER",
+      "id": "ERERERERERERERERERERERERERERERERERERERERERE="
+    },
+    {
+      "name": "relay-MzMzMzMz",
+      "id": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM="
+    },
+    {
+      "name": "relay-zzzzzzzz",
+      "id": "ip:relay-zzzzzzzz"
+    }
+  ],
+  "relay_placeholder": {
+    "key": "ERERERERERERERERERERERERERERERERERERERERERE=",
+    "id": "ip:relay-ERERERER"
+  },
+  "rekey": {
+    "cap": 3,
+    "history": {
+      "192.168.68.27": [
+        {
+          "message_id": "b",
+          "timestamp": 2
+        },
+        {
+          "message_id": "d",
+          "timestamp": 4
+        }
+      ],
+      "ERERERERERERERERERERERERERERERERERERERERERE=": [
+        {
+          "message_id": "a",
+          "timestamp": 1
+        },
+        {
+          "message_id": "b",
+          "timestamp": 2
+        },
+        {
+          "message_id": "c",
+          "timestamp": 3
+        }
+      ],
+      "192.168.68.40": [
+        {
+          "message_id": "e",
+          "timestamp": 5
+        }
+      ],
+      "192.168.68.31": [
+        {
+          "message_id": "late",
+          "timestamp": 9
+        },
+        {
+          "message_id": "early",
+          "timestamp": 1
+        }
+      ]
+    },
+    "expected": {
+      "ERERERERERERERERERERERERERERERERERERERERERE=": [
+        "b",
+        "c",
+        "d"
+      ],
+      "ip:192.168.68.40": [
+        "e"
+      ],
+      "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=": [
+        "late",
+        "early"
+      ]
+    },
+    "moved": {
+      "192.168.68.27": "ERERERERERERERERERERERERERERERERERERERERERE=",
+      "192.168.68.40": "ip:192.168.68.40",
+      "192.168.68.31": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI="
+    }
+  },
+  "rekey_list": {
+    "list": [
+      "192.168.68.27",
+      "192.168.68.9",
+      "ERERERERERERERERERERERERERERERERERERERERERE=",
+      "192.168.68.40"
+    ],
+    "expected": [
+      "ERERERERERERERERERERERERERERERERERERERERERE=",
+      "ip:192.168.68.9",
+      "ip:192.168.68.40"
+    ]
+  }
+}
