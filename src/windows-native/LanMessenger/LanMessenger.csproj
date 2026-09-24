@@ -20,7 +20,7 @@
       Keep this in sync with version/windows.json so local builds show the right
       number in the Settings page.
     -->
-    <Version>2.0.7</Version>
+    <Version>2.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
