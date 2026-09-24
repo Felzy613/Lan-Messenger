@@ -218,7 +218,8 @@ untestable; everything above it runs against in-memory doubles. See
 | Path | Purpose |
 |---|---|
 | `src/macos/LanMessenger/UI/AppModel.swift` | Root observable state, service wiring, peer/contact/history migration, conversations, pending queues, updates, and actions. |
-| `src/macos/LanMessenger/UI/Theme.swift` | Shared color palette, bubble colors, accent, and formatting helpers. |
+| `src/macos/LanMessenger/UI/Theme.swift` | The app's colours, all sourced from `GlassTokens` (bubble fills with their Reduce Transparency fallbacks, ink, meta, accent, presence), plus avatar and timestamp helpers. |
+| `src/macos/LanMessenger/UI/Glass.swift` | `glassSurface(_:in:tint:)`, the one call site for glass (Liquid Glass on macOS 26, materials before, the opaque fallback with Reduce Transparency); `LiquidGlass.isAvailable`; `BubbleShape` and `bubbleSurface` for every message bubble; `glassShadow`. |
 | `src/macos/LanMessenger/UI/AvatarView.swift` | Avatar view supporting initials and base64 contact photos. |
 | `src/macos/LanMessenger/UI/GlassTokens.swift` | **Generated** by `scripts/design/gen_tokens.py`. Every design token: appearance-following `Color`s, `Raw` ARGB pairs, `Radius`, `Space`, `Size`, `Blur`, `Acrylic`, `Shadow`, `Typography`. Do not edit. |
 | `src/macos/LanMessenger/UI/AvatarPalette.swift` | The eight `avatar-*` colours and which one a name gets: FNV-1a over UTF-16 code units, reduced exactly as Windows `AvatarPalette.cs` does it, so a contact looks the same on both platforms and every launch. |
@@ -304,7 +305,8 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/windows-native/LanMessenger/LanMessenger.csproj` | WinUI app project, dependencies, publish settings, version, asset copy, and PRI publish fix. |
 | `src/windows-native/LanMessenger.Tests/LanMessenger.Tests.csproj` | MSTest project and test-vector copy settings. |
 | `src/windows-native/LanMessenger/app.manifest` | Windows app manifest. |
-| `src/windows-native/LanMessenger/App.xaml` | WinUI application resource root. |
+| `src/windows-native/LanMessenger/App.xaml` | WinUI application resource root: merges `XamlControlsResources` then `Styles/Glass.xaml`. |
+| `src/windows-native/LanMessenger/Styles/Glass.xaml` | Hand-written glass recipes: `GlassSurfaceStyle`, the icon, primary, send, glass, danger, plain, pill and row button templates, `GlassDialogStyle`, `GlassSettingsGroupStyle`. Merges the generated `GlassTokens.xaml` itself. |
 | `src/windows-native/LanMessenger/App.xaml.cs` | WinUI app startup, binding/resource diagnostics, unhandled exception capture, crash log and message box. |
 | `src/windows-native/LanMessenger/MainWindow.xaml` | Main shell layout, sidebar/content columns, toolbar buttons, and tray icon. |
 | `src/windows-native/LanMessenger/MainWindow.xaml.cs` | Window shell behavior, dialog orchestration, chat/archive page reuse, migration dialog, tray lifecycle, the taskbar unread-count overlay icon (`ITaskbarList3.SetOverlayIcon`), and the tray icon's red-dot badge swap (`TrayIcon.IconSource`) — both driven by `AppModel.TotalUnreadCount`. |
@@ -430,7 +432,8 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 | Path | Purpose |
 |---|---|
 | `src/windows-native/LanMessenger/UI/AppModel.cs` | Root observable state, service wiring, peers, conversations, pending queues, contacts, read receipts, updates, and actions. |
-| `src/windows-native/LanMessenger/UI/Theme.cs` | Shared brushes, colors, and formatting helpers. |
+| `src/windows-native/LanMessenger/UI/Theme.cs` | Shared brushes for code-behind, all sourced from `GlassTokens`; rebuilt by `Initialize(isDark, transparencyEnabled)`, which raises `Theme.Changed` so on-screen bubbles and rows repaint. |
+| `src/windows-native/LanMessenger/UI/GlassDialog.cs` | `GlassDialog.Apply`: every `ContentDialog` as a thick-glass sheet, with per-dialog Fluent overrides (focus underline, default button) that App-level resources cannot reach. |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml` | Avatar control XAML. |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml.cs` | Avatar image/initial rendering logic. |
 | `src/windows-native/LanMessenger/UI/GlassTokens.cs` | **Generated** by `scripts/design/gen_tokens.py`. Every colour token as `<Name>Light`/`<Name>Dark`, `Pick`, `All`, and `Radius`/`Space`/`Size`/`Acrylic` constants for code-behind. Do not edit. |

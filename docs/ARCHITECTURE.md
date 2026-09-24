@@ -624,6 +624,32 @@ floors for every text-on-surface pairing the design uses, compositing each
 translucent surface over the wallpaper and over its glow and taking the worse,
 so a colour tuned below legibility fails a test.
 
+### Glass Chrome Over The Thread
+
+On Windows the chat pane is one cell, not a stack of opaque rows. Back to
+front: `ThreadBackground` (the wallpaper and its two radial glows),
+`MessagesList` on a transparent background, the top chrome (header capsule and
+transfer banner), the jump button, the composer, and the drop overlay. The
+header, composer, transfer banner and jump button are in-app acrylic because
+the thread moves under them; bubbles and the sidebar panel are translucent
+solid brushes (Mica is already the sidebar's blur, and only the wallpaper is
+behind a bubble). `ChatPage.UpdateThreadInsets` keeps the list's `Padding`
+equal to the chrome's size plus 16: the ListView template puts that padding
+on the `ItemsPresenter` inside the `ScrollViewer`, so it scrolls with the
+content and the existing pin-to-bottom logic lands the last message clear of
+the composer without knowing the composer exists.
+
+On macOS 26 the header and composer are glass too, but they stay rows above
+and below the thread: `ChatView`'s scroll geometry assumes the viewport is the
+visible area, and letting the thread run under them (`.safeAreaInset`) needs
+that geometry corrected first (plan step M5). Before macOS 26 both keep `.bar`.
+
+WinUI detail worth knowing: Fluent brushes read from inside a generic.xaml
+template's visual-state storyboard (a focused field's underline, a dialog's
+default button) cannot be overridden from App.xaml; they resolve from the
+control's own tree and then the style's defining dictionary first. Override
+them per instance (`GlassDialog`, `ToggleSwitch.Resources`).
+
 ### macOS UI
 
 Important files:
@@ -635,7 +661,8 @@ Important files:
 - `UI/Chat`: header, message list, composer, file transfer banner, message
   bubbles, reply interactions.
 - `UI/Settings`: identity, dock policy, login item, inbox, updates, version.
-- `UI/Theme.swift`: shared colors, bubbles, timestamp helpers.
+- `UI/Theme.swift`, `UI/Glass.swift`, `UI/GlassTokens.swift`: colours from the
+  tokens, the glass helper, and the generated tokens.
 
 The app can hide from the Dock and live in the menu bar. Closing the last window
 does not terminate the app.
@@ -660,7 +687,8 @@ Important files:
 - `UI/Sidebar`: conversation list, contacts, archive, contact dialogs.
 - `UI/Chat`: chat page, composer, message bubbles, file banner.
 - `UI/Settings`: identity, inbox, update settings, tray preferences.
-- `UI/Theme.cs`: shared brushes and formatting helpers.
+- `UI/Theme.cs`, `UI/GlassTokens.cs`, `Styles/Glass.xaml`,
+  `Styles/GlassTokens.xaml`: brushes and styles from the tokens.
 
 The tray icon is always present. Closing can hide to tray based on config.
 

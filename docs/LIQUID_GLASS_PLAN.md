@@ -12,6 +12,7 @@ to prove it.
 | Order | Groundwork (G) → Windows (W1–W10) → macOS (M1–M6) → Wrap-up (X) |
 | PRs | Three: **G** alone, then **W**, then **M**. Each is reviewable on its own. |
 | Status | Tick the boxes in this file in the same commit that finishes the step. |
+| Progress (2026-09-23) | G, W1–W9, M1–M4 and the X docs are done and committed. W10 and M6 are partly done: see their notes for what still needs a person (dark mode, transparency off and High Contrast on the Dell; a long thread for the scroll checks; a live remote session for the consent window and indicator; the running app on macOS 26). M5 is deferred until M3 has been seen in the running app. |
 
 ---
 
@@ -336,7 +337,9 @@ Files: `UI/RemoteDesktop/RemoteConsentWindow.xaml(.cs)`, `UI/RemoteDesktop/Remot
 - the indicator is the dark HUD in both themes: an amber dot when viewing, and a coral dot plus a coral system border when controlled. The red Stop Sharing button is the only filled colour. It has rounded corners and sits top-centre on every monitor layout
 
 ### W10. Windows verification pass
-- [ ] Full Dell build (separate restore and build) and MSTest, with the DLL timestamp printed and the test totals up by the G2 tests.
+*Status (2026-09-23):* build, tests and the light-theme screenshots are done. Screenshots were taken with `PrintWindow(PW_RENDERFULLCONTENT)` from a `/IT` scheduled task, which captures the window's own content (Mica included) even with something overlapping it. Still open, each needing a person: dark mode, transparency off and High Contrast (all system settings on the Dell); scroll checks (a)–(d) and (f), which need a thread longer than one screen; the consent window and the indicator, which need a live remote-desktop session; the performance check.
+
+- [x] Full Dell build (separate restore and build) and MSTest, with the DLL timestamp printed and the test totals up by the G2 tests. *409/409, up from 405.*
 - [ ] Screenshots on the Dell for review. Run a capture script **in the user's session** through a `/IT` scheduled task (see `driving-the-dell-headlessly`): `System.Drawing` `CopyFromScreen` on the app window's rectangle, saved to a file, then `scp` it back. Capture the main window in light, dark, transparency off, and High Contrast (Aquatic), plus the consent window and the indicator in both states.
 - [ ] Put the screenshots next to the matching design-system previews and fix any mismatch before ticking the milestone.
 - [ ] Performance check: scroll a 200-message thread with images. `viewer_stats`-style numbers are not available here, so use Task Manager's GPU and CPU while scrolling, before and after. Acrylic on three surfaces should cost nothing noticeable. If it does, the first thing to drop is `ThemeShadow`.
@@ -444,6 +447,8 @@ Files: `RemoteDesktop/RemoteConsentView.swift`, `RemoteDesktop/RemoteConsentPres
 **Done when** the consent panel shows glass edge to edge on macOS 26 and a thick material on 13–15 with no opaque slab, and the indicator is the dark HUD (amber dot when viewing; coral dot and outline when controlled; red Stop Sharing as the only filled colour) in both light and dark mode.
 
 ### M5. Optional: the thread runs under the chrome on macOS
+**Deferred (2026-09-23):** M3 has not yet been seen in the running app on macOS 26 (the shell here cannot screenshot, and the installed app was running), so the precondition below is not met. Nothing in M5 has been started.
+
 Do this last, and only if M3 shipped cleanly. It is the riskiest change in the plan, because `ChatView`'s scroll geometry assumes the viewport is the visible area.
 - [ ] Move the header into `.safeAreaInset(edge: .top)` and the composer, banner and transfer banner into `.safeAreaInset(edge: .bottom)` on the `ScrollView`. Add `.scrollEdgeEffectStyle(.soft, for: [.top, .bottom])` on macOS 26.
 - [ ] **Correct the geometry.** Today the code computes the distance still to scroll as `max(0, contentBottom − viewportHeight)`. With a bottom inset, the last pixel of content rests at `viewportHeight − bottomInset`, so that distance under-reads by exactly the inset's height. The jump button appears late, and the at-bottom slack effectively grows by the inset. Read the bottom inset in the same background `GeometryReader` that writes `viewportHeight` (`geo.safeAreaInsets.bottom`, via `onAppear`/`onChange`, **not** through a preference). Replace every `viewportHeight` in distance maths with `viewportHeight − bottomInset`. Both content edges still travel in the one `ScrollGeometryKey` preference. Do not split them.
@@ -453,7 +458,7 @@ Do this last, and only if M3 shipped cleanly. It is the riskiest change in the p
 **Done when** all five harness cases give the same results as before the change.
 
 ### M6. macOS verification pass
-- [ ] `swift build && swift test` green, including G2.
+- [x] `swift build && swift test` green, including G2. *522 passed, 8 skipped.*
 - [ ] ImageRenderer renders of every touched view in both schemes, reviewed against the design-system previews.
 - [ ] The running app on macOS 26 (packaged with `scripts/macos/package.sh` so notifications and TCC behave): open a conversation, reply, edit, send a file, receive a message while scrolled up, toggle Reduce Transparency, and toggle dark mode. The shell cannot take screenshots here, so ask the user for them.
 
@@ -461,16 +466,16 @@ Do this last, and only if M3 shipped cleanly. It is the riskiest change in the p
 
 ## X: Wrap-up (last commit of each PR)
 
-- [ ] `CLAUDE.md` → *Do not accidentally regress*, add:
+- [x] `CLAUDE.md` → *Do not accidentally regress*, add:
   - "Do not put an `AcrylicBrush` on message bubbles. Acrylic is only for chrome that has app content moving under it (header, composer, transfer banner, jump button). Bubbles and the sidebar panel use translucent solid brushes."
   - "Do not paint the screen-sharing indicator in its state colour. It is a neutral, solid `hud-surface` HUD, identical in both themes. The state shows as the status dot (plus a coral outline for control), and the only filled colour is the Stop Sharing button. A full amber or red bar reads as an alarm, and an alarm that stays up for a whole session stops being seen."
   - "Do not make the remote-desktop Allow button primary or give it a shortcut. Decline stays the default on both platforms, and the warning colour appears only for an unexpected key."
   - "Do not add a colour, radius or size literal to UI code. Add a token to `design/liquid-glass/tokens.json` and run `scripts/design/gen_tokens.py`. CI's `--check` fails on a stale generated file."
   - (After W3) "Do not give `MessagesList` a background brush. The wallpaper and its glows are painted by `ThreadBackground` behind it, and the list padding, not a margin, keeps the first and last messages clear of the floating chrome."
-- [ ] `docs/ARCHITECTURE.md` UI section: the token pipeline, and the chrome-over-thread layout.
-- [ ] `docs/FILE_MAP.md`: `scripts/design/gen_tokens.py`, `GlassTokens.*`, `Styles/Glass.xaml`, `UI/Glass.swift`, `UI/GlassDialog.cs`.
-- [ ] `design/README.md`: how a token change flows from `tokens.json` to the generator, the apps and the artifact.
-- [ ] Tick every box above. Set this file's status table to done.
+- [x] `docs/ARCHITECTURE.md` UI section: the token pipeline, and the chrome-over-thread layout.
+- [x] `docs/FILE_MAP.md`: `scripts/design/gen_tokens.py`, `GlassTokens.*`, `Styles/Glass.xaml`, `UI/Glass.swift`, `UI/GlassDialog.cs`.
+- [x] `design/README.md`: how a token change flows from `tokens.json` to the generator, the apps and the artifact.
+- [ ] Tick every box above. Set this file's status table to done. *Open until W10, M5 and M6 are finished.*
 
 ## Commit map
 
