@@ -131,7 +131,7 @@ jobs:
     if: |
       needs.preflight.outputs.release_exists == 'false' ||
       inputs.force_rebuild == true
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 35
     permissions:
       contents: write
@@ -140,12 +140,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Require the macOS 26 SDK
+        run: |
+          # Liquid Glass is compiled in only against the macOS 26 SDK (the code
+          # sits behind #if compiler(>=6.2)). An older Xcode builds cleanly and
+          # ships an app with no glass at all, so fail loudly here instead.
+          sdk=$(xcrun --sdk macosx --show-sdk-version)
+          echo "$(xcodebuild -version | tr '\n' ' ')| SDK $sdk | $(swift --version 2>&1 | head -1)"
+          if [ "${sdk%%.*}" -lt 26 ]; then
+            echo "::error::macOS SDK $sdk is older than 26: this build would ship without Liquid Glass."
+            exit 1
+          fi
+
       - name: Cache Swift build artifacts
         uses: actions/cache@v4
         with:
           path: src/macos/.build
-          key: swift-${{ runner.os }}-${{ hashFiles('src/macos/Package.swift') }}
-          restore-keys: swift-${{ runner.os }}-
+          # The image is in the key: .build artefacts compiled by another
+          # toolchain must never be restored onto this one.
+          key: swift-macos-26-${{ hashFiles('src/macos/Package.swift') }}
+          restore-keys: swift-macos-26-
 
       - name: Cache Homebrew downloads
         uses: actions/cache@v4
@@ -270,7 +284,7 @@ jobs:
     name: Validate
     needs: [preflight, build-test-package]
     if: needs.build-test-package.result == 'success'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 15
     permissions:
       contents: write
