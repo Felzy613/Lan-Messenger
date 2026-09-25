@@ -223,7 +223,9 @@ public sealed partial class MainWindow : Window
             Content         = new SettingsPage { Model = Model },
             XamlRoot        = Content.XamlRoot,
         };
-        GlassDialog.Apply(dialog);
+        // The one sheet whose whole body scrolls: an opaque ground, so its
+        // rows can dissolve into it at the edges (SheetScrollEdges).
+        GlassDialog.Apply(dialog, scrollingBody: true);
         // Wider than Fluent's 548: a settings row is a label and a control side
         // by side, and at 548 a text field left its label two words a line.
         // The sheet template reads this from the dialog's own resources.

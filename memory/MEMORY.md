@@ -8,6 +8,8 @@ sessions and should stay aligned with the current native app tree.
 
 - [Thread scroll reliability and merged release notes](thread-scroll-and-merged-release-notes.md) — 2026-09-19: latched pinnedToBottom + settle repeats so the thread actually lands on the newest message, and the update panel now merges every skipped version's changelog.
 
+- [Settings sheet scroll edges (Windows)](settings-sheet-scroll-edges.md) — 2026-09-25: rows fade into the Settings sheet at the scroll edges instead of being sliced; why the sheet is opaque glass-regular-fallback, why the edge colour is read from live brushes, and what to check on the Dell.
+
 - [Relay system audit & hardening](relay-system-audit.md) — Relay bugs fixed 2026-05-29 (delivery-mode tracking, offline-only gating, synthetic IP migration) and 2026-07-02 (confirmed-store-before-badge, global message-id dedup, durable outbox retry).
 
 - [Remote desktop](remote-desktop.md) — working notes for the unreleased

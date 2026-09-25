@@ -9,8 +9,9 @@
          divider between rows and none above the first. A row is a label, an
          optional hint under it, and ONE trailing control: a switch, a folder
          with a plain "Change…", or a text field. The dialog around this page
-         already carries the "Settings" title and is acrylic, so the page has
-         no title of its own and the panels are translucent solid. -->
+         already carries the "Settings" title, so the page has none of its
+         own, and the panels are translucent solid over the sheet's opaque
+         ground (GlassScrollingDialogStyle). -->
     <Page.Resources>
         <Style x:Key="SettingsHeaderStyle" TargetType="TextBlock" BasedOn="{StaticResource TokenTypeLabelStrongStyle}">
             <Setter Property="Foreground" Value="{ThemeResource TokenInkSecondaryBrush}" />
@@ -43,192 +44,127 @@
         </Style>
     </Page.Resources>
 
-    <!-- The ScrollViewer reaches 24px into the dialog's right padding and the
-         content gives it back, so the scroll bar runs in the dialog's margin
-         instead of over the panels, and the panels still line up with the
-         title and the Done button.
+    <!-- The Grid reaches 24px into the dialog's right padding and the content
+         gives it back, so the scroll bar runs in the dialog's margin instead
+         of over the panels, and the panels still line up with the title and
+         the Done button.
 
-         It is a tab stop, and the first one, so the sheet opens with focus on
-         the scroll area rather than in the Display name field. With the field
-         focused, the sheet opened with a caret and a focus ring in it, and
-         Windows put focus back there every time the window was re-activated,
-         scrolling the sheet back to the top: scroll down, glance at another
-         window, come back, and you were at the top again. Focused, the scroll
-         area also answers Page Down and the arrow keys. -->
-    <ScrollViewer x:Name="SettingsScroll" Margin="0,0,-24,0" IsTabStop="True">
-        <StackPanel Spacing="20" Margin="0,0,24,4" MaxWidth="600">
+         The ScrollViewer is a tab stop, and the first one, so the sheet opens
+         with focus on the scroll area rather than in the Display name field.
+         With the field focused, the sheet opened with a caret and a focus ring
+         in it, and Windows put focus back there every time the window was
+         re-activated, scrolling the sheet back to the top: scroll down, glance
+         at another window, come back, and you were at the top again. Focused,
+         the scroll area also answers Page Down and the arrow keys.
 
-            <!-- Identity -->
-            <StackPanel Style="{StaticResource SettingsSectionStyle}">
-                <TextBlock Text="Identity" Style="{StaticResource SettingsHeaderStyle}" />
-                <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
-                    <Grid Style="{StaticResource SettingsRowStyle}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel VerticalAlignment="Center" Spacing="2">
-                            <TextBlock Text="Display name" Style="{StaticResource SettingsLabelStyle}" />
-                            <TextBlock Text="How you appear to people on your network."
-                                       Style="{StaticResource SettingsHintStyle}" />
-                        </StackPanel>
-                        <TextBox x:Name="UsernameBox"
-                                 Grid.Column="1"
-                                 Width="200"
-                                 VerticalAlignment="Center"
-                                 Style="{StaticResource GlassTextFieldStyle}"
-                                 PlaceholderText="Your name"
-                                 AutomationProperties.Name="Display name"
-                                 LostFocus="UsernameBox_LostFocus" />
-                    </Grid>
-                </ContentControl>
-            </StackPanel>
+         The two rectangles are the scroll area's edges (UI/SheetScrollEdges.cs):
+         gradients in the sheet's own colour over its top and bottom, so rows
+         dissolve into the sheet under the title and above Done instead of
+         being sliced by the viewport. They stop short of the scroll bar, stay
+         collapsed until the sheet's colour is known, and show only while
+         there is content beyond their edge. -->
+    <Grid Margin="0,0,-24,0">
+        <ScrollViewer x:Name="SettingsScroll" IsTabStop="True">
+            <StackPanel x:Name="SettingsContent" Spacing="20" Margin="0,0,24,4" MaxWidth="600">
 
-            <!-- Files -->
-            <StackPanel Style="{StaticResource SettingsSectionStyle}">
-                <TextBlock Text="Files" Style="{StaticResource SettingsHeaderStyle}" />
-                <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
-                    <StackPanel>
+                <!-- Identity -->
+                <StackPanel Style="{StaticResource SettingsSectionStyle}">
+                    <TextBlock Text="Identity" Style="{StaticResource SettingsHeaderStyle}" />
+                    <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
                         <Grid Style="{StaticResource SettingsRowStyle}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel VerticalAlignment="Center" Spacing="2">
-                                <TextBlock Text="Received files" Style="{StaticResource SettingsLabelStyle}" />
-                                <TextBlock x:Name="InboxPath" Style="{StaticResource SettingsPathStyle}" />
-                            </StackPanel>
-                            <Button Grid.Column="1"
-                                    Style="{StaticResource GlassPlainButtonStyle}"
-                                    VerticalAlignment="Center"
-                                    Content="Change…"
-                                    AutomationProperties.Name="Change received files folder"
-                                    Click="BrowseInbox_Click" />
-                        </Grid>
-                        <Rectangle Style="{StaticResource SettingsDividerStyle}" />
-                        <Grid Style="{StaticResource SettingsRowStyle}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel VerticalAlignment="Center" Spacing="2">
-                                <TextBlock Text="Screenshots" Style="{StaticResource SettingsLabelStyle}" />
-                                <TextBlock x:Name="ScreenshotDirPath" Style="{StaticResource SettingsPathStyle}" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1"
-                                        Orientation="Horizontal"
-                                        Spacing="2"
-                                        VerticalAlignment="Center">
-                                <Button x:Name="ResetScreenshotDirBtn"
-                                        Style="{StaticResource GlassPlainButtonStyle}"
-                                        Content="Reset"
-                                        AutomationProperties.Name="Reset screenshots folder"
-                                        Visibility="Collapsed"
-                                        Click="ResetScreenshotDir_Click" />
-                                <Button Style="{StaticResource GlassPlainButtonStyle}"
-                                        Content="Change…"
-                                        AutomationProperties.Name="Change screenshots folder"
-                                        Click="BrowseScreenshotDir_Click" />
-                            </StackPanel>
-                        </Grid>
-                    </StackPanel>
-                </ContentControl>
-            </StackPanel>
-
-            <!-- General -->
-            <StackPanel Style="{StaticResource SettingsSectionStyle}">
-                <TextBlock Text="General" Style="{StaticResource SettingsHeaderStyle}" />
-                <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
-                    <Grid Style="{StaticResource SettingsRowStyle}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel VerticalAlignment="Center" Spacing="2">
-                            <TextBlock Text="Keep running when the window is closed"
-                                       Style="{StaticResource SettingsLabelStyle}" />
-                            <TextBlock Text="LAN Messenger stays in the notification area, so messages and files still arrive."
-                                       Style="{StaticResource SettingsHintStyle}" />
-                        </StackPanel>
-                        <ToggleSwitch x:Name="CloseToTrayToggle"
-                                      Grid.Column="1"
-                                      Style="{StaticResource GlassRowToggleStyle}"
-                                      Width="40" MinWidth="0" HorizontalAlignment="Right"
-                                      AutomationProperties.Name="Keep running when the window is closed"
-                                      Toggled="CloseToTrayToggle_Toggled">
-                            <ToggleSwitch.Resources>
-                                <StaticResource x:Key="ToggleSwitchFillOn" ResourceKey="TokenBrandBrush"/>
-                                <StaticResource x:Key="ToggleSwitchFillOnPointerOver" ResourceKey="TokenBrandHoverBrush"/>
-                                <StaticResource x:Key="ToggleSwitchFillOnPressed" ResourceKey="TokenBrandPressedBrush"/>
-                                <StaticResource x:Key="ToggleSwitchStrokeOn" ResourceKey="TokenBrandBrush"/>
-                                <StaticResource x:Key="ToggleSwitchStrokeOnPointerOver" ResourceKey="TokenBrandHoverBrush"/>
-                                <StaticResource x:Key="ToggleSwitchStrokeOnPressed" ResourceKey="TokenBrandPressedBrush"/>
-                            </ToggleSwitch.Resources>
-                        </ToggleSwitch>
-                    </Grid>
-                </ContentControl>
-            </StackPanel>
-
-            <!-- Remote desktop -->
-            <StackPanel Style="{StaticResource SettingsSectionStyle}">
-                <TextBlock Text="Remote desktop" Style="{StaticResource SettingsHeaderStyle}" />
-                <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
-                    <Grid Style="{StaticResource SettingsRowStyle}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <!-- The safety explanations are row hints, never tooltips. -->
-                        <StackPanel VerticalAlignment="Center" Spacing="4">
-                            <TextBlock Text="Allow remote desktop" Style="{StaticResource SettingsLabelStyle}" />
-                            <TextBlock Text="A saved contact can ask to view your screen, and separately to control it. You are asked every time — there is no unattended access, and peers who are not in your contacts are ignored without being told anything."
-                                       Style="{StaticResource SettingsHintStyle}" />
-                            <TextBlock x:Name="RemoteDesktopStopHint"
-                                       Text="Stop a session at any time from the indicator at the top of the screen, or with Ctrl+Alt+Shift+Esc, which works even while the other side is controlling your keyboard and mouse."
-                                       Style="{StaticResource SettingsHintStyle}" />
-                        </StackPanel>
-                        <ToggleSwitch x:Name="RemoteDesktopToggle"
-                                      Grid.Column="1"
-                                      VerticalAlignment="Top"
-                                      Style="{StaticResource GlassRowToggleStyle}"
-                                      Width="40" MinWidth="0" HorizontalAlignment="Right"
-                                      AutomationProperties.Name="Allow remote desktop"
-                                      Toggled="RemoteDesktopToggle_Toggled">
-                            <ToggleSwitch.Resources>
-                                <StaticResource x:Key="ToggleSwitchFillOn" ResourceKey="TokenBrandBrush"/>
-                                <StaticResource x:Key="ToggleSwitchFillOnPointerOver" ResourceKey="TokenBrandHoverBrush"/>
-                                <StaticResource x:Key="ToggleSwitchFillOnPressed" ResourceKey="TokenBrandPressedBrush"/>
-                                <StaticResource x:Key="ToggleSwitchStrokeOn" ResourceKey="TokenBrandBrush"/>
-                                <StaticResource x:Key="ToggleSwitchStrokeOnPointerOver" ResourceKey="TokenBrandHoverBrush"/>
-                                <StaticResource x:Key="ToggleSwitchStrokeOnPressed" ResourceKey="TokenBrandPressedBrush"/>
-                            </ToggleSwitch.Resources>
-                        </ToggleSwitch>
-                    </Grid>
-                </ContentControl>
-            </StackPanel>
-
-            <!-- Cloud relay -->
-            <StackPanel Style="{StaticResource SettingsSectionStyle}">
-                <TextBlock Text="Cloud relay" Style="{StaticResource SettingsHeaderStyle}" />
-                <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
-                    <StackPanel>
-                        <Grid Style="{StaticResource SettingsRowStyle}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel VerticalAlignment="Center" Spacing="2">
-                                <TextBlock Text="Enable cloud relay" Style="{StaticResource SettingsLabelStyle}" />
-                                <TextBlock Text="Messages to offline contacts are stored in the cloud and delivered when they reconnect. Deploy your own Cloudflare Worker (see README) and paste its URL below."
+                                <TextBlock Text="Display name" Style="{StaticResource SettingsLabelStyle}" />
+                                <TextBlock Text="How you appear to people on your network."
                                            Style="{StaticResource SettingsHintStyle}" />
                             </StackPanel>
-                            <ToggleSwitch x:Name="RelayEnabledToggle"
+                            <TextBox x:Name="UsernameBox"
+                                     Grid.Column="1"
+                                     Width="200"
+                                     VerticalAlignment="Center"
+                                     Style="{StaticResource GlassTextFieldStyle}"
+                                     PlaceholderText="Your name"
+                                     AutomationProperties.Name="Display name"
+                                     LostFocus="UsernameBox_LostFocus" />
+                        </Grid>
+                    </ContentControl>
+                </StackPanel>
+
+                <!-- Files -->
+                <StackPanel Style="{StaticResource SettingsSectionStyle}">
+                    <TextBlock Text="Files" Style="{StaticResource SettingsHeaderStyle}" />
+                    <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
+                        <StackPanel>
+                            <Grid Style="{StaticResource SettingsRowStyle}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Spacing="2">
+                                    <TextBlock Text="Received files" Style="{StaticResource SettingsLabelStyle}" />
+                                    <TextBlock x:Name="InboxPath" Style="{StaticResource SettingsPathStyle}" />
+                                </StackPanel>
+                                <Button Grid.Column="1"
+                                        Style="{StaticResource GlassPlainButtonStyle}"
+                                        VerticalAlignment="Center"
+                                        Content="Change…"
+                                        AutomationProperties.Name="Change received files folder"
+                                        Click="BrowseInbox_Click" />
+                            </Grid>
+                            <Rectangle Style="{StaticResource SettingsDividerStyle}" />
+                            <Grid Style="{StaticResource SettingsRowStyle}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Spacing="2">
+                                    <TextBlock Text="Screenshots" Style="{StaticResource SettingsLabelStyle}" />
+                                    <TextBlock x:Name="ScreenshotDirPath" Style="{StaticResource SettingsPathStyle}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1"
+                                            Orientation="Horizontal"
+                                            Spacing="2"
+                                            VerticalAlignment="Center">
+                                    <Button x:Name="ResetScreenshotDirBtn"
+                                            Style="{StaticResource GlassPlainButtonStyle}"
+                                            Content="Reset"
+                                            AutomationProperties.Name="Reset screenshots folder"
+                                            Visibility="Collapsed"
+                                            Click="ResetScreenshotDir_Click" />
+                                    <Button Style="{StaticResource GlassPlainButtonStyle}"
+                                            Content="Change…"
+                                            AutomationProperties.Name="Change screenshots folder"
+                                            Click="BrowseScreenshotDir_Click" />
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </ContentControl>
+                </StackPanel>
+
+                <!-- General -->
+                <StackPanel Style="{StaticResource SettingsSectionStyle}">
+                    <TextBlock Text="General" Style="{StaticResource SettingsHeaderStyle}" />
+                    <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
+                        <Grid Style="{StaticResource SettingsRowStyle}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Text="Keep running when the window is closed"
+                                           Style="{StaticResource SettingsLabelStyle}" />
+                                <TextBlock Text="LAN Messenger stays in the notification area, so messages and files still arrive."
+                                           Style="{StaticResource SettingsHintStyle}" />
+                            </StackPanel>
+                            <ToggleSwitch x:Name="CloseToTrayToggle"
                                           Grid.Column="1"
-                                          VerticalAlignment="Top"
                                           Style="{StaticResource GlassRowToggleStyle}"
-                                      Width="40" MinWidth="0" HorizontalAlignment="Right"
-                                          AutomationProperties.Name="Enable cloud relay"
-                                          Toggled="RelayEnabledToggle_Toggled">
+                                          Width="40" MinWidth="0" HorizontalAlignment="Right"
+                                          AutomationProperties.Name="Keep running when the window is closed"
+                                          Toggled="CloseToTrayToggle_Toggled">
                                 <ToggleSwitch.Resources>
                                     <StaticResource x:Key="ToggleSwitchFillOn" ResourceKey="TokenBrandBrush"/>
                                     <StaticResource x:Key="ToggleSwitchFillOnPointerOver" ResourceKey="TokenBrandHoverBrush"/>
@@ -239,165 +175,254 @@
                                 </ToggleSwitch.Resources>
                             </ToggleSwitch>
                         </Grid>
-                        <Rectangle Style="{StaticResource SettingsDividerStyle}" />
-                        <Grid Style="{StaticResource SettingsRowStyle}">
-                            <!-- One label width for every field row, so the
-                                 fields line up down the sheet. -->
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="96" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Worker URL"
-                                       VerticalAlignment="Center"
-                                       Style="{StaticResource SettingsLabelStyle}" />
-                            <TextBox x:Name="RelayUrlBox"
-                                     Grid.Column="1"
-                                     VerticalAlignment="Center"
-                                     Style="{StaticResource GlassTextFieldStyle}"
-                                     PlaceholderText="https://your-worker.workers.dev"
-                                     AutomationProperties.Name="Worker URL"
-                                     LostFocus="RelayUrlBox_LostFocus" />
-                        </Grid>
-                    </StackPanel>
-                </ContentControl>
-            </StackPanel>
+                    </ContentControl>
+                </StackPanel>
 
-            <!-- Updates -->
-            <StackPanel Style="{StaticResource SettingsSectionStyle}">
-                <TextBlock Text="Updates" Style="{StaticResource SettingsHeaderStyle}" />
-                <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
-                    <StackPanel>
+                <!-- Remote desktop -->
+                <StackPanel Style="{StaticResource SettingsSectionStyle}">
+                    <TextBlock Text="Remote desktop" Style="{StaticResource SettingsHeaderStyle}" />
+                    <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
                         <Grid Style="{StaticResource SettingsRowStyle}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <StackPanel VerticalAlignment="Center" Spacing="2">
-                                <TextBlock Text="Check for updates" Style="{StaticResource SettingsLabelStyle}" />
-                                <TextBlock x:Name="VersionText" Style="{StaticResource SettingsHintStyle}" />
-                                <TextBlock x:Name="UpdateStatusText" Style="{StaticResource SettingsHintStyle}" />
+                            <!-- The safety explanations are row hints, never tooltips. -->
+                            <StackPanel VerticalAlignment="Center" Spacing="4">
+                                <TextBlock Text="Allow remote desktop" Style="{StaticResource SettingsLabelStyle}" />
+                                <TextBlock Text="A saved contact can ask to view your screen, and separately to control it. You are asked every time — there is no unattended access, and peers who are not in your contacts are ignored without being told anything."
+                                           Style="{StaticResource SettingsHintStyle}" />
+                                <TextBlock x:Name="RemoteDesktopStopHint"
+                                           Text="Stop a session at any time from the indicator at the top of the screen, or with Ctrl+Alt+Shift+Esc, which works even while the other side is controlling your keyboard and mouse."
+                                           Style="{StaticResource SettingsHintStyle}" />
                             </StackPanel>
-                            <Button x:Name="CheckUpdatesBtn"
-                                    Grid.Column="1"
-                                    VerticalAlignment="Center"
-                                    Content="Check Now"
-                                    Style="{StaticResource GlassButtonStyle}"
-                                    Click="CheckUpdates_Click" />
+                            <ToggleSwitch x:Name="RemoteDesktopToggle"
+                                          Grid.Column="1"
+                                          VerticalAlignment="Top"
+                                          Style="{StaticResource GlassRowToggleStyle}"
+                                          Width="40" MinWidth="0" HorizontalAlignment="Right"
+                                          AutomationProperties.Name="Allow remote desktop"
+                                          Toggled="RemoteDesktopToggle_Toggled">
+                                <ToggleSwitch.Resources>
+                                    <StaticResource x:Key="ToggleSwitchFillOn" ResourceKey="TokenBrandBrush"/>
+                                    <StaticResource x:Key="ToggleSwitchFillOnPointerOver" ResourceKey="TokenBrandHoverBrush"/>
+                                    <StaticResource x:Key="ToggleSwitchFillOnPressed" ResourceKey="TokenBrandPressedBrush"/>
+                                    <StaticResource x:Key="ToggleSwitchStrokeOn" ResourceKey="TokenBrandBrush"/>
+                                    <StaticResource x:Key="ToggleSwitchStrokeOnPointerOver" ResourceKey="TokenBrandHoverBrush"/>
+                                    <StaticResource x:Key="ToggleSwitchStrokeOnPressed" ResourceKey="TokenBrandPressedBrush"/>
+                                </ToggleSwitch.Resources>
+                            </ToggleSwitch>
                         </Grid>
-                        <Rectangle Style="{StaticResource SettingsDividerStyle}" />
-                        <Grid Style="{StaticResource SettingsRowStyle}">
-                            <!-- One label width for every field row, so the
-                                 fields line up down the sheet. -->
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="96" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Source"
-                                       VerticalAlignment="Center"
-                                       Style="{StaticResource SettingsLabelStyle}" />
-                            <TextBox x:Name="UpdateRepoBox"
-                                     Grid.Column="1"
-                                     VerticalAlignment="Center"
-                                     Style="{StaticResource GlassTextFieldStyle}"
-                                     PlaceholderText="felzy613/lan-messenger"
-                                     AutomationProperties.Name="GitHub repository for updates"
-                                     ToolTipService.ToolTip="GitHub repository (owner/repo)"
-                                     LostFocus="UpdateRepoBox_LostFocus" />
-                        </Grid>
-                        <Border x:Name="UpdatePanel"
-                                Background="{ThemeResource TokenInsetFillBrush}"
-                                BorderBrush="{ThemeResource TokenBrandBrush}"
-                                BorderThickness="1"
-                                CornerRadius="{StaticResource TokenRadiusRow}"
-                                Padding="12"
-                                Margin="0,4,0,8"
-                                Visibility="Collapsed">
-                            <StackPanel Spacing="8">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEBD3;"
-                                              VerticalAlignment="Center"
-                                              Foreground="{ThemeResource TokenAccentInkBrush}" />
-                                    <TextBlock x:Name="UpdateAvailableText"
-                                               Grid.Column="1"
-                                               VerticalAlignment="Center"
-                                               TextTrimming="CharacterEllipsis"
-                                               Style="{StaticResource TokenTypeNameStyle}"
-                                               Foreground="{ThemeResource TokenInkBrush}" />
-                                    <Button x:Name="InstallNowBtn"
-                                            Grid.Column="2"
-                                            Content="Install &amp; Restart"
-                                            Style="{StaticResource GlassPrimaryButtonStyle}"
-                                            Click="InstallNow_Click" />
-                                </Grid>
-                                <!-- Release notes rendered as Markdown (headings, lists, bold,
-                                     inline code, links).  Collapsed to ~5 lines initially;
-                                     "Show more" expands into a scrollable area. -->
-                                <ScrollViewer x:Name="UpdateNotesScroll"
-                                              MaxHeight="120"
-                                              VerticalScrollBarVisibility="Hidden">
-                                    <RichTextBlock x:Name="UpdateNotesBlock"
-                                                   TextWrapping="Wrap"
-                                                   IsTextSelectionEnabled="True"
-                                                   Foreground="{ThemeResource TokenInkSecondaryBrush}" />
-                                </ScrollViewer>
-                                <Button x:Name="NotesToggleBtn"
-                                        Content="Show more"
-                                        Style="{StaticResource GlassPlainButtonStyle}"
-                                        HorizontalAlignment="Left"
-                                        Visibility="Collapsed"
-                                        Click="NotesToggleBtn_Click" />
-                                <ProgressBar x:Name="UpdateProgressBar"
-                                             Value="0"
-                                             Minimum="0"
-                                             Maximum="1"
-                                             Height="4" MinHeight="4"
-                                             CornerRadius="2"
-                                             Foreground="{ThemeResource TokenBrandBrush}"
-                                             Background="{ThemeResource TokenInsetFillBrush}"
-                                             Visibility="Collapsed">
-                                    <ProgressBar.Resources>
-                                        <x:Double x:Key="ProgressBarTrackHeight">4</x:Double>
-                                        <x:Double x:Key="ProgressBarMinHeight">4</x:Double>
-                                    </ProgressBar.Resources>
-                                </ProgressBar>
-                                <TextBlock x:Name="UpdateProgressText"
-                                           Style="{StaticResource TokenTypeLabelStyle}"
-                                           Foreground="{ThemeResource TokenInkSecondaryBrush}"
-                                           Visibility="Collapsed" />
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-                </ContentControl>
-            </StackPanel>
+                    </ContentControl>
+                </StackPanel>
 
-            <!-- Logging: one row, with its actions under the hint rather than
-                 across a divider, because they belong to the same sentence. -->
-            <StackPanel Style="{StaticResource SettingsSectionStyle}">
-                <TextBlock Text="Logging" Style="{StaticResource SettingsHeaderStyle}" />
-                <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
-                    <StackPanel Padding="0,8" Spacing="2">
-                        <TextBlock Text="Diagnostic logs" Style="{StaticResource SettingsLabelStyle}" />
-                        <TextBlock Text="Transfers, connections, discovery, UI events and crashes are always recorded. An export holds the current and rotated logs for every channel."
-                                   Style="{StaticResource SettingsHintStyle}" />
-                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
-                            <Button Content="Open Logs Folder"
-                                    Style="{StaticResource GlassButtonStyle}"
-                                    Click="OpenLogsFolder_Click" />
-                            <Button Content="Export Logs…"
-                                    Style="{StaticResource GlassButtonStyle}"
-                                    Click="ExportLogs_Click" />
-                            <TextBlock x:Name="LogExportStatus"
-                                       VerticalAlignment="Center"
-                                       Style="{StaticResource SettingsHintStyle}" />
+                <!-- Cloud relay -->
+                <StackPanel Style="{StaticResource SettingsSectionStyle}">
+                    <TextBlock Text="Cloud relay" Style="{StaticResource SettingsHeaderStyle}" />
+                    <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
+                        <StackPanel>
+                            <Grid Style="{StaticResource SettingsRowStyle}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Spacing="2">
+                                    <TextBlock Text="Enable cloud relay" Style="{StaticResource SettingsLabelStyle}" />
+                                    <TextBlock Text="Messages to offline contacts are stored in the cloud and delivered when they reconnect. Deploy your own Cloudflare Worker (see README) and paste its URL below."
+                                               Style="{StaticResource SettingsHintStyle}" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="RelayEnabledToggle"
+                                              Grid.Column="1"
+                                              VerticalAlignment="Top"
+                                              Style="{StaticResource GlassRowToggleStyle}"
+                                          Width="40" MinWidth="0" HorizontalAlignment="Right"
+                                              AutomationProperties.Name="Enable cloud relay"
+                                              Toggled="RelayEnabledToggle_Toggled">
+                                    <ToggleSwitch.Resources>
+                                        <StaticResource x:Key="ToggleSwitchFillOn" ResourceKey="TokenBrandBrush"/>
+                                        <StaticResource x:Key="ToggleSwitchFillOnPointerOver" ResourceKey="TokenBrandHoverBrush"/>
+                                        <StaticResource x:Key="ToggleSwitchFillOnPressed" ResourceKey="TokenBrandPressedBrush"/>
+                                        <StaticResource x:Key="ToggleSwitchStrokeOn" ResourceKey="TokenBrandBrush"/>
+                                        <StaticResource x:Key="ToggleSwitchStrokeOnPointerOver" ResourceKey="TokenBrandHoverBrush"/>
+                                        <StaticResource x:Key="ToggleSwitchStrokeOnPressed" ResourceKey="TokenBrandPressedBrush"/>
+                                    </ToggleSwitch.Resources>
+                                </ToggleSwitch>
+                            </Grid>
+                            <Rectangle Style="{StaticResource SettingsDividerStyle}" />
+                            <Grid Style="{StaticResource SettingsRowStyle}">
+                                <!-- One label width for every field row, so the
+                                     fields line up down the sheet. -->
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="96" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Worker URL"
+                                           VerticalAlignment="Center"
+                                           Style="{StaticResource SettingsLabelStyle}" />
+                                <TextBox x:Name="RelayUrlBox"
+                                         Grid.Column="1"
+                                         VerticalAlignment="Center"
+                                         Style="{StaticResource GlassTextFieldStyle}"
+                                         PlaceholderText="https://your-worker.workers.dev"
+                                         AutomationProperties.Name="Worker URL"
+                                         LostFocus="RelayUrlBox_LostFocus" />
+                            </Grid>
                         </StackPanel>
-                    </StackPanel>
-                </ContentControl>
+                    </ContentControl>
+                </StackPanel>
+
+                <!-- Updates -->
+                <StackPanel Style="{StaticResource SettingsSectionStyle}">
+                    <TextBlock Text="Updates" Style="{StaticResource SettingsHeaderStyle}" />
+                    <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
+                        <StackPanel>
+                            <Grid Style="{StaticResource SettingsRowStyle}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Spacing="2">
+                                    <TextBlock Text="Check for updates" Style="{StaticResource SettingsLabelStyle}" />
+                                    <TextBlock x:Name="VersionText" Style="{StaticResource SettingsHintStyle}" />
+                                    <TextBlock x:Name="UpdateStatusText" Style="{StaticResource SettingsHintStyle}" />
+                                </StackPanel>
+                                <Button x:Name="CheckUpdatesBtn"
+                                        Grid.Column="1"
+                                        VerticalAlignment="Center"
+                                        Content="Check Now"
+                                        Style="{StaticResource GlassButtonStyle}"
+                                        Click="CheckUpdates_Click" />
+                            </Grid>
+                            <Rectangle Style="{StaticResource SettingsDividerStyle}" />
+                            <Grid Style="{StaticResource SettingsRowStyle}">
+                                <!-- One label width for every field row, so the
+                                     fields line up down the sheet. -->
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="96" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Source"
+                                           VerticalAlignment="Center"
+                                           Style="{StaticResource SettingsLabelStyle}" />
+                                <TextBox x:Name="UpdateRepoBox"
+                                         Grid.Column="1"
+                                         VerticalAlignment="Center"
+                                         Style="{StaticResource GlassTextFieldStyle}"
+                                         PlaceholderText="felzy613/lan-messenger"
+                                         AutomationProperties.Name="GitHub repository for updates"
+                                         ToolTipService.ToolTip="GitHub repository (owner/repo)"
+                                         LostFocus="UpdateRepoBox_LostFocus" />
+                            </Grid>
+                            <Border x:Name="UpdatePanel"
+                                    Background="{ThemeResource TokenInsetFillBrush}"
+                                    BorderBrush="{ThemeResource TokenBrandBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="{StaticResource TokenRadiusRow}"
+                                    Padding="12"
+                                    Margin="0,4,0,8"
+                                    Visibility="Collapsed">
+                                <StackPanel Spacing="8">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEBD3;"
+                                                  VerticalAlignment="Center"
+                                                  Foreground="{ThemeResource TokenAccentInkBrush}" />
+                                        <TextBlock x:Name="UpdateAvailableText"
+                                                   Grid.Column="1"
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Style="{StaticResource TokenTypeNameStyle}"
+                                                   Foreground="{ThemeResource TokenInkBrush}" />
+                                        <Button x:Name="InstallNowBtn"
+                                                Grid.Column="2"
+                                                Content="Install &amp; Restart"
+                                                Style="{StaticResource GlassPrimaryButtonStyle}"
+                                                Click="InstallNow_Click" />
+                                    </Grid>
+                                    <!-- Release notes rendered as Markdown (headings, lists, bold,
+                                         inline code, links).  Collapsed to ~5 lines initially;
+                                         "Show more" expands into a scrollable area. -->
+                                    <ScrollViewer x:Name="UpdateNotesScroll"
+                                                  MaxHeight="120"
+                                                  VerticalScrollBarVisibility="Hidden">
+                                        <RichTextBlock x:Name="UpdateNotesBlock"
+                                                       TextWrapping="Wrap"
+                                                       IsTextSelectionEnabled="True"
+                                                       Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+                                    </ScrollViewer>
+                                    <Button x:Name="NotesToggleBtn"
+                                            Content="Show more"
+                                            Style="{StaticResource GlassPlainButtonStyle}"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Collapsed"
+                                            Click="NotesToggleBtn_Click" />
+                                    <ProgressBar x:Name="UpdateProgressBar"
+                                                 Value="0"
+                                                 Minimum="0"
+                                                 Maximum="1"
+                                                 Height="4" MinHeight="4"
+                                                 CornerRadius="2"
+                                                 Foreground="{ThemeResource TokenBrandBrush}"
+                                                 Background="{ThemeResource TokenInsetFillBrush}"
+                                                 Visibility="Collapsed">
+                                        <ProgressBar.Resources>
+                                            <x:Double x:Key="ProgressBarTrackHeight">4</x:Double>
+                                            <x:Double x:Key="ProgressBarMinHeight">4</x:Double>
+                                        </ProgressBar.Resources>
+                                    </ProgressBar>
+                                    <TextBlock x:Name="UpdateProgressText"
+                                               Style="{StaticResource TokenTypeLabelStyle}"
+                                               Foreground="{ThemeResource TokenInkSecondaryBrush}"
+                                               Visibility="Collapsed" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ContentControl>
+                </StackPanel>
+
+                <!-- Logging: one row, with its actions under the hint rather than
+                     across a divider, because they belong to the same sentence. -->
+                <StackPanel Style="{StaticResource SettingsSectionStyle}">
+                    <TextBlock Text="Logging" Style="{StaticResource SettingsHeaderStyle}" />
+                    <ContentControl Style="{StaticResource GlassSettingsGroupStyle}">
+                        <StackPanel Padding="0,8" Spacing="2">
+                            <TextBlock Text="Diagnostic logs" Style="{StaticResource SettingsLabelStyle}" />
+                            <TextBlock Text="Transfers, connections, discovery, UI events and crashes are always recorded. An export holds the current and rotated logs for every channel."
+                                       Style="{StaticResource SettingsHintStyle}" />
+                            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+                                <Button Content="Open Logs Folder"
+                                        Style="{StaticResource GlassButtonStyle}"
+                                        Click="OpenLogsFolder_Click" />
+                                <Button Content="Export Logs…"
+                                        Style="{StaticResource GlassButtonStyle}"
+                                        Click="ExportLogs_Click" />
+                                <TextBlock x:Name="LogExportStatus"
+                                           VerticalAlignment="Center"
+                                           Style="{StaticResource SettingsHintStyle}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ContentControl>
+                </StackPanel>
             </StackPanel>
-        </StackPanel>
-    </ScrollViewer>
+        </ScrollViewer>
+
+        <Rectangle x:Name="TopScrollEdge"
+                   VerticalAlignment="Top"
+                   Height="{StaticResource TokenSpaceS24}"
+                   Margin="0,0,24,0"
+                   IsHitTestVisible="False"
+                   Opacity="0"
+                   Visibility="Collapsed" />
+        <Rectangle x:Name="BottomScrollEdge"
+                   VerticalAlignment="Bottom"
+                   Height="{StaticResource TokenSpaceS24}"
+                   Margin="0,0,24,0"
+                   IsHitTestVisible="False"
+                   Opacity="0"
+                   Visibility="Collapsed" />
+    </Grid>
 </Page>
