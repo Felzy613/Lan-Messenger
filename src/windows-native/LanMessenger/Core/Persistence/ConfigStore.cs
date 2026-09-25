@@ -1,4 +1,5 @@
 using LanMessenger.Core.Networking.Media;
+using LanMessenger.Core.Services;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -88,6 +89,11 @@ public sealed class ConfigStore
 
     private static string ResolveAppDataDir()
     {
+        // No test saves config today, but every queued message or contact
+        // change does, and a test that reached one would put its pending
+        // message in the real outbox. See TestIsolation.
+        if (TestIsolation.IsActive) return TestIsolation.ScratchPath("config");
+
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         if (string.IsNullOrEmpty(appData))
             appData = Environment.GetEnvironmentVariable("APPDATA");
@@ -124,7 +130,9 @@ public sealed class ConfigStore
 
     public string HistoryFilePath => Path.Combine(_appDataDir, "history.enc");
 
-    public string LogsDirectory => Path.Combine(_appDataDir, "Logs");
+    // The logger owns this path, as on macOS, so UpdateService's update.log
+    // cannot resolve somewhere the logger's own guard does not cover.
+    public string LogsDirectory => LanLogger.LogsDirectory;
 
     public string UpdateStagingDirectory => Path.Combine(_appDataDir, "Updates");
 

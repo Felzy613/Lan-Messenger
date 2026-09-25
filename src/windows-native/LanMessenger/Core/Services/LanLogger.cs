@@ -96,8 +96,14 @@ public static class LanLogger
 
     private static readonly object _lock = new();
 
-    private static readonly string _defaultLogDir =
-        Path.Combine(ConfigStore.Shared.AppDataDirectory, "Logs");
+    // Under MSTest the default is a scratch directory, never the real one. The
+    // override alone is not enough: only the logger's own tests set it, while
+    // most of the suite logs without it — every MessagingService and
+    // remote-desktop test does, and sessions go on logging from their own
+    // threads after the test that started them returns. See TestIsolation.
+    private static readonly string _defaultLogDir = TestIsolation.IsActive
+        ? TestIsolation.ScratchPath("logs")
+        : Path.Combine(ConfigStore.Shared.AppDataDirectory, "Logs");
 
     // Per-channel header-written flags (access under _lock).
     private static readonly Dictionary<LogChannel, bool> _headerWritten =

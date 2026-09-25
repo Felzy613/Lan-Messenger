@@ -743,7 +743,20 @@ Use the smallest sufficient set for the change:
   open the real key, and a save during a test wrote a 1970-dated thread under
   `192.168.99.77` into a user's actual history. `HistoryStore` points itself at a
   temp file when XCTest/MSTest is loaded; keep new persistence singletons behind
-  the same guard.
+  the same guard — `TestIsolation` on both platforms, which `ConfigStore` and the
+  logger use too.
+- Do not let the test suites write the real logs. Only the logger's own tests
+  set `_testLogDirectoryOverride`/`TestLogDirectoryOverride`; every
+  `MessagingService` and remote-desktop test logs through the default, so
+  `swift test` and `dotnet vstest` appended their own `# Session` headers and
+  `typing from 192.168.1.31 dropped` lines to the running app's `client.log` and
+  `remote.log` — the files a user exports into a bug report. Under tests
+  `NetLogger`/`LanLogger` default to a per-process
+  `lanmessenger-tests-<pid>-logs` in the temp directory, so a tearDown that
+  resets the override to nil lands there, not in the real directory. Windows
+  `ConfigStore.LogsDirectory` defers to the logger, as macOS's always did, so
+  nothing resolves a log path the guard misses. Covered by `TestIsolationTests`
+  on both platforms.
 - Do not refuse a new remote-desktop invite because another is pending. A
   single app-wide pending slot turned one misdirected invite into a dead button
   for every contact for sixty seconds. A new request supersedes the pending one

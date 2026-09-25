@@ -4,8 +4,9 @@ using System.Text.Json;
 
 namespace LanMessenger.Tests;
 
-// ConfigStore uses real AppData paths, so we test the config model + serialization directly
-// (not the singleton, which would mutate user data).
+// Tests the config model + serialization directly. Under MSTest the singleton
+// lives in a scratch directory (TestIsolation), so it can no longer touch user
+// data, but its state is shared by the whole run.
 [TestClass]
 public class ConfigStoreTests
 {

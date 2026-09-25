@@ -1,8 +1,9 @@
 import XCTest
 @testable import LanMessenger
 
-// ConfigStore reads/writes to Application Support so these are integration-style tests.
-// They operate on a temp directory to avoid polluting real user data.
+// Tests the config model + serialization directly. Under XCTest the singleton
+// lives in a scratch directory (TestIsolation), so it can no longer touch user
+// data, but its state is shared by the whole run.
 final class ConfigStoreTests: XCTestCase {
 
     // MARK: - Filename sanitization (pure logic, no disk I/O)

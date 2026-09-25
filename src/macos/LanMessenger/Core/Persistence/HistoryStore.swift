@@ -138,20 +138,14 @@ final class HistoryStore {
     private(set) var history: [String: [MessageEntry]] = [:]
 
     private init() {
-        fileURL = Self.runningUnderTests
-            ? FileManager.default.temporaryDirectory
-                .appendingPathComponent("lanmessenger-tests-\(ProcessInfo.processInfo.processIdentifier)-history.enc")
+        // Explicit rather than inherited from ConfigStore's own guard: the test
+        // process can open the real keychain key, so this file is the one that
+        // must never be the real one. See TestIsolation.
+        fileURL = TestIsolation.isActive
+            ? TestIsolation.scratchURL("history.enc")
             : ConfigStore.shared.historyFileURL
         load()
     }
-
-    /// The suite exercises this singleton directly, and the test process can
-    /// open the real keychain key — so without this, `swift test` decrypted the
-    /// user's own history, and any path that saved wrote test conversations
-    /// back into it. One did: a thread under `192.168.99.77`, sender "me",
-    /// dated 1970, sat in a real history file until the user hid it. XCTest is
-    /// never linked into the app, so its presence is an unambiguous signal.
-    private static var runningUnderTests: Bool { NSClassFromString("XCTestCase") != nil }
 
     // MARK: - Load
 
