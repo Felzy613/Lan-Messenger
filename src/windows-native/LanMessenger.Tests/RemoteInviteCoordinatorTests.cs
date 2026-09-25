@@ -55,6 +55,10 @@ public class RemoteInviteCoordinatorTests
         public List<(string Name, string IP)> ViewingStarts { get; } = [];
         public List<(string SessionId, string Name, string IP)> HostingArmed { get; } = [];
         public int AttachCalls { get; set; }
+        /// <summary>Where each media attach was dialled.</summary>
+        public List<string> AttachAddresses { get; } = [];
+        /// <summary>Everything the coordinator told the interface, in order.</summary>
+        public List<string> Statuses { get; } = [];
 
         /// Set by the test to answer whatever prompt is raised.
         public RemoteConsentOutcome ConsentAnswer { get; set; } = RemoteConsentOutcome.Declined();
@@ -113,7 +117,12 @@ public class RemoteInviteCoordinatorTests
                     }
                 }
             },
-            AttachOutbound = (_, _) => { recorder.AttachCalls++; return null; },
+            AttachOutbound = (ip, _) =>
+            {
+                recorder.AttachCalls++;
+                recorder.AttachAddresses.Add(ip);
+                return null;
+            },
             OwnPublicKeyB64 = () => peers.LocalKeyB64,
             OwnUsername = () => "Dell",
             PrivateKey = () => peers.LocalPrivate,
@@ -129,7 +138,9 @@ public class RemoteInviteCoordinatorTests
             StartViewing = (name, ip, _) => recorder.ViewingStarts.Add((name, ip)),
             ArmHosting = (id, name, ip) => recorder.HostingArmed.Add((id, name, ip)),
         };
-        return new RemoteInviteCoordinator(env);
+        var coordinator = new RemoteInviteCoordinator(env);
+        coordinator.OnStateChange = status => recorder.Statuses.Add(status);
+        return coordinator;
     }
 
     /// <summary>A remote_invite as the Mac would actually send one.</summary>
@@ -322,6 +333,145 @@ public class RemoteInviteCoordinatorTests
         CollectionAssert.AreEqual(new[] { "remote_invite" }, recorder.DecodedTypes());
         Assert.IsTrue(coordinator.HasInviteInFlight);
         coordinator.CancelInvite();
+    }
+
+    // ---- Addressed by identity, not by a remembered IP ----------------------
+
+    /// <summary>The packet types sent to <paramref name="ip"/>, in order.</summary>
+    private static List<string> TypesSentTo(string ip, Recorder recorder) =>
+        recorder.Sent
+            .Where(e => e.IP == ip && e.Frame.Length > 4)
+            .Select(e =>
+            {
+                using var document = JsonDocument.Parse(e.Frame.AsMemory(4));
+                return document.RootElement.GetProperty("type").GetString()!;
+            })
+            .ToList();
+
+    [TestMethod]
+    public void InvitingSomebodyElseSupersedesThePendingInvite()
+    {
+        // The bug: one invite outstanding refused every other for up to a
+        // minute, silently. An invite to Ari — clicked by mistake, or aimed at
+        // an address that now belongs to Ari — made the button for everyone
+        // else do nothing, with only invite_blocked in a log.
+        using var peers = new Peers();
+        using var ari = Key.Create(KeyAgreementAlgorithm.X25519,
+            new KeyCreationParameters { ExportPolicy = KeyExportPolicies.AllowPlaintextExport });
+        string ariKey = Convert.ToBase64String(ari.PublicKey.Export(KeyBlobFormat.RawPublicKey));
+        var recorder = new Recorder();
+        var coordinator = MakeCoordinator(peers, recorder, contacts:
+        [
+            new KnownContact(peers.RemoteKeyB64, "Mac", "192.168.68.15"),
+            new KnownContact(ariKey, "Ari", "192.168.68.31"),
+        ]);
+
+        coordinator.Invite(ariKey, "192.168.68.31", "Ari");
+        string? first = coordinator.PendingSessionId;
+        coordinator.Invite(peers.RemoteKeyB64, "192.168.68.15", "Mac");
+
+        CollectionAssert.AreEqual(new[] { "remote_invite" }, TypesSentTo("192.168.68.15", recorder),
+                                  "the Mac's invite was refused behind Ari's");
+        Assert.AreNotEqual(first, coordinator.PendingSessionId);
+        // Withdrawn, not abandoned: a prompt that did reach Ari must close.
+        CollectionAssert.AreEqual(new[] { "remote_invite", "remote_end" },
+                                  TypesSentTo("192.168.68.31", recorder));
+        Assert.AreEqual("Waiting for Mac to accept…", recorder.Statuses[^1]);
+        coordinator.CancelInvite();
+    }
+
+    [TestMethod]
+    public void TheSamePeerAtANewAddressSupersedesTooBecauseTheOldOneCannotArrive()
+    {
+        // DHCP moved the peer between two clicks. The pending invite went to an
+        // address that reaches nobody — or somebody else — so keeping it would
+        // wait a full minute for an answer that is not coming.
+        using var peers = new Peers();
+        var recorder = new Recorder();
+        var coordinator = MakeCoordinator(peers, recorder);
+
+        coordinator.Invite(peers.RemoteKeyB64, "192.168.68.31", "Mac");
+        coordinator.Invite(peers.RemoteKeyB64, "192.168.68.15", "Mac");
+
+        CollectionAssert.AreEqual(new[] { "remote_invite" }, TypesSentTo("192.168.68.15", recorder));
+        CollectionAssert.AreEqual(new[] { "remote_invite", "remote_end" },
+                                  TypesSentTo("192.168.68.31", recorder));
+        coordinator.CancelInvite();
+    }
+
+    [TestMethod]
+    public void ARepeatedClickSaysItIsStillWaitingRatherThanNothing()
+    {
+        // Same device, same address: genuinely still asking. No second invite —
+        // but the status is said again, because a second click is a user who
+        // cannot tell whether the first one did anything.
+        using var peers = new Peers();
+        var recorder = new Recorder();
+        var coordinator = MakeCoordinator(peers, recorder);
+
+        coordinator.Invite(peers.RemoteKeyB64, "10.0.0.9", "Mac");
+        recorder.Statuses.Clear();
+        coordinator.Invite(peers.RemoteKeyB64, "10.0.0.9", "Mac");
+
+        CollectionAssert.AreEqual(new[] { "remote_invite" }, recorder.DecodedTypes());
+        CollectionAssert.AreEqual(new[] { "Waiting for Mac to accept…" }, recorder.Statuses);
+        coordinator.CancelInvite();
+    }
+
+    [TestMethod]
+    public void TheMediaChannelDialsWhereTheAuthenticatedAcceptCameFrom()
+    {
+        // The accept only opens under the peer's identity key, so its source
+        // address is proof of where that device is now. The invite's own
+        // address is older by a round trip and a human decision.
+        using var peers = new Peers();
+        var recorder = new Recorder();
+        var coordinator = MakeCoordinator(peers, recorder);
+
+        coordinator.Invite(peers.RemoteKeyB64, "192.168.68.31", "Mac");
+        string sessionId = coordinator.PendingSessionId!;
+
+        var sealed_ = MakeInvite(peers, sessionId);
+        var accept = new RemoteSessionPacket
+        {
+            Type = "remote_accept",
+            SessionId = sessionId,
+            Sender = "Mac",
+            SenderPublicKeyB64 = peers.RemoteKeyB64,
+            Port = 54232,
+            Nonce = sealed_.Nonce,
+            Ciphertext = sealed_.Ciphertext,
+        };
+        coordinator.HandleAccept(accept, "192.168.68.15");
+
+        CollectionAssert.AreEqual(new[] { "192.168.68.15" }, recorder.AttachAddresses);
+    }
+
+    [TestMethod]
+    public void AnAcceptThatDoesNotOpenDialsNothingWhateverItsAddress()
+    {
+        // The source address is trusted only after the body opens. A forged
+        // accept from a third machine must not make us dial it.
+        using var peers = new Peers();
+        var recorder = new Recorder();
+        var coordinator = MakeCoordinator(peers, recorder);
+
+        coordinator.Invite(peers.RemoteKeyB64, "192.168.68.15", "Mac");
+        string sessionId = coordinator.PendingSessionId!;
+
+        var forged = new RemoteSessionPacket
+        {
+            Type = "remote_accept",
+            SessionId = sessionId,
+            Sender = "Mac",
+            SenderPublicKeyB64 = peers.RemoteKeyB64,
+            Port = 54232,
+            Nonce = "AAAAAAAAAAAAAAAA",
+            Ciphertext = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        };
+        coordinator.HandleAccept(forged, "192.168.68.66");
+
+        Assert.AreEqual(0, recorder.AttachAddresses.Count);
     }
 
     [TestMethod]

@@ -111,9 +111,13 @@ struct MessageEntry: Codable, Identifiable {
 // Manages reading and writing the encrypted history file.
 // Format and key derivation are identical to the Python app so files are portable.
 //
-// Inner JSON structure: { "<peer_ip>": [MessageEntry, ...] }
-// Keyed by peer IP (not public key) — same as Python.
-// Max 200 entries per peer.
+// Inner JSON structure: { "<conversation id>": [MessageEntry, ...] }
+//
+// Keyed by conversation id — the peer's identity key (see `PeerID`). It used to
+// be the peer's LAN address, which DHCP recycles between machines, so a thread
+// could be filed under a name later given to somebody else. The file shape is
+// unchanged; only what the names mean is, and history written under addresses
+// is re-filed once, at load. Max 200 entries per peer.
 final class HistoryStore {
 
     static let shared = HistoryStore()
@@ -130,13 +134,24 @@ final class HistoryStore {
         qos: .background
     )
 
-    // All loaded conversations, keyed by peer IP.
+    // All loaded conversations, keyed by conversation id (`PeerID`).
     private(set) var history: [String: [MessageEntry]] = [:]
 
     private init() {
-        fileURL = ConfigStore.shared.historyFileURL
+        fileURL = Self.runningUnderTests
+            ? FileManager.default.temporaryDirectory
+                .appendingPathComponent("lanmessenger-tests-\(ProcessInfo.processInfo.processIdentifier)-history.enc")
+            : ConfigStore.shared.historyFileURL
         load()
     }
+
+    /// The suite exercises this singleton directly, and the test process can
+    /// open the real keychain key — so without this, `swift test` decrypted the
+    /// user's own history, and any path that saved wrote test conversations
+    /// back into it. One did: a thread under `192.168.99.77`, sender "me",
+    /// dated 1970, sat in a real history file until the user hid it. XCTest is
+    /// never linked into the app, so its presence is an unambiguous signal.
+    private static var runningUnderTests: Bool { NSClassFromString("XCTestCase") != nil }
 
     // MARK: - Load
 
@@ -149,7 +164,24 @@ final class HistoryStore {
                 privateKey: KeyManager.shared.privateKey
             )
             guard let raw = try? JSONDecoder().decode([String: [MessageEntry]].self, from: plaintext) else { return }
-            history = raw.mapValues { Array($0.suffix(Self.maxEntriesPerPeer)) }
+            let capped = raw.mapValues { Array($0.suffix(Self.maxEntriesPerPeer)) }
+
+            // Re-file anything still named by address. Idempotent: a key is
+            // already an id, so a history that has been migrated passes
+            // through untouched and nothing is written.
+            let contacts = ConfigStore.shared.config.contacts.map {
+                PeerID.Contact(publicKeyB64: $0.publicKeyB64, lastIP: $0.lastIP)
+            }
+            let (rekeyed, moved) = PeerID.rekey(history: capped, contacts: contacts,
+                                                cap: Self.maxEntriesPerPeer)
+            history = rekeyed
+            if !moved.isEmpty {
+                let unattributed = moved.values.filter(PeerID.isLegacy).count
+                NetLogger.info("History",
+                    "re-filed \(moved.count) conversation(s) from address to identity key"
+                    + (unattributed > 0 ? " (\(unattributed) kept under their address: no single contact owned it)" : ""))
+                save()
+            }
         } catch {
             // Corrupted or wrong key — start fresh
             history = [:]
@@ -191,40 +223,49 @@ final class HistoryStore {
 
     // MARK: - Mutations
 
-    func append(entry: MessageEntry, forPeerIP ip: String) {
-        var entries = history[ip] ?? []
+    func append(entry: MessageEntry, forPeer peer: String) {
+        var entries = history[peer] ?? []
         entries.append(entry)
-        history[ip] = Array(entries.suffix(Self.maxEntriesPerPeer))
+        history[peer] = Array(entries.suffix(Self.maxEntriesPerPeer))
     }
 
-    func markReadReceiptSent(messageId: String, peerIP: String) {
-        guard var entries = history[peerIP] else { return }
+    /// Moves everything filed under `source` into `target`, merged as
+    /// `PeerID.merge` does. Returns false when there was nothing to move.
+    @discardableResult
+    func merge(from source: String, into target: String) -> Bool {
+        guard source != target, let moving = history.removeValue(forKey: source) else { return false }
+        history[target] = PeerID.merge([history[target] ?? [], moving], cap: Self.maxEntriesPerPeer)
+        return true
+    }
+
+    func markReadReceiptSent(messageId: String, peer: String) {
+        guard var entries = history[peer] else { return }
         for i in entries.indices where entries[i].messageId == messageId {
             entries[i].readReceiptSent = true
         }
-        history[peerIP] = entries
+        history[peer] = entries
     }
 
     // Marks every incoming entry for a peer as read, regardless of whether it has
     // a messageId.  File-transfer entries (messageId == nil) are not handled by
     // markReadReceiptSent and would otherwise remain unread after an app restart.
-    func markAllIncomingRead(forPeerIP ip: String) {
-        guard var entries = history[ip] else { return }
+    func markAllIncomingRead(forPeer peer: String) {
+        guard var entries = history[peer] else { return }
         var changed = false
         for i in entries.indices where entries[i].incoming && !entries[i].readReceiptSent {
             entries[i].readReceiptSent = true
             changed = true
         }
-        if changed { history[ip] = entries }
+        if changed { history[peer] = entries }
     }
 
     // Marks a message entry as having transited the cloud relay. Called once
     // the Worker has *confirmed* an outgoing message was stored (see
     // MessagingService.markRelayStored). Scans every bucket rather than
-    // taking a peerIP — an outgoing message's bucket is known at send time,
+    // taking a conversation id — an outgoing message's bucket is known at send time,
     // but retries of a failed store (fired from the relay-outbox retry loop,
     // which only knows the messageId) need to find it without re-resolving
-    // an IP that may have changed since the message was queued.
+    // the conversation from state that may have changed since it was queued.
     func markRelayDelivery(messageId: String) {
         for (ip, entries) in history {
             guard let idx = entries.firstIndex(where: { $0.messageId == messageId }) else { continue }
@@ -244,8 +285,8 @@ final class HistoryStore {
     // check mark forever on cross-platform exchanges. Returns true iff the
     // status was actually applied.
     @discardableResult
-    func updateStatus(_ status: String, forMessageId messageId: String, peerIP: String) -> Bool {
-        guard var entries = history[peerIP] else { return false }
+    func updateStatus(_ status: String, forMessageId messageId: String, peer: String) -> Bool {
+        guard var entries = history[peer] else { return false }
         var applied = false
         for i in entries.indices where entries[i].messageId == messageId {
             if MessageStatus.shouldApply(status, over: entries[i].status) {
@@ -253,12 +294,12 @@ final class HistoryStore {
                 applied = true
             }
         }
-        if applied { history[peerIP] = entries }
+        if applied { history[peer] = entries }
         return applied
     }
 
-    func entries(forPeerIP ip: String) -> [MessageEntry] {
-        history[ip] ?? []
+    func entries(forPeer peer: String) -> [MessageEntry] {
+        history[peer] ?? []
     }
 
     // Scans every peer bucket, not just one IP. Relay messages are dispatched
@@ -284,8 +325,8 @@ final class HistoryStore {
     // rather than allowed to blank what we said. Inbound notices pass true; our
     // own "delete for everyone" passes false.
     @discardableResult
-    func markDeleted(messageId: String, peerIP: String, requireIncoming: Bool) -> Bool {
-        guard var entries = history[peerIP] else { return false }
+    func markDeleted(messageId: String, peer: String, requireIncoming: Bool) -> Bool {
+        guard var entries = history[peer] else { return false }
         var changed = false
         for i in entries.indices where entries[i].messageId == messageId {
             if entries[i].incoming != requireIncoming { continue }
@@ -297,7 +338,7 @@ final class HistoryStore {
             changed = true
         }
         if changed {
-            history[peerIP] = entries
+            history[peer] = entries
             save()
         }
         return changed
@@ -316,11 +357,11 @@ final class HistoryStore {
     /// `__FILE__:` text is a local path, not a body the peer can replace.
     @discardableResult
     func applyEdit(messageId: String,
-                   peerIP: String,
+                   peer: String,
                    newText: String,
                    editedAt: Double,
                    requireIncoming: Bool) -> Bool {
-        guard var entries = history[peerIP] else { return false }
+        guard var entries = history[peer] else { return false }
         var changed = false
         for i in entries.indices where entries[i].messageId == messageId {
             let e = entries[i]
@@ -333,7 +374,7 @@ final class HistoryStore {
             changed = true
         }
         if changed {
-            history[peerIP] = entries
+            history[peer] = entries
             save()
         }
         return changed
@@ -341,27 +382,17 @@ final class HistoryStore {
 
     // Removes the first entry matching `entry` via sameEntry — used for
     // "delete for me", a local-only operation that never sends a packet.
-    func removeEntry(matching entry: MessageEntry, peerIP: String) {
-        guard var entries = history[peerIP] else { return }
+    func removeEntry(matching entry: MessageEntry, peer: String) {
+        guard var entries = history[peer] else { return }
         guard let idx = entries.firstIndex(where: { MessageEntry.sameEntry($0, entry) }) else { return }
         entries.remove(at: idx)
-        history[peerIP] = entries
+        history[peer] = entries
         save()
     }
 
-    // Drops all messages for a peer IP. Caller is responsible for persisting via save().
-    func delete(peerIP: String) {
-        history.removeValue(forKey: peerIP)
-    }
-
-    // Moves all history entries from one peer IP to another. Used when a saved
-    // contact reappears on a different LAN IP — we keep their thread intact.
-    // If both keys hold entries, they are merged in timestamp order.
-    func migrate(fromIP: String, toIP: String) {
-        guard fromIP != toIP, let oldEntries = history.removeValue(forKey: fromIP) else { return }
-        let existing = history[toIP] ?? []
-        let merged = Self.dedupByMessageId(existing + oldEntries).sorted { $0.timestamp < $1.timestamp }
-        history[toIP] = Array(merged.suffix(Self.maxEntriesPerPeer))
+    // Drops all messages for a conversation. Caller persists via save().
+    func delete(peer: String) {
+        history.removeValue(forKey: peer)
     }
 
     // Keeps the first occurrence of each messageId; entries with no messageId

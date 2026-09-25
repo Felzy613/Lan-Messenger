@@ -46,17 +46,17 @@ final class MessageStatusTests: XCTestCase {
             status: MessageStatus.sending, readReceiptSent: false
         )
         let peer = "192.168.99.99"
-        HistoryStore.shared.append(entry: entry, forPeerIP: peer)
+        HistoryStore.shared.append(entry: entry, forPeer: peer)
 
         // Simulate the race: receipt arrives first (Delivered), then the late
         // "Sent" dispatch from the sender's own send-completion.
-        XCTAssertTrue(HistoryStore.shared.updateStatus(MessageStatus.delivered, forMessageId: "msg-rank-test", peerIP: peer))
-        XCTAssertFalse(HistoryStore.shared.updateStatus(MessageStatus.sent,     forMessageId: "msg-rank-test", peerIP: peer))
+        XCTAssertTrue(HistoryStore.shared.updateStatus(MessageStatus.delivered, forMessageId: "msg-rank-test", peer: peer))
+        XCTAssertFalse(HistoryStore.shared.updateStatus(MessageStatus.sent,     forMessageId: "msg-rank-test", peer: peer))
 
-        let stored = HistoryStore.shared.entries(forPeerIP: peer).first(where: { $0.messageId == "msg-rank-test" })
+        let stored = HistoryStore.shared.entries(forPeer: peer).first(where: { $0.messageId == "msg-rank-test" })
         XCTAssertEqual(stored?.status, MessageStatus.delivered,
             "Late 'Sent' dispatch must not overwrite 'Delivered' — this was the single-tick bug.")
 
-        HistoryStore.shared.delete(peerIP: peer)
+        HistoryStore.shared.delete(peer: peer)
     }
 }

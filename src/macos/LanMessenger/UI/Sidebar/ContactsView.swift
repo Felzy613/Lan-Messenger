@@ -137,7 +137,7 @@ struct ContactsView: View {
                         .offset(x: 2, y: 2)
                 }
             Button {
-                model.selectedPeerIP = contact.lastIP
+                model.startConversation(withContact: contact.publicKeyB64)
                 dismiss()
             } label: {
                 VStack(alignment: .leading, spacing: 2) {

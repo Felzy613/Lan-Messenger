@@ -78,11 +78,11 @@
                                         VerticalAlignment="Center">
                                 <Button Content="Open"
                                         Style="{StaticResource GlassPillAccentButtonStyle}"
-                                        Tag="{x:Bind PeerIP}"
+                                        Tag="{x:Bind ConversationId}"
                                         Click="OpenBtn_Click" />
                                 <Button Content="Unarchive"
                                         Style="{StaticResource GlassPillButtonStyle}"
-                                        Tag="{x:Bind PeerIP}"
+                                        Tag="{x:Bind ConversationId}"
                                         Click="UnarchiveBtn_Click" />
                             </StackPanel>
                         </Grid>

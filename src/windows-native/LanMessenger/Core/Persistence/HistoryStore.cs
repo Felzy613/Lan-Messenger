@@ -1,4 +1,5 @@
 using LanMessenger.Core.Crypto;
+using LanMessenger.Core.Services;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -40,8 +41,13 @@ public sealed class MessageEntry
 }
 
 // Manages reading/writing the encrypted history file.
-// Inner JSON structure: { "<peer_ip>": [MessageEntry, ...] } — keyed by peer IP (same as Python).
-// Max 200 entries per peer.
+// Inner JSON structure: { "<conversation id>": [MessageEntry, ...] }
+//
+// Keyed by conversation id — the peer's identity key (see PeerId). It used to be
+// the peer's LAN address, which DHCP recycles between machines, so a thread could
+// be filed under a name later given to somebody else. The file shape is
+// unchanged; only what the names mean is, and history written under addresses
+// is re-filed once, at load. Max 200 entries per peer.
 public sealed class HistoryStore
 {
     public static HistoryStore Shared { get; } = new();
@@ -54,23 +60,57 @@ public sealed class HistoryStore
     // Snapshot of loaded history (shallow copy — do not mutate keys).
     public IReadOnlyDictionary<string, List<MessageEntry>> History => _history;
 
-    private HistoryStore() => Load();
+    private readonly string _path;
+
+    private HistoryStore()
+    {
+        _path = RunningUnderTests
+            ? Path.Combine(Path.GetTempPath(), $"lanmessenger-tests-{Environment.ProcessId}-history.enc")
+            : ConfigStore.Shared.HistoryFilePath;
+        Load();
+    }
+
+    /// <summary>
+    /// The suite exercises this singleton directly, on the same machine and
+    /// account as the real app — so without this the test host decrypted the
+    /// user's own history, and any path that saved wrote test conversations
+    /// back into it. On macOS one such thread, dated 1970, sat in a real
+    /// history file until the user hid it. MSTest is never loaded by the app,
+    /// so its presence is an unambiguous signal.
+    /// </summary>
+    private static bool RunningUnderTests => AppDomain.CurrentDomain.GetAssemblies()
+        .Any(a => a.GetName().Name == "Microsoft.VisualStudio.TestPlatform.TestFramework");
 
     // MARK: - Load
 
     private void Load()
     {
-        var path = ConfigStore.Shared.HistoryFilePath;
-        if (!File.Exists(path)) return;
+        if (!File.Exists(_path)) return;
         try
         {
-            var fileJson = File.ReadAllText(path);
+            var fileJson = File.ReadAllText(_path);
             var plaintext = HistoryCrypto.DecryptHistory(fileJson, KeyManager.Shared.PrivateKey);
             var raw = JsonSerializer.Deserialize<Dictionary<string, List<MessageEntry>>>(plaintext);
-            _history = raw?.ToDictionary(
+            var capped = raw?.ToDictionary(
                 kv => kv.Key,
                 kv => kv.Value.TakeLast(MaxEntriesPerPeer).ToList()
             ) ?? [];
+
+            // Re-file anything still named by address. Idempotent: a key is
+            // already an id, so a history that has been migrated passes through
+            // untouched and nothing is written.
+            var contacts = ConfigStore.Shared.Config.Contacts
+                .Select(c => new PeerId.Contact(c.PublicKeyB64, c.LastIP)).ToList();
+            var (rekeyed, moved) = PeerId.Rekey(capped, contacts, MaxEntriesPerPeer);
+            _history = rekeyed;
+            if (moved.Count > 0)
+            {
+                var unattributed = moved.Values.Count(PeerId.IsLegacy);
+                LanLogger.Info("History",
+                    $"re-filed {moved.Count} conversation(s) from address to identity key"
+                    + (unattributed > 0 ? $" ({unattributed} kept under their address: no single contact owned it)" : ""));
+                Save();
+            }
         }
         catch { _history = []; }
     }
@@ -118,7 +158,7 @@ public sealed class HistoryStore
             var snapshot = Interlocked.Exchange(ref _dirtySnapshot, null);
             if (snapshot is null) return;   // a newer flush already wrote it
             var fileJson = HistoryCrypto.EncryptHistory(snapshot, KeyManager.Shared.PrivateKey);
-            var path = ConfigStore.Shared.HistoryFilePath;
+            var path = _path;
             // Write-to-temp + atomic replace so a crash mid-write can't leave a
             // truncated (undecryptable) history file behind.
             var tmp = path + ".tmp";
@@ -131,18 +171,33 @@ public sealed class HistoryStore
 
     // MARK: - Mutations (call from UI thread)
 
-    public void Append(MessageEntry entry, string peerIP)
+    // Every `peer` below is a conversation id (PeerId) — the peer's identity key.
+
+    public void Append(MessageEntry entry, string peer)
     {
-        if (!_history.TryGetValue(peerIP, out var list))
-            list = _history[peerIP] = [];
+        if (!_history.TryGetValue(peer, out var list))
+            list = _history[peer] = [];
         list.Add(entry);
         if (list.Count > MaxEntriesPerPeer)
-            _history[peerIP] = list.TakeLast(MaxEntriesPerPeer).ToList();
+            _history[peer] = list.TakeLast(MaxEntriesPerPeer).ToList();
     }
 
-    public void MarkReadReceiptSent(string messageId, string peerIP)
+    /// <summary>
+    /// Moves everything filed under <paramref name="source"/> into
+    /// <paramref name="target"/>, merged as <see cref="PeerId.Merge"/> does.
+    /// Returns false when there was nothing to move. Caller persists.
+    /// </summary>
+    public bool Merge(string source, string target)
     {
-        if (!_history.TryGetValue(peerIP, out var list)) return;
+        if (source == target || !_history.Remove(source, out var moving)) return false;
+        var existing = _history.TryGetValue(target, out var cur) ? cur : [];
+        _history[target] = PeerId.Merge([existing, moving], MaxEntriesPerPeer);
+        return true;
+    }
+
+    public void MarkReadReceiptSent(string messageId, string peer)
+    {
+        if (!_history.TryGetValue(peer, out var list)) return;
         foreach (var e in list.Where(e => e.MessageId == messageId))
             e.ReadReceiptSent = true;
     }
@@ -150,9 +205,9 @@ public sealed class HistoryStore
     // Marks every incoming entry as read regardless of whether it has a MessageId.
     // File-transfer entries (MessageId == null) are not handled by MarkReadReceiptSent
     // and would otherwise remain unread after an app restart.
-    public void MarkAllIncomingRead(string peerIP)
+    public void MarkAllIncomingRead(string peer)
     {
-        if (!_history.TryGetValue(peerIP, out var list)) return;
+        if (!_history.TryGetValue(peer, out var list)) return;
         foreach (var e in list.Where(e => e.Incoming && !e.ReadReceiptSent))
             e.ReadReceiptSent = true;
     }
@@ -160,10 +215,10 @@ public sealed class HistoryStore
     // Marks a message entry as having transited the cloud relay. Called once
     // the Worker has *confirmed* an outgoing message was stored (see
     // MessagingService.MarkRelayStored). Scans every bucket rather than
-    // taking a peerIP — an outgoing message's bucket is known at send time,
-    // but retries of a failed store (fired from the relay-outbox retry loop,
-    // which only knows the messageId) need to find it without re-resolving
-    // an IP that may have changed since the message was queued.
+    // taking a conversation id — an outgoing message's bucket is known at send
+    // time, but retries of a failed store (fired from the relay-outbox retry
+    // loop, which only knows the messageId) need to find it without
+    // re-resolving the conversation from state that may have changed since.
     public void MarkRelayDelivery(string messageId)
     {
         foreach (var list in _history.Values)
@@ -175,12 +230,10 @@ public sealed class HistoryStore
         }
     }
 
-    // Scans every peer bucket, not just one IP. Relay messages are dispatched
-    // through an IP that's re-resolved from ephemeral state (live peers,
-    // contacts, session cache) on every poll and can legitimately point at a
-    // different bucket than where an earlier delivery of the same message_id
-    // landed. A per-IP dedup check misses that case and re-appends the
-    // message; this doesn't.
+    // Scans every bucket, not just one conversation. The same message may have
+    // arrived over the LAN already, and history written before conversations
+    // were filed by key can hold it under an address-named bucket this key's
+    // thread never reads. A per-conversation check misses that; this doesn't.
     public bool ContainsMessageId(string messageId) =>
         _history.Values.Any(list => list.Any(e => e.MessageId == messageId));
 
@@ -192,9 +245,9 @@ public sealed class HistoryStore
     //
     // Returns true if the status was actually applied (so callers know whether
     // to fire OnStatusUpdate and persist to disk).
-    public bool UpdateStatus(string status, string messageId, string peerIP)
+    public bool UpdateStatus(string status, string messageId, string peer)
     {
-        if (!_history.TryGetValue(peerIP, out var list)) return false;
+        if (!_history.TryGetValue(peer, out var list)) return false;
         var applied = false;
         foreach (var e in list.Where(e => e.MessageId == messageId))
         {
@@ -205,8 +258,8 @@ public sealed class HistoryStore
         return applied;
     }
 
-    public List<MessageEntry> Entries(string peerIP) =>
-        _history.TryGetValue(peerIP, out var list) ? list : [];
+    public List<MessageEntry> Entries(string peer) =>
+        _history.TryGetValue(peer, out var list) ? list : [];
 
     // Marks a message as deleted: clears its text and reply preview fields and
     // sets Deleted = true, leaving a "this message was deleted" placeholder.
@@ -218,9 +271,9 @@ public sealed class HistoryStore
     /// must be refused rather than allowed to blank what we said. Inbound
     /// notices pass true; our own "delete for everyone" passes false.
     /// </summary>
-    public bool MarkDeleted(string messageId, string peerIP, bool requireIncoming)
+    public bool MarkDeleted(string messageId, string peer, bool requireIncoming)
     {
-        if (!_history.TryGetValue(peerIP, out var list)) return false;
+        if (!_history.TryGetValue(peer, out var list)) return false;
         var changed = false;
         foreach (var e in list.Where(e => e.MessageId == messageId && e.Incoming == requireIncoming))
         {
@@ -248,9 +301,9 @@ public sealed class HistoryStore
     /// Attachments and already-deleted messages are never editable — a
     /// "__FILE__:" text is a local path, not a body the peer can replace.
     /// </summary>
-    public bool ApplyEdit(string messageId, string peerIP, string newText, double editedAt, bool requireIncoming)
+    public bool ApplyEdit(string messageId, string peer, string newText, double editedAt, bool requireIncoming)
     {
-        if (!_history.TryGetValue(peerIP, out var list)) return false;
+        if (!_history.TryGetValue(peer, out var list)) return false;
         var changed = false;
         foreach (var e in list.Where(e => e.MessageId == messageId))
         {
@@ -267,36 +320,13 @@ public sealed class HistoryStore
 
     // Removes the first entry matching `matching` (local-only "delete for me").
     // Caller is responsible for persisting via Save().
-    public void RemoveEntry(MessageEntry matching, string peerIP)
+    public void RemoveEntry(MessageEntry matching, string peer)
     {
-        if (!_history.TryGetValue(peerIP, out var list)) return;
+        if (!_history.TryGetValue(peer, out var list)) return;
         var idx = list.FindIndex(e => MessageEntry.SameEntry(e, matching));
         if (idx >= 0) list.RemoveAt(idx);
     }
 
-    // Drops all messages for a peer IP. Caller is responsible for persisting via Save().
-    public void Delete(string peerIP) => _history.Remove(peerIP);
-
-    // Moves history from one peer IP to another (used when a saved contact reappears
-    // on a different LAN IP). Entries are merged and re-sorted by timestamp.
-    public void Migrate(string fromIP, string toIP)
-    {
-        if (fromIP == toIP) return;
-        if (!_history.TryGetValue(fromIP, out var old)) return;
-        _history.Remove(fromIP);
-        var existing = _history.TryGetValue(toIP, out var cur) ? cur : [];
-        var merged = DedupByMessageId(existing.Concat(old)).OrderBy(e => e.Timestamp).ToList();
-        if (merged.Count > MaxEntriesPerPeer)
-            merged = merged.TakeLast(MaxEntriesPerPeer).ToList();
-        _history[toIP] = merged;
-    }
-
-    // Keeps the first occurrence of each MessageId; entries with no MessageId
-    // (file transfers, legacy migrated history) are never considered
-    // duplicates of each other and are all kept.
-    private static List<MessageEntry> DedupByMessageId(IEnumerable<MessageEntry> entries)
-    {
-        var seen = new HashSet<string>();
-        return entries.Where(e => e.MessageId is null || seen.Add(e.MessageId)).ToList();
-    }
+    // Drops all messages for a conversation. Caller is responsible for persisting via Save().
+    public void Delete(string peer) => _history.Remove(peer);
 }

@@ -78,9 +78,9 @@ public sealed partial class MainWindow : Window
         appWindow.Resize(new Windows.Graphics.SizeInt32(960, 700));
 
         Sidebar.Model = Model;
-        Sidebar.ConversationSelected += ip =>
+        Sidebar.ConversationSelected += id =>
         {
-            Model.SelectedPeerIP = ip;
+            Model.SelectedConversationId = id;
             ShowChatPage();
         };
         Sidebar.SettingsRequested += ShowSettingsPage;
@@ -188,7 +188,7 @@ public sealed partial class MainWindow : Window
     }
 
     // Reuse a single ChatPage instance — re-binding `Model` would also re-fire OnPropertyChanged,
-    // so we only assign it once. ChatPage observes SelectedPeerIP itself.
+    // so we only assign it once. ChatPage observes SelectedConversationId itself.
     private void ShowChatPage()
     {
         if (_chatPage is null)
@@ -241,7 +241,7 @@ public sealed partial class MainWindow : Window
             _archivedPage.BackRequested += () =>
             {
                 // Restore the previous view — the chat page if a peer is selected, otherwise blank.
-                if (Model.SelectedPeerIP is not null) ShowChatPage();
+                if (Model.SelectedConversationId is not null) ShowChatPage();
                 else ContentFrame.Content = null;
             };
             _archivedPage.ConversationOpened += _ => ShowChatPage();
@@ -294,8 +294,8 @@ public sealed partial class MainWindow : Window
                 ShowContactsPage();
                 return;
             }
-            // Selecting a contact within the dialog sets SelectedPeerIP; show the chat view.
-            if (Model.SelectedPeerIP is not null) ShowChatPage();
+            // Selecting a contact within the dialog sets SelectedConversationId; show the chat view.
+            if (Model.SelectedConversationId is not null) ShowChatPage();
         }
         finally
         {
@@ -316,8 +316,8 @@ public sealed partial class MainWindow : Window
             if (Model.IsWindowVisible == nowVisible) return;
             Model.IsWindowVisible = nowVisible;
             // Catch up on any unread messages that arrived while minimized.
-            if (nowVisible && Model.SelectedPeerIP is not null)
-                Model.MarkConversationRead(Model.SelectedPeerIP);
+            if (nowVisible && Model.SelectedConversationId is not null)
+                Model.MarkConversationRead(Model.SelectedConversationId);
             // …and land on them. The page is never unloaded while minimized,
             // so nothing else re-runs the scroll.
             if (nowVisible) _chatPage?.OnWindowShown();
@@ -359,8 +359,8 @@ public sealed partial class MainWindow : Window
         // Mark the current conversation read now that the user can see it.
         // This catches messages that arrived while the window was hidden.
         Model.IsWindowVisible = true;
-        if (Model.SelectedPeerIP is not null)
-            Model.MarkConversationRead(Model.SelectedPeerIP);
+        if (Model.SelectedConversationId is not null)
+            Model.MarkConversationRead(Model.SelectedConversationId);
         // Messages that arrived while hidden are below the fold; put the
         // thread back on the newest one.
         _chatPage?.OnWindowShown();

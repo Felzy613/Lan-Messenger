@@ -28,8 +28,13 @@ public sealed class FileTransferStore
     public static FileTransferStore Shared { get; } = new();
 
     public Dictionary<TransferKey, IncomingTransfer> Incoming       { get; } = [];
-    public Dictionary<string, Queue<OutgoingQueueItem>> OutgoingQueues { get; } = []; // keyed by peerIP
-    public HashSet<string> ActiveOutgoing { get; } = [];
+    // Outgoing queues are keyed by the peer's identity key — never by address.
+    // A file queued while a peer is away waits for that device, and the address
+    // it is sent to is looked up when it is sent. Incoming transfers stay keyed
+    // by the connection they arrive on; which conversation they belong to is
+    // SenderPublicKeyB64.
+    public Dictionary<string, Queue<OutgoingQueueItem>> OutgoingQueues { get; } = []; // keyed by peer key
+    public HashSet<string> ActiveOutgoing { get; } = [];                                 // peer keys
 
     private FileTransferStore() { }
 
@@ -85,6 +90,15 @@ public sealed class FileTransferStore
         catch { return null; }
     }
 
+    // Abandons a transfer: closes and deletes its temp file.
+    public void CancelIncoming(TransferKey key)
+    {
+        if (!Incoming.Remove(key, out var t)) return;
+        t.TempStream?.Dispose();
+        t.TempStream = null;
+        try { File.Delete(t.TempFilePath); } catch { }
+    }
+
     private static string FindAvailablePath(string basePath)
     {
         if (!File.Exists(basePath)) return basePath;
@@ -99,21 +113,21 @@ public sealed class FileTransferStore
         return Path.Combine(dir, $"{stem}_{Convert.ToHexString(Guid.NewGuid().ToByteArray())[..8]}{ext}");
     }
 
-    public void Enqueue(string path, string filename, string peerIP)
+    public void Enqueue(string path, string filename, string peer)
     {
-        if (!OutgoingQueues.TryGetValue(peerIP, out var q))
-            q = OutgoingQueues[peerIP] = new Queue<OutgoingQueueItem>();
+        if (!OutgoingQueues.TryGetValue(peer, out var q))
+            q = OutgoingQueues[peer] = new Queue<OutgoingQueueItem>();
         q.Enqueue(new OutgoingQueueItem { Path = path, Filename = filename });
     }
 
-    public void MarkTransferStarted(string peerIP) => ActiveOutgoing.Add(peerIP);
+    public void MarkTransferStarted(string peer) => ActiveOutgoing.Add(peer);
 
-    public void MarkTransferFinished(string peerIP, bool success)
+    public void MarkTransferFinished(string peer, bool success)
     {
-        ActiveOutgoing.Remove(peerIP);
+        ActiveOutgoing.Remove(peer);
         // Only dequeue on success.  A failed item stays at the front of the queue
         // so RetryQueue() can re-attempt it when the peer comes back online.
-        if (success && OutgoingQueues.TryGetValue(peerIP, out var q) && q.Count > 0)
+        if (success && OutgoingQueues.TryGetValue(peer, out var q) && q.Count > 0)
             q.Dequeue();
     }
 }

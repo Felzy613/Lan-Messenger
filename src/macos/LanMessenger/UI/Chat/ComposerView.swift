@@ -3,7 +3,8 @@ import AppKit
 
 struct ComposerView: View {
     @EnvironmentObject var model: AppModel
-    let peerIP: String
+    /// The conversation id (`PeerID`) — the peer's identity key.
+    let peerID: String
     @Binding var replyTarget: MessageEntry?
     /// Non-nil while editing an already-sent message. The composer swaps its
     /// draft for that message's text and Send applies the edit.
@@ -186,20 +187,20 @@ struct ComposerView: View {
         .onChange(of: draft) { newValue in
             typingTimer?.cancel()
             if newValue.isEmpty {
-                model.sendTyping(false, toPeerIP: peerIP)
+                model.sendTyping(false, toPeer: peerID)
             } else {
-                model.sendTyping(true, toPeerIP: peerIP)
+                model.sendTyping(true, toPeer: peerID)
                 typingTimer = Task {
                     try? await Task.sleep(for: .seconds(3))
                     guard !Task.isCancelled else { return }
-                    model.sendTyping(false, toPeerIP: peerIP)
+                    model.sendTyping(false, toPeer: peerID)
                 }
             }
             // While editing, the composer is showing someone's already-sent
             // message — persisting that as the draft would resurrect it as
             // an unsent message the next time the conversation is opened.
             if editTarget == nil {
-                model.drafts[peerIP] = newValue.isEmpty ? nil : newValue
+                model.drafts[peerID] = newValue.isEmpty ? nil : newValue
             }
         }
         // Keyed on id rather than the entry: MessageEntry isn't Equatable,
@@ -214,7 +215,7 @@ struct ComposerView: View {
             }
         }
         .onAppear {
-            draft = model.drafts[peerIP] ?? ""
+            draft = model.drafts[peerID] ?? ""
         }
     }
 
@@ -333,7 +334,7 @@ struct ComposerView: View {
         showScreenshotPreview = false
         capturedScreenshotPath = nil
         // Hand off through the same path drag-drop and the file picker use.
-        model.sendFile(path: path, toPeerIP: peerIP)
+        model.sendFile(path: path, toPeer: peerID)
     }
 
     // MARK: - Text message
@@ -347,20 +348,20 @@ struct ComposerView: View {
         if let target = editTarget {
             // Leave the composer in edit mode if the message turned out not to
             // be editable, rather than silently discarding what was typed.
-            guard model.editMessage(target, newText: trimmed, peerIP: peerIP) else {
+            guard model.editMessage(target, newText: trimmed, peer: peerID) else {
                 NetLogger.warn("Edit", "message no longer editable — keeping composer in edit mode")
                 return
             }
             editTarget = nil        // onChange restores draftBeforeEdit
-            model.sendTyping(false, toPeerIP: peerIP)
+            model.sendTyping(false, toPeer: peerID)
             return
         }
 
-        model.sendMessage(trimmed, toPeerIP: peerIP, replyTo: replyTarget)
+        model.sendMessage(trimmed, toPeer: peerID, replyTo: replyTarget)
         draft = ""
-        model.drafts[peerIP] = nil
+        model.drafts[peerID] = nil
         replyTarget = nil
-        model.sendTyping(false, toPeerIP: peerIP)
+        model.sendTyping(false, toPeer: peerID)
     }
 
     /// Escape backs out of edit or reply mode. Editing shows an already-sent
@@ -377,9 +378,9 @@ struct ComposerView: View {
     /// Routed through `sendFile` exactly like a drop or the file picker.
     private func sendPastedAttachments(_ paths: [String]) {
         guard !paths.isEmpty else { return }
-        NetLogger.ui(event: "attachment_pasted_send", peer: peerIP, detail: "\(paths.count) file(s)")
+        NetLogger.ui(event: "attachment_pasted_send", peer: peerID, detail: "\(paths.count) file(s)")
         for path in paths {
-            model.sendFile(path: path, toPeerIP: peerIP)
+            model.sendFile(path: path, toPeer: peerID)
         }
     }
 
@@ -392,7 +393,7 @@ struct ComposerView: View {
         // the system dialog takes time to render or appears off-screen.
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            model.sendFile(path: url.path, toPeerIP: peerIP)
+            model.sendFile(path: url.path, toPeer: peerID)
         }
     }
 }
