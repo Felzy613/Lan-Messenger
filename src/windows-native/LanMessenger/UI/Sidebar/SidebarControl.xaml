@@ -15,42 +15,14 @@
                   Grid.Row="0"
                   SelectionMode="Single"
                   SelectionChanged="ConversationList_SelectionChanged">
-            <!-- Selected is a glass-thick lozenge, not Fluent's accent pill at
-                 the leading edge; hover is glass-hover. Per-instance resources,
-                 because a Style cannot set Resources (WMC0095). Theme
-                 dictionaries, because glass-thick differs between themes and a
-                 plain StaticResource alias would freeze whichever was current
-                 at load. High Contrast is left to the system's own resources. -->
-            <ListView.Resources>
-                <ResourceDictionary>
-                    <ResourceDictionary.ThemeDictionaries>
-                        <ResourceDictionary x:Key="Light">
-                            <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">False</x:Boolean>
-                            <SolidColorBrush x:Key="ListViewItemBackgroundSelected"            Color="{ThemeResource TokenGlassThickColor}" />
-                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="{ThemeResource TokenGlassThickColor}" />
-                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed"     Color="{ThemeResource TokenGlassThickColor}" />
-                            <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver"         Color="{ThemeResource TokenGlassHoverColor}" />
-                            <SolidColorBrush x:Key="ListViewItemBackgroundPressed"             Color="{ThemeResource TokenGlassPressedColor}" />
-                        </ResourceDictionary>
-                        <ResourceDictionary x:Key="Dark">
-                            <x:Boolean x:Key="ListViewItemSelectionIndicatorVisualEnabled">False</x:Boolean>
-                            <SolidColorBrush x:Key="ListViewItemBackgroundSelected"            Color="{ThemeResource TokenGlassThickColor}" />
-                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="{ThemeResource TokenGlassThickColor}" />
-                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed"     Color="{ThemeResource TokenGlassThickColor}" />
-                            <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver"         Color="{ThemeResource TokenGlassHoverColor}" />
-                            <SolidColorBrush x:Key="ListViewItemBackgroundPressed"             Color="{ThemeResource TokenGlassPressedColor}" />
-                        </ResourceDictionary>
-                    </ResourceDictionary.ThemeDictionaries>
-                </ResourceDictionary>
-            </ListView.Resources>
+            <!-- Rows are GlassListItemStyle: hover glass-hover, selected a
+                 glass-thick lozenge with the rim (not Fluent's accent pill at
+                 the leading edge), radius-row corners and a focus ring that
+                 follows them. Fluent's own item template drew all of those
+                 square. -->
             <ListView.ItemContainerStyle>
-                <Style TargetType="ListViewItem">
-                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Style TargetType="ListViewItem" BasedOn="{StaticResource GlassListItemStyle}">
                     <Setter Property="Padding" Value="8,4" />
-                    <Setter Property="CornerRadius" Value="{StaticResource TokenRadiusRow}" />
-                    <Setter Property="FocusVisualPrimaryBrush" Value="{ThemeResource TokenFocusRingBrush}" />
-                    <Setter Property="FocusVisualPrimaryThickness" Value="2" />
-                    <Setter Property="FocusVisualSecondaryThickness" Value="0" />
                 </Style>
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
@@ -94,6 +66,7 @@
         <!-- Archived: always the LAST row, only while something is archived. -->
         <Button x:Name="ArchivedSection"
                 Grid.Row="1"
+                AutomationProperties.Name="Archived conversations"
                 Style="{StaticResource GlassRowButtonStyle}"
                 Height="52"
                 Margin="0,2,0,0"

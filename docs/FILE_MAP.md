@@ -306,9 +306,9 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/windows-native/LanMessenger.Tests/LanMessenger.Tests.csproj` | MSTest project and test-vector copy settings. |
 | `src/windows-native/LanMessenger/app.manifest` | Windows app manifest. |
 | `src/windows-native/LanMessenger/App.xaml` | WinUI application resource root: merges `XamlControlsResources` then `Styles/Glass.xaml`. |
-| `src/windows-native/LanMessenger/Styles/Glass.xaml` | Hand-written glass recipes: `GlassSurfaceStyle`, the icon, primary, send, glass, danger, plain, pill and row button templates, `GlassDialogStyle`, `GlassSettingsGroupStyle`. Merges the generated `GlassTokens.xaml` itself. |
+| `src/windows-native/LanMessenger/Styles/Glass.xaml` | Hand-written glass recipes: `GlassSurfaceStyle`, the icon, primary, send, glass, danger, plain, pill and row button templates, `GlassDialogStyle` (a full `ContentDialog` template), `GlassTextFieldStyle` and `GlassSearchFieldStyle` (`TextBox` templates), `GlassRowToggleStyle`, `GlassListItemStyle` (a `ListViewItem` template), `GlassSettingsGroupStyle`. Merges the generated `GlassTokens.xaml` itself. |
 | `src/windows-native/LanMessenger/App.xaml.cs` | WinUI app startup, binding/resource diagnostics, unhandled exception capture, crash log and message box. |
-| `src/windows-native/LanMessenger/MainWindow.xaml` | Main shell layout, sidebar/content columns, toolbar buttons, and tray icon. |
+| `src/windows-native/LanMessenger/MainWindow.xaml` | Main shell layout: the app-drawn title bar row, sidebar/content columns, toolbar buttons, and tray icon. |
 | `src/windows-native/LanMessenger/MainWindow.xaml.cs` | Window shell behavior, dialog orchestration, chat/archive page reuse, migration dialog, tray lifecycle, the taskbar unread-count overlay icon (`ITaskbarList3.SetOverlayIcon`), and the tray icon's red-dot badge swap (`TrayIcon.IconSource`) — both driven by `AppModel.TotalUnreadCount`. |
 
 ## Windows Assets
@@ -433,7 +433,8 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 |---|---|
 | `src/windows-native/LanMessenger/UI/AppModel.cs` | Root observable state, service wiring, peers, conversations, pending queues, contacts, read receipts, updates, and actions. |
 | `src/windows-native/LanMessenger/UI/Theme.cs` | Shared brushes for code-behind, all sourced from `GlassTokens`; rebuilt by `Initialize(isDark, transparencyEnabled)`, which raises `Theme.Changed` so on-screen bubbles and rows repaint. |
-| `src/windows-native/LanMessenger/UI/GlassDialog.cs` | `GlassDialog.Apply`: every `ContentDialog` as a thick-glass sheet, with per-dialog Fluent overrides (focus underline, default button) that App-level resources cannot reach. |
+| `src/windows-native/LanMessenger/UI/GlassDialog.cs` | `GlassDialog.Apply`: every `ContentDialog` as a thick-glass sheet (`GlassDialogStyle`) with its buttons in their roles: primary brand, danger for a destructive confirmation, glass for a side trip. |
+| `src/windows-native/LanMessenger/UI/GlassControls.cs` | Glass recipes for controls built in code: keyed style lookup, `ApplyList` (glass list rows), `ApplyBrandCheck` (a brand check box). |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml` | Avatar control XAML. |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml.cs` | Avatar image/initial rendering logic. |
 | `src/windows-native/LanMessenger/UI/GlassTokens.cs` | **Generated** by `scripts/design/gen_tokens.py`. Every colour token as `<Name>Light`/`<Name>Dark`, `Pick`, `All`, and `Radius`/`Space`/`Size`/`Acrylic` constants for code-behind. Do not edit. |

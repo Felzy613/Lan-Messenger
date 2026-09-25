@@ -95,8 +95,10 @@ public sealed partial class NewMessagePage : Page
 
         var nameBlock = new TextBlock
         {
-            Text  = contact.Username,
-            Style = TryGetStyle("BodyStrongTextBlockStyle"),
+            Text         = contact.Username,
+            Style        = TryGetStyle("TokenTypeNameStyle"),
+            Foreground   = Theme.InkBrush,
+            TextTrimming = TextTrimming.CharacterEllipsis,
         };
         // Matches macOS's NewMessageView contact row: "Online" or the saved
         // IP, both in secondary (not accent-colored) text — unlike the
@@ -104,40 +106,34 @@ public sealed partial class NewMessagePage : Page
         var statusBlock = new TextBlock
         {
             Text       = isOnline ? "Online" : (string.IsNullOrEmpty(contact.LastIP) ? "—" : contact.LastIP),
-            FontSize   = 12,
-            Foreground = TryGetBrush("TextFillColorSecondaryBrush"),
+            Style      = TryGetStyle("TokenTypeCaptionStyle"),
+            Foreground = Theme.InkSecondaryBrush,
         };
         var info = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
         info.Children.Add(nameBlock);
         info.Children.Add(statusBlock);
 
-        var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(16, 6, 16, 6) };
+        var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 6, 8, 6), Tag = contact.PublicKeyB64 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         Grid.SetColumn(avatarGrid, 0);
         Grid.SetColumn(info,       1);
         row.Children.Add(avatarGrid);
         row.Children.Add(info);
-        row.Tapped += (_, _) => ContactSelected?.Invoke(contact.PublicKeyB64);
         return row;
     }
 
     private static Style? TryGetStyle(string key) =>
         Application.Current.Resources.TryGetValue(key, out var v) ? v as Style : null;
 
-    private static Brush? TryGetBrush(string key) =>
-        Application.Current.Resources.TryGetValue(key, out var v) ? v as Brush : null;
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => ApplyFilter();
 
-    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    // An item click rather than a Tapped handler on the row: the ListView
+    // then gives the row its pressed state and answers Enter and Space.
+    private void ContactsList_ItemClick(object sender, ItemClickEventArgs e)
     {
-        ClearSearchBtn.Visibility = SearchBox.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        ApplyFilter();
-    }
-
-    private void ClearSearch_Click(object sender, RoutedEventArgs e)
-    {
-        SearchBox.Text = "";
-        ApplyFilter();
+        if (e.ClickedItem is FrameworkElement { Tag: string publicKeyB64 })
+            ContactSelected?.Invoke(publicKeyB64);
     }
 
     private void AddContact_Click(object sender, RoutedEventArgs e) => AddContactRequested?.Invoke();

@@ -4,11 +4,24 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ui="using:LanMessenger.UI">
 
-    <Grid Padding="4,6" ColumnSpacing="10" Height="{StaticResource TokenSizeRow}">
+    <!-- The options button lives under the time, where the unread badge
+         goes, and shows while the pointer is over the row (or the button has
+         focus, or its menu is open). As a fourth column it took 42px from the
+         name and preview on every row, which is what left "Dovi's Compu…" and
+         a paperclip alone on its own line in a 296px sidebar. The same menu
+         is the row's right-click menu (set in the code-behind), which is also
+         how touch reaches it. -->
+    <Grid x:Name="RowRoot"
+          Padding="4,6"
+          ColumnSpacing="10"
+          Height="{StaticResource TokenSizeRow}"
+          Background="Transparent"
+          PointerEntered="RowRoot_PointerEntered"
+          PointerExited="RowRoot_PointerExited"
+          PointerCanceled="RowRoot_PointerExited">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
-            <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
@@ -50,58 +63,66 @@
             </Border>
         </StackPanel>
 
-        <!-- Timestamp + unread badge -->
-        <StackPanel Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="4">
+        <!-- Timestamp, then the unread badge or (on hover) the options button -->
+        <StackPanel Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="2">
             <TextBlock x:Name="TimestampText"
                        Style="{StaticResource TokenTypeCaptionStyle}"
                        HorizontalAlignment="Right" />
-            <!-- brand with on-brand numerals: white on the green is 2:1. -->
-            <Border x:Name="UnreadBadge"
-                    Background="{ThemeResource TokenBrandBrush}"
-                    CornerRadius="10"
-                    MinWidth="20" Height="20"
-                    Padding="6,0"
-                    HorizontalAlignment="Right"
-                    Visibility="Collapsed">
-                <TextBlock x:Name="UnreadCount"
-                           Style="{StaticResource TokenTypeBadgeStyle}"
-                           Foreground="{ThemeResource TokenOnBrandBrush}"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center" />
-            </Border>
-        </StackPanel>
+            <Grid Height="{StaticResource TokenSizeIconButton}" HorizontalAlignment="Right">
+                <!-- brand with on-brand numerals: white on the green is 2:1. -->
+                <Border x:Name="UnreadBadge"
+                        Background="{ThemeResource TokenBrandBrush}"
+                        CornerRadius="10"
+                        MinWidth="20" Height="20"
+                        Padding="6,0"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
+                        Visibility="Collapsed">
+                    <TextBlock x:Name="UnreadCount"
+                               Style="{StaticResource TokenTypeBadgeStyle}"
+                               Foreground="{ThemeResource TokenOnBrandBrush}"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+                </Border>
 
-        <!-- Three-dot conversation options menu -->
-        <Button x:Name="OptionsBtn"
-                Grid.Column="3"
-                Style="{StaticResource GlassIconButtonStyle}"
-                Click="OptionsBtn_Click"
-                VerticalAlignment="Center"
-                ToolTipService.ToolTip="Conversation options"
-                AutomationProperties.Name="Conversation options">
-            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                      Glyph="&#xE712;"
-                      FontSize="14" />
-            <Button.Flyout>
-                <MenuFlyout x:Name="OptionsFlyout">
-                    <MenuFlyoutItem x:Name="ArchiveItem" Text="Archive" Click="Archive_Click">
-                        <MenuFlyoutItem.Icon>
-                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE7B8;" />
-                        </MenuFlyoutItem.Icon>
-                    </MenuFlyoutItem>
-                    <MenuFlyoutItem x:Name="UnarchiveItem" Text="Unarchive" Click="Unarchive_Click" Visibility="Collapsed">
-                        <MenuFlyoutItem.Icon>
-                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE74A;" />
-                        </MenuFlyoutItem.Icon>
-                    </MenuFlyoutItem>
-                    <MenuFlyoutSeparator />
-                    <MenuFlyoutItem Text="Delete conversation" Click="Delete_Click">
-                        <MenuFlyoutItem.Icon>
-                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE74D;" />
-                        </MenuFlyoutItem.Icon>
-                    </MenuFlyoutItem>
-                </MenuFlyout>
-            </Button.Flyout>
-        </Button>
+                <!-- Draws at 22px (the glyph) inside a 32px hit area. -->
+                <Button x:Name="OptionsBtn"
+                        Style="{StaticResource GlassIconButtonStyle}"
+                        HorizontalAlignment="Right"
+                        Margin="0,0,-6,0"
+                        Opacity="0"
+                        Click="OptionsBtn_Click"
+                        GotFocus="OptionsBtn_FocusChanged"
+                        LostFocus="OptionsBtn_FocusChanged"
+                        ToolTipService.ToolTip="Conversation options"
+                        AutomationProperties.Name="Conversation options">
+                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                              Glyph="&#xE712;"
+                              FontSize="14" />
+                    <Button.Flyout>
+                        <MenuFlyout x:Name="OptionsFlyout"
+                                    Opened="OptionsFlyout_OpenedOrClosed"
+                                    Closed="OptionsFlyout_OpenedOrClosed">
+                            <MenuFlyoutItem x:Name="ArchiveItem" Text="Archive" Click="Archive_Click">
+                                <MenuFlyoutItem.Icon>
+                                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE7B8;" />
+                                </MenuFlyoutItem.Icon>
+                            </MenuFlyoutItem>
+                            <MenuFlyoutItem x:Name="UnarchiveItem" Text="Unarchive" Click="Unarchive_Click" Visibility="Collapsed">
+                                <MenuFlyoutItem.Icon>
+                                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE74A;" />
+                                </MenuFlyoutItem.Icon>
+                            </MenuFlyoutItem>
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem Text="Delete conversation" Click="Delete_Click">
+                                <MenuFlyoutItem.Icon>
+                                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE74D;" />
+                                </MenuFlyoutItem.Icon>
+                            </MenuFlyoutItem>
+                        </MenuFlyout>
+                    </Button.Flyout>
+                </Button>
+            </Grid>
+        </StackPanel>
     </Grid>
 </UserControl>

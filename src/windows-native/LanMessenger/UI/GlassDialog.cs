@@ -1,7 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
-using Windows.UI.ViewManagement;
 
 namespace LanMessenger.UI;
 
@@ -10,6 +8,14 @@ namespace LanMessenger.UI;
 /// built in code, so this is called from each construction site (and from the
 /// constructor of each ContentDialog subclass) rather than by an implicit style.
 /// </summary>
+/// <remarks>
+/// GlassDialogStyle carries its own template (see Styles/Glass.xaml), and that
+/// is what keeps the buttons in their roles. Fluent's template restyles
+/// whichever button is DefaultButton with AccentButtonStyle, over the styles
+/// set here, and no resource override reaches the Style it swaps in; per-dialog
+/// brush overrides only recoloured a square Fluent button. With the template
+/// ours, DefaultButton decides what Enter does and nothing else.
+/// </remarks>
 public static class GlassDialog
 {
     /// <param name="destructive">
@@ -17,71 +23,31 @@ public static class GlassDialog
     /// style, and whatever DefaultButton the dialog already has stays: "Delete
     /// conversation?" keeps Cancel as its default.
     /// </param>
-    public static void Apply(ContentDialog dialog, bool destructive = false)
+    /// <param name="neutralPrimary">
+    /// For a sheet whose primary button is a side trip rather than the thing the
+    /// sheet is for ("Add Contact" on New Message, where picking a contact is
+    /// the action): it takes the glass style, so no button claims the brand.
+    /// </param>
+    public static void Apply(ContentDialog dialog, bool destructive = false, bool neutralPrimary = false)
     {
         var resources = Application.Current.Resources;
         if (Find<Style>(resources, "GlassDialogStyle") is { } sheet) dialog.Style = sheet;
-        // The template's inner DialogSpace grid rounds itself from this resource,
-        // not from the dialog's CornerRadius.
-        dialog.Resources["OverlayCornerRadius"] = new CornerRadius(GlassTokens.Radius.Sheet);
 
-        if (Find<Style>(resources, destructive ? "GlassDangerButtonStyle" : "GlassPrimaryButtonStyle") is { } primary)
+        // Set every time, not left to the style: ContactsDialog re-applies as it
+        // moves between states, and a danger style set locally for "Remove
+        // contact?" would otherwise outlive that state.
+        var primaryKey = destructive ? "GlassDangerButtonStyle"
+                       : neutralPrimary ? "GlassButtonStyle"
+                       : "GlassPrimaryButtonStyle";
+        if (Find<Style>(resources, primaryKey) is { } primary)
             dialog.PrimaryButtonStyle = primary;
         if (Find<Style>(resources, "GlassButtonStyle") is { } glass)
         {
             dialog.SecondaryButtonStyle = glass;
             dialog.CloseButtonStyle     = glass;
         }
-
-        // Fluent's own brushes, per dialog. The template restyles whichever
-        // button is DefaultButton with AccentButtonStyle from a visual state,
-        // over the styles set above, and that — like a focused field's
-        // underline — reads the user's Windows accent colour. Overriding those
-        // keys in App.xaml does nothing: a ThemeResource inside a generic.xaml
-        // template resolves from the control's own tree and then the style's
-        // own dictionary, before it ever reaches the app's. Per-dialog
-        // resources are in the control's tree, so they win.
-        // An ordinary dialog's default is brand; a destructive dialog's default
-        // is its SAFE button, which must not look like the primary action, so
-        // it is glass. High Contrast keeps the system's colours.
-        if (IsHighContrast()) return;
-        dialog.Resources["TextControlBorderBrushFocused"] =
-            new SolidColorBrush(GlassTokens.Pick(GlassTokens.FocusRingLight, GlassTokens.FocusRingDark));
-        if (destructive)
-            SetAccent(dialog,
-                GlassTokens.Pick(GlassTokens.GlassRegularLight, GlassTokens.GlassRegularDark),
-                GlassTokens.Pick(GlassTokens.GlassHoverLight, GlassTokens.GlassHoverDark),
-                GlassTokens.Pick(GlassTokens.GlassPressedLight, GlassTokens.GlassPressedDark),
-                GlassTokens.Pick(GlassTokens.InkLight, GlassTokens.InkDark));
-        else
-            SetAccent(dialog,
-                GlassTokens.Pick(GlassTokens.BrandLight, GlassTokens.BrandDark),
-                GlassTokens.Pick(GlassTokens.BrandHoverLight, GlassTokens.BrandHoverDark),
-                GlassTokens.Pick(GlassTokens.BrandPressedLight, GlassTokens.BrandPressedDark),
-                GlassTokens.Pick(GlassTokens.OnBrandLight, GlassTokens.OnBrandDark));
-    }
-
-    private static void SetAccent(ContentDialog dialog, Windows.UI.Color fill, Windows.UI.Color hover,
-                                  Windows.UI.Color pressed, Windows.UI.Color ink)
-    {
-        var r = dialog.Resources;
-        r["AccentButtonBackground"]            = new SolidColorBrush(fill);
-        r["AccentButtonBackgroundPointerOver"] = new SolidColorBrush(hover);
-        r["AccentButtonBackgroundPressed"]     = new SolidColorBrush(pressed);
-        r["AccentButtonForeground"]            = new SolidColorBrush(ink);
-        r["AccentButtonForegroundPointerOver"] = new SolidColorBrush(ink);
-        r["AccentButtonForegroundPressed"]     = new SolidColorBrush(ink);
-        r["AccentButtonBorderBrush"]            = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        r["AccentButtonBorderBrushPointerOver"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        r["AccentButtonBorderBrushPressed"]     = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
     }
 
     private static T? Find<T>(ResourceDictionary resources, string key) where T : class
         => resources.TryGetValue(key, out var value) ? value as T : null;
-
-    private static bool IsHighContrast()
-    {
-        try { return new AccessibilitySettings().HighContrast; }
-        catch (Exception) { return false; }
-    }
 }

@@ -5,7 +5,7 @@
     xmlns:local="using:LanMessenger.UI.Sidebar"
     xmlns:ui="using:LanMessenger.UI">
 
-    <Grid RowSpacing="0">
+    <Grid RowSpacing="0" Width="400" Height="380">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -13,65 +13,33 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Search bar -->
-        <Border Grid.Row="0"
-                Padding="12,10,12,6">
-            <Grid ColumnSpacing="8"
-                  Padding="10,6"
-                  Background="{ThemeResource ControlFillColorDefaultBrush}"
-                  CornerRadius="10">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <FontIcon Grid.Column="0"
-                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                          Glyph="&#xE721;"
-                          FontSize="14"
-                          Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <TextBox x:Name="SearchBox"
-                         Grid.Column="1"
-                         PlaceholderText="Search by name or IP"
-                         BorderThickness="0"
-                         Background="Transparent"
-                         TextChanged="SearchBox_TextChanged">
-                    <TextBox.Resources>
-                        <SolidColorBrush x:Key="TextControlBorderBrushFocused"     Color="Transparent"/>
-                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent"/>
-                        <SolidColorBrush x:Key="TextControlBackgroundFocused"      Color="Transparent"/>
-                        <SolidColorBrush x:Key="TextControlBackgroundPointerOver"  Color="Transparent"/>
-                    </TextBox.Resources>
-                </TextBox>
-                <Button x:Name="ClearSearchBtn"
-                        Grid.Column="2"
-                        Width="24" Height="24"
-                        Padding="0"
-                        CornerRadius="12"
-                        BorderThickness="0"
-                        Background="Transparent"
-                        Visibility="Collapsed"
-                        Click="ClearSearch_Click">
-                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                              Glyph="&#xE711;"
-                              FontSize="10"
-                              Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                </Button>
-            </Grid>
-        </Border>
+        <!-- Search: the glass search field with the magnifier laid over its
+             leading padding, exactly as on the New Message sheet. -->
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <TextBox x:Name="SearchBox"
+                     Style="{StaticResource GlassSearchFieldStyle}"
+                     PlaceholderText="Search by name or IP"
+                     AutomationProperties.Name="Search contacts"
+                     TextChanged="SearchBox_TextChanged" />
+            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                      Glyph="&#xE721;"
+                      FontSize="13"
+                      Margin="13,0,0,0"
+                      HorizontalAlignment="Left"
+                      VerticalAlignment="Center"
+                      IsHitTestVisible="False"
+                      Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+        </Grid>
 
-        <!-- New contact — full-width row, matching macOS's placement/style. -->
+        <!-- New contact: a whole-row button, matching macOS's placement. -->
         <Button Grid.Row="1"
                 x:Name="NewContactBtn"
-                HorizontalAlignment="Stretch"
-                HorizontalContentAlignment="Left"
-                Padding="16,8"
-                Background="Transparent"
-                BorderThickness="0"
+                Style="{StaticResource GlassRowButtonStyle}"
+                Padding="8,6"
                 Click="AddFromPeers_Click"
                 ToolTipService.ToolTip="Find peers on your network and add them as contacts">
-            <StackPanel Orientation="Horizontal" Spacing="14">
-                <Grid Width="44" Height="44">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Grid Width="{StaticResource TokenSizeAvatarRow}" Height="{StaticResource TokenSizeAvatarRow}">
                     <Ellipse Fill="{ThemeResource TokenBrandBrush}" />
                     <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
                               Glyph="&#xE8FA;"
@@ -82,14 +50,15 @@
                 </Grid>
                 <TextBlock Text="New contact"
                            VerticalAlignment="Center"
-                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                           Style="{StaticResource TokenTypeNameStyle}"
+                           Foreground="{ThemeResource TokenInkBrush}" />
             </StackPanel>
         </Button>
 
         <Rectangle Grid.Row="2"
                    Height="1"
-                   Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
-                   Margin="16,4,16,0" />
+                   Fill="{ThemeResource TokenDividerBrush}"
+                   Margin="8,6,8,0" />
 
         <!-- Contact list — one flat "Contacts" section, matching macOS (no
              Online/Offline split). Items are built programmatically so a
@@ -97,15 +66,8 @@
              CollectionViewSource. -->
         <ListView x:Name="ContactsList"
                   Grid.Row="3"
-                  SelectionMode="None">
-            <ListView.ItemContainerStyle>
-                <Style TargetType="ListViewItem">
-                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                    <Setter Property="Padding"                    Value="0" />
-                    <Setter Property="MinHeight"                  Value="0" />
-                </Style>
-            </ListView.ItemContainerStyle>
-        </ListView>
+                  SelectionMode="None"
+                  ItemContainerStyle="{StaticResource GlassListItemStyle}" />
 
         <!-- Empty state: no contacts, or no search matches -->
         <StackPanel x:Name="EmptyState"
@@ -114,20 +76,28 @@
                     VerticalAlignment="Center"
                     Spacing="10"
                     Visibility="Collapsed">
-            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                      Glyph="&#xE779;"
-                      FontSize="44"
-                      Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Grid Width="64" Height="64" HorizontalAlignment="Center">
+                <Ellipse Fill="{ThemeResource TokenGlassClearBrush}"
+                         Stroke="{ThemeResource GlassRimBrush}"
+                         StrokeThickness="1" />
+                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                          Glyph="&#xE779;"
+                          FontSize="26"
+                          Foreground="{ThemeResource TokenInkSecondaryBrush}" />
+            </Grid>
             <TextBlock x:Name="EmptyTitle"
                        Text="No saved contacts"
-                       Style="{ThemeResource SubtitleTextBlockStyle}"
+                       Style="{StaticResource TokenTypeTitleSheetStyle}"
                        HorizontalAlignment="Center"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                       Foreground="{ThemeResource TokenInkBrush}" />
             <TextBlock x:Name="EmptySubtitle"
-                       Text="Click &quot;New contact&quot; to find peers on your network."
+                       Text="Choose &quot;New contact&quot; to find peers on your network."
                        HorizontalAlignment="Center"
                        TextAlignment="Center"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                       MaxWidth="260"
+                       TextWrapping="Wrap"
+                       Style="{StaticResource TokenTypeLabelStyle}"
+                       Foreground="{ThemeResource TokenInkSecondaryBrush}" />
         </StackPanel>
     </Grid>
 </Page>

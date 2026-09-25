@@ -7,5 +7,5 @@ A switch for on/off settings; switched on, it fills with brand green.
 - The label says what "on" means: "Launch at login", "Enable cloud relay".
 
 ## Build
-- **Windows:** set `ToggleSwitchFillOn*` and `ToggleSwitchStrokeOn*` to the brand brushes as per-instance `ToggleSwitch.Resources`. A `Style` setter for `Resources` does not compile.
+- **Windows:** `GlassRowToggleStyle` in a settings row, with `Width="40" MinWidth="0" HorizontalAlignment="Right"` repeated on the instance (Fluent's template otherwise keeps room for an On/Off caption, and the switch sat 100px in from the edge). Set `ToggleSwitchFillOn*` and `ToggleSwitchStrokeOn*` to the brand brushes as per-instance `ToggleSwitch.Resources`. A `Style` setter for `Resources` does not compile.
 - **macOS:** `Toggle` with `.tint(brand)`.

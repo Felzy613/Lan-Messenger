@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using System.ComponentModel;
 using Windows.UI;
@@ -30,11 +31,19 @@ public sealed partial class ConversationRowControl : UserControl
         // switch reaches it.
         TypingDots.DotDiameter = 6;
         TypingDots.DotSpacing  = 4;
+        // Right-click anywhere on the row opens the same menu as the button.
+        RowRoot.ContextFlyout = OptionsFlyout;
         Loaded   += (_, _) => { if (!_themeHooked) { Theme.Changed += Refresh; _themeHooked = true; } };
         Unloaded += (_, _) => { Theme.Changed -= Refresh; _themeHooked = false; };
     }
 
     private bool _themeHooked;
+
+    // The options button shows while any of these holds; otherwise the
+    // unread badge (if any) has the spot.
+    private bool _pointerOver;
+    private bool _menuOpen;
+    private bool _optionsFocused;
 
     private static void OnRowChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -54,7 +63,11 @@ public sealed partial class ConversationRowControl : UserControl
         Avatar.PhotoB64        = Row.PhotoB64;
         NameText.Text          = Row.PeerName;
         PreviewText.Text       = Row.LastMessage;
-        PreviewText.Visibility   = Row.IsTyping ? Visibility.Collapsed : Visibility.Visible;
+        // No preview line at all when there is nothing to preview, so a
+        // conversation with no messages yet has its name centred on the avatar
+        // rather than sitting above an empty line.
+        PreviewText.Visibility   = Row.IsTyping || string.IsNullOrEmpty(Row.LastMessage)
+            ? Visibility.Collapsed : Visibility.Visible;
         TypingCapsule.Visibility = Row.IsTyping ? Visibility.Visible : Visibility.Collapsed;
         TypingDots.DotBrush      = Theme.AccentInkBrush;
         TypingDots.IsActive      = Row.IsTyping;
@@ -69,18 +82,43 @@ public sealed partial class ConversationRowControl : UserControl
         // macOS sidebar. (The previous 45%-alpha black was invisible in dark mode.)
         OnlineDot.Fill = Row.IsOnline ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
 
-        if (Row.UnreadCount > 0)
-        {
-            UnreadCount.Text       = Row.UnreadCount > 99 ? "99+" : Row.UnreadCount.ToString();
-            UnreadBadge.Visibility = Visibility.Visible;
-        }
-        else
-        {
-            UnreadBadge.Visibility = Visibility.Collapsed;
-        }
+        UnreadCount.Text = Row.UnreadCount > 99 ? "99+" : Row.UnreadCount.ToString();
+        UpdateOptionsVisibility();
 
         ArchiveItem.Visibility   = Row.IsArchived ? Visibility.Collapsed : Visibility.Visible;
         UnarchiveItem.Visibility = Row.IsArchived ? Visibility.Visible   : Visibility.Collapsed;
+    }
+
+    private void UpdateOptionsVisibility()
+    {
+        var showOptions = _pointerOver || _menuOpen || _optionsFocused;
+        OptionsBtn.Opacity = showOptions ? 1 : 0;
+        UnreadBadge.Visibility = !showOptions && Row is { UnreadCount: > 0 }
+            ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void RowRoot_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        _pointerOver = true;
+        UpdateOptionsVisibility();
+    }
+
+    private void RowRoot_PointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        _pointerOver = false;
+        UpdateOptionsVisibility();
+    }
+
+    private void OptionsBtn_FocusChanged(object sender, RoutedEventArgs e)
+    {
+        _optionsFocused = OptionsBtn.FocusState != FocusState.Unfocused;
+        UpdateOptionsVisibility();
+    }
+
+    private void OptionsFlyout_OpenedOrClosed(object? sender, object e)
+    {
+        _menuOpen = OptionsFlyout.IsOpen;
+        UpdateOptionsVisibility();
     }
 
     private void OptionsBtn_Click(object sender, RoutedEventArgs e)

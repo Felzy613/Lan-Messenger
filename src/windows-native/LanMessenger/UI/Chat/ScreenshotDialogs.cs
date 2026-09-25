@@ -41,6 +41,7 @@ internal sealed class ScreenshotWindowPickerDialog : ContentDialog
             MinHeight     = 120,
             MaxHeight     = 440,
         };
+        GlassControls.ApplyList(_list);
 
         // "Select region..." is always the first option \u2014 drag to capture an
         // arbitrary rectangle of the primary display.
@@ -91,9 +92,10 @@ internal sealed class ScreenshotWindowPickerDialog : ContentDialog
 
         var titleBlock = new TextBlock
         {
-            Text  = title,
-            Style = Application.Current.Resources.TryGetValue("BodyStrongTextBlockStyle", out var s)
-                        ? (Style)s : null,
+            Text         = title,
+            Style        = GlassControls.Style("TokenTypeNameStyle"),
+            Foreground   = Theme.InkBrush,
+            TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
         var stack = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
@@ -102,16 +104,16 @@ internal sealed class ScreenshotWindowPickerDialog : ContentDialog
         {
             stack.Children.Add(new TextBlock
             {
-                Text     = subtitle,
-                Opacity  = 0.6,
-                FontSize = 11,
+                Text       = subtitle,
+                Style      = GlassControls.Style("TokenTypeCaptionStyle"),
+                Foreground = Theme.InkSecondaryBrush,
             });
         }
 
         var row = new Grid
         {
             ColumnSpacing = 12,
-            Padding       = new Thickness(4, 6, 4, 6),
+            Padding       = new Thickness(10, 6, 10, 6),
             Tag           = tag,
         };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -141,6 +143,8 @@ internal sealed class ScreenshotPreviewDialog : ContentDialog
         CloseButtonText   = "Cancel";
         DefaultButton     = ContentDialogButton.Primary;
         GlassDialog.Apply(this);
+        // The preview is 580 wide; at Fluent's 548 cap the sheet cut it off.
+        Resources["ContentDialogMaxWidth"] = 640.0;
 
         // BitmapImage accepts file:/// URIs built from local absolute paths.
         Image image;
@@ -167,13 +171,22 @@ internal sealed class ScreenshotPreviewDialog : ContentDialog
         var filename = new TextBlock
         {
             Text                = Path.GetFileName(imagePath),
-            Opacity             = 0.6,
-            FontSize            = 11,
+            Style               = GlassControls.Style("TokenTypeCaptionStyle"),
+            Foreground          = Theme.InkSecondaryBrush,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+
+        // Rounded like a media bubble, so the capture reads as the attachment
+        // it is about to become.
+        var frame = new Border
+        {
+            Child               = image,
+            CornerRadius        = new CornerRadius(GlassTokens.Radius.Media),
             HorizontalAlignment = HorizontalAlignment.Center,
         };
 
         var root = new StackPanel { Spacing = 8, Width = 580 };
-        root.Children.Add(image);
+        root.Children.Add(frame);
         root.Children.Add(filename);
         Content = root;
     }

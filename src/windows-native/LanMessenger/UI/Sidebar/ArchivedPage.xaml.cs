@@ -60,6 +60,10 @@ public sealed partial class ArchivedPage : Page
         EmptyState.Visibility    = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    // An empty preview line would push the name above the avatar's centre.
+    public static Visibility ShownIfAny(string? text) =>
+        string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
+
     private void OpenBtn_Click(object sender, RoutedEventArgs e)
     {
         if (_model is null) return;

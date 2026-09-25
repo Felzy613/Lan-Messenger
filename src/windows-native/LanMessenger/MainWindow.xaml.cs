@@ -45,6 +45,16 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         Title = "LAN Messenger";
         ApplyBackdrop();
+        // Draw our own title bar on the Mica (see MainWindow.xaml, row 0).
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
+
+        // The "select a conversation" placeholder sits under ContentFrame and
+        // is hidden whenever a page is showing. Being covered is not enough:
+        // the Archived page is translucent glass, and the placeholder's title
+        // and line of text showed through it, on top of its own empty state.
+        ContentFrame.RegisterPropertyChangedCallback(ContentControl.ContentProperty, (_, _) =>
+            NoConversationState.Visibility = ContentFrame.Content is null ? Visibility.Visible : Visibility.Collapsed);
 
         // Point the code-behind palette (bubbles, dots, check marks) at the
         // light or dark colors. XAML colors follow ThemeDictionaries on their
@@ -108,6 +118,42 @@ public sealed partial class MainWindow : Window
         try { transparency = _uiSettings.AdvancedEffectsEnabled; }
         catch (Exception) { /* keep translucent; acrylic still falls back by itself */ }
         UI.Theme.Initialize(root.ActualTheme == ElementTheme.Dark, transparency);
+        ApplyCaptionButtonColors();
+    }
+
+    // The system still draws the minimise, maximise and close buttons over
+    // the right of our title bar. Their colours are per-window state rather
+    // than theme resources, so they are set again whenever the theme changes:
+    // transparent over the Mica, ink glyphs, and the same hover and pressed
+    // layers as every other glass control. High Contrast keeps the system's.
+    private void ApplyCaptionButtonColors()
+    {
+        if (!AppWindowTitleBar.IsCustomizationSupported()) return;
+        var highContrast = false;
+        try { highContrast = new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast; }
+        catch (Exception) { /* treat as not high contrast */ }
+        var bar = AppWindow.TitleBar;
+        if (highContrast)
+        {
+            bar.ButtonBackgroundColor = null;
+            bar.ButtonInactiveBackgroundColor = null;
+            bar.ButtonForegroundColor = null;
+            bar.ButtonInactiveForegroundColor = null;
+            bar.ButtonHoverBackgroundColor = null;
+            bar.ButtonHoverForegroundColor = null;
+            bar.ButtonPressedBackgroundColor = null;
+            bar.ButtonPressedForegroundColor = null;
+            return;
+        }
+        var ink = GlassTokens.Pick(GlassTokens.InkLight, GlassTokens.InkDark);
+        bar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+        bar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+        bar.ButtonForegroundColor = ink;
+        bar.ButtonInactiveForegroundColor = GlassTokens.Pick(GlassTokens.InkSecondaryLight, GlassTokens.InkSecondaryDark);
+        bar.ButtonHoverBackgroundColor = GlassTokens.Pick(GlassTokens.GlassHoverLight, GlassTokens.GlassHoverDark);
+        bar.ButtonHoverForegroundColor = ink;
+        bar.ButtonPressedBackgroundColor = GlassTokens.Pick(GlassTokens.GlassPressedLight, GlassTokens.GlassPressedDark);
+        bar.ButtonPressedForegroundColor = ink;
     }
 
     // Gives the whole window a translucent, wallpaper-tinted backdrop — the
@@ -132,8 +178,14 @@ public sealed partial class MainWindow : Window
 
     // Tracks focus so notifications only suppress while the window is both
     // open and the active foreground window (see AppModel.IsWindowFocused).
-    private void OnWindowActivated(object sender, WindowActivatedEventArgs args) =>
-        Model.IsWindowFocused = args.WindowActivationState != WindowActivationState.Deactivated;
+    // The title dims while another window is active, as the system's own
+    // title bar does.
+    private void OnWindowActivated(object sender, WindowActivatedEventArgs args)
+    {
+        var active = args.WindowActivationState != WindowActivationState.Deactivated;
+        Model.IsWindowFocused = active;
+        AppTitleText.Opacity = active ? 1.0 : 0.6;
+    }
 
     // Reuse a single ChatPage instance — re-binding `Model` would also re-fire OnPropertyChanged,
     // so we only assign it once. ChatPage observes SelectedPeerIP itself.
@@ -172,6 +224,10 @@ public sealed partial class MainWindow : Window
             XamlRoot        = Content.XamlRoot,
         };
         GlassDialog.Apply(dialog);
+        // Wider than Fluent's 548: a settings row is a label and a control side
+        // by side, and at 548 a text field left its label two words a line.
+        // The sheet template reads this from the dialog's own resources.
+        dialog.Resources["ContentDialogMaxWidth"] = 640.0;
         _activeDialog = dialog;
         try { await dialog.ShowAsync(); }
         finally { _activeDialog = null; }

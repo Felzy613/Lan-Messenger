@@ -12,6 +12,10 @@ public sealed class ConversationRowViewModel : INotifyPropertyChanged
 {
     public string PeerIP { get; init; } = "";
 
+    // A list row's accessible name is its item's ToString(): without this,
+    // Narrator read every conversation as "LanMessenger.UI.Sidebar.ConversationRowViewModel".
+    public override string ToString() => PeerName;
+
     private string _peerName = "";
     public string PeerName
     {
