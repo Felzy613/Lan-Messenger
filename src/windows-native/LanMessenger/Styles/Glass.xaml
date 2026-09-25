@@ -331,6 +331,17 @@
         </Setter>
     </Style>
 
+    <!-- The destructive action in a confirmation ("Delete conversation?",
+         "Remove contact?"): the glass button, the same as Cancel beside it,
+         with its label in danger-ink. A saturated red slab with a sheen read
+         as a toy in a sheet whose whole job is to make you pause; this is how
+         macOS marks an alert's destructive button. The solid danger fill
+         below stays for the screen-sharing HUD's Stop Sharing, where it is
+         the one filled colour on purpose. -->
+    <Style x:Key="GlassDestructiveButtonStyle" TargetType="Button" BasedOn="{StaticResource GlassButtonStyle}">
+        <Setter Property="Foreground" Value="{ThemeResource TokenDangerInkBrush}" />
+    </Style>
+
     <!-- Only for actions that remove data, and always behind a confirmation.
          There is no danger-hover token, so hover and pressed darken through
          the same glass-hover and glass-pressed overlays as everything else. -->

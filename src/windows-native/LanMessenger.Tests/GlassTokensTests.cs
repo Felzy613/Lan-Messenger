@@ -66,6 +66,8 @@ public class GlassTokensTests
         ("accent-ink", [["bubble-in", "accent-wash"], ["glass-regular", "accent-wash"],
                         ["glass-thick", "accent-wash"]], 4.5),
         ("warning-ink", [["glass-regular", "warning-wash"], ["glass-thick", "warning-wash"]], 4.5),
+        // A confirmation's destructive button: glass on a thick sheet, red label.
+        ("danger-ink", [["glass-thick", "glass-regular"]], 4.5),
     ];
 
     [TestMethod]

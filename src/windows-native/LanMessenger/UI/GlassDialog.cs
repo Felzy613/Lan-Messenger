@@ -19,8 +19,9 @@ namespace LanMessenger.UI;
 public static class GlassDialog
 {
     /// <param name="destructive">
-    /// For confirmations that remove data. The primary button takes the danger
-    /// style, and whatever DefaultButton the dialog already has stays: "Delete
+    /// For confirmations that remove data. The primary button is glass with a
+    /// danger-ink label (GlassDestructiveButtonStyle), not a red fill, and
+    /// whatever DefaultButton the dialog already has stays: "Delete
     /// conversation?" keeps Cancel as its default.
     /// </param>
     /// <param name="neutralPrimary">
@@ -36,7 +37,7 @@ public static class GlassDialog
         // Set every time, not left to the style: ContactsDialog re-applies as it
         // moves between states, and a danger style set locally for "Remove
         // contact?" would otherwise outlive that state.
-        var primaryKey = destructive ? "GlassDangerButtonStyle"
+        var primaryKey = destructive ? "GlassDestructiveButtonStyle"
                        : neutralPrimary ? "GlassButtonStyle"
                        : "GlassPrimaryButtonStyle";
         if (Find<Style>(resources, primaryKey) is { } primary)

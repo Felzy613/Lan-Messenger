@@ -71,6 +71,8 @@ final class GlassTokensTests: XCTestCase {
                          ["glass-thick", "accent-wash"]], minimum: 4.5),
         Floor(foreground: "warning-ink",
               surfaces: [["glass-regular", "warning-wash"], ["glass-thick", "warning-wash"]], minimum: 4.5),
+        // A confirmation's destructive button: glass on a thick sheet, red label.
+        Floor(foreground: "danger-ink", surfaces: [["glass-thick", "glass-regular"]], minimum: 4.5),
     ]
 
     func testEveryPairingMeetsItsContrastFloor() throws {

@@ -1027,7 +1027,10 @@ Use the smallest sufficient set for the change:
   "Cancel" beside a round "Add Contact". Fluent's also lays a separator line
   and a second background above the buttons and stretches a lone "Done" across
   half the sheet. Ours keeps Fluent's part and state names, which
-  `ContentDialog`'s code drives, and leaves `DefaultButtonStates` empty.
+  `ContentDialog`'s code drives, and leaves `DefaultButtonStates` empty. A
+  confirmation's destructive button is `GlassDestructiveButtonStyle` (glass,
+  `danger-ink` label), not the solid `danger` fill, which is for the HUD's Stop
+  Sharing only: a red slab in a confirmation looked like a toy.
 - Do not round a list row through `ListViewItem.CornerRadius` or the
   `ListViewItemCornerRadius` resource. Fluent's `ListViewItemPresenter` drew
   square hover, selection and focus highlights on the Dell whichever was set,
