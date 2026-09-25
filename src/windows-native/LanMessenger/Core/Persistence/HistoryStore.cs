@@ -64,22 +64,14 @@ public sealed class HistoryStore
 
     private HistoryStore()
     {
-        _path = RunningUnderTests
-            ? Path.Combine(Path.GetTempPath(), $"lanmessenger-tests-{Environment.ProcessId}-history.enc")
+        // Explicit rather than inherited from ConfigStore's own guard: the test
+        // host can open the real DPAPI key, so this file is the one that must
+        // never be the real one. See TestIsolation.
+        _path = TestIsolation.IsActive
+            ? TestIsolation.ScratchPath("history.enc")
             : ConfigStore.Shared.HistoryFilePath;
         Load();
     }
-
-    /// <summary>
-    /// The suite exercises this singleton directly, on the same machine and
-    /// account as the real app — so without this the test host decrypted the
-    /// user's own history, and any path that saved wrote test conversations
-    /// back into it. On macOS one such thread, dated 1970, sat in a real
-    /// history file until the user hid it. MSTest is never loaded by the app,
-    /// so its presence is an unambiguous signal.
-    /// </summary>
-    private static bool RunningUnderTests => AppDomain.CurrentDomain.GetAssemblies()
-        .Any(a => a.GetName().Name == "Microsoft.VisualStudio.TestPlatform.TestFramework");
 
     // MARK: - Load
 

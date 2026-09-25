@@ -191,6 +191,7 @@ untestable; everything above it runs against in-memory doubles. See
 |---|---|
 | `src/macos/LanMessenger/Core/Persistence/ConfigStore.swift` | App config schema, app-data paths, save/load, inbox/log/update directories, and legacy Python config migration. |
 | `src/macos/LanMessenger/Core/Persistence/HistoryStore.swift` | Encrypted message history keyed by conversation id, per-peer cap, read-receipt flags, status updates, deletion, the one-time address→key re-filing at load, and the test-mode temp-file guard. |
+| `src/macos/LanMessenger/Core/Persistence/TestIsolation.swift` | Whether this process is an XCTest run, and the per-process temp paths that `HistoryStore`, `ConfigStore` and `NetLogger` use instead of Application Support when it is. Mirror of `TestIsolation.cs`. |
 | `src/macos/LanMessenger/Core/Persistence/PeerID.swift` | Conversation ids: what a peer identity key is, the `ip:<address>` legacy form, and the pure migration (`resolve`, `rekey`, `merge`) that re-files address-named history. Mirror of `PeerId.cs`. |
 | `src/macos/LanMessenger/Core/Persistence/MessageStatus.swift` | Central monotonic message-status ranking. |
 | `src/macos/LanMessenger/Core/Persistence/FileTransferStore.swift` | Incoming temp file state, outgoing queues, active transfer tracking, and final filename deduplication. |
@@ -251,6 +252,7 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/macos/LanMessengerTests/AttachmentPasteboardTests.swift` | Paste precedence (files vs bitmap vs text), pasted-bitmap flavour/extension choice, drag item-provider decoding, and `AttachmentStore` naming/placement. |
 | `src/macos/LanMessengerTests/GlassTokensTests.swift` | Spot values from the generated tokens, the WCAG contrast floors (each glass composited over the wallpaper and its glow, the worse taken), and `AvatarPalette` equal to the `avatar-*` tokens. Mirrors `GlassTokensTests.cs`. |
 | `src/macos/LanMessengerTests/AvatarPaletteTests.swift` | The avatar palette, and each name's hash and slot, against `avatar_palette_vector.json`. Mirrors `AvatarPaletteTests.cs`. |
+| `src/macos/LanMessengerTests/TestIsolationTests.swift` | A test run's logs, config and history paths resolve to scratch, never to Application Support, including the logger with no override set. Mirrors `TestIsolationTests.cs`. |
 | `src/macos/LanMessengerTests/PeerIDTests.swift` | Conversation-id migration (what it refuses to guess, merging, idempotence, the shared vector) and the claimed-sender binding for unencrypted packets. Mirrors `PeerIdTests.cs`. |
 | `src/macos/LanMessengerTests/ConfigStoreTests.swift` | Config and filename sanitization tests. |
 | `src/macos/LanMessengerTests/DockPolicyGuardTests.swift` | Guards the Dock-presence invariant: an AppKit promotion back to `.regular` must be corrected, and a policy that already matches must be left alone. |
@@ -407,8 +409,9 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 
 | Path | Purpose |
 |---|---|
-| `src/windows-native/LanMessenger/Core/Persistence/ConfigStore.cs` | App config schema, app-data paths, save/load, and legacy Python config migration. |
+| `src/windows-native/LanMessenger/Core/Persistence/ConfigStore.cs` | App config schema, app-data paths (the log directory defers to `LanLogger`), save/load, and legacy Python config migration. |
 | `src/windows-native/LanMessenger/Core/Persistence/HistoryStore.cs` | Encrypted history keyed by conversation id, cap, read flags, status updates, deletion, the one-time address→key re-filing at load, and the test-mode temp-file guard. |
+| `src/windows-native/LanMessenger/Core/Persistence/TestIsolation.cs` | Whether this process is an MSTest run, and the per-process temp paths that `HistoryStore`, `ConfigStore` and `LanLogger` use instead of `%APPDATA%` when it is. Mirror of `TestIsolation.swift`. |
 | `src/windows-native/LanMessenger/Core/Persistence/PeerId.cs` | Conversation ids and the pure address→key migration. Mirror of `PeerID.swift`. |
 | `src/windows-native/LanMessenger/Core/Persistence/MessageStatus.cs` | Central monotonic message-status ranking. |
 | `src/windows-native/LanMessenger/Core/Persistence/FileTransferStore.cs` | Incoming temp files, outgoing queues, active transfer state, and final filename dedupe. |
@@ -481,6 +484,7 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 |---|---|
 | `src/windows-native/LanMessenger.Tests/GlassTokensTests.cs` | Mirror of the Swift token suite: spot values, contrast floors, avatar agreement. |
 | `src/windows-native/LanMessenger.Tests/AvatarPaletteTests.cs` | Mirror of the Swift avatar suite, against the shared vector. |
+| `src/windows-native/LanMessenger.Tests/TestIsolationTests.cs` | Mirror of the Swift suite: logs, config and history resolve to scratch under MSTest, never to `%APPDATA%`. |
 | `src/windows-native/LanMessenger.Tests/PeerIdTests.cs` | Mirror of the Swift conversation-id and claimed-sender suites, against the shared vector. |
 | `src/windows-native/LanMessenger.Tests/ClipboardAttachmentsTests.cs` | Ctrl+V paste precedence and pasted-image filename safety. |
 | `src/windows-native/LanMessenger.Tests/ConfigStoreTests.cs` | Config and filename sanitization tests. |

@@ -303,6 +303,8 @@ Coverage:
   health summary.
 - `DockPolicyGuardTests`, `AttachmentPasteboardTests`, `NetLoggerTests`,
   `StressTests`.
+- `TestIsolationTests`: a test run's logs, config and history resolve to
+  per-process temp paths, never the real app-data directory.
 - Remote desktop: `RemoteSessionCryptoTests` (32), `MediaFrameTests` (26),
   `H264BitstreamTests` (15), `H264EncoderTests` (12), `H264DecoderTests` (14),
   `SampleBufferVideoPresenterTests` (3), `ScreenCaptureSourceTests` (18),

@@ -97,6 +97,21 @@ enum NetLogger {
     // In production the path resolves to Application Support / LanMessenger / Logs.
     static var _testLogDirectoryOverride: URL?
 
+    // Under XCTest the default is a scratch directory, never the real one. The
+    // override alone is not enough: only the logger's own tests set it, while
+    // most of the suite logs without it — every MessagingService and
+    // remote-desktop test does, and sessions go on logging from their own
+    // queues after the test that started them returns. See TestIsolation.
+    private static let defaultLogsDirectory: URL = {
+        if TestIsolation.isActive {
+            return TestIsolation.scratchURL("logs")
+        }
+        return (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSTemporaryDirectory()))
+            .appendingPathComponent("LanMessenger", isDirectory: true)
+            .appendingPathComponent("Logs", isDirectory: true)
+    }()
+
     // Backward-compat: the primary (app/client) log URL.
     static var logURL: URL { logURL(for: .app) }
 
@@ -105,16 +120,7 @@ enum NetLogger {
     }
 
     static var logsDirectory: URL {
-        let dir: URL
-        if let override = _testLogDirectoryOverride {
-            dir = override
-        } else {
-            let fm = FileManager.default
-            dir = (fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-                    ?? URL(fileURLWithPath: NSTemporaryDirectory()))
-                .appendingPathComponent("LanMessenger", isDirectory: true)
-                .appendingPathComponent("Logs", isDirectory: true)
-        }
+        let dir = _testLogDirectoryOverride ?? defaultLogsDirectory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

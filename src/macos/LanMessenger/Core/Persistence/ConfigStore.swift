@@ -191,8 +191,15 @@ final class ConfigStore {
     var config: AppConfig = AppConfig()
 
     private init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        configDir = appSupport.appendingPathComponent("LanMessenger")
+        // No test saves config today, but every queued message or contact
+        // change does, and a test that reached one would put its pending
+        // message in the real outbox. See TestIsolation.
+        if TestIsolation.isActive {
+            configDir = TestIsolation.scratchURL("config")
+        } else {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            configDir = appSupport.appendingPathComponent("LanMessenger")
+        }
         configURL = configDir.appendingPathComponent("config.json")
         try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
         load()

@@ -357,7 +357,10 @@ an offline peer has none and its message is queued and relayed.
 
 Under XCTest/MSTest `HistoryStore` writes to a temp file instead of the real
 history: the suites use the shared instance directly, and the test process can
-open the real key.
+open the real key. `ConfigStore` and the logger do the same — config and logs go
+to per-process `lanmessenger-tests-<pid>-*` paths in the temp directory — all
+through `TestIsolation`, so a test run never writes the running app's
+`client.log` or its outbox.
 
 The message status update path is rank-aware. This prevents race conditions where
 a late local "Sent" update overwrites a remote `sent_receipt` or `read_receipt`.
