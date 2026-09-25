@@ -265,6 +265,25 @@ public sealed class LanLoggerTests
         StringAssert.Contains(body, "ERROR Retry:", "exhausted should be ERROR level");
     }
 
+    // UpdateService → update.log, through the logger
+    //
+    // UpdateService used to append to update.log itself: no rotation, no
+    // session header, and outside the logger's lock on a file the Update
+    // channel also owns. An empty repo logs and returns before any network
+    // call, so this needs no GitHub.
+    [TestMethod]
+    public async Task UpdateServiceLogsThroughTheUpdateChannel()
+    {
+        Assert.IsNull(await UpdateService.Shared.CheckAsync(""));
+
+        var body = File.ReadAllText(LanLogger._TestLogPathFor(LanLogger.LogChannel.Update));
+        StringAssert.StartsWith(body, "# Session ",
+            "update.log should open with the logger's session header");
+        StringAssert.Contains(body, "INFO  Update: event=log reason=\"CheckAsync: empty repo\"");
+        Assert.IsFalse(body.Contains("[UpdateService "),
+            "UpdateService must not write its own hand-formatted lines to update.log");
+    }
+
     // ── Session header per channel ────────────────────────────────────────────────
 
     [TestMethod]

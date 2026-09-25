@@ -42,13 +42,8 @@ public sealed class UpdateService
     }
 
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly string _logPath;
 
-    private UpdateService()
-    {
-        try { Directory.CreateDirectory(ConfigStore.Shared.LogsDirectory); } catch { }
-        _logPath = Path.Combine(ConfigStore.Shared.LogsDirectory, "update.log");
-    }
+    private UpdateService() { }
 
     public string CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
@@ -539,10 +534,11 @@ public sealed class UpdateService
         onProgress?.Invoke(1.0);
     }
 
-    private void Log(string message)
-    {
-        var line = $"[UpdateService {DateTime.UtcNow:u}] {message}{Environment.NewLine}";
-        try { File.AppendAllText(_logPath, line); } catch { }
-        Debug.WriteLine(line);
-    }
+    // Route through LanLogger's Update channel rather than appending to
+    // update.log by hand. The hand-rolled writer never rotated (the file grew
+    // forever), wrote no "# Session" header, and appended outside LanLogger's
+    // lock to the very file that channel owns, so the two could interleave.
+    // LanLogger.Write also echoes to Debug output, so no WriteLine here.
+    private static void Log(string message) =>
+        LanLogger.Update("log", reason: message);
 }

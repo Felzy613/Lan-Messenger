@@ -130,8 +130,9 @@ public sealed class ConfigStore
 
     public string HistoryFilePath => Path.Combine(_appDataDir, "history.enc");
 
-    // The logger owns this path, as on macOS, so UpdateService's update.log
-    // cannot resolve somewhere the logger's own guard does not cover.
+    // The logger owns this path, as on macOS, so nothing that resolves the logs
+    // directory through ConfigStore can land somewhere the logger's own guard
+    // does not cover.
     public string LogsDirectory => LanLogger.LogsDirectory;
 
     public string UpdateStagingDirectory => Path.Combine(_appDataDir, "Updates");
