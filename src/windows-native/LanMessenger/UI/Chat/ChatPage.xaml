@@ -78,6 +78,18 @@
                   Padding="12,80,12,72"
                   Background="Transparent"
                   ItemTemplateSelector="{StaticResource MessageRowTemplates}">
+            <!-- A message row is not selectable or clickable, so it has no
+                 highlight: Fluent's item template otherwise lays a grey 4px box
+                 the full width of the thread behind whichever bubble the pointer
+                 is over. The item's Background setter below does not reach it;
+                 the presenter draws these from its own theme resources. -->
+            <ListView.Resources>
+                <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver"         Color="Transparent" />
+                <SolidColorBrush x:Key="ListViewItemBackgroundPressed"             Color="Transparent" />
+                <SolidColorBrush x:Key="ListViewItemBackgroundSelected"            Color="Transparent" />
+                <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="Transparent" />
+                <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed"     Color="Transparent" />
+            </ListView.Resources>
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />

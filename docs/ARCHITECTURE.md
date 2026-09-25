@@ -671,10 +671,16 @@ visible area, and letting the thread run under them (`.safeAreaInset`) needs
 that geometry corrected first (plan step M5). Before macOS 26 both keep `.bar`.
 
 WinUI detail worth knowing: Fluent brushes read from inside a generic.xaml
-template's visual-state storyboard (a focused field's underline, a dialog's
-default button) cannot be overridden from App.xaml; they resolve from the
-control's own tree and then the style's defining dictionary first. Override
-them per instance (`GlassDialog`, `ToggleSwitch.Resources`).
+template's visual-state storyboard (a focused field's underline, a toggle's
+on-track) cannot be overridden from App.xaml; they resolve from the control's
+own tree and then the style's defining dictionary first. Override them per
+instance (`ToggleSwitch.Resources`), or replace the template where Fluent's
+cannot be talked out of a behaviour. `Styles/Glass.xaml` does that for dialogs
+(`GlassDialogStyle`: Fluent's restyles the default button square and accent),
+text fields (`GlassTextFieldStyle`, `GlassSearchFieldStyle`) and list rows
+(`GlassListItemStyle`: Fluent's `ListViewItemPresenter` draws square
+highlights whatever corner radius it is given). The main window draws its own
+title bar on the Mica, so the system's accent-coloured one never appears.
 
 ### macOS UI
 

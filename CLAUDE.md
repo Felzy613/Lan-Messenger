@@ -1026,12 +1026,46 @@ Use the smallest sufficient set for the change:
   margin, keeps the first and last messages clear of the floating chrome
   (`ChatPage.UpdateThreadInsets`).
 - Do not try to restyle a Fluent brush from App.xaml when the control reads it
-  inside a visual-state storyboard. `TextControlBorderBrushFocused` and the
-  `AccentButton*` brushes resolve from the control's own tree and then the
-  style's defining dictionary, never reaching the app's — tried in App.xaml's
-  own `ThemeDictionaries` and in a merged dictionary, and a focused field kept
-  the user's red Windows accent underline both times. Set them per instance:
-  `GlassDialog.Apply` does it for every dialog.
+  inside a visual-state storyboard. Those `ThemeResource`s resolve from the
+  control's own tree and then the style's defining dictionary, never reaching
+  the app's — tried in App.xaml's own `ThemeDictionaries` and in a merged
+  dictionary, and a focused field kept the user's red Windows accent underline
+  both times. Set them per instance (`ToggleSwitch.Resources`), or better,
+  replace the template: text fields are `GlassTextFieldStyle` and have no
+  Fluent underline at all.
+- Do not put a `ContentDialog` back on Fluent's template. `GlassDialogStyle`
+  carries its own, because Fluent's swaps whichever button is `DefaultButton`
+  to `AccentButtonStyle` from a visual state — over the style we set, and no
+  resource override reaches the Style it swaps in. That gave a square, green
+  "Cancel" beside a round "Add Contact". Fluent's also lays a separator line
+  and a second background above the buttons and stretches a lone "Done" across
+  half the sheet. Ours keeps Fluent's part and state names, which
+  `ContentDialog`'s code drives, and leaves `DefaultButtonStates` empty. A
+  confirmation's destructive button is `GlassDestructiveButtonStyle` (glass,
+  `danger-ink` label), not the solid `danger` fill, which is for the HUD's Stop
+  Sharing only: a red slab in a confirmation looked like a toy.
+- Do not round a list row through `ListViewItem.CornerRadius` or the
+  `ListViewItemCornerRadius` resource. Fluent's `ListViewItemPresenter` drew
+  square hover, selection and focus highlights on the Dell whichever was set,
+  per list or app-wide. Lists in glass use `GlassListItemStyle`, whose own
+  template draws those states at `radius-row` and puts the focus ring on the
+  same corners. `MessagesList` keeps Fluent's template with its highlight
+  brushes transparent: a message row is not selectable, and the default laid a
+  grey box across the thread behind the bubble under the pointer.
+- Do not let a text field be the first focusable element in a scrolling sheet.
+  Windows puts focus back on it whenever the window is re-activated, and the
+  sheet scrolls back to show it: scroll down Settings, glance at another
+  window, come back, and you are at the top. `SettingsPage`'s `ScrollViewer`
+  is the first tab stop instead, which also lets Page Down scroll it.
+- Do not give a XAML `Border` or `TextBox` `radius-pill` (999). XAML does not
+  clamp radii the way CSS does, so 999 on a wide, short shape draws an ellipse.
+  A capsule is half its height.
+- Do not put anything interactive in `MainWindow`'s `AppTitleBar`. The window
+  draws its own title bar (`ExtendsContentIntoTitleBar`), because the system's
+  takes the user's accent colour — a magenta band across the top of the app on
+  the Dell — and the whole `SetTitleBar` element becomes caption area, which
+  swallows clicks. The caption buttons' colours are per-window state, re-set
+  on every theme change by `ApplyCaptionButtonColors`.
 - Do not set white text or glyphs on the brand green. It is 2:1. Content on
   `brand` is `on-brand` (#0B141A) — the send glyph, the unread count, any
   primary button.

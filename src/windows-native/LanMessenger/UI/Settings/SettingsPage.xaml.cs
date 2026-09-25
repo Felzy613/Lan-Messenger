@@ -35,8 +35,8 @@ public sealed partial class SettingsPage : Page
     {
         var cfg = ConfigStore.Shared.Config;
         UsernameBox.Text   = cfg.Username;
-        InboxBox.Text      = ConfigStore.Shared.InboxDirectory;
-        ScreenshotDirBox.Text = ConfigStore.Shared.ScreenshotDirectory;
+        ShowPath(InboxPath, ConfigStore.Shared.InboxDirectory);
+        ShowPath(ScreenshotDirPath, ConfigStore.Shared.ScreenshotDirectory);
         ResetScreenshotDirBtn.Visibility = string.IsNullOrEmpty(cfg.ScreenshotDir)
             ? Visibility.Collapsed : Visibility.Visible;
         UpdateRepoBox.Text = cfg.UpdateRepo;
@@ -47,8 +47,24 @@ public sealed partial class SettingsPage : Page
         RelayEnabledToggle.IsOn = cfg.RelayEnabled;
         RelayUrlBox.Text = cfg.RelayWorkerUrl;
         RelayUrlBox.IsEnabled = cfg.RelayEnabled;
-        VersionText.Text   = $"LAN Messenger v{UpdateService.Shared.CurrentVersion}";
+        VersionText.Text   = $"You have version {UpdateService.Shared.CurrentVersion}.";
+        ShowStatus(UpdateStatusText, "");
         RefreshUpdateUI();
+    }
+
+    // A folder is shown as its path in the code face, trimmed with an
+    // ellipsis when the row is narrow; the tooltip keeps the whole of it.
+    private static void ShowPath(TextBlock block, string path)
+    {
+        block.Text = path;
+        ToolTipService.SetToolTip(block, path);
+    }
+
+    // An empty status line would still take a line's height under its label.
+    private static void ShowStatus(TextBlock block, string text)
+    {
+        block.Text = text;
+        block.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void OnModelChanged(object? s, PropertyChangedEventArgs e)
@@ -173,7 +189,7 @@ public sealed partial class SettingsPage : Page
 
         ConfigStore.Shared.Config.InboxDir = folder;
         ConfigStore.Shared.Save();
-        InboxBox.Text = folder;
+        ShowPath(InboxPath, folder);
     }
 
     private void BrowseScreenshotDir_Click(object sender, RoutedEventArgs e)
@@ -183,7 +199,7 @@ public sealed partial class SettingsPage : Page
 
         ConfigStore.Shared.Config.ScreenshotDir = folder;
         ConfigStore.Shared.Save();
-        ScreenshotDirBox.Text = folder;
+        ShowPath(ScreenshotDirPath, folder);
         ResetScreenshotDirBtn.Visibility = Visibility.Visible;
     }
 
@@ -208,22 +224,22 @@ public sealed partial class SettingsPage : Page
     {
         ConfigStore.Shared.Config.ScreenshotDir = "";
         ConfigStore.Shared.Save();
-        ScreenshotDirBox.Text = ConfigStore.Shared.ScreenshotDirectory;
+        ShowPath(ScreenshotDirPath, ConfigStore.Shared.ScreenshotDirectory);
         ResetScreenshotDirBtn.Visibility = Visibility.Collapsed;
     }
 
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
     {
-        UpdateStatusText.Text = "Checking…";
+        ShowStatus(UpdateStatusText, "Checking…");
         CheckUpdatesBtn.IsEnabled = false;
         try
         {
             var info = _model is not null
                 ? await _model.CheckForUpdatesAsync(silent: false)
                 : await UpdateService.Shared.CheckAsync(ConfigStore.Shared.Config.UpdateRepo);
-            UpdateStatusText.Text = info is null
+            ShowStatus(UpdateStatusText, info is null
                 ? "You're up to date."
-                : $"Update available: v{info.Version}";
+                : $"Update available: v{info.Version}");
             RefreshUpdateUI();
         }
         finally { CheckUpdatesBtn.IsEnabled = true; }

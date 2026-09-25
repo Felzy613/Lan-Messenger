@@ -1,6 +1,7 @@
 using LanMessenger.Core.Persistence;
 using LanMessenger.UI;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
@@ -64,7 +65,9 @@ public sealed class ContactRowViewModel : INotifyPropertyChanged
     // Derived display properties — used when building rows in code.
     public string StatusText => _isOnline ? "Online" : "Offline";
 
-    public SolidColorBrush StatusBrush => _isOnline ? Theme.OnlineDotBrush : Theme.OfflineDotBrush;
+    // accent-ink, not the presence green: the dot's green is a fill colour and
+    // about 2:1 as text on glass.
+    public SolidColorBrush StatusBrush => _isOnline ? Theme.AccentInkBrush : Theme.InkSecondaryBrush;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Notify(string name) => PropertyChanged?.Invoke(this, new(name));
@@ -162,10 +165,10 @@ public sealed partial class ContactsPage : Page
     {
         return new TextBlock
         {
-            Text     = text,
-            Style    = TryGetStyle("CaptionTextBlockStyle"),
-            Foreground = TryGetBrush("TextFillColorSecondaryBrush"),
-            Margin   = new Thickness(16, 8, 16, 4),
+            Text       = text,
+            Style      = TryGetStyle("TokenTypeLabelStrongStyle"),
+            Foreground = Theme.InkSecondaryBrush,
+            Margin     = new Thickness(8, 10, 8, 4),
         };
     }
 
@@ -197,13 +200,15 @@ public sealed partial class ContactsPage : Page
         // Name + status.
         var nameBlock = new TextBlock
         {
-            Text  = vm.Username,
-            Style = TryGetStyle("BodyStrongTextBlockStyle"),
+            Text         = vm.Username,
+            Style        = TryGetStyle("TokenTypeNameStyle"),
+            Foreground   = Theme.InkBrush,
+            TextTrimming = TextTrimming.CharacterEllipsis,
         };
         var statusBlock = new TextBlock
         {
             Text       = vm.StatusText,
-            FontSize   = 11,
+            Style      = TryGetStyle("TokenTypeCaptionStyle"),
             Foreground = vm.StatusBrush,
         };
         var info = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
@@ -233,26 +238,24 @@ public sealed partial class ContactsPage : Page
 
         var menuBtn = new Button
         {
-            Width           = 32,
-            Height          = 32,
-            Padding         = new Thickness(0),
-            Background      = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
-            BorderThickness = new Thickness(0),
-            Tag             = vm.PublicKeyB64,
-            Flyout          = flyout,
-            Content         = new FontIcon
+            Style             = TryGetStyle("GlassIconButtonStyle"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Tag               = vm.PublicKeyB64,
+            Flyout            = flyout,
+            Content           = new FontIcon
             {
                 Glyph      = "\uE712",
                 FontSize   = 14,
             },
         };
+        AutomationProperties.SetName(menuBtn, $"Options for {vm.Username}");
         ToolTipService.SetToolTip(menuBtn, "Contact options");
 
         // Assemble the row.
         var row = new Grid
         {
             ColumnSpacing = 12,
-            Padding       = new Thickness(16, 6, 8, 6),
+            Padding       = new Thickness(8, 6, 4, 6),
         };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -263,6 +266,8 @@ public sealed partial class ContactsPage : Page
         row.Children.Add(avatarGrid);
         row.Children.Add(info);
         row.Children.Add(menuBtn);
+        // The same menu on right-click, anywhere on the row.
+        row.ContextFlyout = flyout;
         return row;
     }
 
@@ -271,23 +276,11 @@ public sealed partial class ContactsPage : Page
     private static Style? TryGetStyle(string key) =>
         Application.Current.Resources.TryGetValue(key, out var v) ? v as Style : null;
 
-    private static Brush? TryGetBrush(string key) =>
-        Application.Current.Resources.TryGetValue(key, out var v) ? v as Brush : null;
 
     // ── Event handlers ───────────────────────────────────────────────────────
 
-    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        ClearSearchBtn.Visibility = SearchBox.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        ApplyFilter();
-    }
-
-    private void ClearSearch_Click(object sender, RoutedEventArgs e)
-    {
-        SearchBox.Text            = "";
-        ClearSearchBtn.Visibility = Visibility.Collapsed;
-        ApplyFilter();
-    }
+    // The field's own clear button empties it, which lands here too.
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => ApplyFilter();
 
     private void DeleteBtn_Click(object sender, RoutedEventArgs e)
     {

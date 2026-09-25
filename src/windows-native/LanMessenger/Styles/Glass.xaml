@@ -19,6 +19,24 @@
         <ResourceDictionary Source="ms-appx:///Styles/GlassTokens.xaml" />
     </ResourceDictionary.MergedDictionaries>
 
+    <!-- A list row's hover and press fills. In High Contrast the glass-hover
+         token maps to GrayText, and system text on a GrayText fill is not
+         legible, so there a row takes no fill and selection shows as its rim. -->
+    <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+            <SolidColorBrush x:Key="GlassRowHoverBrush"   Color="{ThemeResource TokenGlassHoverColor}" />
+            <SolidColorBrush x:Key="GlassRowPressedBrush" Color="{ThemeResource TokenGlassPressedColor}" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+            <SolidColorBrush x:Key="GlassRowHoverBrush"   Color="{ThemeResource TokenGlassHoverColor}" />
+            <SolidColorBrush x:Key="GlassRowPressedBrush" Color="{ThemeResource TokenGlassPressedColor}" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="HighContrast">
+            <SolidColorBrush x:Key="GlassRowHoverBrush"   Color="Transparent" />
+            <SolidColorBrush x:Key="GlassRowPressedBrush" Color="Transparent" />
+        </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
+
     <!-- A pane of glass: fill, sheen, content, rim, in that z-order. The fill
          defaults to regular acrylic, which is for chrome that app content
          scrolls under. A surface sitting straight on Mica takes a translucent
@@ -313,6 +331,17 @@
         </Setter>
     </Style>
 
+    <!-- The destructive action in a confirmation ("Delete conversation?",
+         "Remove contact?"): the glass button, the same as Cancel beside it,
+         with its label in danger-ink. A saturated red slab with a sheen read
+         as a toy in a sheet whose whole job is to make you pause; this is how
+         macOS marks an alert's destructive button. The solid danger fill
+         below stays for the screen-sharing HUD's Stop Sharing, where it is
+         the one filled colour on purpose. -->
+    <Style x:Key="GlassDestructiveButtonStyle" TargetType="Button" BasedOn="{StaticResource GlassButtonStyle}">
+        <Setter Property="Foreground" Value="{ThemeResource TokenDangerInkBrush}" />
+    </Style>
+
     <!-- Only for actions that remove data, and always behind a confirmation.
          There is no danger-hover token, so hover and pressed darken through
          the same glass-hover and glass-pressed overlays as everything else. -->
@@ -477,12 +506,617 @@
     </Style>
 
     <!-- A ContentDialog as a thick-glass sheet. Applied from code by
-         UI/GlassDialog.cs; the dialog template binds both properties. There is
-         no BasedOn: a WinUI 3 control's default style is its own precedence
-         layer, so the template still comes from there. -->
+         UI/GlassDialog.cs, because every dialog in the app is built in code.
+
+         The template is our own rather than Fluent's, for three things Fluent's
+         cannot be talked out of:
+         - Its DefaultButtonStates swap the default button's Style for
+           AccentButtonStyle from a visual state, over whatever PrimaryButtonStyle
+           or CloseButtonStyle we set. That is a square, 4px, accent-coloured
+           button: "Cancel" came out green and square beside a round "Add
+           Contact". Here those states are empty, so every button keeps its role.
+         - It lays the title and content on ContentDialogTopOverlay with a 1px
+           separator above the buttons: a two-tone sheet with a line across it.
+         - It stretches the buttons into equal columns, so a lone "Done" sat in
+           the right half of the sheet. Here they sit at the trailing edge at
+           their own width.
+         - It lets a tall sheet run to the window's edges; this one keeps a
+           margin, and 44px at the top to clear the title bar the window draws
+           itself.
+         The part names and state names are Fluent's, unchanged: ContentDialog's
+         code drives them. -->
     <Style x:Key="GlassDialogStyle" TargetType="ContentDialog">
+        <Setter Property="Foreground" Value="{ThemeResource TokenInkBrush}" />
         <Setter Property="Background" Value="{ThemeResource GlassThickAcrylicBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource GlassRimBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="{StaticResource TokenRadiusSheet}" />
+        <Setter Property="IsTabStop" Value="False" />
+        <Setter Property="PrimaryButtonStyle" Value="{StaticResource GlassPrimaryButtonStyle}" />
+        <Setter Property="SecondaryButtonStyle" Value="{StaticResource GlassButtonStyle}" />
+        <Setter Property="CloseButtonStyle" Value="{StaticResource GlassButtonStyle}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContentDialog">
+                    <Border x:Name="Container">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="DialogShowingStates">
+                                <VisualStateGroup.Transitions>
+                                    <VisualTransition To="DialogHidden">
+                                        <Storyboard>
+                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="LayoutRoot" Storyboard.TargetProperty="Visibility">
+                                                <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="Visible" />
+                                            </ObjectAnimationUsingKeyFrames>
+                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="LayoutRoot" Storyboard.TargetProperty="IsHitTestVisible">
+                                                <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="False" />
+                                            </ObjectAnimationUsingKeyFrames>
+                                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="ScaleTransform" Storyboard.TargetProperty="ScaleX">
+                                                <DiscreteDoubleKeyFrame KeyTime="0:0:0" Value="1.0" />
+                                                <SplineDoubleKeyFrame KeyTime="0:0:0.167" KeySpline="0,0,0,1" Value="1.05" />
+                                            </DoubleAnimationUsingKeyFrames>
+                                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="ScaleTransform" Storyboard.TargetProperty="ScaleY">
+                                                <DiscreteDoubleKeyFrame KeyTime="0:0:0" Value="1.0" />
+                                                <SplineDoubleKeyFrame KeyTime="0:0:0.167" KeySpline="0,0,0,1" Value="1.05" />
+                                            </DoubleAnimationUsingKeyFrames>
+                                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="LayoutRoot" Storyboard.TargetProperty="Opacity">
+                                                <DiscreteDoubleKeyFrame KeyTime="0:0:0" Value="1.0" />
+                                                <LinearDoubleKeyFrame KeyTime="0:0:0.083" Value="0.0" />
+                                            </DoubleAnimationUsingKeyFrames>
+                                        </Storyboard>
+                                    </VisualTransition>
+                                    <VisualTransition To="DialogShowing">
+                                        <Storyboard>
+                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="LayoutRoot" Storyboard.TargetProperty="Visibility">
+                                                <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="Visible" />
+                                            </ObjectAnimationUsingKeyFrames>
+                                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="ScaleTransform" Storyboard.TargetProperty="ScaleX">
+                                                <DiscreteDoubleKeyFrame KeyTime="0:0:0" Value="1.05" />
+                                                <SplineDoubleKeyFrame KeyTime="0:0:0.25" KeySpline="0,0,0,1" Value="1.0" />
+                                            </DoubleAnimationUsingKeyFrames>
+                                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="ScaleTransform" Storyboard.TargetProperty="ScaleY">
+                                                <DiscreteDoubleKeyFrame KeyTime="0:0:0" Value="1.05" />
+                                                <SplineDoubleKeyFrame KeyTime="0:0:0.25" KeySpline="0,0,0,1" Value="1.0" />
+                                            </DoubleAnimationUsingKeyFrames>
+                                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="LayoutRoot" Storyboard.TargetProperty="Opacity">
+                                                <DiscreteDoubleKeyFrame KeyTime="0:0:0" Value="0.0" />
+                                                <LinearDoubleKeyFrame KeyTime="0:0:0.083" Value="1.0" />
+                                            </DoubleAnimationUsingKeyFrames>
+                                        </Storyboard>
+                                    </VisualTransition>
+                                </VisualStateGroup.Transitions>
+                                <VisualState x:Name="DialogHidden" />
+                                <VisualState x:Name="DialogShowing">
+                                    <VisualState.Setters>
+                                        <Setter Target="PrimaryButton.IsTabStop" Value="True" />
+                                        <Setter Target="SecondaryButton.IsTabStop" Value="True" />
+                                        <Setter Target="CloseButton.IsTabStop" Value="True" />
+                                        <Setter Target="LayoutRoot.Visibility" Value="Visible" />
+                                        <Setter Target="BackgroundElement.TabFocusNavigation" Value="Cycle" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="DialogShowingWithoutSmokeLayer">
+                                    <VisualState.Setters>
+                                        <Setter Target="PrimaryButton.IsTabStop" Value="True" />
+                                        <Setter Target="SecondaryButton.IsTabStop" Value="True" />
+                                        <Setter Target="CloseButton.IsTabStop" Value="True" />
+                                        <Setter Target="LayoutRoot.Visibility" Value="Visible" />
+                                        <Setter Target="LayoutRoot.Background" Value="{x:Null}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="DialogSizingStates">
+                                <VisualState x:Name="DefaultDialogSizing" />
+                                <VisualState x:Name="FullDialogSizing">
+                                    <VisualState.Setters>
+                                        <Setter Target="BackgroundElement.VerticalAlignment" Value="Stretch" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <!-- Buttons read Primary, Secondary, Close from the
+                                 left, the Windows order; the row sits at the
+                                 trailing edge, and a hidden button's Auto column
+                                 folds to nothing. -->
+                            <VisualStateGroup x:Name="ButtonsVisibilityStates">
+                                <VisualState x:Name="AllVisible">
+                                    <VisualState.Setters>
+                                        <Setter Target="FirstSpacer.Width" Value="8" />
+                                        <Setter Target="SecondaryButton.(Grid.Column)" Value="2" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="NoneVisible">
+                                    <VisualState.Setters>
+                                        <Setter Target="CommandSpace.Visibility" Value="Collapsed" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="PrimaryVisible">
+                                    <VisualState.Setters>
+                                        <Setter Target="PrimaryButton.(Grid.Column)" Value="4" />
+                                        <Setter Target="SecondaryButton.Visibility" Value="Collapsed" />
+                                        <Setter Target="CloseButton.Visibility" Value="Collapsed" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="SecondaryVisible">
+                                    <VisualState.Setters>
+                                        <Setter Target="SecondaryButton.(Grid.Column)" Value="4" />
+                                        <Setter Target="PrimaryButton.Visibility" Value="Collapsed" />
+                                        <Setter Target="CloseButton.Visibility" Value="Collapsed" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="CloseVisible">
+                                    <VisualState.Setters>
+                                        <Setter Target="PrimaryButton.Visibility" Value="Collapsed" />
+                                        <Setter Target="SecondaryButton.Visibility" Value="Collapsed" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="PrimaryAndSecondaryVisible">
+                                    <VisualState.Setters>
+                                        <Setter Target="SecondaryButton.(Grid.Column)" Value="4" />
+                                        <Setter Target="CloseButton.Visibility" Value="Collapsed" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="PrimaryAndCloseVisible">
+                                    <VisualState.Setters>
+                                        <Setter Target="SecondaryButton.Visibility" Value="Collapsed" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="SecondaryAndCloseVisible">
+                                    <VisualState.Setters>
+                                        <Setter Target="PrimaryButton.Visibility" Value="Collapsed" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <!-- Deliberately empty: see the comment above the style.
+                                 Enter still activates the default button; only
+                                 the restyle is gone. -->
+                            <VisualStateGroup x:Name="DefaultButtonStates">
+                                <VisualState x:Name="NoDefaultButton" />
+                                <VisualState x:Name="PrimaryAsDefaultButton" />
+                                <VisualState x:Name="SecondaryAsDefaultButton" />
+                                <VisualState x:Name="CloseAsDefaultButton" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="DialogBorderStates">
+                                <VisualState x:Name="NoBorder" />
+                                <VisualState x:Name="AccentColorBorder" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+
+                        <Grid x:Name="LayoutRoot" Visibility="Collapsed">
+                            <Rectangle x:Name="SmokeLayerBackground" Fill="{ThemeResource ContentDialogSmokeFill}" />
+                            <Border x:Name="BackgroundElement"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    BackgroundSizing="InnerBorderEdge"
+                                    CornerRadius="{TemplateBinding CornerRadius}"
+                                    FlowDirection="{TemplateBinding FlowDirection}"
+                                    Margin="24,44,24,24"
+                                    MinWidth="320"
+                                    MaxWidth="{ThemeResource ContentDialogMaxWidth}"
+                                    MinHeight="140"
+                                    MaxHeight="{ThemeResource ContentDialogMaxHeight}"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    RenderTransformOrigin="0.5,0.5"
+                                    Translation="0,0,32">
+                                <Border.Shadow>
+                                    <ThemeShadow />
+                                </Border.Shadow>
+                                <Border.RenderTransform>
+                                    <ScaleTransform x:Name="ScaleTransform" />
+                                </Border.RenderTransform>
+                                <Grid x:Name="DialogSpace" CornerRadius="{TemplateBinding CornerRadius}">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Border Grid.RowSpan="2"
+                                            Background="{ThemeResource GlassSheenBrush}"
+                                            IsHitTestVisible="False" />
+                                    <ScrollViewer x:Name="ContentScrollViewer"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  VerticalScrollBarVisibility="Disabled"
+                                                  ZoomMode="Disabled"
+                                                  IsTabStop="False">
+                                        <Grid Padding="24,20,24,0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                            </Grid.RowDefinitions>
+                                            <!-- title-sheet: 15/20 semibold. -->
+                                            <ContentControl x:Name="Title"
+                                                            Margin="0,0,0,14"
+                                                            Content="{TemplateBinding Title}"
+                                                            ContentTemplate="{TemplateBinding TitleTemplate}"
+                                                            FontSize="15"
+                                                            FontWeight="SemiBold"
+                                                            Foreground="{TemplateBinding Foreground}"
+                                                            HorizontalAlignment="Left"
+                                                            VerticalAlignment="Top"
+                                                            IsTabStop="False">
+                                                <ContentControl.Template>
+                                                    <ControlTemplate TargetType="ContentControl">
+                                                        <ContentPresenter Content="{TemplateBinding Content}"
+                                                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                                          MaxLines="2"
+                                                                          TextWrapping="Wrap"
+                                                                          Margin="{TemplateBinding Padding}"
+                                                                          ContentTransitions="{TemplateBinding ContentTransitions}"
+                                                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                                                    </ControlTemplate>
+                                                </ContentControl.Template>
+                                            </ContentControl>
+                                            <ContentPresenter x:Name="Content"
+                                                              Grid.Row="1"
+                                                              Content="{TemplateBinding Content}"
+                                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                              FontSize="14"
+                                                              Foreground="{TemplateBinding Foreground}"
+                                                              TextWrapping="Wrap" />
+                                        </Grid>
+                                    </ScrollViewer>
+                                    <Grid x:Name="CommandSpace"
+                                          Grid.Row="1"
+                                          HorizontalAlignment="Right"
+                                          VerticalAlignment="Bottom"
+                                          XYFocusKeyboardNavigation="Enabled"
+                                          Padding="24,20,24,20">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition x:Name="PrimaryColumn" Width="Auto" />
+                                            <ColumnDefinition x:Name="FirstSpacer" Width="0" />
+                                            <ColumnDefinition x:Name="SecondaryColumn" Width="Auto" />
+                                            <ColumnDefinition x:Name="SecondSpacer" Width="8" />
+                                            <ColumnDefinition x:Name="CloseColumn" Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button x:Name="PrimaryButton"
+                                                IsTabStop="False"
+                                                MinWidth="96"
+                                                Content="{TemplateBinding PrimaryButtonText}"
+                                                IsEnabled="{TemplateBinding IsPrimaryButtonEnabled}"
+                                                Style="{TemplateBinding PrimaryButtonStyle}"
+                                                ElementSoundMode="FocusOnly"
+                                                HorizontalAlignment="Stretch" />
+                                        <Button x:Name="SecondaryButton"
+                                                IsTabStop="False"
+                                                MinWidth="96"
+                                                Content="{TemplateBinding SecondaryButtonText}"
+                                                IsEnabled="{TemplateBinding IsSecondaryButtonEnabled}"
+                                                Style="{TemplateBinding SecondaryButtonStyle}"
+                                                ElementSoundMode="FocusOnly"
+                                                HorizontalAlignment="Stretch" />
+                                        <Button x:Name="CloseButton"
+                                                Grid.Column="4"
+                                                IsTabStop="False"
+                                                MinWidth="96"
+                                                Content="{TemplateBinding CloseButtonText}"
+                                                Style="{TemplateBinding CloseButtonStyle}"
+                                                ElementSoundMode="FocusOnly"
+                                                HorizontalAlignment="Stretch" />
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- A recessed single-line field for use inside glass (the TextField
+         component): inset-fill with a glass-edge outline, radius-card corners,
+         13px ink text, ink-secondary placeholder. Focus is the 2px focus-ring,
+         drawn over the outline rather than by thickening it, so the text never
+         moves; Fluent's version is a 4px-radius box that grows an accent
+         underline, which inside a 20px glass panel read as a square box in a
+         round one. The Header, when set, is label-strong ink-secondary above.
+         Part and state names are Fluent's: TextBox's code drives them. -->
+    <Style x:Key="GlassTextFieldStyle" TargetType="TextBox">
+        <Setter Property="Foreground" Value="{ThemeResource TokenInkBrush}" />
+        <Setter Property="Background" Value="{ThemeResource TokenInsetFillBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource TokenGlassEdgeBrush}" />
+        <Setter Property="PlaceholderForeground" Value="{ThemeResource TokenInkSecondaryBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="Padding" Value="10,6,6,6" />
+        <Setter Property="CornerRadius" Value="{StaticResource TokenRadiusCard}" />
+        <Setter Property="UseSystemFocusVisuals" Value="False" />
+        <Setter Property="ScrollViewer.HorizontalScrollMode" Value="Auto" />
+        <Setter Property="ScrollViewer.VerticalScrollMode" Value="Auto" />
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Hidden" />
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Hidden" />
+        <Setter Property="ScrollViewer.IsDeferredScrollingEnabled" Value="False" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Grid x:Name="FieldRoot">
+                        <Grid.Resources>
+                            <!-- The clear button: a bare 20px disc with the
+                                 cancel glyph, glass-hover under the pointer. -->
+                            <Style x:Name="DeleteButtonStyle" TargetType="Button">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="Button">
+                                            <Grid x:Name="ButtonLayoutGrid"
+                                                  Width="20" Height="20"
+                                                  CornerRadius="10"
+                                                  Background="Transparent">
+                                                <VisualStateManager.VisualStateGroups>
+                                                    <VisualStateGroup x:Name="CommonStates">
+                                                        <VisualState x:Name="Normal" />
+                                                        <VisualState x:Name="PointerOver">
+                                                            <VisualState.Setters>
+                                                                <Setter Target="ButtonLayoutGrid.Background" Value="{ThemeResource TokenGlassHoverBrush}" />
+                                                                <Setter Target="GlyphElement.Foreground" Value="{ThemeResource TokenInkBrush}" />
+                                                            </VisualState.Setters>
+                                                        </VisualState>
+                                                        <VisualState x:Name="Pressed">
+                                                            <VisualState.Setters>
+                                                                <Setter Target="ButtonLayoutGrid.Background" Value="{ThemeResource TokenGlassPressedBrush}" />
+                                                                <Setter Target="GlyphElement.Foreground" Value="{ThemeResource TokenInkBrush}" />
+                                                            </VisualState.Setters>
+                                                        </VisualState>
+                                                        <VisualState x:Name="Disabled">
+                                                            <VisualState.Setters>
+                                                                <Setter Target="ButtonLayoutGrid.Opacity" Value="0" />
+                                                            </VisualState.Setters>
+                                                        </VisualState>
+                                                    </VisualStateGroup>
+                                                </VisualStateManager.VisualStateGroups>
+                                                <TextBlock x:Name="GlyphElement"
+                                                           Foreground="{ThemeResource TokenInkSecondaryBrush}"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
+                                                           FontSize="9"
+                                                           Text="&#xE894;"
+                                                           FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                           AutomationProperties.AccessibilityView="Raw" />
+                                            </Grid>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </Grid.Resources>
+
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="FieldRoot.Opacity" Value="0.5" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="PointerOver" />
+                                <VisualState x:Name="Focused">
+                                    <VisualState.Setters>
+                                        <Setter Target="BorderElement.BorderBrush" Value="Transparent" />
+                                        <Setter Target="FocusRing.Opacity" Value="1" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="ButtonStates">
+                                <VisualState x:Name="ButtonVisible">
+                                    <VisualState.Setters>
+                                        <Setter Target="DeleteButton.Visibility" Value="Visible" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="ButtonCollapsed" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <ContentPresenter x:Name="HeaderContentPresenter"
+                                          Grid.Row="0" Grid.ColumnSpan="2"
+                                          Content="{TemplateBinding Header}"
+                                          ContentTemplate="{TemplateBinding HeaderTemplate}"
+                                          FontSize="12"
+                                          FontWeight="SemiBold"
+                                          Foreground="{ThemeResource TokenInkSecondaryBrush}"
+                                          Margin="0,0,0,6"
+                                          TextWrapping="Wrap"
+                                          VerticalAlignment="Top"
+                                          Visibility="Collapsed"
+                                          x:DeferLoadStrategy="Lazy" />
+                        <Border x:Name="BorderElement"
+                                Grid.Row="1" Grid.ColumnSpan="2"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                Control.IsTemplateFocusTarget="True"
+                                MinWidth="{TemplateBinding MinWidth}"
+                                MinHeight="{TemplateBinding MinHeight}" />
+                        <ScrollViewer x:Name="ContentElement"
+                                      Grid.Row="1" Grid.Column="0"
+                                      HorizontalScrollMode="{TemplateBinding ScrollViewer.HorizontalScrollMode}"
+                                      HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}"
+                                      VerticalScrollMode="{TemplateBinding ScrollViewer.VerticalScrollMode}"
+                                      VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}"
+                                      IsHorizontalRailEnabled="{TemplateBinding ScrollViewer.IsHorizontalRailEnabled}"
+                                      IsVerticalRailEnabled="{TemplateBinding ScrollViewer.IsVerticalRailEnabled}"
+                                      IsDeferredScrollingEnabled="{TemplateBinding ScrollViewer.IsDeferredScrollingEnabled}"
+                                      Margin="{TemplateBinding BorderThickness}"
+                                      Padding="{TemplateBinding Padding}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      IsTabStop="False"
+                                      AutomationProperties.AccessibilityView="Raw"
+                                      ZoomMode="Disabled" />
+                        <TextBlock x:Name="PlaceholderTextContentPresenter"
+                                   Grid.Row="1" Grid.ColumnSpan="2"
+                                   Foreground="{TemplateBinding PlaceholderForeground}"
+                                   Margin="{TemplateBinding BorderThickness}"
+                                   Padding="{TemplateBinding Padding}"
+                                   Text="{TemplateBinding PlaceholderText}"
+                                   TextAlignment="{TemplateBinding TextAlignment}"
+                                   TextWrapping="{TemplateBinding TextWrapping}"
+                                   IsHitTestVisible="False" />
+                        <Button x:Name="DeleteButton"
+                                Grid.Row="1" Grid.Column="1"
+                                Style="{StaticResource DeleteButtonStyle}"
+                                Margin="0,0,6,0"
+                                IsTabStop="False"
+                                Visibility="Collapsed"
+                                AutomationProperties.AccessibilityView="Raw"
+                                VerticalAlignment="Center" />
+                        <Border x:Name="FocusRing"
+                                Grid.Row="1" Grid.ColumnSpan="2"
+                                BorderBrush="{ThemeResource TokenFocusRingBrush}"
+                                BorderThickness="2"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                Opacity="0"
+                                IsHitTestVisible="False" />
+                        <ContentPresenter x:Name="DescriptionPresenter"
+                                          Grid.Row="2" Grid.ColumnSpan="2"
+                                          Content="{TemplateBinding Description}"
+                                          Foreground="{ThemeResource TokenInkSecondaryBrush}"
+                                          FontSize="12"
+                                          Margin="0,4,0,0"
+                                          AutomationProperties.AccessibilityView="Raw"
+                                          x:Load="False" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- The search field at the top of the contact sheets: the same field as a
+         capsule, with room on the left for the magnifier glyph, which the page
+         lays over it (IsHitTestVisible False) so the field keeps one template.
+         16, half the 32px height, rather than radius-pill: pill is 999, and a
+         XAML Border does not clamp its radii the way CSS does, so 999 on a
+         wide, short field draws an ellipse. -->
+    <Style x:Key="GlassSearchFieldStyle" TargetType="TextBox" BasedOn="{StaticResource GlassTextFieldStyle}">
+        <Setter Property="CornerRadius" Value="16" />
+        <Setter Property="Padding" Value="34,6,6,6" />
+    </Style>
+
+    <!-- A switch with no header and no On/Off caption, for the trailing edge of
+         a settings row, where the row's own label says what "on" means. It is
+         exactly the 40px track wide: Fluent's template keeps a 12px gutter and
+         a caption column after the track, and with them the switch sat 100px
+         in from the row's edge. Each instance also sets Width, MinWidth and
+         HorizontalAlignment itself, because measured on the Dell this style's
+         values for those three did not take (the caption did).
+         Brand colours still go on each instance as ToggleSwitch.Resources
+         (a Style cannot set Resources; WMC0095). -->
+    <Style x:Key="GlassRowToggleStyle" TargetType="ToggleSwitch">
+        <Setter Property="OnContent" Value="" />
+        <Setter Property="OffContent" Value="" />
+        <Setter Property="Width" Value="40" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="HorizontalAlignment" Value="Right" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="FocusVisualMargin" Value="-4,4,-4,4" />
+    </Style>
+
+    <!-- A row in a list inside glass: the sidebar, the contact sheets, the
+         archive, the window picker. Hover is glass-hover, press glass-pressed,
+         and a selected row is a glass-thick lozenge with the rim, all at
+         radius-row, with the keyboard focus ring following the same corners.
+
+         A template of our own, because Fluent's rounds nothing here. Its
+         ListViewItemPresenter takes its corners from the ListViewItemCornerRadius
+         resource rather than the item's CornerRadius, and measured on the Dell
+         it drew square highlights and a square focus ring whichever of the two
+         was set, per list or not. Only the common and disabled states are
+         drawn; the reorder, drag and multi-select states the ListView also
+         asks for have nothing to show in these lists. -->
+    <Style x:Key="GlassListItemStyle" TargetType="ListViewItem">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource TokenInkBrush}" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Margin" Value="0,1" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="CornerRadius" Value="{StaticResource TokenRadiusRow}" />
+        <Setter Property="UseSystemFocusVisuals" Value="True" />
+        <Setter Property="FocusVisualPrimaryBrush" Value="{ThemeResource TokenFocusRingBrush}" />
+        <Setter Property="FocusVisualPrimaryThickness" Value="2" />
+        <Setter Property="FocusVisualSecondaryThickness" Value="0" />
+        <Setter Property="FocusVisualMargin" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListViewItem">
+                    <Grid x:Name="RowRoot">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Backplate.Background" Value="{ThemeResource GlassRowHoverBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Backplate.Background" Value="{ThemeResource GlassRowPressedBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Selected">
+                                    <VisualState.Setters>
+                                        <Setter Target="Backplate.Background" Value="{ThemeResource TokenGlassThickBrush}" />
+                                        <Setter Target="SelectedRim.Opacity" Value="1" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="PointerOverSelected">
+                                    <VisualState.Setters>
+                                        <Setter Target="Backplate.Background" Value="{ThemeResource TokenGlassThickBrush}" />
+                                        <Setter Target="SelectedRim.Opacity" Value="1" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="PressedSelected">
+                                    <VisualState.Setters>
+                                        <Setter Target="Backplate.Background" Value="{ThemeResource TokenGlassThickBrush}" />
+                                        <Setter Target="SelectedRim.Opacity" Value="1" />
+                                        <Setter Target="PressOverlay.Background" Value="{ThemeResource GlassRowPressedBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="DisabledStates">
+                                <VisualState x:Name="Enabled" />
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="RowRoot.Opacity" Value="0.5" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Border x:Name="Backplate"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                Control.IsTemplateFocusTarget="True" />
+                        <Border x:Name="PressOverlay"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                IsHitTestVisible="False" />
+                        <Border x:Name="SelectedRim"
+                                BorderBrush="{ThemeResource GlassRimBrush}"
+                                BorderThickness="1"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                Opacity="0"
+                                IsHitTestVisible="False" />
+                        <ContentPresenter x:Name="ContentPresenter"
+                                          Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          ContentTransitions="{TemplateBinding ContentTransitions}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          Margin="{TemplateBinding Padding}"
+                                          HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- A section of Settings: thick glass holding rows, with 1px dividers

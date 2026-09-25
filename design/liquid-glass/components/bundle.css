@@ -427,6 +427,8 @@
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 60%), var(--danger);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), var(--shadow-bubble);
 }
+.lm-button--destructive { color: var(--danger-ink); box-shadow: var(--shadow-rim), var(--shadow-bubble); }
+.lm-button--destructive:hover { box-shadow: var(--shadow-rim), var(--shadow-bubble), inset 0 0 0 100px var(--glass-hover); }
 .lm-button--plain { background: rgba(0, 0, 0, 0); color: var(--accent-ink); padding: 0 8px; }
 .lm-button--plain:hover { background: var(--glass-hover); }
 .lm-button:disabled { opacity: 0.5; cursor: default; }

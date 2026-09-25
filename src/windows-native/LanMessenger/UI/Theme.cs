@@ -41,6 +41,8 @@ public static class Theme
     public static SolidColorBrush AccentInkOutBrush      { get; private set; } = new(GlassTokens.AccentInkOutLight);
     public static SolidColorBrush OnBrandBrush           { get; private set; } = new(GlassTokens.OnBrandLight);
     public static SolidColorBrush DangerInkBrush         { get; private set; } = new(GlassTokens.DangerInkLight);
+    /// <summary>Primary text in rows built in code (contact sheets, pickers).</summary>
+    public static SolidColorBrush InkBrush               { get; private set; } = new(GlassTokens.InkLight);
     public static SolidColorBrush InkSecondaryBrush      { get; private set; } = new(GlassTokens.InkSecondaryLight);
     public static SolidColorBrush AccentWashBrush        { get; private set; } = new(GlassTokens.AccentWashLight);
     public static SolidColorBrush InsetFillBrush         { get; private set; } = new(GlassTokens.InsetFillLight);
@@ -99,6 +101,7 @@ public static class Theme
         AccentInkOutBrush      = B(GlassTokens.AccentInkOutLight, GlassTokens.AccentInkOutDark);
         OnBrandBrush           = B(GlassTokens.OnBrandLight, GlassTokens.OnBrandDark);
         DangerInkBrush         = B(GlassTokens.DangerInkLight, GlassTokens.DangerInkDark);
+        InkBrush               = B(GlassTokens.InkLight, GlassTokens.InkDark);
         InkSecondaryBrush      = B(GlassTokens.InkSecondaryLight, GlassTokens.InkSecondaryDark);
         AccentWashBrush        = B(GlassTokens.AccentWashLight, GlassTokens.AccentWashDark);
         InsetFillBrush         = B(GlassTokens.InsetFillLight, GlassTokens.InsetFillDark);

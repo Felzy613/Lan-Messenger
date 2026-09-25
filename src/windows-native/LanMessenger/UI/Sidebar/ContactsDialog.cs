@@ -62,10 +62,12 @@ public sealed class ContactsDialog : ContentDialog
         _state  = State.List;
         Title   = "Contacts";
         Content = _listPage;
-        PrimaryButtonText      = "Done";
-        CloseButtonText        = "";
+        // Done is the close button, glass like Settings' Done: nothing on this
+        // page is an action that deserves the brand.
+        PrimaryButtonText      = "";
+        CloseButtonText        = "Done";
         IsPrimaryButtonEnabled = true;
-        DefaultButton          = ContentDialogButton.Primary;
+        DefaultButton          = ContentDialogButton.Close;
         GlassDialog.Apply(this);
     }
 
@@ -145,7 +147,7 @@ public sealed class ContactsDialog : ContentDialog
         switch (_state)
         {
             case State.List:
-                break; // "Done" — let the dialog close normally.
+                break; // No primary button in this state.
 
             case State.Find:
                 args.Cancel = true;
@@ -183,7 +185,7 @@ public sealed class ContactsDialog : ContentDialog
         switch (_state)
         {
             case State.List:
-                break; // CloseButtonText is empty in this state — button is hidden.
+                break; // "Done" — let the dialog close normally.
 
             case State.Find:
                 args.Cancel = true;
@@ -235,10 +237,10 @@ public sealed class NameContactPanel : StackPanel
 
         _nameBox = new TextBox
         {
+            Style           = GlassControls.Style("GlassTextFieldStyle"),
             Text            = peer.Username,
             Header          = "Display name",
             PlaceholderText = "Contact name",
-            MinWidth        = 280,
         };
 
         var avatar = new AvatarControl { Width = 64, Height = 64, NameText = peer.Username };
@@ -246,8 +248,14 @@ public sealed class NameContactPanel : StackPanel
             avatar.NameText = string.IsNullOrWhiteSpace(_nameBox.Text) ? peer.Username : _nameBox.Text;
 
         var info = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-        info.Children.Add(new TextBlock { Text = peer.Username, Style = SidebarStyles.TryGetStyle("BodyStrongTextBlockStyle") });
-        info.Children.Add(new TextBlock { Text = "Detected nearby", Opacity = 0.6, FontSize = 11 });
+        info.Children.Add(new TextBlock
+        {
+            Text = peer.Username, Style = GlassControls.Style("TokenTypeNameStyle"), Foreground = Theme.InkBrush,
+        });
+        info.Children.Add(new TextBlock
+        {
+            Text = "Detected nearby", Style = GlassControls.Style("TokenTypeCaptionStyle"), Foreground = Theme.InkSecondaryBrush,
+        });
 
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14 };
         header.Children.Add(avatar);
@@ -283,17 +291,21 @@ public sealed class ContactEditorPanel : StackPanel
         };
         _nameBox = new TextBox
         {
+            Style = GlassControls.Style("GlassTextFieldStyle"),
             Text = contact.Username, Header = "Display name",
-            PlaceholderText = "Contact name", MinWidth = 260,
+            PlaceholderText = "Contact name",
         };
         _nameBox.TextChanged += (_, _) => _avatar.NameText = _nameBox.Text;
 
-        var choose = new Button { Content = "Choose Photo…" };
+        var choose = new Button { Content = "Choose Photo…", Style = GlassControls.Style("GlassButtonStyle") };
         choose.Click += async (_, _) => await PickPhotoAsync();
-        var remove = new Button { Content = "Remove Photo" };
+        var remove = new Button { Content = "Remove Photo", Style = GlassControls.Style("GlassButtonStyle") };
         remove.Click += (_, _) => { _currentPhotoB64 = null; _avatar.PhotoB64 = null; };
 
-        var photoButtons = new StackPanel { Spacing = 8, Orientation = Orientation.Vertical };
+        var photoButtons = new StackPanel
+        {
+            Spacing = 8, Orientation = Orientation.Vertical, VerticalAlignment = VerticalAlignment.Center,
+        };
         photoButtons.Children.Add(choose);
         photoButtons.Children.Add(remove);
 
@@ -304,18 +316,21 @@ public sealed class ContactEditorPanel : StackPanel
         var deviceIdLabel = new TextBlock
         {
             Text = $"Device ID: {(contact.PublicKeyB64.Length > 16 ? contact.PublicKeyB64[..16] + "…" : contact.PublicKeyB64)}",
-            FontSize = 11, Opacity = 0.6,
+            Style = GlassControls.Style("TokenTypeCaptionStyle"), Foreground = Theme.InkSecondaryBrush,
         };
         var ipLabel = new TextBlock
         {
             Text = $"Last IP: {(string.IsNullOrEmpty(contact.LastIP) ? "—" : contact.LastIP)}",
-            FontSize = 11, Opacity = 0.6,
+            Style = GlassControls.Style("TokenTypeCaptionStyle"), Foreground = Theme.InkSecondaryBrush,
         };
+
+        var ids = new StackPanel { Spacing = 2 };
+        ids.Children.Add(deviceIdLabel);
+        ids.Children.Add(ipLabel);
 
         Children.Add(avatarRow);
         Children.Add(_nameBox);
-        Children.Add(deviceIdLabel);
-        Children.Add(ipLabel);
+        Children.Add(ids);
     }
 
     private async Task PickPhotoAsync()
@@ -409,15 +424,25 @@ public sealed class FindContactsPanel : Grid
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment   = VerticalAlignment.Center,
         };
-        _scanningView.Children.Add(new ProgressRing { IsActive = true, Width = 32, Height = 32 });
+        _scanningView.Children.Add(new ProgressRing
+        {
+            IsActive = true, Width = 32, Height = 32, Foreground = Theme.BrandAccentBrush,
+        });
         _scanningView.Children.Add(new TextBlock
         {
             Text = "Scanning for peers…",
-            Opacity = 0.7,
+            Style = GlassControls.Style("TokenTypeLabelStyle"),
+            Foreground = Theme.InkSecondaryBrush,
             HorizontalAlignment = HorizontalAlignment.Center,
         });
 
-        var scanAgainBtn = new Button { Content = "Scan Again", HorizontalAlignment = HorizontalAlignment.Center };
+        var scanAgainBtn = new Button
+        {
+            Content = "Scan Again",
+            Style = GlassControls.Style("GlassButtonStyle"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 6, 0, 0),
+        };
         scanAgainBtn.Click += (_, _) => TriggerScan();
 
         _emptyView = new StackPanel
@@ -432,13 +457,14 @@ public sealed class FindContactsPanel : Grid
             FontFamily = SidebarStyles.TryGetFontFamily("SymbolThemeFontFamily"),
             Glyph      = "",
             FontSize   = 40,
-            Foreground = SidebarStyles.TryGetBrush("TextFillColorSecondaryBrush"),
+            Foreground = Theme.InkSecondaryBrush,
             HorizontalAlignment = HorizontalAlignment.Center,
         });
         _emptyView.Children.Add(new TextBlock
         {
             Text  = "No peers found",
-            Style = SidebarStyles.TryGetStyle("SubtitleTextBlockStyle"),
+            Style = GlassControls.Style("TokenTypeTitleSheetStyle"),
+            Foreground = Theme.InkBrush,
             HorizontalAlignment = HorizontalAlignment.Center,
         });
         _emptyView.Children.Add(new TextBlock
@@ -447,7 +473,8 @@ public sealed class FindContactsPanel : Grid
             TextWrapping = TextWrapping.Wrap,
             TextAlignment = TextAlignment.Center,
             MaxWidth = 260,
-            Opacity = 0.6,
+            Style = GlassControls.Style("TokenTypeLabelStyle"),
+            Foreground = Theme.InkSecondaryBrush,
             HorizontalAlignment = HorizontalAlignment.Center,
         });
         _emptyView.Children.Add(scanAgainBtn);
@@ -457,6 +484,7 @@ public sealed class FindContactsPanel : Grid
             SelectionMode = ListViewSelectionMode.None,
             Visibility    = Visibility.Collapsed,
         };
+        GlassControls.ApplyList(_resultsList);
 
         Children.Add(_scanningView);
         Children.Add(_emptyView);
@@ -535,13 +563,20 @@ public sealed class FindContactsPanel : Grid
                 IsChecked = _selectedKeys.Contains(peer.PublicKeyB64),
                 VerticalAlignment = VerticalAlignment.Center,
             };
+            GlassControls.ApplyBrandCheck(check);
             check.Tapped    += (_, e) => e.Handled = true;
             check.Checked   += (_, _) => { _selectedKeys.Add(capturedPeer.PublicKeyB64); NotifySelection(); };
             check.Unchecked += (_, _) => { _selectedKeys.Remove(capturedPeer.PublicKeyB64); NotifySelection(); };
 
             var avatar = new AvatarControl { Width = 36, Height = 36, NameText = peer.Username };
-            var name   = new TextBlock { Text = peer.Username, Style = SidebarStyles.TryGetStyle("BodyStrongTextBlockStyle") };
-            var status = new TextBlock { Text = peer.IP, Opacity = 0.6, FontSize = 11 };
+            var name   = new TextBlock
+            {
+                Text = peer.Username, Style = GlassControls.Style("TokenTypeNameStyle"), Foreground = Theme.InkBrush,
+            };
+            var status = new TextBlock
+            {
+                Text = peer.IP, Style = GlassControls.Style("TokenTypeCaptionStyle"), Foreground = Theme.InkSecondaryBrush,
+            };
             var info   = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
             info.Children.Add(name);
             info.Children.Add(status);
@@ -570,16 +605,10 @@ public sealed class FindContactsPanel : Grid
     }
 }
 
-// MARK: - Shared theme-resource lookup helpers (safe against missing keys)
+// MARK: - Theme-resource lookup (safe against a missing key); styles go through GlassControls.Style
 
 internal static class SidebarStyles
 {
-    public static Style? TryGetStyle(string key) =>
-        Application.Current.Resources.TryGetValue(key, out var v) ? v as Style : null;
-
-    public static Brush? TryGetBrush(string key) =>
-        Application.Current.Resources.TryGetValue(key, out var v) ? v as Brush : null;
-
     public static FontFamily TryGetFontFamily(string key) =>
         Application.Current.Resources.TryGetValue(key, out var v) && v is FontFamily f
             ? f

@@ -13,6 +13,10 @@ public sealed class ConversationRowViewModel : INotifyPropertyChanged
     /// <summary>The conversation id (PeerId): the peer's identity key, or ip:&lt;address&gt; for a legacy thread.</summary>
     public string ConversationId { get; init; } = "";
 
+    // A list row's accessible name is its item's ToString(): without this,
+    // Narrator read every conversation as "LanMessenger.UI.Sidebar.ConversationRowViewModel".
+    public override string ToString() => PeerName;
+
     private string _peerName = "";
     public string PeerName
     {
