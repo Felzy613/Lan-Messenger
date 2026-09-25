@@ -709,7 +709,11 @@
                                         <RowDefinition Height="*" />
                                         <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
-                                    <Border Grid.RowSpan="2"
+                                    <!-- Named for UI/SheetScrollEdges.cs, which reads the
+                                         sheet's colour at a height from this and the
+                                         ground under it. -->
+                                    <Border x:Name="SheenElement"
+                                            Grid.RowSpan="2"
                                             Background="{ThemeResource GlassSheenBrush}"
                                             IsHitTestVisible="False" />
                                     <ScrollViewer x:Name="ContentScrollViewer"
@@ -800,6 +804,24 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+    </Style>
+
+    <!-- The same sheet for a body that scrolls (Settings), on an opaque ground.
+         Its rows dissolve into the sheet at the top and bottom of the scroll
+         area (UI/SheetScrollEdges.cs) instead of being cut by the viewport,
+         and a fade can only vanish into a colour it knows exactly. Acrylic's
+         depends on whatever is behind the smoke: one sheet on the Dell
+         measured from 243 to 249 top to bottom, and a fade a few levels off
+         draws the very line it was meant to remove.
+
+         The ground is glass-regular settled to opaque, close to what the
+         acrylic sheet measured, and it keeps the glass-thick groups a step
+         lighter than the sheet under them, as the sidebar keeps its thick
+         selected row on a regular panel. glass-thick-fallback would be the
+         groups' own colour: they would melt into the sheet but for their
+         rims. -->
+    <Style x:Key="GlassScrollingDialogStyle" TargetType="ContentDialog" BasedOn="{StaticResource GlassDialogStyle}">
+        <Setter Property="Background" Value="{ThemeResource TokenGlassRegularFallbackBrush}" />
     </Style>
 
     <!-- A recessed single-line field for use inside glass (the TextField
@@ -1120,8 +1142,9 @@
     </Style>
 
     <!-- A section of Settings: thick glass holding rows, with 1px dividers
-         between them. Translucent solid, because it sits in a dialog that is
-         already acrylic. -->
+         between them. Translucent solid rather than acrylic: it sits on the
+         sheet's own ground (GlassScrollingDialogStyle), a step lighter than
+         it, and nothing moves under a group but the sheet. -->
     <Style x:Key="GlassSettingsGroupStyle" TargetType="ContentControl" BasedOn="{StaticResource GlassSurfaceStyle}">
         <Setter Property="Background" Value="{ThemeResource TokenGlassThickBrush}" />
         <Setter Property="CornerRadius" Value="{StaticResource TokenRadiusPanel}" />

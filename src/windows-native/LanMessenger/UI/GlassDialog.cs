@@ -29,10 +29,18 @@ public static class GlassDialog
     /// sheet is for ("Add Contact" on New Message, where picking a contact is
     /// the action): it takes the glass style, so no button claims the brand.
     /// </param>
-    public static void Apply(ContentDialog dialog, bool destructive = false, bool neutralPrimary = false)
+    /// <param name="scrollingBody">
+    /// For a sheet whose whole body scrolls (Settings). It gets an opaque
+    /// ground (GlassScrollingDialogStyle), which is what lets SheetScrollEdges
+    /// dissolve rows into the sheet instead of cutting them at the edge of the
+    /// scroll area. The body still has to attach SheetScrollEdges itself.
+    /// </param>
+    public static void Apply(ContentDialog dialog, bool destructive = false, bool neutralPrimary = false,
+                             bool scrollingBody = false)
     {
         var resources = Application.Current.Resources;
-        if (Find<Style>(resources, "GlassDialogStyle") is { } sheet) dialog.Style = sheet;
+        var sheetKey = scrollingBody ? "GlassScrollingDialogStyle" : "GlassDialogStyle";
+        if (Find<Style>(resources, sheetKey) is { } sheet) dialog.Style = sheet;
 
         // Set every time, not left to the style: ContactsDialog re-applies as it
         // moves between states, and a danger style set locally for "Remove

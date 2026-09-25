@@ -28,6 +28,11 @@ public sealed partial class SettingsPage : Page
     public SettingsPage()
     {
         InitializeComponent();
+        // Rows dissolve into the sheet under its title and above Done rather
+        // than being sliced by the edge of the scroll area. Needs the opaque
+        // ground MainWindow asks for with GlassDialog.Apply(scrollingBody: true);
+        // on any other ground the edges stay hard, as before.
+        SheetScrollEdges.Attach(SettingsScroll, SettingsContent, TopScrollEdge, BottomScrollEdge);
         Loaded += (_, _) => Refresh();
     }
 

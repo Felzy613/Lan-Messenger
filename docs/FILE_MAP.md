@@ -311,7 +311,7 @@ untestable; everything above it runs against in-memory doubles. See
 | `src/windows-native/LanMessenger.Tests/LanMessenger.Tests.csproj` | MSTest project and test-vector copy settings. |
 | `src/windows-native/LanMessenger/app.manifest` | Windows app manifest. |
 | `src/windows-native/LanMessenger/App.xaml` | WinUI application resource root: merges `XamlControlsResources` then `Styles/Glass.xaml`. |
-| `src/windows-native/LanMessenger/Styles/Glass.xaml` | Hand-written glass recipes: `GlassSurfaceStyle`, the icon, primary, send, glass, danger, plain, pill and row button templates, `GlassDialogStyle` (a full `ContentDialog` template), `GlassTextFieldStyle` and `GlassSearchFieldStyle` (`TextBox` templates), `GlassRowToggleStyle`, `GlassListItemStyle` (a `ListViewItem` template), `GlassSettingsGroupStyle`. Merges the generated `GlassTokens.xaml` itself. |
+| `src/windows-native/LanMessenger/Styles/Glass.xaml` | Hand-written glass recipes: `GlassSurfaceStyle`, the icon, primary, send, glass, danger, plain, pill and row button templates, `GlassDialogStyle` (a full `ContentDialog` template) and `GlassScrollingDialogStyle` (the same on an opaque ground), `GlassTextFieldStyle` and `GlassSearchFieldStyle` (`TextBox` templates), `GlassRowToggleStyle`, `GlassListItemStyle` (a `ListViewItem` template), `GlassSettingsGroupStyle`. Merges the generated `GlassTokens.xaml` itself. |
 | `src/windows-native/LanMessenger/App.xaml.cs` | WinUI app startup, binding/resource diagnostics, unhandled exception capture, crash log and message box. |
 | `src/windows-native/LanMessenger/MainWindow.xaml` | Main shell layout: the app-drawn title bar row, sidebar/content columns, toolbar buttons, and tray icon. |
 | `src/windows-native/LanMessenger/MainWindow.xaml.cs` | Window shell behavior, dialog orchestration, chat/archive page reuse, migration dialog, tray lifecycle, the taskbar unread-count overlay icon (`ITaskbarList3.SetOverlayIcon`), and the tray icon's red-dot badge swap (`TrayIcon.IconSource`) — both driven by `AppModel.TotalUnreadCount`. |
@@ -440,7 +440,8 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 |---|---|
 | `src/windows-native/LanMessenger/UI/AppModel.cs` | Root observable state, service wiring, peers, conversations, pending queues, contacts, read receipts, updates, and actions. |
 | `src/windows-native/LanMessenger/UI/Theme.cs` | Shared brushes for code-behind, all sourced from `GlassTokens`; rebuilt by `Initialize(isDark, transparencyEnabled)`, which raises `Theme.Changed` so on-screen bubbles and rows repaint. |
-| `src/windows-native/LanMessenger/UI/GlassDialog.cs` | `GlassDialog.Apply`: every `ContentDialog` as a thick-glass sheet (`GlassDialogStyle`) with its buttons in their roles: primary brand, danger for a destructive confirmation, glass for a side trip. |
+| `src/windows-native/LanMessenger/UI/GlassDialog.cs` | `GlassDialog.Apply`: every `ContentDialog` as a thick-glass sheet (`GlassDialogStyle`) with its buttons in their roles: primary brand, danger for a destructive confirmation, glass for a side trip. `scrollingBody` puts a sheet whose whole body scrolls on an opaque ground (`GlassScrollingDialogStyle`). |
+| `src/windows-native/LanMessenger/UI/SheetScrollEdges.cs` | Soft scroll edges for such a sheet (Settings): rows dissolve into it under the title and above the buttons instead of being cut by the viewport. Gradients in the sheet's exact colour, read from its ground and sheen at that height; shown only while content lies beyond an edge; bring-into-view kept clear of them. `SheetEdgeColors` holds the XAML-free colour arithmetic. |
 | `src/windows-native/LanMessenger/UI/GlassControls.cs` | Glass recipes for controls built in code: keyed style lookup, `ApplyList` (glass list rows), `ApplyBrandCheck` (a brand check box). |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml` | Avatar control XAML. |
 | `src/windows-native/LanMessenger/UI/AvatarControl.xaml.cs` | Avatar image/initial rendering logic. |
@@ -475,7 +476,7 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 | `src/windows-native/LanMessenger/UI/Chat/MediaPreviewDialog.xaml.cs` | Modal viewer code-behind: lazy media-source binding, transport-control teardown on close, and "Show in folder" primary-button handling. |
 | `src/windows-native/LanMessenger/UI/Chat/FileTransferBannerControl.xaml` | File transfer banner XAML. |
 | `src/windows-native/LanMessenger/UI/Chat/FileTransferBannerControl.xaml.cs` | File transfer banner code-behind. |
-| `src/windows-native/LanMessenger/UI/Settings/SettingsPage.xaml` | Settings dialog XAML. |
+| `src/windows-native/LanMessenger/UI/Settings/SettingsPage.xaml` | Settings dialog XAML: grouped rows in one scroll area, with the two scroll-edge rectangles laid over its ends. |
 | `src/windows-native/LanMessenger/UI/Settings/SettingsPage.xaml.cs` | Settings save logic, inbox/screenshot folder pickers and log-bundle export (all via `Win32FileDialog`), update check/install UI, tray preferences. |
 
 ## Windows Tests
@@ -483,6 +484,7 @@ them honest. See [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md).
 | Path | Purpose |
 |---|---|
 | `src/windows-native/LanMessenger.Tests/GlassTokensTests.cs` | Mirror of the Swift token suite: spot values, contrast floors, avatar agreement. |
+| `src/windows-native/LanMessenger.Tests/SheetScrollEdgesTests.cs` | The scroll edges' colour arithmetic: compositing, sampling a gradient at a position, the fade's stops, an opaque scrolling-sheet ground, and the sheen reaching the top edge but not the bottom. |
 | `src/windows-native/LanMessenger.Tests/AvatarPaletteTests.cs` | Mirror of the Swift avatar suite, against the shared vector. |
 | `src/windows-native/LanMessenger.Tests/TestIsolationTests.cs` | Mirror of the Swift suite: logs, config and history resolve to scratch under MSTest, never to `%APPDATA%`. |
 | `src/windows-native/LanMessenger.Tests/PeerIdTests.cs` | Mirror of the Swift conversation-id and claimed-sender suites, against the shared vector. |

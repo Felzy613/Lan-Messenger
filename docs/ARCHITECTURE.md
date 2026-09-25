@@ -682,6 +682,18 @@ text fields (`GlassTextFieldStyle`, `GlassSearchFieldStyle`) and list rows
 highlights whatever corner radius it is given). The main window draws its own
 title bar on the Mica, so the system's accent-coloured one never appears.
 
+Settings is the one sheet whose whole body scrolls, and at the startup window
+size it shows about half of it, so its viewport always cuts through something.
+Rows dissolve into the sheet at each end instead (`SheetScrollEdges`), the
+glass scroll edge. WinUI has no opacity mask, so each edge is a gradient in the
+sheet's colour laid over the scroll area, and it has to end in exactly that
+colour or it draws a line of its own. Acrylic's colour depends on what is
+behind it, so this sheet stands on an opaque ground
+(`GlassScrollingDialogStyle`, `glass-regular-fallback`), and the edge colour is
+read from the ground and the sheen the sheet is actually painting at that
+height rather than assumed. An edge shows only while content lies beyond it,
+and focus or a caret is brought into view clear of it.
+
 ### macOS UI
 
 Important files:

@@ -1044,6 +1044,25 @@ Use the smallest sufficient set for the change:
   confirmation's destructive button is `GlassDestructiveButtonStyle` (glass,
   `danger-ink` label), not the solid `danger` fill, which is for the HUD's Stop
   Sharing only: a red slab in a confirmation looked like a toy.
+- Do not let a sheet's scroll area cut its rows with a hard edge. Settings is
+  the one sheet whose whole body scrolls, and at the startup 960×700 window it
+  shows about half its content, so the viewport always slices something:
+  "Reset" and "Change…" cut in half under the title, a group's panel sheared
+  flat above Done. On the Dell that read as a broken sheet. Rows dissolve into
+  the sheet over `space-24` at each end instead (`SheetScrollEdges`), and each
+  edge shows only while there is content beyond it. WinUI has no opacity mask,
+  so an edge is a gradient in the sheet's colour laid over the viewport, and it
+  must end in *exactly* that colour or it draws the very line it removes. So:
+  the Settings sheet is not acrylic (`GlassScrollingDialogStyle`, an opaque
+  `glass-regular-fallback` ground; acrylic's colour depends on what is behind
+  the smoke, 243 to 249 across one sheet), not `glass-thick-fallback` either
+  (the `glass-thick` groups melt into it and read as outlines), and the edge
+  colour is read from the ground and the sheen the sheet is painting at that
+  height, never from a token: in dark mode the sheen alone is about 12 levels
+  under the title. On any other ground the edges switch themselves off. Focus
+  and caret bring-into-view requests are inflated by the same depth, so a
+  focused field never lands inside a fade. Never answer this with a divider
+  line; a line across the Settings sheet was an earlier complaint.
 - Do not round a list row through `ListViewItem.CornerRadius` or the
   `ListViewItemCornerRadius` resource. Fluent's `ListViewItemPresenter` drew
   square hover, selection and focus highlights on the Dell whichever was set,
