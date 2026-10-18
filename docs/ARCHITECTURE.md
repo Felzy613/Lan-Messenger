@@ -711,6 +711,13 @@ Important files:
 The app can hide from the Dock and live in the menu bar. Closing the last window
 does not terminate the app.
 
+The menu bar icon (`MenuBarIcon`, drawn by `UI/MenuBarGlyph.swift`) shows a red
+dot in its top-right corner while any visible conversation has unread messages —
+the same rule as the Dock badge, so archived threads do not light it. The dot is
+part of a non-template image that paints itself, because a template image is flat
+ink and a SwiftUI overlay on it never reaches the bar in colour; see the entry in
+CLAUDE.md for the traps.
+
 Dock presence is not a one-shot setting. AppKit promotes an `.accessory` process
 back to `.regular` on its own — materialising a `Window` scene, running a modal
 panel, being re-activated after the updater relaunches the bundle — and there is

@@ -895,6 +895,25 @@ Use the smallest sufficient set for the change:
   Dock icon reappears for a user who switched it off. `DockPolicyGuard` owns the
   policy and re-asserts it; route changes through it rather than calling
   `NSApp.setActivationPolicy` directly.
+- Do not draw the menu bar's unread dot as a SwiftUI overlay on the symbol, and
+  do not attach it to the status item's button. `MenuBarExtra` gives its label's
+  `NSImage` to the button as-is (the button has no subviews). The old
+  `ZStack { Image(systemName:); Circle().fill(.red) }` label reached the button
+  as a *template* image the same 17x15 size as the bare symbol with zero red
+  pixels in it, so the dot was never visible — it is gone or flattened to the
+  glyph's ink, which a template is. Colour reaches the menu bar only through a
+  non-template image, so `MenuBarGlyph.unread` draws itself and is handed to
+  `Image(nsImage:)`. Two things follow. Tint the glyph from `NSColor.labelColor`
+  inside the drawing handler, never from `NSApp.effectiveAppearance`: the handler runs under the
+  *button's* appearance, and the two disagree (a dark wallpaper gives a
+  vibrant-dark bar while the app is still Aqua). And bake the dot into the image
+  rather than adding a subview, because a status item is replicated onto every
+  display's menu bar and the replicas draw the image, not the button's children.
+  The unread canvas is one point wider than the glyph on purpose: AppKit lays a
+  non-template image out a point narrower than a template of the same size
+  (33pt vs 34pt), which would shift every item to the left on each new message.
+  Covered by `MenuBarGlyphTests`, which render the image under all four menu bar
+  appearances and sample pixels. Not covered: how it looks on a real bar.
 - Do not call a WinRT picker (`FileOpenPicker`, `FileSavePicker`,
   `FolderPicker`) from the Windows app. They route through a shell-broker COM
   surrogate that throws `COMException 0x80004005` in this unpackaged process,

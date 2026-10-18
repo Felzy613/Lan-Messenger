@@ -281,27 +281,21 @@ struct ContentView: View {
 
 // MARK: - Menu bar extra
 
-// Custom label so we can overlay a small red dot on the glyph when there are
-// unread messages — MenuBarExtra's plain `systemImage:` initializer has no way
-// to composite a badge onto the status item icon.
+// Custom label so the glyph can carry a red dot when there are unread messages.
+// The dot has to be part of the image — see MenuBarGlyph for why a SwiftUI
+// overlay on the symbol never shows up in the menu bar.
 struct MenuBarIcon: View {
     @EnvironmentObject var model: AppModel
 
+    // Same rule as the Dock badge: archived threads are out of sight and
+    // shouldn't light the icon.
     private var hasUnread: Bool {
         model.conversations.contains { $0.unreadCount > 0 }
     }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Image(systemName: "message.fill")
-            if hasUnread {
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 7, height: 7)
-                    .offset(x: 3, y: -3)
-            }
-        }
-        .accessibilityLabel(Text("LAN Messenger"))
+        Image(nsImage: MenuBarGlyph.image(unread: hasUnread))
+            .accessibilityLabel(Text(hasUnread ? "LAN Messenger, unread messages" : "LAN Messenger"))
     }
 }
 
