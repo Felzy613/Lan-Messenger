@@ -33,7 +33,20 @@ public sealed partial class SettingsPage : Page
         // ground MainWindow asks for with GlassDialog.Apply(scrollingBody: true);
         // on any other ground the edges stay hard, as before.
         SheetScrollEdges.Attach(SettingsScroll, SettingsContent, TopScrollEdge, BottomScrollEdge);
-        Loaded += (_, _) => Refresh();
+        Loaded   += (_, _) => Refresh();
+        // The text fields save when they lose focus. Escape closes this sheet
+        // with a field still focused, and taking a focused element out of the
+        // tree is not guaranteed to raise LostFocus, so an edit made just
+        // before Escape could be dropped. Save them on the way out too; the
+        // handlers write what the boxes already show, so a repeat is harmless.
+        Unloaded += (_, _) => CommitFields();
+    }
+
+    private void CommitFields()
+    {
+        UsernameBox_LostFocus(UsernameBox, new RoutedEventArgs());
+        UpdateRepoBox_LostFocus(UpdateRepoBox, new RoutedEventArgs());
+        RelayUrlBox_LostFocus(RelayUrlBox, new RoutedEventArgs());
     }
 
     private void Refresh()
